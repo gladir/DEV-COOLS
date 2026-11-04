@@ -7083,6 +7083,9 @@ Type
  { signaux independants qui confirment ce layout, meme discipline que le    }
  { chantier OS/2 LX. 64 octets exactement (0x40), aucune reserve non        }
  { reprise ici contrairement a LX - tous les champs sont utiles. }
+ TW2Bits = Array[0..299999] Of Byte;
+ PW2Bits = ^TW2Bits;
+
  TNEHeader = Record
   ne_magic0, ne_magic1: Byte;  { 'N','E'                                  }
   ne_ver, ne_rev: Byte;        { version/revision du linker                }
@@ -7243,6 +7246,8 @@ Const
  { et emplacements de trappe d'import, mêmes constantes utilisees par      }
  { Win16_LoadNE/Win16_ResolveImportSlot (voir plus loin dans ce fichier). }
  WIN16_MAX_SEGS       = 64;
+ W2_MAXOB = 512;
+ W2_MAXDC = 40;
  WIN16_MAX_TRAP_SLOTS = 512;  { CALENDAR.EXE (Win 2.03) importe 139 fonctions :
    128 etait trop peu }
  WIN16_TRAP_SLOT_SIZE = 5;  { CD F8 (INT prive) + index de slot (2 octets) + CB
@@ -9616,9 +9621,53 @@ Var
  { partout ailleurs), MoveTo/LineTo/Ellipse/Rectangle peuvent l'utiliser    }
  { sans avoir a resoudre hDC->fenetre a chaque appel. -1 = aucune. }
  Win16_ActiveDCWindow  : Integer;
+ { Moteur GDI Windows 2.x : objets et contextes }
+ W2ResBuf   : Array[0..65534] Of Byte;
+ W2ObUsed   : Array[1..512] Of Boolean;
+ W2ObKind   : Array[1..512] Of Byte;
+ W2ObColor  : Array[1..512] Of LongInt;
+ W2ObStyle  : Array[1..512] Of Integer;
+ W2ObWidth  : Array[1..512] Of Integer;
+ W2ObPat    : Array[1..512, 0..7] Of Byte;
+ W2ObBmp    : Array[1..512] Of PW2Bits;
+ W2ObBW     : Array[1..512] Of Integer;
+ W2ObBH     : Array[1..512] Of Integer;
+ W2ObMono   : Array[1..512] Of Boolean;
+ W2DcUsed   : Array[1..40] Of Boolean;
+ W2DcKind   : Array[1..40] Of Byte;
+ W2DcHw     : Array[1..40] Of Word;
+ W2DcBmp    : Array[1..40] Of Word;
+ W2DcPen    : Array[1..40] Of Word;
+ W2DcBrush  : Array[1..40] Of Word;
+ W2DcTextCol: Array[1..40] Of LongInt;
+ W2DcBkCol  : Array[1..40] Of LongInt;
+ W2DcBkMode : Array[1..40] Of Integer;
+ W2DcRop2   : Array[1..40] Of Integer;
+ W2DcPenX   : Array[1..40] Of Integer;
+ W2DcPenY   : Array[1..40] Of Integer;
+ W2DcClipOn : Array[1..40] Of Boolean;
+ W2DcCX1    : Array[1..40] Of Integer;
+ W2DcCY1    : Array[1..40] Of Integer;
+ W2DcCX2    : Array[1..40] Of Integer;
+ W2DcCY2    : Array[1..40] Of Integer;
+ W2DcWOx    : Array[1..40] Of Integer;
+ W2DcWOy    : Array[1..40] Of Integer;
+ W2DcVOx    : Array[1..40] Of Integer;
+ W2DcVOy    : Array[1..40] Of Integer;
+ W2DcSvPen  : Array[1..40] Of Word;
+ W2DcSvBrush: Array[1..40] Of Word;
+ W2DcSvText : Array[1..40] Of LongInt;
+ W2DcSvBk   : Array[1..40] Of LongInt;
+ W2DcOrgX   : Array[1..40] Of Integer;
+ W2DcOrgY   : Array[1..40] Of Integer;
+ W2DcCL     : Array[1..40] Of Integer;
+ W2DcCT     : Array[1..40] Of Integer;
+ W2DcCR     : Array[1..40] Of Integer;
+ W2DcCB     : Array[1..40] Of Integer;
  { Memoire de Windows 2.x : poignees locales mobiles et blocs globaux par   }
  { segments (la poignee GlobalAlloc EST le segment, ES := poignee). }
  Win16_W2MoveCount     : Integer;
+ Win16_W2ResFile       : File;
  Win16_W2MoveCell      : Array[0..255] Of Word;
  Win16_W2GCount        : Integer;
  Win16_W2GSeg          : Array[0..255] Of Word;
@@ -108118,6 +108167,8 @@ Begin
   Win16_HeapLimit := 0;
   Win16_HeapStart := 0;
  End;
+ FillChar(W2ObUsed, SizeOf(W2ObUsed), 0);
+ FillChar(W2DcUsed, SizeOf(W2DcUsed), 0);
  Win16_W2MoveCount := 0;
  Win16_W2GCount := 0;
  Win16_LocalBlockCount := 0;
@@ -113713,8 +113764,1076 @@ Begin
       P.CPU.Regs.DX := Word(Lg Shr 16);
       AW := 1;
      End;
+  61: Begin                                  { LoadResource -> segment global }
+      Ptr := 0;
+      If Win16_LastRsrcFound Then Begin
+       Lg := Win16_LastRsrcLen;
+       If Lg > 65000 Then Lg := 65000;
+       NP := Win16_W2GlobalAlloc(P.CPU, Lg);
+       If NP <> 0 Then Begin
+        {$I-} Assign(Win16_W2ResFile, Win16_LoadedPath);
+        Reset(Win16_W2ResFile, 1); {$I+}
+        If IOResult = 0 Then Begin
+         Seek(Win16_W2ResFile, Win16_LastRsrcFileOfs);
+         BlockRead(Win16_W2ResFile, W2ResBuf, Word(Lg), Sz);
+         Close(Win16_W2ResFile);
+         For J := 0 To Sz - 1 Do Emu_WriteByte(P.CPU, NP, Word(J), W2ResBuf[J]);
+         Ptr := NP;
+        End;
+       End;
+      End;
+      P.CPU.Regs.AX := Ptr;
+      AW := 2;
+     End;
+  62: Begin                                       { LockResource(h) = h:0 }
+      A1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+      P.CPU.Regs.AX := 0;
+      P.CPU.Regs.DX := A1;
+      AW := 1;
+     End;
+  63: Begin P.CPU.Regs.AX := 0; AW := 1; End;        { FreeResource }
   Else Win16_Win2Mem := False;
  End;
+End;
+
+{ ======================================================================== }
+{ Moteur GDI de Windows 2.x : objets (stylos, pinceaux, bitmaps, polices),  }
+{ contextes de peripherique (fenetre ou memoire) et rasterisation reelle.   }
+{ Reproduit le modele de WINDOWS2.PAS : poignee d'objet = $100 + n, poignee  }
+{ de contexte = $4000 + n, objets stock = $20 + n.                          }
+{ ======================================================================== }
+Const
+ W2_VGA: Array[0..15, 0..2] Of Byte = (
+  (0, 0, 0), (0, 0, 170), (0, 170, 0), (0, 170, 170),
+  (170, 0, 0), (170, 0, 170), (170, 85, 0), (170, 170, 170),
+  (85, 85, 85), (85, 85, 255), (85, 255, 85), (85, 255, 255),
+  (255, 85, 85), (255, 85, 255), (255, 255, 85), (255, 255, 255));
+
+{ COLORREF -> indice VGA 16 couleurs le plus proche }
+Function W2Col(C: LongInt): Integer;
+Var I, Best, R, G, B: Integer; BD, D: LongInt;
+Begin
+ If C < 0 Then Begin W2Col := 0; Exit; End;
+ R := C And 255; G := (C Shr 8) And 255; B := (C Shr 16) And 255;
+ Best := 0; BD := 999999;
+ For I := 0 To 15 Do Begin
+  D := Sqr(LongInt(R - W2_VGA[I, 0])) + Sqr(LongInt(G - W2_VGA[I, 1])) +
+   Sqr(LongInt(B - W2_VGA[I, 2]));
+  If D < BD Then Begin BD := D; Best := I; End;
+ End;
+ W2Col := Best;
+End;
+
+Function W2ColRef(Idx: Integer): LongInt;
+Begin
+ Idx := Idx And 15;
+ W2ColRef := LongInt(W2_VGA[Idx, 0]) + LongInt(W2_VGA[Idx, 1]) * 256 +
+   LongInt(W2_VGA[Idx, 2]) * 65536;
+End;
+
+Function W2ObIdx(H: Word): Integer;
+Begin
+ If (H > $100) And (H <= $100 + W2_MAXOB) And W2ObUsed[H - $100] Then
+  W2ObIdx := H - $100
+ Else W2ObIdx := 0;
+End;
+
+Function W2ObNew(Kind: Byte; Color: LongInt; Style, Width: Integer): Word;
+Var I: Integer;
+Begin
+ W2ObNew := 0;
+ For I := 1 To W2_MAXOB Do
+  If Not W2ObUsed[I] Then Begin
+   W2ObUsed[I] := True;
+   W2ObKind[I] := Kind;
+   W2ObColor[I] := Color;
+   W2ObStyle[I] := Style;
+   W2ObWidth[I] := Width;
+   FillChar(W2ObPat[I], 8, 0);
+   W2ObBmp[I] := Nil;
+   W2ObBW[I] := 0; W2ObBH[I] := 0; W2ObMono[I] := False;
+   W2ObNew := $100 + I;
+   Exit;
+  End;
+End;
+
+Procedure W2ObFree(H: Word);
+Var I, D: Integer;
+Begin
+ I := W2ObIdx(H);
+ If I = 0 Then Exit;
+ For D := 1 To W2_MAXDC Do
+  If W2DcUsed[D] Then Begin
+   If W2DcBmp[D] = H Then W2DcBmp[D] := 0;
+   If W2DcPen[D] = H Then W2DcPen[D] := $27;
+   If W2DcBrush[D] = H Then W2DcBrush[D] := $20;
+  End;
+ If (W2ObKind[I] = 4) And (W2ObBmp[I] <> Nil) Then
+  FreeMem(W2ObBmp[I], LongInt(W2ObBW[I]) * W2ObBH[I]);
+ W2ObBmp[I] := Nil;
+ W2ObUsed[I] := False;
+End;
+
+Function W2BmpNew(W, H: Integer; Mono: Boolean): Word;
+Var Hn: Word; I: Integer; N: LongInt;
+Begin
+ W2BmpNew := 0;
+ If (W <= 0) Or (H <= 0) Or (LongInt(W) * H > 300000) Then Exit;
+ Hn := W2ObNew(4, 0, 0, 0);
+ If Hn = 0 Then Exit;
+ I := Hn - $100;
+ N := LongInt(W) * H;
+ GetMem(W2ObBmp[I], N);
+ If Mono Then FillChar(W2ObBmp[I]^, N, 1) Else FillChar(W2ObBmp[I]^, N, 15);
+ W2ObBW[I] := W; W2ObBH[I] := H; W2ObMono[I] := Mono;
+ W2BmpNew := Hn;
+End;
+
+Function W2DcIdx(H: Word): Integer;
+Begin
+ If (H > $4000) And (H <= $4000 + W2_MAXDC) And W2DcUsed[H - $4000] Then
+  W2DcIdx := H - $4000
+ Else W2DcIdx := 0;
+End;
+
+Function W2DcNew(Kind: Byte; Hw: Word): Word;
+Var I: Integer;
+Begin
+ W2DcNew := 0;
+ For I := 1 To W2_MAXDC Do
+  If Not W2DcUsed[I] Then Begin
+   W2DcUsed[I] := True;
+   W2DcKind[I] := Kind;
+   W2DcHw[I] := Hw;
+   W2DcBmp[I] := 0;
+   W2DcPen[I] := $27; W2DcBrush[I] := $20;
+   W2DcTextCol[I] := 0; W2DcBkCol[I] := $FFFFFF;
+   W2DcBkMode[I] := 2; W2DcRop2[I] := 13;
+   W2DcPenX[I] := 0; W2DcPenY[I] := 0;
+   W2DcClipOn[I] := False;
+   W2DcCX1[I] := 0; W2DcCY1[I] := 0; W2DcCX2[I] := 0; W2DcCY2[I] := 0;
+   W2DcWOx[I] := 0; W2DcWOy[I] := 0; W2DcVOx[I] := 0; W2DcVOy[I] := 0;
+   W2DcSvPen[I] := $27; W2DcSvBrush[I] := $20;
+   W2DcSvText[I] := 0; W2DcSvBk[I] := $FFFFFF;
+   W2DcNew := $4000 + I;
+   Exit;
+  End;
+End;
+
+{ Prepare le contexte : origine absolue + rectangle de clip. False = rien a  }
+{ dessiner (fenetre cachee/inconnue, bitmap absent). }
+Function W2DcPrep(D: Integer): Boolean;
+Var I, Wi, O, L, T, R, B: Integer;
+Begin
+ W2DcPrep := False;
+ If D <= 0 Then Exit;
+ If W2DcKind[D] = 2 Then Begin
+  O := W2ObIdx(W2DcBmp[D]);
+  If O = 0 Then Exit;
+  W2DcOrgX[D] := W2DcVOx[D] - W2DcWOx[D];
+  W2DcOrgY[D] := W2DcVOy[D] - W2DcWOy[D];
+  W2DcCL[D] := 0; W2DcCT[D] := 0;
+  W2DcCR[D] := W2ObBW[O] - 1; W2DcCB[D] := W2ObBH[O] - 1;
+  W2DcPrep := True;
+  Exit;
+ End;
+ Wi := -1;
+ If W2DcHw[D] <> 0 Then
+  For I := 0 To Win16_WindowCount - 1 Do
+   If Win16_WindowHWnd[I] = W2DcHw[D] Then Wi := I;
+ If Wi >= 0 Then Begin
+  If Not Win16_IsVisible(Wi) Then Exit;
+  Win16_ClientClip(Wi, L, T, R, B);
+  W2DcOrgX[D] := Win16_WindowX[Wi] + 1 + W2DcVOx[D] - W2DcWOx[D];
+  W2DcOrgY[D] := Win16_WindowY[Wi] + 1 + W2DcVOy[D] - W2DcWOy[D];
+ End Else Begin
+  If W2DcHw[D] <> 0 Then Exit;
+  L := 0; T := 0; R := 639; B := 399;
+  W2DcOrgX[D] := W2DcVOx[D] - W2DcWOx[D];
+  W2DcOrgY[D] := W2DcVOy[D] - W2DcWOy[D];
+ End;
+ If W2DcClipOn[D] Then Begin
+  If W2DcOrgX[D] + W2DcCX1[D] > L Then L := W2DcOrgX[D] + W2DcCX1[D];
+  If W2DcOrgY[D] + W2DcCY1[D] > T Then T := W2DcOrgY[D] + W2DcCY1[D];
+  If W2DcOrgX[D] + W2DcCX2[D] - 1 < R Then R := W2DcOrgX[D] + W2DcCX2[D] - 1;
+  If W2DcOrgY[D] + W2DcCY2[D] - 1 < B Then B := W2DcOrgY[D] + W2DcCY2[D] - 1;
+ End;
+ W2DcCL[D] := L; W2DcCT[D] := T; W2DcCR[D] := R; W2DcCB[D] := B;
+ W2DcPrep := True;
+End;
+
+Function W2MonoOf(C: Integer): Byte;
+Begin
+ If C >= 7 Then W2MonoOf := 1 Else W2MonoOf := 0;
+End;
+
+{ ecrit un pixel (coordonnees logiques du DC), clippe }
+Procedure W2Pix(D, X, Y, C: Integer);
+Var O, AX, AY: Integer;
+Begin
+ AX := W2DcOrgX[D] + X; AY := W2DcOrgY[D] + Y;
+ If (AX < W2DcCL[D]) Or (AX > W2DcCR[D]) Or (AY < W2DcCT[D]) Or
+    (AY > W2DcCB[D]) Then Exit;
+ If W2DcKind[D] = 2 Then Begin
+  O := W2ObIdx(W2DcBmp[D]);
+  If O = 0 Then Exit;
+  If W2ObMono[O] Then W2ObBmp[O]^[LongInt(AY) * W2ObBW[O] + AX] := W2MonoOf(C)
+  Else W2ObBmp[O]^[LongInt(AY) * W2ObBW[O] + AX] := C;
+ End Else Emu_VidSetPixel(AX, AY, C);
+End;
+
+Function W2Get(D, X, Y: Integer; Var IsMono: Boolean): Integer;
+Var O, AX, AY: Integer;
+Begin
+ IsMono := False; W2Get := 0;
+ AX := W2DcOrgX[D] + X; AY := W2DcOrgY[D] + Y;
+ If W2DcKind[D] = 2 Then Begin
+  O := W2ObIdx(W2DcBmp[D]);
+  If (O > 0) And (AX >= 0) And (AY >= 0) And (AX < W2ObBW[O]) And
+     (AY < W2ObBH[O]) Then Begin
+   W2Get := W2ObBmp[O]^[LongInt(AY) * W2ObBW[O] + AX];
+   IsMono := W2ObMono[O];
+  End;
+ End Else If (AX >= 0) And (AY >= 0) And (AX < 640) And (AY < 400) Then
+  W2Get := Emu_VidGetPixel(AX, AY);
+End;
+
+{ ROP2 binaire (R2_*) applique a un indice de couleur 4 bits }
+Function W2Rop2(Rop2, Pen, Dst: Integer): Integer;
+Begin
+ Case Rop2 Of
+  1: W2Rop2 := 0;
+  2: W2Rop2 := (Not (Pen Or Dst)) And 15;
+  3: W2Rop2 := (Not Pen) And Dst;
+  4: W2Rop2 := (Not Pen) And 15;
+  5: W2Rop2 := Pen And ((Not Dst) And 15);
+  6: W2Rop2 := (Not Dst) And 15;
+  7: W2Rop2 := Pen Xor Dst;
+  8: W2Rop2 := (Not (Pen And Dst)) And 15;
+  9: W2Rop2 := Pen And Dst;
+  10: W2Rop2 := (Not (Pen Xor Dst)) And 15;
+  11: W2Rop2 := Dst;
+  12: W2Rop2 := ((Not Pen) And 15) Or Dst;
+  14: W2Rop2 := Pen Or ((Not Dst) And 15);
+  15: W2Rop2 := Pen Or Dst;
+  16: W2Rop2 := 15;
+  Else W2Rop2 := Pen;
+ End;
+End;
+
+Procedure W2PlotPen(D, X, Y, C: Integer);
+Var M: Boolean;
+Begin
+ If W2DcRop2[D] = 13 Then W2Pix(D, X, Y, C)
+ Else W2Pix(D, X, Y, W2Rop2(W2DcRop2[D], C, W2Get(D, X, Y, M)));
+End;
+
+Procedure W2Bar(D, X1, Y1, X2, Y2, C: Integer);
+Var X, Y: Integer;
+Begin
+ If (X2 < X1) Or (Y2 < Y1) Then Exit;
+ For Y := Y1 To Y2 Do
+  For X := X1 To X2 Do W2Pix(D, X, Y, C);
+End;
+
+Procedure W2Line(D, X1, Y1, X2, Y2, C: Integer);
+Var DX, DY, SX, SY, E, E2: Integer;
+Begin
+ DX := Abs(X2 - X1); DY := -Abs(Y2 - Y1);
+ If X1 < X2 Then SX := 1 Else SX := -1;
+ If Y1 < Y2 Then SY := 1 Else SY := -1;
+ E := DX + DY;
+ While True Do Begin
+  W2PlotPen(D, X1, Y1, C);
+  If (X1 = X2) And (Y1 = Y2) Then Break;
+  E2 := 2 * E;
+  If E2 >= DY Then Begin E := E + DY; X1 := X1 + SX; End;
+  If E2 <= DX Then Begin E := E + DX; Y1 := Y1 + SY; End;
+ End;
+End;
+
+{ couleur du pinceau en (X,Y) : -1 = creux }
+Function W2BrushPix(D, X, Y: Integer): Integer;
+Var H: Word; O: Integer; B: Byte;
+Begin
+ H := W2DcBrush[D];
+ W2BrushPix := -1;
+ If H < $100 Then Begin
+  Case H - $20 Of
+   0: W2BrushPix := 15;
+   1: W2BrushPix := 7;
+   2: W2BrushPix := 8;
+   3: W2BrushPix := 8;
+   4: W2BrushPix := 0;
+  End;
+  If H = $21 Then W2BrushPix := 7;
+  If H = $22 Then Begin
+   If ((X + Y) And 1) = 0 Then W2BrushPix := 0 Else W2BrushPix := 15;
+  End;
+  If H = $23 Then W2BrushPix := 8;
+  Exit;
+ End;
+ O := W2ObIdx(H);
+ If O = 0 Then Exit;
+ If W2ObStyle[O] = 3 Then Begin
+  B := (W2ObPat[O, Y And 7] Shr (7 - (X And 7))) And 1;
+  If B = 1 Then W2BrushPix := W2Col(W2DcBkCol[D])
+  Else W2BrushPix := W2Col(W2DcTextCol[D]);
+ End Else If W2ObStyle[O] = 1 Then W2BrushPix := -1
+ Else W2BrushPix := W2Col(W2ObColor[O]);
+End;
+
+Procedure W2FillBrush(D, X1, Y1, X2, Y2: Integer);
+Var X, Y, C, C0: Integer; Solid: Boolean; O: Integer;
+Begin
+ If (X2 < X1) Or (Y2 < Y1) Then Exit;
+ C0 := W2BrushPix(D, 0, 0);
+ Solid := True;
+ O := W2ObIdx(W2DcBrush[D]);
+ If (O > 0) And (W2ObStyle[O] = 3) Then Solid := False;
+ If W2DcBrush[D] = $22 Then Solid := False;
+ If Solid Then Begin
+  If C0 >= 0 Then W2Bar(D, X1, Y1, X2, Y2, C0);
+  Exit;
+ End;
+ For Y := Y1 To Y2 Do
+  For X := X1 To X2 Do Begin
+   C := W2BrushPix(D, X, Y);
+   If C >= 0 Then W2Pix(D, X, Y, C);
+  End;
+End;
+
+Function W2PenCol(D: Integer; Var Null: Boolean): Integer;
+Var O: Integer;
+Begin
+ Null := False;
+ W2PenCol := 0;
+ If W2DcPen[D] < $100 Then Begin
+  Case W2DcPen[D] - $20 Of
+   6: W2PenCol := 15;
+   7: W2PenCol := 0;
+   8: Null := True;
+  End;
+  Exit;
+ End;
+ O := W2ObIdx(W2DcPen[D]);
+ If O = 0 Then Exit;
+ If W2ObStyle[O] = 5 Then Null := True;
+ W2PenCol := W2Col(W2ObColor[O]);
+End;
+
+Function W2PenWidth(D: Integer): Integer;
+Var O, R: Integer;
+Begin
+ R := 1;
+ O := W2ObIdx(W2DcPen[D]);
+ If (O > 0) And (W2ObWidth[O] > 1) Then Begin
+  R := W2ObWidth[O];
+  If R > 8 Then R := 8;
+ End;
+ W2PenWidth := R;
+End;
+
+Procedure W2PenLine(D, X1, Y1, X2, Y2: Integer);
+Var C, W, I: Integer; Nl: Boolean;
+Begin
+ C := W2PenCol(D, Nl);
+ If Nl Then Exit;
+ W := W2PenWidth(D);
+ W2Line(D, X1, Y1, X2, Y2, C);
+ For I := 1 To W - 1 Do
+  If Abs(X2 - X1) >= Abs(Y2 - Y1) Then W2Line(D, X1, Y1 + I, X2, Y2 + I, C)
+  Else W2Line(D, X1 + I, Y1, X2 + I, Y2, C);
+End;
+
+Procedure W2Rectangle(D, X1, Y1, X2, Y2: Integer);
+Var C: Integer; Nl: Boolean;
+Begin
+ If X2 < X1 Then Exit;
+ W2FillBrush(D, X1, Y1, X2 - 1, Y2 - 1);
+ C := W2PenCol(D, Nl);
+ If Not Nl Then Begin
+  W2Line(D, X1, Y1, X2 - 1, Y1, C); W2Line(D, X2 - 1, Y1, X2 - 1, Y2 - 1, C);
+  W2Line(D, X2 - 1, Y2 - 1, X1, Y2 - 1, C); W2Line(D, X1, Y2 - 1, X1, Y1, C);
+ End;
+End;
+
+Procedure W2Ellipse(D, X1, Y1, X2, Y2: Integer);
+Var CX, CY, RX, RY, Y, N, I, Hx: Integer; A: Double; C: Integer; Nl: Boolean;
+Begin
+ CX := (X1 + X2) Div 2; CY := (Y1 + Y2) Div 2;
+ RX := Abs(X2 - X1) Div 2; RY := Abs(Y2 - Y1) Div 2;
+ If (RX = 0) Or (RY = 0) Then Exit;
+ For Y := -RY To RY Do Begin
+  Hx := Round(RX * Sqrt(1 - Sqr(Y / RY)));
+  W2FillBrush(D, CX - Hx, CY + Y, CX + Hx, CY + Y);
+ End;
+ C := W2PenCol(D, Nl);
+ If Nl Then Exit;
+ N := (RX + RY) * 4;
+ For I := 0 To N - 1 Do Begin
+  A := I * 2 * Pi / N;
+  W2PlotPen(D, CX + Round(Cos(A) * RX), CY + Round(Sin(A) * RY), C);
+ End;
+End;
+
+Procedure W2Text(D, X, Y: Integer; Const S: String);
+Var I, Row, Col, Ch, Fg, Bg: Integer; Bits, Bold: Byte;
+Begin
+ Fg := W2Col(W2DcTextCol[D]); Bg := W2Col(W2DcBkCol[D]);
+ For I := 1 To Length(S) Do Begin
+  Ch := Ord(S[I]);
+  For Row := 0 To 7 Do Begin
+   Bits := Win16_Font8[Ch, Row];
+   Bold := Bits Or (Bits Shr 1);
+   For Col := 0 To 7 Do
+    If (Bold And (128 Shr Col)) <> 0 Then
+     W2Pix(D, X + (I - 1) * 8 + Col, Y + Row, Fg)
+    Else If W2DcBkMode[D] = 2 Then
+     W2Pix(D, X + (I - 1) * 8 + Col, Y + Row, Bg);
+  End;
+ End;
+End;
+
+{ operation raster sur un pixel, table de verite ternaire (P,S,D) }
+Function W2RopPix(Rop: LongInt; P, S, Dd: Integer): Integer;
+Var Code, B, R, Idx: Integer;
+Begin
+ Code := (Rop Shr 16) And $FF;
+ R := 0;
+ For B := 0 To 3 Do Begin
+  Idx := (((P Shr B) And 1) * 4) + (((S Shr B) And 1) * 2) + ((Dd Shr B) And 1);
+  If ((Code Shr Idx) And 1) <> 0 Then R := R Or (1 Shl B);
+ End;
+ W2RopPix := R;
+End;
+
+Function W2RopUsesP(Rop: LongInt): Boolean;
+Var Code: Integer;
+Begin
+ Code := (Rop Shr 16) And $FF;
+ W2RopUsesP := ((Code Shr 4) And $F) <> (Code And $F);
+End;
+
+Function W2RopUsesS(Rop: LongInt): Boolean;
+Var Code: Integer;
+Begin
+ Code := (Rop Shr 16) And $FF;
+ W2RopUsesS := (((Code Shr 2) And $33) <> (Code And $33));
+End;
+
+{ BitBlt / StretchBlt / PatBlt : copie rectangle de Sd vers Dd }
+Procedure W2BitBlt(Dd: Integer; DX, DY, Wd, Ht: Integer; Sd: Integer;
+  SX, SY, SW, SH: Integer; Rop: LongInt);
+Var X, Y, Sx_, Sy_, S, Dp, Pt, Rs, N, I: Integer; M, DM, NeedS, NeedP: Boolean;
+ Buf: Boolean; Idx: LongInt;
+Begin
+ If (Wd = 0) Or (Ht = 0) Then Exit;
+ NeedS := (Sd > 0) And W2RopUsesS(Rop);
+ NeedP := W2RopUsesP(Rop);
+ If SW = 0 Then SW := Wd;
+ If SH = 0 Then SH := Ht;
+ { source et destination sur le meme ecran : passer par un tampon }
+ Buf := NeedS And (W2DcKind[Sd] = 1) And (W2DcKind[Dd] = 1) And
+   (LongInt(Abs(Wd)) * Abs(Ht) <= 256000);
+ If Buf Then Begin
+  Idx := 0;
+  For Y := 0 To Abs(Ht) - 1 Do
+   For X := 0 To Abs(Wd) - 1 Do Begin
+    If Abs(SW) = Abs(Wd) Then Sx_ := SX + X Else Sx_ := SX + (X * Abs(SW)) Div
+      Abs(Wd);
+    If Abs(SH) = Abs(Ht) Then Sy_ := SY + Y Else Sy_ := SY + (Y * Abs(SH)) Div
+      Abs(Ht);
+    Win16_BlitBuf[Idx] := Byte(W2Get(Sd, Sx_, Sy_, M));
+    Inc(Idx);
+   End;
+ End;
+ Idx := 0;
+ For Y := 0 To Abs(Ht) - 1 Do
+  For X := 0 To Abs(Wd) - 1 Do Begin
+   S := 0;
+   If NeedS Then Begin
+    If Buf Then Begin S := Win16_BlitBuf[Idx]; Inc(Idx); M := False; End
+    Else Begin
+     If Abs(SW) = Abs(Wd) Then Sx_ := SX + X Else Sx_ := SX + (X * Abs(SW)) Div
+       Abs(Wd);
+     If Abs(SH) = Abs(Ht) Then Sy_ := SY + Y Else Sy_ := SY + (Y * Abs(SH)) Div
+       Abs(Ht);
+     S := W2Get(Sd, Sx_, Sy_, M);
+     If M Then Begin
+      { bitmap monochrome : 1 -> couleur de fond, 0 -> couleur du texte }
+      If S = 1 Then S := W2Col(W2DcBkCol[Dd]) Else S := W2Col(W2DcTextCol[Dd]);
+     End;
+    End;
+   End;
+   Pt := 0;
+   If NeedP Then Begin
+    Pt := W2BrushPix(Dd, DX + X, DY + Y);
+    If Pt < 0 Then Continue;
+   End;
+   Dp := W2Get(Dd, DX + X, DY + Y, DM);
+   If DM Then Begin If Dp = 0 Then Dp := 0 Else Dp := 15; End;
+   Rs := W2RopPix(Rop, Pt, S, Dp);
+   W2Pix(Dd, DX + X, DY + Y, Rs);
+  End;
+ If N = I Then ;
+End;
+
+{ bits Windows 2.x (lignes alignees sur un mot, plans entrelaces) -> bitmap }
+Procedure W2BmpFromMem(Var C: TEmuCPU; H: Word; Seg, Ofs: Word; WB: Integer;
+  Planes, Bpp: Integer);
+Var O, X, Y, P: Integer; B, Bit: Byte;
+Begin
+ O := W2ObIdx(H);
+ If O = 0 Then Exit;
+ For Y := 0 To W2ObBH[O] - 1 Do
+  For X := 0 To W2ObBW[O] - 1 Do Begin
+   If W2ObMono[O] Then Begin
+    B := Emu_ReadByte(C, Seg, Word(Ofs + Y * WB + (X Shr 3)));
+    W2ObBmp[O]^[LongInt(Y) * W2ObBW[O] + X] := (B Shr (7 - (X And 7))) And 1;
+   End Else Begin
+    Bit := 0;
+    For P := 0 To Planes - 1 Do Begin
+     B := Emu_ReadByte(C, Seg, Word(Ofs + (Y * Planes + P) * WB + (X Shr 3)));
+     Bit := Bit Or (((B Shr (7 - (X And 7))) And 1) Shl P);
+    End;
+    W2ObBmp[O]^[LongInt(Y) * W2ObBW[O] + X] := Bit;
+   End;
+  End;
+End;
+
+{ LoadBitmap : ressource RT_BITMAP (en-tete de 16 octets) du .EXE charge }
+Function W2LoadBitmapRes(Var P: TEmulatorPanel; NameSeg, NameOfs: Word): Word;
+Var
+ ResOfs, ResLen: LongInt;
+ F: File;
+ Got: Word;
+ Found: Boolean;
+ W, H, WB, Pl, Bp, X, Y, Q: Integer;
+ Hn: Word;
+ O: Integer;
+ B, Bit: Byte;
+Begin
+ W2LoadBitmapRes := 0;
+ If NameSeg = 0 Then
+  Found := Win16_FindResourceGeneric(True, $8002, '', True,
+   Word($8000 Or NameOfs), '', ResOfs, ResLen)
+ Else
+  Found := Win16_FindResourceGeneric(True, $8002, '', False, 0,
+   Win16_ReadGuestString(P.CPU, NameSeg, NameOfs), ResOfs, ResLen);
+ If Not Found Then Exit;
+ If ResLen > 65000 Then ResLen := 65000;
+ {$I-} Assign(F, Win16_LoadedPath); Reset(F, 1); {$I+}
+ If IOResult <> 0 Then Exit;
+ Seek(F, ResOfs);
+ BlockRead(F, W2ResBuf, Word(ResLen), Got);
+ Close(F);
+ If Got < 16 Then Exit;
+ W := W2ResBuf[4] Or (W2ResBuf[5] Shl 8);
+ H := W2ResBuf[6] Or (W2ResBuf[7] Shl 8);
+ WB := W2ResBuf[8] Or (W2ResBuf[9] Shl 8);
+ Pl := W2ResBuf[10]; Bp := W2ResBuf[11];
+ If (W <= 0) Or (H <= 0) Or (W > 1000) Or (H > 1000) Then Exit;
+ If Pl < 1 Then Pl := 1;
+ Hn := W2BmpNew(W, H, (Pl * Bp) = 1);
+ If Hn = 0 Then Exit;
+ O := Hn - $100;
+ For Y := 0 To H - 1 Do
+  For X := 0 To W - 1 Do Begin
+   If W2ObMono[O] Then Begin
+    Q := 16 + Y * WB + (X Shr 3);
+    If Q < Got Then B := W2ResBuf[Q] Else B := 0;
+    W2ObBmp[O]^[LongInt(Y) * W + X] := (B Shr (7 - (X And 7))) And 1;
+   End Else Begin
+    Bit := 0;
+    For Q := 0 To Pl - 1 Do Begin
+     If 16 + (Y * Pl + Q) * WB + (X Shr 3) < Got Then
+      B := W2ResBuf[16 + (Y * Pl + Q) * WB + (X Shr 3)]
+     Else B := 0;
+     Bit := Bit Or (((B Shr (7 - (X And 7))) And 1) Shl Q);
+    End;
+    W2ObBmp[O]^[LongInt(Y) * W + X] := Bit;
+   End;
+  End;
+ W2LoadBitmapRes := Hn;
+End;
+
+{ bitmaps systeme OEM (OBM_*) : fleches 16x16 monochromes }
+Function W2SysBitmap(Id: Word): Word;
+Var Hn: Word; O, X, Y, Dd: Integer;
+Begin
+ W2SysBitmap := 0;
+ Hn := W2BmpNew(16, 16, True);
+ If Hn = 0 Then Exit;
+ O := Hn - $100;
+ For X := 0 To 15 Do Begin
+  W2ObBmp[O]^[X] := 0; W2ObBmp[O]^[15 * 16 + X] := 0;
+  W2ObBmp[O]^[X * 16] := 0; W2ObBmp[O]^[X * 16 + 15] := 0;
+ End;
+ For Y := 0 To 15 Do
+  For X := 0 To 15 Do Begin
+   Dd := -1;
+   Case Id Of
+    32762, 32750: If (X >= 4) And (X <= 10) And (Abs(Y - 7) <= X - 4) Then Dd
+      := 0;
+    32763, 32751: If (X >= 5) And (X <= 11) And (Abs(Y - 7) <= 11 - X) Then Dd
+      := 0;
+    32765, 32753: If (Y >= 4) And (Y <= 10) And (Abs(X - 7) <= Y - 4) Then Dd
+      := 0;
+    32764, 32752: If (Y >= 5) And (Y <= 11) And (Abs(X - 7) <= 11 - Y) Then Dd
+      := 0;
+    32760: If (Y >= 3) And (Y <= 12) And ((X = Y - 2) Or (X = 13 - Y + 3)) Then
+      Dd := 0;
+   End;
+   If Dd = 0 Then W2ObBmp[O]^[Y * 16 + X] := 0;
+  End;
+ W2SysBitmap := Hn;
+End;
+
+{ DC fenetre : association a la fenetre Win16 (GetDC / BeginPaint) }
+Function W2WindowDC(Hw: Word): Word;
+Begin
+ W2WindowDC := W2DcNew(1, Hw);
+End;
+
+{ ---- Dispatcheur GDI Windows 2.x ---------------------------------------- }
+Function Win16_Win2Gdi(Var P: TEmulatorPanel; Ord: Word;
+  Var AW: Integer): Boolean;
+Var
+ K: Integer;
+ D, D2, O, I, J, X, Y, X2, Y2, N, Fl: Integer;
+ H: Word;
+ L: LongInt;
+ S: String;
+ Pts: Array[1..64] Of Integer;
+ A: Word;
+ Nl, M: Boolean;
+ C: Integer;
+ Sg, Of_: Word;
+
+ Function Wd(Idx: Integer): Word;
+ Begin
+  Wd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+    Word(P.CPU.Regs.SP + 4 + 2 * (K - Idx)));
+ End;
+ Function Si(Idx: Integer): Integer;
+ Begin
+  Si := SmallInt(Wd(Idx));
+ End;
+ Function Gl(Idx: Integer): LongInt;
+ Begin
+  Gl := (LongInt(Wd(Idx)) Shl 16) Or LongInt(Wd(Idx + 1));
+ End;
+ Procedure RetL(V: LongInt);
+ Begin
+  P.CPU.Regs.AX := Word(V And $FFFF);
+  P.CPU.Regs.DX := Word((V Shr 16) And $FFFF);
+ End;
+ Function DcOf(Idx: Integer): Integer;
+ Begin
+  DcOf := W2DcIdx(Wd(Idx));
+ End;
+ Function StrAt(SegI, Cnt: Integer): String;
+ Var T: String; Q: Integer;
+ Begin
+  T := '';
+  If Cnt > 255 Then Cnt := 255;
+  For Q := 0 To Cnt - 1 Do
+   T := T + Chr(Emu_ReadByte(P.CPU, Wd(SegI), Word(Wd(SegI + 1) + Q)));
+  StrAt := T;
+ End;
+Begin
+ Win16_Win2Gdi := True;
+ Case Ord Of
+  1: Begin K := 3; D := DcOf(1);                       { SetBkColor }
+      If D > 0 Then Begin L := W2DcBkCol[D]; W2DcBkCol[D] := Gl(2); RetL(L); End
+      Else RetL(0);
+      AW := 3; End;
+  2: Begin K := 2; D := DcOf(1);                       { SetBkMode }
+      If D > 0 Then Begin P.CPU.Regs.AX := Word(W2DcBkMode[D]);
+       W2DcBkMode[D] := Wd(2); End Else P.CPU.Regs.AX := 0;
+      AW := 2; End;
+  3, 7: Begin P.CPU.Regs.AX := 1; AW := 2; End;
+  4: Begin K := 2; D := DcOf(1);                       { SetROP2 }
+      If D > 0 Then Begin P.CPU.Regs.AX := Word(W2DcRop2[D]);
+       W2DcRop2[D] := Wd(2); End Else P.CPU.Regs.AX := 0;
+      AW := 2; End;
+  9: Begin K := 3; D := DcOf(1);                       { SetTextColor }
+      If D > 0 Then Begin L := W2DcTextCol[D]; W2DcTextCol[D] := Gl(2);
+       RetL(L); End Else RetL(0);
+      AW := 3; End;
+  10: Begin P.CPU.Regs.AX := 1; AW := 3; End;
+  11, 13: Begin K := 3; D := DcOf(1);       { SetWindowOrg / SetViewportOrg }
+      If D > 0 Then Begin
+       If Ord = 11 Then Begin
+        RetL((LongInt(W2DcWOy[D] And $FFFF) Shl 16) Or (W2DcWOx[D] And $FFFF));
+        W2DcWOx[D] := Si(2); W2DcWOy[D] := Si(3);
+       End Else Begin
+        RetL((LongInt(W2DcVOy[D] And $FFFF) Shl 16) Or (W2DcVOx[D] And $FFFF));
+        W2DcVOx[D] := Si(2); W2DcVOy[D] := Si(3);
+       End;
+      End Else RetL(0);
+      AW := 3; End;
+  12, 14: Begin RetL(0); AW := 3; End;
+  19: Begin K := 3; D := DcOf(1);                      { LineTo }
+      If D > 0 Then Begin
+       If W2DcPrep(D) Then
+        W2PenLine(D, W2DcPenX[D], W2DcPenY[D], Si(2), Si(3));
+       W2DcPenX[D] := Si(2); W2DcPenY[D] := Si(3);
+      End;
+      P.CPU.Regs.AX := 1; AW := 3; End;
+  20: Begin K := 3; D := DcOf(1);                      { MoveTo }
+      If D > 0 Then Begin
+       RetL((LongInt(W2DcPenY[D] And $FFFF) Shl 16) Or (W2DcPenX[D] And $FFFF));
+       W2DcPenX[D] := Si(2); W2DcPenY[D] := Si(3);
+      End Else RetL(0);
+      AW := 3; End;
+  22: Begin K := 5; D := DcOf(1);                      { IntersectClipRect }
+      If D > 0 Then Begin
+       If Not W2DcClipOn[D] Then Begin
+        W2DcCX1[D] := Si(2); W2DcCY1[D] := Si(3);
+        W2DcCX2[D] := Si(4); W2DcCY2[D] := Si(5);
+       End Else Begin
+        If Si(2) > W2DcCX1[D] Then W2DcCX1[D] := Si(2);
+        If Si(3) > W2DcCY1[D] Then W2DcCY1[D] := Si(3);
+        If Si(4) < W2DcCX2[D] Then W2DcCX2[D] := Si(4);
+        If Si(5) < W2DcCY2[D] Then W2DcCY2[D] := Si(5);
+       End;
+       W2DcClipOn[D] := True;
+      End;
+      P.CPU.Regs.AX := 2; AW := 5; End;
+  44: Begin K := 2; D := DcOf(1);                      { SelectClipRgn }
+      If D > 0 Then W2DcClipOn[D] := False;
+      P.CPU.Regs.AX := 2; AW := 2; End;
+  24: Begin K := 5; D := DcOf(1);                      { Ellipse }
+      If (D > 0) And W2DcPrep(D) Then W2Ellipse(D, Si(2), Si(3), Si(4), Si(5));
+      P.CPU.Regs.AX := 1; AW := 5; End;
+  27: Begin K := 5; D := DcOf(1);                      { Rectangle }
+      If (D > 0) And W2DcPrep(D) Then W2Rectangle(D, Si(2), Si(3), Si(4),
+        Si(5));
+      P.CPU.Regs.AX := 1; AW := 5; End;
+  28: Begin K := 7; D := DcOf(1);                      { RoundRect }
+      If (D > 0) And W2DcPrep(D) Then W2Rectangle(D, Si(2), Si(3), Si(4),
+        Si(5));
+      P.CPU.Regs.AX := 1; AW := 7; End;
+  25: Begin K := 5; D := DcOf(1);                      { FloodFill (non pris en
+    charge) }
+      P.CPU.Regs.AX := 1; AW := 5; End;
+  29: Begin K := 7; D := DcOf(1);                      { PatBlt }
+      If (D > 0) And W2DcPrep(D) Then
+       W2BitBlt(D, Si(2), Si(3), Si(4), Si(5), 0, 0, 0, Si(4), Si(5), Gl(6));
+      P.CPU.Regs.AX := 1; AW := 7; End;
+  30: Begin K := 1; D := DcOf(1);                      { SaveDC }
+      If D > 0 Then Begin
+       W2DcSvPen[D] := W2DcPen[D]; W2DcSvBrush[D] := W2DcBrush[D];
+       W2DcSvText[D] := W2DcTextCol[D]; W2DcSvBk[D] := W2DcBkCol[D];
+      End;
+      P.CPU.Regs.AX := 1; AW := 1; End;
+  39: Begin K := 2; D := DcOf(1);                      { RestoreDC }
+      If D > 0 Then Begin
+       W2DcPen[D] := W2DcSvPen[D]; W2DcBrush[D] := W2DcSvBrush[D];
+       W2DcTextCol[D] := W2DcSvText[D]; W2DcBkCol[D] := W2DcSvBk[D];
+      End;
+      P.CPU.Regs.AX := 1; AW := 2; End;
+  31: Begin K := 5; D := DcOf(1);                      { SetPixel }
+      If (D > 0) And W2DcPrep(D) Then W2Pix(D, Si(2), Si(3), W2Col(Gl(4)));
+      RetL(Gl(4)); AW := 5; End;
+  83: Begin K := 3; D := DcOf(1); L := 0;              { GetPixel }
+      If (D > 0) And W2DcPrep(D) Then Begin
+       I := W2Get(D, Si(2), Si(3), M);
+       If M Then Begin If I = 0 Then L := 0 Else L := $FFFFFF; End
+       Else L := W2ColRef(I);
+      End;
+      RetL(L); AW := 3; End;
+  33: Begin K := 6; D := DcOf(1);                      { TextOut }
+      S := StrAt(4, Wd(6));
+      If (D > 0) And W2DcPrep(D) Then W2Text(D, Si(2), Si(3), S);
+      P.CPU.Regs.AX := 1; AW := 6; End;
+  34: Begin K := 10; D := DcOf(1); D2 := DcOf(6);      { BitBlt }
+      If D > 0 Then Begin
+       If W2DcPrep(D) Then Begin
+        If (D2 > 0) And W2DcPrep(D2) Then
+         W2BitBlt(D, Si(2), Si(3), Si(4), Si(5), D2, Si(7), Si(8), Si(4),
+          Si(5), Gl(9))
+        Else If Not W2RopUsesS(Gl(9)) Then
+         W2BitBlt(D, Si(2), Si(3), Si(4), Si(5), 0, 0, 0, Si(4), Si(5), Gl(9));
+       End;
+      End;
+      P.CPU.Regs.AX := 1; AW := 10; End;
+  35: Begin K := 12; D := DcOf(1); D2 := DcOf(6);      { StretchBlt }
+      If (D > 0) And W2DcPrep(D) Then Begin
+       If (D2 > 0) And W2DcPrep(D2) Then
+        W2BitBlt(D, Si(2), Si(3), Si(4), Si(5), D2, Si(7), Si(8), Si(9),
+         Si(10), Gl(11))
+       Else If Not W2RopUsesS(Gl(11)) Then
+        W2BitBlt(D, Si(2), Si(3), Si(4), Si(5), 0, 0, 0, Si(4), Si(5),
+         Gl(11));
+      End;
+      P.CPU.Regs.AX := 1; AW := 12; End;
+  36, 37: Begin K := 4; D := DcOf(1); N := Wd(4);      { Polygon / Polyline }
+      If N > 32 Then N := 32;
+      For I := 1 To N Do Begin
+       Pts[I * 2 - 1] := SmallInt(Emu_ReadWord(P.CPU, Wd(2),
+        Word(Wd(3) + (I - 1) * 4)));
+       Pts[I * 2] := SmallInt(Emu_ReadWord(P.CPU, Wd(2),
+        Word(Wd(3) + (I - 1) * 4 + 2)));
+      End;
+      If (D > 0) And (N > 1) And W2DcPrep(D) Then Begin
+       If Ord = 36 Then Begin
+        Y := Pts[2]; Y2 := Pts[2];
+        For I := 1 To N Do Begin
+         If Pts[I * 2] < Y Then Y := Pts[I * 2];
+         If Pts[I * 2] > Y2 Then Y2 := Pts[I * 2];
+        End;
+        For C := Y To Y2 Do Begin
+         X := 32767; X2 := -32768;
+         For I := 1 To N Do Begin
+          O := I + 1; If O > N Then O := 1;
+          If ((Pts[I * 2] <= SmallInt(C)) And (Pts[O * 2] > SmallInt(C))) Or
+             ((Pts[O * 2] <= SmallInt(C)) And (Pts[I * 2] > SmallInt(C))) Then
+               Begin
+           J := Pts[I * 2 - 1] + (LongInt(SmallInt(C) - Pts[I * 2]) *
+            (Pts[O * 2 - 1] - Pts[I * 2 - 1])) Div (Pts[O * 2] - Pts[I * 2]);
+           If J < X Then X := J;
+           If J > X2 Then X2 := J;
+          End;
+         End;
+         If X2 >= X Then W2FillBrush(D, X, SmallInt(C), X2, SmallInt(C));
+        End;
+       End;
+       For I := 1 To N - 1 Do
+        W2PenLine(D, Pts[I * 2 - 1], Pts[I * 2], Pts[I * 2 + 1],
+         Pts[I * 2 + 2]);
+       If Ord = 36 Then W2PenLine(D, Pts[N * 2 - 1], Pts[N * 2], Pts[1],
+         Pts[2]);
+      End;
+      P.CPU.Regs.AX := 1; AW := 4; End;
+  45: Begin K := 2; D := DcOf(1); H := Wd(2); A := 0; { SelectObject }
+      If D > 0 Then Begin
+       O := W2ObIdx(H);
+       If O > 0 Then Begin
+        Case W2ObKind[O] Of
+         2: Begin A := W2DcPen[D]; W2DcPen[D] := H; End;
+         1: Begin A := W2DcBrush[D]; W2DcBrush[D] := H; End;
+         4: Begin A := W2DcBmp[D]; If A = 0 Then A := $29; W2DcBmp[D] := H; End;
+         3: A := $2D;
+        End;
+       End Else Begin
+        If H = $29 Then Begin
+         A := W2DcBmp[D]; If A = 0 Then A := $29; W2DcBmp[D] := 0;
+        End Else If (H >= $20) And (H <= $28) Then Begin
+         If H >= $26 Then Begin A := W2DcPen[D]; W2DcPen[D] := H; End
+         Else Begin A := W2DcBrush[D]; W2DcBrush[D] := H; End;
+        End Else A := $2D;
+       End;
+      End;
+      P.CPU.Regs.AX := A; AW := 2; End;
+  48: Begin K := 6;                                    { CreateBitmap }
+      H := W2BmpNew(Si(1), Si(2), (Wd(3) * Wd(4)) = 1);
+      If (H <> 0) And (Wd(5) <> 0) Then
+       W2BmpFromMem(P.CPU, H, Wd(5), Wd(6),
+        ((Si(1) * Wd(4) + 15) Div 16) * 2, Wd(3), Wd(4));
+      P.CPU.Regs.AX := H; AW := 6; End;
+  49: Begin K := 2; Sg := Wd(1); Of_ := Wd(2);         { CreateBitmapIndirect }
+      P.CPU.Regs.AX := W2BmpNew(SmallInt(Emu_ReadWord(P.CPU, Sg, Word(Of_ +
+        2))),
+       SmallInt(Emu_ReadWord(P.CPU, Sg, Word(Of_ + 4))),
+       (Emu_ReadByte(P.CPU, Sg, Word(Of_ + 9)) *
+        Emu_ReadByte(P.CPU, Sg, Word(Of_ + 8))) = 1);
+      AW := 2; End;
+  50: Begin K := 2; Sg := Wd(1); Of_ := Wd(2);         { CreateBrushIndirect }
+      H := W2ObNew(1, LongInt(Emu_ReadWord(P.CPU, Sg, Word(Of_ + 2))) Or
+       (LongInt(Emu_ReadWord(P.CPU, Sg, Word(Of_ + 4))) Shl 16),
+       Emu_ReadWord(P.CPU, Sg, Of_), 0);
+      O := W2ObIdx(H);
+      If (O > 0) And (W2ObStyle[O] > 1) Then W2ObStyle[O] := 0;
+      P.CPU.Regs.AX := H; AW := 2; End;
+  51, 156: Begin K := 3;                       { CreateCompatibleBitmap }
+      P.CPU.Regs.AX := W2BmpNew(Si(2), Si(3), False); AW := 3; End;
+  52: Begin P.CPU.Regs.AX := W2DcNew(2, 0); AW := 1; End;  { CreateCompatibleDC
+    }
+  57: Begin P.CPU.Regs.AX := W2ObNew(3, 0, 0, 0); AW := 2; End;
+  58: Begin K := 3;                       { CreateHatchBrush -> uni }
+      P.CPU.Regs.AX := W2ObNew(1, Gl(2), 0, 0); AW := 3; End;
+  60: Begin K := 1; O := W2ObIdx(Wd(1));         { CreatePatternBrush }
+      H := W2ObNew(1, 0, 3, 0);
+      If (H <> 0) And (O > 0) And (W2ObBmp[O] <> Nil) Then Begin
+       I := W2ObIdx(H);
+       For Y := 0 To 7 Do Begin
+        A := 0;
+        For X := 0 To 7 Do
+         If W2ObBmp[O]^[LongInt(Y Mod W2ObBH[O]) * W2ObBW[O] + (X Mod
+           W2ObBW[O])] <> 0
+         Then A := A Or (128 Shr X);
+        W2ObPat[I, Y] := A;
+       End;
+      End;
+      P.CPU.Regs.AX := H; AW := 1; End;
+  61: Begin K := 4;                                    { CreatePen }
+      P.CPU.Regs.AX := W2ObNew(2, Gl(3), Si(1), Si(2)); AW := 4; End;
+  66: Begin K := 2;                                    { CreateSolidBrush }
+      P.CPU.Regs.AX := W2ObNew(1, Gl(1), 0, 0); AW := 2; End;
+  68: Begin K := 1; D := DcOf(1);                      { DeleteDC }
+      If D > 0 Then W2DcUsed[D] := False;
+      P.CPU.Regs.AX := 1; AW := 1; End;
+  69: Begin K := 1; W2ObFree(Wd(1));                   { DeleteObject }
+      P.CPU.Regs.AX := 1; AW := 1; End;
+  76: Begin K := 1; D := DcOf(1);                      { GetBkMode }
+      If D > 0 Then P.CPU.Regs.AX := Word(W2DcBkMode[D]) Else P.CPU.Regs.AX :=
+        0;
+      AW := 1; End;
+  80: Begin K := 2; N := Wd(2);                        { GetDeviceCaps }
+      Case N Of
+       0: A := $100; 2: A := 1; 4: A := 180; 6: A := 135; 8: A := 640;
+       10: A := 400; 12: A := 1; 14: A := 4; 16: A := 8; 18: A := 8;
+       22: A := 2; 24: A := 16; 26: A := 0; 28: A := 0; 30: A := $7F;
+       32: A := $FF; 34: A := 7; 36: A := 1; 38: A := $1C1; 40: A := 36;
+       42: A := 36; 44: A := 51; 88: A := 96; 90: A := 96;
+       Else A := 0;
+      End;
+      P.CPU.Regs.AX := A; AW := 2; End;
+  82: Begin K := 4; O := W2ObIdx(Wd(1));               { GetObject }
+      If (O > 0) And (W2ObKind[O] = 4) And (Wd(2) >= 14) Then Begin
+       Sg := Wd(3); Of_ := Wd(4);
+       Emu_WriteWord(P.CPU, Sg, Of_, 0);
+       Emu_WriteWord(P.CPU, Sg, Word(Of_ + 2), Word(W2ObBW[O]));
+       Emu_WriteWord(P.CPU, Sg, Word(Of_ + 4), Word(W2ObBH[O]));
+       Emu_WriteWord(P.CPU, Sg, Word(Of_ + 6), Word((W2ObBW[O] + 15) Div 16 *
+         2));
+       Emu_WriteByte(P.CPU, Sg, Word(Of_ + 8), 1);
+       If W2ObMono[O] Then Emu_WriteByte(P.CPU, Sg, Word(Of_ + 9), 1)
+       Else Emu_WriteByte(P.CPU, Sg, Word(Of_ + 9), 4);
+       Emu_WriteWord(P.CPU, Sg, Word(Of_ + 10), 0);
+       Emu_WriteWord(P.CPU, Sg, Word(Of_ + 12), 0);
+       P.CPU.Regs.AX := 14;
+      End Else P.CPU.Regs.AX := 0;
+      AW := 4; End;
+  87: Begin K := 1; P.CPU.Regs.AX := Word($20 + Wd(1)); AW := 1; End;
+  90: Begin K := 1; D := DcOf(1);                      { GetTextColor }
+      If D > 0 Then RetL(W2DcTextCol[D]) Else RetL(0);
+      AW := 1; End;
+  91: Begin K := 4;                                    { GetTextExtent }
+      RetL(LongInt(Wd(4)) * 8 + (LongInt(8) Shl 16)); AW := 4; End;
+  154: Begin K := 2; RetL(Gl(1)); AW := 2; End;
+  Else Win16_Win2Gdi := False;
+ End;
+ If Nl Then ;
+ If C = 0 Then ;
+ If Fl = 0 Then ;
+End;
+
+{ ---- USER Windows 2.x : contextes de fenetre et rectangles -------------- }
+Function Win16_Win2User(Var P: TEmulatorPanel; Ord: Word;
+  Var AW: Integer): Boolean;
+Var
+ K, D, I, J, X, Y, X1, Y1, X2, Y2, N, Fmt, Ys, Kk, Pp, Q: Integer;
+ S, Ln, Lm: String;
+ LL: LongInt;
+ H, Old: Word;
+ A: Word;
+ Nl: Boolean;
+ Function Wd(Idx: Integer): Word;
+ Begin
+  Wd := Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+    Word(P.CPU.Regs.SP + 4 + 2 * (K - Idx)));
+ End;
+ Function RdI(Seg, Ofs: Word): Integer;
+ Begin
+  RdI := SmallInt(Emu_ReadWord(P.CPU, Seg, Ofs));
+ End;
+Begin
+ Win16_Win2User := True;
+ Case Ord Of
+  81: Begin K := 4; D := W2DcIdx(Wd(1));              { FillRect(hdc, rect,
+    hbr) }
+       If (D > 0) And W2DcPrep(D) Then Begin
+        Old := W2DcBrush[D];
+        H := Wd(4);
+        If H < $20 Then Begin
+         Case H Of
+          1: W2DcBrush[D] := $21;
+          2: W2DcBrush[D] := $22;
+          5, 6: W2DcBrush[D] := $20;
+          Else W2DcBrush[D] := $20;
+         End;
+         If H = 0 Then W2DcBrush[D] := $20;
+        End Else W2DcBrush[D] := H;
+        W2FillBrush(D, RdI(Wd(2), Wd(3)), RdI(Wd(2), Word(Wd(3) + 2)),
+         RdI(Wd(2), Word(Wd(3) + 4)) - 1, RdI(Wd(2), Word(Wd(3) + 6)) - 1);
+        W2DcBrush[D] := Old;
+       End;
+       P.CPU.Regs.AX := 1; AW := 4; End;
+  82: Begin K := 3; D := W2DcIdx(Wd(1));              { InvertRect }
+       If (D > 0) And W2DcPrep(D) Then
+        For Y := RdI(Wd(2), Word(Wd(3) + 2)) To RdI(Wd(2), Word(Wd(3) + 6)) - 1
+          Do
+         For X := RdI(Wd(2), Wd(3)) To RdI(Wd(2), Word(Wd(3) + 4)) - 1 Do
+          W2Pix(D, X, Y, W2Get(D, X, Y, Nl) Xor 15);
+       P.CPU.Regs.AX := 1; AW := 3; End;
+  83: Begin K := 4; D := W2DcIdx(Wd(1));              { FrameRect }
+       If (D > 0) And W2DcPrep(D) Then Begin
+        X1 := RdI(Wd(2), Wd(3)); Y1 := RdI(Wd(2), Word(Wd(3) + 2));
+        X2 := RdI(Wd(2), Word(Wd(3) + 4)) - 1;
+        Y2 := RdI(Wd(2), Word(Wd(3) + 6)) - 1;
+        W2Line(D, X1, Y1, X2, Y1, 0); W2Line(D, X2, Y1, X2, Y2, 0);
+        W2Line(D, X2, Y2, X1, Y2, 0); W2Line(D, X1, Y2, X1, Y1, 0);
+       End;
+       P.CPU.Regs.AX := 1; AW := 4; End;
+  85: Begin K := 7; D := W2DcIdx(Wd(1));              { DrawText }
+       S := '';
+       N := SmallInt(Wd(4));
+       If N < 0 Then S := Win16_ReadGuestString(P.CPU, Wd(2), Wd(3))
+       Else
+        For I := 0 To N - 1 Do
+         S := S + Chr(Emu_ReadByte(P.CPU, Wd(2), Word(Wd(3) + I)));
+       X1 := RdI(Wd(5), Wd(6)); Y1 := RdI(Wd(5), Word(Wd(6) + 2));
+       X2 := RdI(Wd(5), Word(Wd(6) + 4)); Y2 := RdI(Wd(5), Word(Wd(6) + 6));
+       Fmt := Wd(7);
+       X := X1; Ys := Y1;
+       If (D > 0) And ((Fmt And $400) = 0) And W2DcPrep(D) Then Begin
+        If (Fmt And 1) <> 0 Then X := (X1 + X2 - Length(S) * 8) Div 2;
+        If (Fmt And 2) <> 0 Then X := X2 - Length(S) * 8;
+        If (Fmt And 4) <> 0 Then Ys := (Y1 + Y2 - 8) Div 2;
+        If (Fmt And 8) <> 0 Then Ys := Y2 - 9;
+        If (Pos(#13, S) = 0) Then W2Text(D, X, Ys, S)
+        Else Begin
+         Lm := S; Q := 0;
+         While Lm <> '' Do Begin
+          Pp := Pos(#13, Lm);
+          If Pp > 0 Then Begin
+           Ln := Copy(Lm, 1, Pp - 1); Delete(Lm, 1, Pp);
+           If (Lm <> '') And (Lm[1] = #10) Then Delete(Lm, 1, 1);
+          End Else Begin Ln := Lm; Lm := ''; End;
+          W2Text(D, X1, Y1 + Q * 10, Ln);
+          Inc(Q);
+         End;
+        End;
+       End;
+       P.CPU.Regs.AX := 9; AW := 7; End;
+  175: Begin K := 3;                                   { LoadBitmap(hInst,
+    name) }
+       If (Wd(2) = 0) And (Wd(3) >= $7F00) Then P.CPU.Regs.AX :=
+         W2SysBitmap(Wd(3))
+       Else P.CPU.Regs.AX := W2LoadBitmapRes(P, Wd(2), Wd(3));
+       AW := 3; End;
+  180: Begin K := 1;                                  { GetSysColor }
+        Case Wd(1) Of
+         0: Pp := 7;
+         1: Pp := 11;
+         2: Pp := 1;
+         3: Pp := 7;
+         6, 7, 8: Pp := 0;
+         Else Pp := 15;
+        End;
+        LL := W2ColRef(Pp);
+        P.CPU.Regs.AX := Word(LL And $FFFF);
+        P.CPU.Regs.DX := Word((LL Shr 16) And $FFFF);
+        AW := 1; End;
+  Else Win16_Win2User := False;
+ End;
+ If J = 0 Then ;
+ If Kk = 0 Then ;
+ If A = 0 Then ;
 End;
 
 { Un tour de boucle modale : dessine les controles a repeindre et distribue   }
@@ -114359,6 +115478,7 @@ Var
  { GetVDMPointer32W (ordinal 516). }
  GVPSeg, GVPOfs: Word;
  GVPLin: LongInt;
+ DCFree: Integer;
 Begin
  If (Slot < 0) Or (Slot >= Win16_ImportSlotCount) Then Begin
   P.CPU.Fault := sfEndProgram;
@@ -114377,6 +115497,12 @@ Begin
  If Win16_IsWin2 And (ModIdx = 1) And
     Win16_Win2Mem(P, Ordinal, ArgWords) Then Begin
   { memoire de Windows 2.x traitee par Win16_Win2Mem }
+ End Else If Win16_IsWin2 And (ModIdx = 2) And
+    Win16_Win2Gdi(P, Ordinal, ArgWords) Then Begin
+  { GDI de Windows 2.x traite par Win16_Win2Gdi }
+ End Else If Win16_IsWin2 And (ModIdx = 3) And
+    Win16_Win2User(P, Ordinal, ArgWords) Then Begin
+  { USER (dessin) de Windows 2.x }
  End Else If ModIdx = 1 Then Begin { KERNEL }
   { A PARTIR DU 2026-09-14 (retour explicite de l'utilisateur) : ce Case    }
   { est maintenu TRIE PAR ORDRE NUMERIQUE CROISSANT d'ordinal - tout ajout  }
@@ -133843,7 +134969,35 @@ Begin
  { Lx_DoDosCall/Elf64_DoSyscall (aucun repassage par le decodeur reel).     }
  { KERNEL de Windows 2.x : le code compile teste le resultat avec JCXZ    }
  { (TERMINAL.EXE apres LocalAlloc) - CX doit donc recopier AX au retour. }
- If Win16_IsWin2 And (ModIdx = 1) Then P.CPU.Regs.CX := P.CPU.Regs.AX;
+ If Win16_IsWin2 And (ModIdx = 1) And
+    ((Ordinal = 5) Or (Ordinal = 6) Or (Ordinal = 15) Or (Ordinal = 16)) Then
+  P.CPU.Regs.CX := P.CPU.Regs.AX;
+ If Win16_IsWin2 And (ModIdx = 3) Then Begin
+  { contextes de fenetre Windows 2.x : GetDC/GetWindowDC/BeginPaint creent   }
+  { un DC, ReleaseDC/EndPaint le liberent }
+  Case Ordinal Of
+   66, 67: P.CPU.Regs.AX := W2WindowDC(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+     Word(P.CPU.Regs.SP + 4)));
+   39: Begin
+        P.CPU.Regs.AX := W2WindowDC(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+         Word(P.CPU.Regs.SP + 8)));
+        Emu_WriteWord(P.CPU, Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+         Word(P.CPU.Regs.SP + 6)), Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+         Word(P.CPU.Regs.SP + 4)), P.CPU.Regs.AX);
+       End;
+   68: Begin
+        DCFree := W2DcIdx(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+         Word(P.CPU.Regs.SP + 4)));
+        If DCFree > 0 Then W2DcUsed[DCFree] := False;
+       End;
+   40: Begin
+        DCFree := W2DcIdx(Emu_ReadWord(P.CPU, Emu_ReadWord(P.CPU,
+         P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)), Emu_ReadWord(P.CPU,
+         P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4))));
+        If DCFree > 0 Then W2DcUsed[DCFree] := False;
+       End;
+  End;
+ End;
  RetIP := Emu_PopWord(P.CPU);
  RetCS := Emu_PopWord(P.CPU);
  P.CPU.Regs.SP := Word(P.CPU.Regs.SP + ArgWords * 2);
