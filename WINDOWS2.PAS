@@ -254,6 +254,7 @@ Var
  PrinterName : String;
  PrintPort   : String;
  SpoolN      : Integer;
+ SpoolT0     : LongInt;
  NPrn        : Integer;
  SpoolNames  : Array[1..8] Of String[40];
  SpoolPaused : Boolean;
@@ -1854,7 +1855,7 @@ Procedure BuildSysMenu(W: PWindow);
 Begin
  SysDef.N:=0;SysDef.Title:='';
  Inc(SysDef.N);SetSysItem(SysDef.N,'&Restore~&Restaurer~&Wiederherstellen',CM_RESTORE,
-  W^.State=0,'');
+  W^.State=0,'Alt+F5');
  Inc(SysDef.N);SetSysItem(SysDef.N,'&Move~&D'#130'placer~&Verschieben',CM_MOVE,
   W^.State<>0,'Alt+F7');
  Inc(SysDef.N);SetSysItem(SysDef.N,'&Size~&Taille~&Gr'#148#225'e',CM_SIZE,
@@ -1870,9 +1871,31 @@ Begin
 End;
 
 { Boucle de menu : Sys = menu systeme (boite de gauche de la barre de titre) }
+Var
+ MenuKbd: Boolean;          { menu ouvert au clavier : pre-selectionne la premiere commande }
+
+Const
+ CM_OPENSYS = 30000;        { demande d'ouverture du menu Systeme depuis la barre (ESPACE) }
+
+{ mnemonique : 0 aucun, 1 unique (choisi), 2 doublon (surbrillance deplacee) }
+Function PickMnemo(Const MD: TMenuDef; Ch: Char; Var Hi: Integer): Integer;
+Var K,C,F,Nx: Integer;
+Begin
+ C:=0;F:=0;Nx:=0;
+ For K:=1 To MD.N Do
+  If (MD.It[K].Txt<>'-') And ((MD.It[K].Flag And 1)=0) And (MnemoOf(TL(MD.It[K].Txt))=Ch) Then Begin
+   Inc(C);If F=0 Then F:=K;
+   If (K>Hi) And (Nx=0) Then Nx:=K;
+  End;
+ If C=0 Then Begin PickMnemo:=0;Exit;End;
+ If C=1 Then Begin Hi:=F;PickMnemo:=1;Exit;End;
+ If Nx=0 Then Nx:=F;
+ Hi:=Nx;PickMnemo:=2;
+End;
+
 Function RunMenus(W: PWindow; StartM: Integer; Sys: Boolean): Integer;
 Var M,Hi,H,T,DX1,DY1,DX2,DY2,I: Integer; E: TEvent; Done,Pick,Entered: Boolean;
-    Sv: TSave; Res: Integer; BarY,TX: Integer; PX,PY: LongInt; Ch: Char;
+    Sv: TSave; Res: Integer; BarY,TX: Integer; PX,PY: LongInt; Ch: Char; SwSys: Boolean; Pm: Integer;
 
  Procedure Place;
  Begin
@@ -1918,8 +1941,11 @@ Begin
  M:=StartM;
  If Sys Then M:=1;
  TX:=0;
- Hi:=0;
- Show(0);
+ Hi:=0;SwSys:=False;
+ If MenuKbd Then Begin
+  If Sys Then Begin Show(0);Show(NextItem(SysDef,0,1));End Else Begin Show(0);Show(NextItem(W^.Menus[M],0,1));End;
+  MenuKbd:=False;
+ End Else Show(0);
  Done:=False;Pick:=False;Entered:=False;
  Repeat
   PollEvent(E);
@@ -1961,6 +1987,10 @@ Begin
        K_UP: Show(NextItem(SysDef,Hi,-1));
        K_DOWN: Show(NextItem(SysDef,Hi,1));
        K_ENTER: If Hi<>0 Then Begin Pick:=True;Done:=True;End;
+      Else If (E.Key<256) And (E.Key>32) Then Begin
+        Pm:=PickMnemo(SysDef,Ch,Hi);
+        If Pm=1 Then Begin Pick:=True;Done:=True;End Else If Pm=2 Then Show(Hi);
+       End;
       End;
      End Else Begin
       Case E.Key Of
@@ -1972,9 +2002,10 @@ Begin
        K_UP: Show(NextItem(W^.Menus[M],Hi,-1));
        K_DOWN: Show(NextItem(W^.Menus[M],Hi,1));
        K_ENTER: If Hi<>0 Then Begin Pick:=True;Done:=True;End;
+      Else If E.Key=32 Then Begin SwSys:=True;Done:=True;End
       Else If (E.Key<256) And (E.Key>32) Then Begin
-        I:=ItemOf(Ch);
-        If I<>0 Then Begin Hi:=I;Pick:=True;Done:=True;End;
+        Pm:=PickMnemo(W^.Menus[M],Ch,Hi);
+        If Pm=1 Then Begin Pick:=True;Done:=True;End Else If Pm=2 Then Show(Hi);
        End Else Begin
         Ch:=AltLetter(E.Key);
         If Ch<>#0 Then Begin
@@ -1993,6 +2024,7 @@ Begin
  If Pick And (Hi>0) Then Begin
   If Sys Then Res:=SysDef.It[Hi].Cmd Else Res:=W^.Menus[M].It[Hi].Cmd;
  End;
+ If SwSys Then Res:=CM_OPENSYS;
  RunMenus:=Res;
 End;
 
@@ -3018,12 +3050,16 @@ Begin
  If K=K_ALTF4 Then Begin If W<>Nil Then CloseWindow(W);Exit;End;
  If K=366 Then Begin If W<>Nil Then DoSysCmd(W,CM_MOVE);Exit;End;   { Alt+F7 }
  If K=367 Then Begin If W<>Nil Then DoSysCmd(W,CM_SIZE);Exit;End;   { Alt+F8 }
+ If K=364 Then Begin If W<>Nil Then DoSysCmd(W,CM_RESTORE);Exit;End;   { Alt+F5 }
+ If K=365 Then Begin CycleWindows;Exit;End;                              { Alt+F6 : fenetre suivante }
  If K=368 Then Begin If W<>Nil Then DoSysCmd(W,CM_MINIMIZE);Exit;End; { Alt+F9 }
  If K=369 Then Begin If W<>Nil Then DoSysCmd(W,CM_MAXIMIZE);Exit;End; { Alt+F10 }
  If (K=K_F6) Or (K=421) Or (K=420) Then Begin CycleWindows;Exit;End;
  If W=Nil Then Exit;
  If (K=K_F10) And (W^.NMenu>0) Then Begin
+  MenuKbd:=True;
   Cmd:=RunMenus(W,1,False);Dirty:=True;
+  If Cmd=CM_OPENSYS Then Begin MenuKbd:=True;Cmd:=RunMenus(W,1,True);Dirty:=True;If Cmd<>0 Then DoSysCmd(W,Cmd);Exit;End;
   If Cmd<>0 Then AppMenu(W,Cmd);
   Exit;
  End;
@@ -3031,7 +3067,9 @@ Begin
  If (Ch<>#0) And (W^.NMenu>0) Then Begin
   For I:=1 To W^.NMenu Do
    If MnemoOf(TL(W^.Menus[I].Title))=Ch Then Begin
+    MenuKbd:=True;
     Cmd:=RunMenus(W,I,False);Dirty:=True;
+    If Cmd=CM_OPENSYS Then Begin MenuKbd:=True;Cmd:=RunMenus(W,1,True);Dirty:=True;If Cmd<>0 Then DoSysCmd(W,Cmd);Exit;End;
     If Cmd<>0 Then AppMenu(W,Cmd);
     Exit;
    End;
@@ -3153,6 +3191,29 @@ Const
 Function Launch(App: Integer; Const Arg: String): PWindow; Forward;
 Procedure RunFile(Const Path,Args: String; AsIcon: Boolean); Forward;
 Procedure ShowAboutMs(Const AppName: String; Ico: Integer; Free: Boolean); Forward;
+
+
+{ ajoute un travail a la file d'attente ; lance le Spooler (en icone) s'il n'est pas actif }
+Function SpoolAdd(Const Job: String): Boolean;
+Var W: PWindow;
+Begin
+ SpoolAdd:=False;
+ If NPrn=0 Then Begin
+  InfoBox(T3('Cannot print.|No printer is installed.','Impression impossible.|Aucune imprimante install'#130'e.','Drucken nicht m'#148'glich.|Kein Drucker installiert.'));
+  Exit;
+ End;
+ If SpoolN>=8 Then Begin
+  InfoBox(T3('Cannot print.|The print queue is full.','Impression impossible.|La file d''attente est pleine.','Drucken nicht m'#148'glich.|Warteschlange voll.'));
+  Exit;
+ End;
+ Inc(SpoolN);SpoolNames[SpoolN]:=Copy(Job,1,40);
+ If SpoolN=1 Then SpoolT0:=NowCs;
+ If CountApp(A_SPOOL)=0 Then Begin
+  W:=Launch(A_SPOOL,'');
+  If W<>Nil Then MinimizeWin(W);
+ End;
+ SpoolAdd:=True;
+End;
 
 Function IsProgExt(Const E: String): Boolean;
 Begin
@@ -3653,19 +3714,12 @@ Var X: PExec; I,N,K: Integer; Idx: Array[0..MAXF-1] Of Integer; Nm: String; R: I
 Begin
  X:=W^.Data;
  N:=ExecSelected(X,Idx);
- If NPrn=0 Then Begin InfoBox(T3('Cannot print.|No printer is installed.','Impression impossible.|Aucune imprimante install'#130'e.','Drucken nicht m'#148'glich.|Kein Drucker installiert.'));Exit;End;
  If N=0 Then Nm:=T3('directory listing '+X^.Dir,'liste du r'#130'pertoire '+X^.Dir,'Verzeichnisliste '+X^.Dir) Else Nm:=ExecNames(X,Idx,N);
  R:=MsgBox(T3('Print '+Nm+'?','Imprimer '+Nm+' ?','Drucken: '+Nm+'?'),1,2);
  If R<>ID_OK Then Exit;
- If N=0 Then Begin
-  If SpoolN>=8 Then Begin InfoBox(T3('Cannot print.|The print queue is full.','Impression impossible.|La file d''attente est pleine.','Drucken nicht m'#148'glich.|Warteschlange voll.'));Exit;End;
-  Inc(SpoolN);SpoolNames[SpoolN]:='MS-DOS Executive - '+X^.Dir;
- End Else For K:=0 To N-1 Do Begin
-  If X^.F^[Idx[K]].IsDir Then Begin
-   If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='MS-DOS Executive - '+X^.F^[Idx[K]].Disp+'\';End;
-  End Else If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='MS-DOS Executive - '+X^.F^[Idx[K]].Disp;End
-  Else Begin InfoBox(T3('Cannot print.|The print queue is full.','Impression impossible.|La file d''attente est pleine.','Drucken nicht m'#148'glich.|Warteschlange voll.'));Break;End;
- End;
+ If N=0 Then SpoolAdd('MS-DOS Executive - '+X^.Dir)
+ Else For K:=0 To N-1 Do
+  If Not SpoolAdd('MS-DOS Executive - '+X^.F^[Idx[K]].Disp+IfThenS(X^.F^[Idx[K]].IsDir,'\','')) Then Break;
 End;
 
 Procedure ExecRunDlg(W: PWindow; AsIcon: Boolean);
@@ -4805,7 +4859,7 @@ Begin
  R:=MsgBox(T3('Print "'+N+'" on '+PrinterName+' ('+PrintPort+':)?','Imprimer "'+N+'" sur '+PrinterName+
    ' ('+PrintPort+':) ?','"'+N+'" auf '+PrinterName+' ('+PrintPort+':) drucken?'),1,2);
  If R=ID_OK Then Begin
-  If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:=N;End;
+  SpoolAdd(IfThenS(W^.App=A_WRITE,'Write','Notepad')+' - '+N);
  End;
 End;
 
@@ -5573,26 +5627,40 @@ End;
 
 Var
  SpoolSel : Integer;
- SpoolT0  : LongInt;
  SpoolJobTime: LongInt;
 
 Procedure SpoolDraw(W: PWindow);
 Var X1,Y1,X2,Y2,I: Integer; T: String;
 Begin
  WinClient(W,X1,Y1,X2,Y2);
- GText(X1+6,Y1+4,T3('Printer       Port  Job','Imprimante    Port  Travail','Drucker       Port  Auftrag'),cBlk);
+ { ligne d'etat du port : LPT1: Printing Epson FX-80 }
+ T:=PadR(PrintPort+':',6);
+ If SpoolN=0 Then T:=T+T3('Idle ','Libre ','Frei ')
+ Else If SpoolPaused Then T:=T+T3('Paused ','En pause ','Angehalten ')
+ Else T:=T+T3('Printing ','Impression ','Druckt ');
+ GText(X1+6,Y1+4,T+PrinterName,cBlk);
  GHLine(X1,X2,Y1+16,cBlk);
  If SpoolN=0 Then GText(X1+6,Y1+24,T3('(No jobs in queue)','(Aucun travail en attente)','(Keine Auftr'#132'ge)'),cDGr);
  For I:=1 To SpoolN Do Begin
-  T:=PadR(PrinterName,13)+' '+PadR(PrintPort,5)+' '+SpoolNames[I];
+  T:=SpoolNames[I];
   If I=1 Then Begin
    If SpoolPaused Then T:=T+'  ['+T3('paused','en pause','angehalten')+']'
-   Else T:=T+'  ['+T3('printing','impression','Druck')+' '+IntStr(Clamp((NowCs-SpoolT0)*100 Div Max2(1,SpoolJobTime),0,99))+'%]';
-  End Else T:=T+'  ['+T3('queued','en attente','wartend')+']';
+   Else T:=T+'  ['+IntStr(Clamp((NowCs-SpoolT0)*100 Div Max2(1,SpoolJobTime),0,99))+'%]';
+  End;
   If I=SpoolSel Then Begin GBar(X1+4,Y1+22+(I-1)*12,X1+8+Length(T)*8,Y1+32+(I-1)*12,cBlk);
    GText(X1+6,Y1+24+(I-1)*12,T,cWht);End
   Else GText(X1+6,Y1+24+(I-1)*12,T,cBlk);
  End;
+End;
+
+Procedure SpoolKey(W: PWindow; K: Word);
+Begin
+ If SpoolN=0 Then Exit;
+ If SpoolSel<1 Then SpoolSel:=1;
+ If K=K_UP Then Dec(SpoolSel);
+ If K=K_DOWN Then Inc(SpoolSel);
+ SpoolSel:=Clamp(SpoolSel,1,SpoolN);
+ Dirty:=True;
 End;
 
 Procedure SpoolMouse(W: PWindow; Var E: TEvent);
@@ -5637,7 +5705,8 @@ Begin
   CM_S_ABOUT: ShowAboutMs('Spooler',4,False);
   CM_S_PAUSE: SpoolPaused:=True;
   CM_S_RESUME: Begin SpoolPaused:=False;SpoolT0:=NowCs;End;
-  CM_S_TERM: SpoolRemove(Max2(1,SpoolSel));
+  CM_S_TERM: If (SpoolN>0) And (MsgBox(T3('Terminate '+SpoolNames[Max2(1,SpoolSel)]+'?','Annuler '+SpoolNames[Max2(1,SpoolSel)]+' ?',
+     SpoolNames[Max2(1,SpoolSel)]+' abbrechen?'),1,2)=ID_OK) Then SpoolRemove(Max2(1,SpoolSel));
  End;
  Dirty:=True;
 End;
@@ -7215,7 +7284,7 @@ Begin
     End;
     {$I+}
    End;
-  CM_T_PRINT: Begin If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='TERMINAL';End;End;
+  CM_T_PRINT: SpoolAdd('Terminal - '+IfThenS(T^.FileName='',T3('(untitled)','(sans titre)','(unbenannt)'),BaseName(T^.FileName)));
   CM_T_EXIT: CloseWindow(W);
   CM_T_ABOUT: ShowAboutMs('Terminal',4,False);
   CM_T_COPY: Begin
@@ -7567,7 +7636,7 @@ Begin
     If (Cmd=CM_D_SAVEAS) Or (P='') Then If Not FileDialog(1,T3('Save File Name As:','Enregistrer sous :','Speichern unter:'),'*.CRD',P) Then Exit;
     If CardSave(F,P) Then CardTitle(W) Else InfoBox(T3('Cannot save the file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'));
    End;
-  CM_D_PRINT,CM_D_PRINTALL: If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='CARDFILE';End;
+  CM_D_PRINT,CM_D_PRINTALL: SpoolAdd('Cardfile - '+T3('(untitled)','(sans titre)','(unbenannt)'));
   CM_D_EXIT: CloseWindow(W);
   CM_D_ABOUT: ShowAboutMs('Cardfile',4,False);
   CM_D_UNDO: EdUndo(F^.Ed);
@@ -8037,7 +8106,7 @@ Begin
     If (Cmd=CM_L_SAVEAS) Or (P='') Then If Not FileDialog(1,T3('Save File Name As:','Enregistrer sous :','Speichern unter:'),'*.CAL',P) Then Exit;
     If CalSave(C,P) Then CalTitle(W) Else InfoBox(T3('Cannot save the file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'));
    End;
-  CM_L_PRINT: If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='CALENDAR';End;
+  CM_L_PRINT: SpoolAdd('Calendar - '+T3('(untitled)','(sans titre)','(unbenannt)'));
   CM_L_REMOVE: Begin
     S:=DateStr(C^.Y,C^.M,C^.D);
     If InputBox(T3('Remove appointments before:','Supprimer les rendez-vous avant :','Termine entfernen vor:'),S,10,330) Then Begin
@@ -8738,7 +8807,7 @@ Begin
     If PaintSaveMsp(P,Pth) Then Begin P^.FileName:=Pth;P^.Modified:=False;PaintTitle(W);End
     Else InfoBox(T3('Cannot save the file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'));
    End;
-  CM_G_PRINT: If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:=IfThenS(P^.FileName='','PAINT',BaseName(P^.FileName));End;
+  CM_G_PRINT: SpoolAdd('Paint - '+IfThenS(P^.FileName='',T3('(untitled)','(sans titre)','(unbenannt)'),BaseName(P^.FileName)));
   CM_G_EXIT: CloseWindow(W);
   CM_G_ABOUT: ShowAboutMs('Paint',4,False);
   CM_G_UNDO: Begin PtClearSel(P);PtUndoSwap(P);End;
@@ -10823,7 +10892,7 @@ End;
 
 Const
  CM_M_CLOSE=1101; CM_M_COPY=1102; CM_M_PASTE=1103; CM_M_CLS=1104; CM_M_ABOUT=1105;
- CM_M_RESET=1106; CM_M_FULL=1107;
+ CM_M_RESET=1106; CM_M_FULL=1107; CM_M_MARK=1108; CM_M_SCROLL=1109;
  COLW = 8; ROWH = 9;
 
 Var LastCpuErr: String[80];
@@ -11423,6 +11492,35 @@ End;
 
 { ---------------- fenetre ---------------- }
 
+Var
+ MkOn,MkScr,MkExt: Boolean;      { Mark / Scroll (menu Systeme des fenetres DOS) }
+ MkAR,MkAC,MkR,MkC: Integer;
+ MkWin: PWindow;
+ DosInitDir: String;             { repertoire initial (PIF) }
+ DosCloseExit: Boolean;          { fermer la fenetre a la fin du programme (PIF) }
+
+Procedure MkRect(Var R1,C1,R2,C2: Integer);
+Begin
+ R1:=Min2(MkAR,MkR);R2:=Max2(MkAR,MkR);C1:=Min2(MkAC,MkC);C2:=Max2(MkAC,MkC);
+End;
+
+Function MkCopyText(V: PVM): String;
+Var R,C,R1,C1,R2,C2,N: Integer; S,Ln: String;
+Begin
+ MkRect(R1,C1,R2,C2);
+ S:='';
+ For R:=R1 To R2 Do Begin
+  Ln:='';
+  For C:=C1 To C2 Do Begin
+   N:=V^.Mem^[TXT_BASE+(R*80+C)*2];If N<32 Then N:=32;Ln:=Ln+Chr(N);
+  End;
+  While (Length(Ln)>0) And (Ln[Length(Ln)]=' ') Do Delete(Ln,Length(Ln),1);
+  If R>R1 Then S:=S+#13#10;
+  S:=S+Ln;
+ End;
+ MkCopyText:=S;
+End;
+
 Procedure DosPrepareView(W: PWindow);
 Var V: PVM; X1,Y1,X2,Y2: Integer;
 Begin
@@ -11465,18 +11563,63 @@ Begin
    If Fg<>Bg Then GText(X1+Run0*COLW,Y1+R*ROWH+1,S,Fg);
   End;
  End;
+ If MkOn And (MkWin=W) Then Begin
+  MkRect(R,C,Att,Run0);   { R1,C1,R2,C2 }
+  For N:=R To Att Do
+   For Fg:=C To Run0 Do
+    If (N-W^.VPos>=0) And (Fg-W^.HPos>=0) And (X1+(Fg-W^.HPos)*COLW<=X2) And (Y1+(N-W^.VPos)*ROWH<=Y2) Then Begin
+     GBar(X1+(Fg-W^.HPos)*COLW,Y1+(N-W^.VPos)*ROWH,X1+(Fg-W^.HPos)*COLW+COLW-1,Y1+(N-W^.VPos)*ROWH+ROWH-1,cLGr);
+     Ch:=V^.Mem^[TXT_BASE+(N*80+Fg)*2];If Ch<32 Then Ch:=32;
+     GText(X1+(Fg-W^.HPos)*COLW,Y1+(N-W^.VPos)*ROWH+1,Chr(Ch),cBlk);
+    End;
+ End;
  CurX:=V^.Mem^[$450]-W^.HPos;CurY:=V^.Mem^[$451]-W^.VPos;
  If (CurX>=0) And (CurY>=0) And ((NowCs Div BlinkHalf) Mod 2=0) And (V^.Mode<4) And (W=ActiveWin) Then
   GBar(X1+CurX*COLW,Y1+CurY*ROWH+ROWH-2,X1+CurX*COLW+COLW-1,Y1+CurY*ROWH+ROWH-1,cLGr);
 End;
 
+Var PasteN,PastePos: Integer; PasteWin: PWindow;
+
+Procedure DosMenu(W: PWindow; Cmd: Integer); Forward;
+
 Procedure DosKey(W: PWindow; K: Word);
-Var V: PVM;
+Var V: PVM; Dr,Dc: Integer;
 Begin
  V:=W^.Data;
- If K=K_PGUP Then Begin If W^.VPos>0 Then Dec(W^.VPos);Dirty:=True;End
+ { mode Marquer : les fleches deplacent le curseur (F8 = etendre, equivalent de MAJ+fleches) }
+ If MkOn And (MkWin=W) Then Begin
+  Dr:=0;Dc:=0;
+  Case K Of
+   K_UP: Dr:=-1;K_DOWN: Dr:=1;K_LEFT: Dc:=-1;K_RIGHT: Dc:=1;
+   K_HOME: Dc:=-80;K_END: Dc:=80;K_PGUP: Dr:=-25;K_PGDN: Dr:=25;
+   322: Begin MkExt:=Not MkExt;If Not MkExt Then Begin MkAR:=MkR;MkAC:=MkC;End;End;
+   K_ENTER: Begin DosMenu(W,CM_M_COPY);Exit;End;
+   K_ESC: Begin MkOn:=False;Dirty:=True;Exit;End;
+  End;
+  If (Dr<>0) Or (Dc<>0) Then Begin
+   MkR:=Clamp(MkR+Dr,0,24);MkC:=Clamp(MkC+Dc,0,79);
+   If Not MkExt Then Begin MkAR:=MkR;MkAC:=MkC;End;
+  End;
+  Dirty:=True;Exit;
+ End;
+ { mode Defilement }
+ If MkScr Then Begin
+  Case K Of
+   K_UP: If W^.VPos>0 Then Dec(W^.VPos);
+   K_DOWN: Inc(W^.VPos);
+   K_LEFT: If W^.HPos>0 Then Dec(W^.HPos);
+   K_RIGHT: Inc(W^.HPos);
+   K_PGUP: W^.VPos:=Max2(0,W^.VPos-W^.VPage);
+   K_PGDN: Inc(W^.VPos,W^.VPage);
+   K_HOME: Begin W^.VPos:=0;W^.HPos:=0;End;
+   K_END: W^.VPos:=25;
+   K_ESC,K_ENTER: MkScr:=False;
+  End;
+  Dirty:=True;Exit;
+ End;
+ If V^.Running Then VMKeyPut(V,KeyToBios(K))
+ Else If K=K_PGUP Then Begin If W^.VPos>0 Then Dec(W^.VPos);Dirty:=True;End
  Else If K=K_PGDN Then Begin Inc(W^.VPos);Dirty:=True;End
- Else If V^.Running Then VMKeyPut(V,KeyToBios(K))
  Else ShellKey(V,K);
  Invalidate(W);
 End;
@@ -11486,6 +11629,14 @@ Var V: PVM; X1,Y1,X2,Y2: Integer;
 Begin
  V:=W^.Data;
  WinClient(W,X1,Y1,X2,Y2);
+ If MkOn And (MkWin=W) Then Begin
+  If (E.Kind=EV_DOWN) Or ((E.Kind=EV_MOVE) And ((E.B And 1)<>0)) Then Begin
+   MkR:=Clamp((E.Y-Y1) Div ROWH+W^.VPos,0,24);MkC:=Clamp((E.X-X1) Div COLW+W^.HPos,0,79);
+   If E.Kind=EV_DOWN Then Begin MkAR:=MkR;MkAC:=MkC;MkExt:=False;Capture:=W;End;
+   Dirty:=True;
+  End;
+  Exit;
+ End;
  V^.MouseX:=(E.X-X1+W^.HPos*COLW);
  V^.MouseY:=((E.Y-Y1) Div ROWH+W^.VPos)*8;
  V^.MouseB:=E.B And 3;
@@ -11498,12 +11649,26 @@ Begin
  V:=W^.Data;
  If V=Nil Then Exit;
  If V^.ExitClose Then Begin V^.ExitClose:=False;V^.Dead:=True;CloseWindow(W);Exit;End;
+ { collage progressif (evite la perte de caracteres) }
+ If (PasteWin=W) And (PastePos<PasteN) Then Begin
+  For I:=1 To 8 Do If PastePos<PasteN Then Begin
+   If V^.Running Then Begin
+    If Not ((ClipTxt[PastePos]=#10) And (PastePos>0) And (ClipTxt[PastePos-1]=#13)) Then VMKeyPut(V,KeyToBios(Ord(ClipTxt[PastePos])));
+   End Else If ClipTxt[PastePos]<>#10 Then ShellKey(V,Ord(ClipTxt[PastePos]));
+   Inc(PastePos);
+  End;
+ End;
  If V^.Dead Then Exit;
  If V^.Running Then Begin
   VMRun(V,70000);
   If V^.GfxFull And V^.Running Then GfxSession(W);
   W^.Title:=V^.Title;
  End Else Begin
+  If V^.NeedPrompt And (W^.Param>=1) Then Begin
+   V^.NeedPrompt:=False;
+   If W^.Param=3 Then Begin V^.Dead:=True;CloseWindow(W);Exit;End;
+   W^.Param:=2;W^.Title:='('+W^.Title+')';V^.Title:=W^.Title;
+  End;
   If V^.NeedPrompt Then Begin
    V^.NeedPrompt:=False;V^.Title:='MS-DOS Prompt';W^.Title:='MS-DOS Prompt';
    VMEnter(V);
@@ -11536,15 +11701,21 @@ Begin
  Case Cmd Of
   CM_M_CLOSE: Begin V^.Dead:=True;CloseWindow(W);Exit;End;
   CM_M_CLS: Begin VMEnter(V);ScrClear;If Not V^.Running Then ShellPrompt(V);VMLeave(V);End;
-  CM_M_COPY: Begin
-     S:='';
-     For I:=0 To 24 Do Begin
-      S:=S+'';
-     End;
-     ClipSetText(S,0);
+  CM_M_MARK: Begin
+     MkOn:=True;MkScr:=False;MkExt:=False;MkWin:=W;
+     MkAR:=Clamp(V^.Mem^[$451],0,24);MkAC:=Clamp(V^.Mem^[$450],0,79);MkR:=MkAR;MkC:=MkAC;
     End;
-  CM_M_PASTE: If ClipKind=1 Then For I:=0 To ClipLen-1 Do Begin
-     If V^.Running Then VMKeyPut(V,KeyToBios(Ord(ClipTxt[I]))) Else If ClipTxt[I]<>#10 Then ShellKey(V,Ord(ClipTxt[I]));End;
+  CM_M_SCROLL: Begin MkScr:=True;MkOn:=False;End;
+  CM_M_COPY: Begin
+     If MkOn And (MkWin=W) Then Begin
+      S:=MkCopyText(V);
+      If S<>'' Then ClipSetText(S[1],Length(S)) Else Beep;
+      MkOn:=False;
+     End Else Beep;
+    End;
+  CM_M_PASTE: If ClipKind=1 Then Begin
+     PasteN:=ClipLen;PastePos:=0;PasteWin:=W;
+    End;
   CM_M_ABOUT: ShowAboutMs('MS-DOS Prompt',4,False);
   CM_M_RESET: If V^.Running Then Begin VMEnter(V);V^.NCtx:=0;ProcExit(V,255);VMLeave(V);End;
   CM_M_FULL: Begin If W^.State=2 Then RestoreWin(W) Else MaximizeWin(W);End;
@@ -11567,9 +11738,14 @@ Begin
  If W=Nil Then Begin DosCreate:=Nil;Exit;End;
  V:=VMCreate(W);
  W^.Data:=V;
+ If Cmd<>'' Then Begin W^.Param:=IfThen_(DosCloseExit,3,1);W^.Title:=BaseName(Cmd);End;
+ If DosInitDir<>'' Then V^.CurDir:=DosInitDir;
  WinAddMenu(W,'&Control~&Contr'#147'le~&Steuerung');
  WinAddItem(W,'&Full Screen~&Plein '#130'cran~&Vollbild',CM_M_FULL,'');
+ WinAddItem(W,'&Mark~&Marquer~&Markieren',CM_M_MARK,'');
+ WinAddItem(W,'C&opy~Cop&ier~&Kopieren',CM_M_COPY,'');
  WinAddItem(W,'&Paste~Co&ller~&Einf'#129'gen',CM_M_PASTE,'');
+ WinAddItem(W,'&Scroll~&D'#130'filer~&Rollen',CM_M_SCROLL,'');
  WinAddItem(W,'&Clear Screen~&Effacer l''ecran~&L'#148'schen',CM_M_CLS,'');
  WinAddItem(W,'&Terminate Program~&Arr'#136'ter le programme~&Programm beenden',CM_M_RESET,'');
  WinAddItem(W,'&Exit~&Quitter~&Beenden',CM_M_CLOSE,'');
@@ -15164,6 +15340,7 @@ Begin
   A_CALC: CalcKey(W,K);
   A_TERM: TermKey(W,K);
   A_CTRL: CpKeyMain(W,K);
+  A_SPOOL: SpoolKey(W,K);
   A_CARD: CardKey(W,K);
   A_CALEN: CalKey(W,K);
   A_PAINT: PaintKey(W,K);
@@ -15278,8 +15455,20 @@ Begin
 End;
 
 Procedure AppSysItems(W: PWindow);
+Procedure AddIt(Const T: String; C: Integer);
+Begin
+ If SysDef.N>=MAXITEM Then Exit;
+ Inc(SysDef.N);SysDef.It[SysDef.N].Txt:=T;SysDef.It[SysDef.N].Cmd:=C;SysDef.It[SysDef.N].Flag:=0;SysDef.It[SysDef.N].Key:='';
+End;
 Begin
  {$IFDEF FPC}
+ If W^.App=A_DOSBOX Then Begin
+  AddIt('-',0);
+  AddIt('Mar&k~Mar&quer~Mar&kieren',CM_M_MARK);
+  AddIt('Cop&y~Cop&ier~&Kopieren',CM_M_COPY);
+  AddIt('Pa&ste~Co&ller~&Einf'#129'gen',CM_M_PASTE);
+  AddIt('Scro&ll~D'#130'fi&ler~&Rollen',CM_M_SCROLL);
+ End;
  If W^.App=A_W16 Then W16AddSysItems(W);
  {$ENDIF}
 End;
@@ -15288,6 +15477,7 @@ Procedure AppSysCmd(W: PWindow; Cmd: Integer);
 Begin
  {$IFDEF FPC}
  If W^.App=A_W16 Then W16SysCommand(W,Cmd);
+ If W^.App=A_DOSBOX Then DosMenu(W,Cmd);
  {$ENDIF}
 End;
 
@@ -15364,6 +15554,32 @@ Begin
  Launch:=W;
 End;
 
+{ execution d'un fichier PIF }
+Procedure RunPif(Const Path: String);
+Var P: PPif; Cmd: String; W: PWindow; Pr: String;
+Begin
+ {$IFDEF FPC}
+ New(P);FillChar(P^,SizeOf(TPif),0);PifClear(P);
+ If Not PifLoad(P,Path) Then Begin
+  InfoBox(T3('Cannot open '+BaseName(Path)+'.','Impossible d''ouvrir '+BaseName(Path)+'.','Kann '+BaseName(Path)+' nicht '#148'ffnen.'));
+  Dispose(P);Exit;
+ End;
+ Pr:=Trim(P^.Prog);
+ If Pr='' Then Begin InfoBox(T3('Cannot run '+BaseName(Path)+'.|No program specified.','Impossible d''ex'#130'cuter '+BaseName(Path)+'.|Aucun programme indiqu'#130'.','Kann '+BaseName(Path)+' nicht ausf'#129'hren.|Kein Programm angegeben.'));Dispose(P);Exit;End;
+ If (P^.Dir<>'') And Not VDirExists(Upper(P^.Dir)) Then Begin
+  InfoBox(T3('Initial directory not found.','R'#130'pertoire initial introuvable.','Anfangsverzeichnis nicht gefunden.'));Dispose(P);Exit;End;
+ If P^.MemReq>600 Then Begin
+  InfoBox(T3('Not enough memory to run '+BaseName(Pr)+'.','M'#130'moire insuffisante pour ex'#130'cuter '+BaseName(Pr)+'.','Nicht genug Speicher zum Ausf'#129'hren von '+BaseName(Pr)+'.'));Dispose(P);Exit;End;
+ Cmd:=Pr;
+ If Trim(P^.Params)<>'' Then Cmd:=Cmd+' '+Trim(P^.Params);
+ DosInitDir:=Upper(P^.Dir);DosCloseExit:=P^.CloseExit;
+ W:=Launch(A_DOSBOX,Cmd);
+ DosInitDir:='';DosCloseExit:=False;
+ If (W<>Nil) And (P^.Title<>'') Then Begin W^.Title:=P^.Title;End;
+ Dispose(P);
+ {$ENDIF}
+End;
+
 Procedure RunFile(Const Path,Args: String; AsIcon: Boolean);
 Var I: Integer; W: PWindow;
 Begin
@@ -15380,7 +15596,7 @@ Begin
  End;
  If ExtOf(Path)='.TXT' Then Begin W:=Launch(A_NOTE,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
  If ExtOf(Path)='.WRI' Then Begin W:=Launch(A_WRITE,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
- If ExtOf(Path)='.PIF' Then Begin W:=Launch(A_PIF,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
+ If ExtOf(Path)='.PIF' Then Begin RunPif(Path);Exit;End;
  If ExtOf(Path)='.CRD' Then Begin W:=Launch(A_CARD,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
  If ExtOf(Path)='.CAL' Then Begin W:=Launch(A_CALEN,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
  If ExtOf(Path)='.MSP' Then Begin W:=Launch(A_PAINT,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
@@ -15388,6 +15604,8 @@ Begin
  If (ExtOf(Path)='.EXE') And IsNEFile(V2R(Path)) Then Begin Win16Start(Path,Args);Exit;End;
  {$ENDIF}
  If IsProgExt(ExtOf(Path)) Then Begin
+  { un fichier .PIF de meme nom regit le lancement }
+  If FileExists(V2R(Copy(Path,1,Length(Path)-Length(ExtOf(Path)))+'.PIF')) Then Begin RunPif(Copy(Path,1,Length(Path)-Length(ExtOf(Path)))+'.PIF');Exit;End;
   W:=Launch(A_DOSBOX,Path+IfThenS(Args='','',' '+Args));
   If (W<>Nil) And AsIcon Then MinimizeWin(W);
   Exit;
