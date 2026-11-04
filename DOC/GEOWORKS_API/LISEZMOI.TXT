@@ -35,3 +35,44 @@ d'arguments d'apres les empilements qui precedent l'appel et ne s'arrete jamais.
 
 Les scripts sont en Python 3 (capstone pour valid.py/unknown.py) et lisent les
 fichiers du depot pcgeos clone dans /home/user/bluewaysw/pcgeos.
+
+SYSTEME D'OBJETS (CObjMessage / CObjCallSuper) - etat d'avancement
+-------------------------------------------------------------------
+Source : Library/Kernel/Object/objectClass.asm, Include/Internal/geodeStr.def
+et Include/object.def du depot pcgeos.
+
+Fait (60b_rt.pas : ObjDecode, ObjParamBytes) :
+  * Disposition de la pile (convention pascal, params empiles de gauche a droite) :
+      CObjMessage   : params..., flags, ohan, och, method, mpd
+      CObjCallSuper : params..., class(fptr), ohan, och, method, mpd
+    soit a partir de SS:SP+4 : +0 mpd, +2 method, +4 och, +6 ohan, +8 flags
+    (ou classe fptr), puis les parametres.
+  * MethodParameterDef (16 bits) : 15-14 type de retour, 13-10 info de retour,
+    9 = parametres en registres, 8-0 = registres (PARAM3 8-6, PARAM2 5-3,
+    PARAM1 2-0 ; 1 CL, 2 CH, 3 DL, 4 DH, 5 CX, 6 DX, 7 BP) ou memoire
+    (bit 8 = format C, octet bas = taille ; sinon bit 7 = structure en ss:bp
+    et bits 6-0 = taille).
+  * Le decodage donne la taille exacte des arguments (l'appele depile) : sans
+    lui la pile se desynchronisait apres chaque message ; il fournit aussi les
+    valeurs de cx, dx, bp transmises a la methode. Les messages sont
+    journalises (obj=handle:chunk msg=... mpd=... cx dx bp flags).
+  * Inventaire des blocs d'objets d'une geode (62_gwin.pas : RtObjects) : le
+    premier mot d'un chunk-objet est un ObjRelocationID (4 bits de source,
+    12 bits d'index ; source 3 = classe d'une bibliotheque importee, source 6 =
+    classe de la geode) suivi du numero d'entree, donc le nom de la classe se
+    lit directement dans la table des exportations de "ui" (GenTriggerClass =
+    entree 2...). Exemple INSTFE.GEO : GenInteraction 21, GenText 9, GenGlyph 17,
+    GenValue 4, GenTrigger 11, GenDynamicList 2, GenFileSelector 1.
+
+Reste a faire :
+  * Recherche de methode : lire la table des messages de la classe
+    (ClassStruct : super, masterOffset, nombre de methodes, tableau des numeros
+    de messages puis des pointeurs de gestionnaires), appeler le gestionnaire
+    dans l'emulateur avec ax = message, cx/dx/bp, ds:si = objet, es = classe, et
+    renvoyer le resultat selon MPD_RETURN_TYPE (CMessageReturn).
+  * Relocalisation des chunks d'objets (ObjRelocation des classes) pour
+    transformer les ObjRelocationID en pointeurs, puis lecture de GenInstance
+    (GI_link, GI_comp, GI_visMoniker...) pour reconstruire l'arbre generique.
+  * Association des classes Gen* de "ui" aux composants du clone (GenPrimary ->
+    fenetre, GenTrigger -> bouton, GenText -> champ, GenGlyph -> libelle...).
+  * VMLock / tableaux de chunks / HugeArray / FPU : semantique encore absente.

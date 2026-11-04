@@ -20408,9 +20408,96 @@ Begin
  For I:=1 To High(RtFiles) Do If Not RtFUsed[I] Then Begin RtFreeFile:=I;Exit;End;
 End;
 
+{ ------------------------------------------------------------------------
+  SYSTEME D'OBJETS : CObjMessage / CObjCallSuper (objectClass.asm)
+  Pile (convention pascal, l'appelant empile de gauche a droite) :
+    CObjMessage   : params..., flags, ohan, och, method, mpd
+    CObjCallSuper : params..., class(fptr), ohan, och, method, mpd
+  Disposition en memoire a partir de SS:SP+4 (apres l'adresse de retour) :
+    +0 mpd  +2 method  +4 och  +6 ohan  +8 flags (ou classe fptr)  puis params
+  MethodParameterDef (16 bits, champs de poids fort a poids faible) :
+    bits 15-14 type de retour, 13-10 info de retour, 9 params en registres,
+    8-0 : registres (PARAM3 8-6, PARAM2 5-3, PARAM1 2-0 ; 1 CL 2 CH 3 DL
+    4 DH 5 CX 6 DX 7 BP) ou memoire (bit 8 = format C, octet bas = taille ;
+    sinon bit 7 = structure en ss:bp et bits 6-0 = taille).
+  ------------------------------------------------------------------------ }
+Type
+ TObjMsg = Record
+  Super   : Boolean;
+  Mpd,Method,Och,Ohan,Flags,ClsOfs,ClsSeg : Word;
+  ParamBytes,Total : Integer;
+  Cx,Dx,Bp : Word;
+  RetType  : Byte;
+ End;
+
+Var
+ RtObjMsgs   : LongInt;
+ RtLastObj   : TObjMsg;
+
+Function ObjParamBytes(Mpd: Word): Integer;
+Var Al,N: Integer;
+Begin
+ If (Mpd And $0200)<>0 Then Begin
+  N:=0;
+  If (Mpd And $0007)<>0 Then Inc(N);
+  If (Mpd And $0038)<>0 Then Inc(N);
+  If (Mpd And $01C0)<>0 Then Inc(N);
+  ObjParamBytes:=2*N;
+ End Else If (Mpd And $0100)<>0 Then Begin
+  Al:=Mpd And $FF;
+  If Al<=2 Then ObjParamBytes:=2 Else If Al<=4 Then ObjParamBytes:=4 Else If Al<=6 Then ObjParamBytes:=6 Else ObjParamBytes:=Al;
+ End Else If (Mpd And $0080)<>0 Then ObjParamBytes:=4
+ Else ObjParamBytes:=Mpd And $7F;
+End;
+
+{ charge cx, dx, bp selon le MethodParameterDef ; Top = SS:offset du premier argument }
+Procedure ObjDecode(Super: Boolean; Top: Word; Var M: TObjMsg);
+Var Q: Word; HdrB,I,K: Integer; Sel: Array[1..3] Of Integer; V: Word; Code: Integer;
+ Function Rd(O: Word): Word;
+ Begin
+  Rd:=M16(SegR[2],O);
+ End;
+ Procedure Put(Cd: Integer; W: Word);
+ Begin
+  Case Cd Of
+   1: M.Cx:=(M.Cx And $FF00) Or (W And $FF);
+   2: M.Cx:=(M.Cx And $00FF) Or ((W And $FF) Shl 8);
+   3: M.Dx:=(M.Dx And $FF00) Or (W And $FF);
+   4: M.Dx:=(M.Dx And $00FF) Or ((W And $FF) Shl 8);
+   5: M.Cx:=W;
+   6: M.Dx:=W;
+   7: M.Bp:=W;
+  End;
+ End;
+Begin
+ FillChar(M,SizeOf(M),0);
+ M.Super:=Super;
+ M.Mpd:=Rd(Top);M.Method:=Rd(Word(Top+2));M.Och:=Rd(Word(Top+4));M.Ohan:=Rd(Word(Top+6));
+ If Super Then Begin M.ClsOfs:=Rd(Word(Top+8));M.ClsSeg:=Rd(Word(Top+10));HdrB:=12;End
+ Else Begin M.Flags:=Rd(Word(Top+8));HdrB:=10;End;
+ M.RetType:=(M.Mpd Shr 14) And 3;
+ M.ParamBytes:=ObjParamBytes(M.Mpd);
+ M.Total:=HdrB+M.ParamBytes;
+ Q:=Word(Top+HdrB);
+ If (M.Mpd And $0200)<>0 Then Begin
+  { params en registres : lus dans l'ordre PARAM3, PARAM2, PARAM1 }
+  Sel[1]:=(M.Mpd Shr 6) And 7;Sel[2]:=(M.Mpd Shr 3) And 7;Sel[3]:=M.Mpd And 7;
+  For K:=1 To 3 Do If Sel[K]<>0 Then Begin Put(Sel[K],Rd(Q));Inc(Q,2);End;
+ End Else If (M.Mpd And $0100)<>0 Then Begin
+  I:=M.Mpd And $FF;
+  If I<=6 Then Begin
+   M.Cx:=Rd(Q);
+   If I>2 Then M.Dx:=Rd(Word(Q+2));
+   If I>4 Then M.Bp:=Rd(Word(Q+4));
+  End Else Begin M.Bp:=Q;M.Dx:=I;End;
+ End Else Begin
+  If (M.Mpd And $0080)<>0 Then M.Bp:=Rd(Q) Else Begin M.Bp:=Q;M.Dx:=M.Mpd And $7F;End;
+ End;
+End;
+
 Procedure RtCall(Lib: Integer; Ord_: Word);
 Var I,Tot,N: Integer; Nm,Up,Lb,Sg,Rs,Cv,S,Args,E,T: String; Top: Word; Known,Logit,Cd: Boolean;
-    LibId: Integer; V: Word; L: LongInt; Fnd: Boolean; Nw: Word;
+    LibId: Integer; V: Word; L: LongInt; Fnd: Boolean; Nw: Word; IsObj: Boolean; OM: TObjMsg;
 
  Function ArgOfs(Idx: Integer): Word;
  Var J,C: Integer;
@@ -20478,7 +20565,11 @@ Begin
  Up:=Upper(Nm);
  If (Length(Up)>0) And (Up[1]='_') Then Delete(Up,1,1);
  Top:=Word(Reg[4]+4);
- If (Sg<>'?') And (Pos('.',Sg)=0) Then Begin
+ IsObj:=(Up='COBJMESSAGE') Or (Up='COBJCALLSUPER');
+ If IsObj Then Begin
+  ObjDecode(Up='COBJCALLSUPER',Top,OM);
+  Tot:=OM.Total;Cv:='p';Sg:='';
+ End Else If (Sg<>'?') And (Pos('.',Sg)=0) Then Begin
   Tot:=0;
   For I:=1 To Length(Sg) Do If Sg[I]='d' Then Inc(Tot,4) Else Inc(Tot,2);
  End Else Begin
@@ -20494,6 +20585,11 @@ Begin
  For I:=0 To Min2(Length(Sg),6)-1 Do Begin
   If Sg[I+1]='d' Then Args:=Args+HexW(ArgSeg(I))+':'+HexW(ArgW(I)) Else Args:=Args+HexW(ArgW(I));
   If I<Min2(Length(Sg),6)-1 Then Args:=Args+',';
+ End;
+ If IsObj Then Begin
+  Args:='obj='+HexW(OM.Ohan)+':'+HexW(OM.Och)+' msg='+HexW(OM.Method)+' mpd='+HexW(OM.Mpd)+' cx='+HexW(OM.Cx)+' dx='+HexW(OM.Dx)+' bp='+HexW(OM.Bp);
+  If OM.Super Then Args:=Args+' class='+HexW(OM.ClsSeg)+':'+HexW(OM.ClsOfs) Else Args:=Args+' flags='+HexW(OM.Flags);
+  Inc(RtObjMsgs);RtLastObj:=OM;
  End;
  Reg[0]:=0;Reg[2]:=0;
  Fnd:=True;
@@ -20634,11 +20730,13 @@ Begin
   Args:=Args+'  "'+Copy(S,1,24)+'"';
  End
  Else If Up='GRCREATESTATE' Then Reg[0]:=$4001
+ Else If IsObj Then Begin End
  Else Fnd:=Known And (Copy(Up,1,2)='GR');
  { ---- journal ---- }
  Logit:=(RtLogged<18) Or (Not Known);
  If Not Known Then Begin Inc(RtUnkCalls);Logit:=RtLogged<40;End
  Else If Not Fnd Then Logit:=RtLogged<30;
+ If IsObj And (RtObjMsgs<=80) Then Logit:=True;
  If Logit Then Begin
   Inc(RtLogged);
   If Not Known Then ELogLine('  CALL ?? '+Nm+'('+Args+')')
@@ -20993,6 +21091,52 @@ Begin
 End;
 
 { Rapport statique : ordinaux importes par le geode, identifies ou non }
+{ Inventaire des blocs d'objets (resources LMem de type objet) : le premier mot de
+  chaque chunk-objet est un ObjRelocationID (source sur 4 bits, index sur 12) suivi du
+  numero d'entree ; source 3 = classe d'une bibliotheque importee (index = bibliotheque,
+  entree = ordinal dans la table des exportations), source 6 = classe de la geode. }
+Procedure RtObjects(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
+Var I,K,N,J,NC,NB: Integer; Sg,HT,Off,Sz,Rid,Ent: Word; Src: Integer; Nm: String; Cl: Array[1..48] Of String[26];
+    Cc: Array[1..48] Of Integer; S: String; LbName: String;
+Begin
+ Dt_:=Wd_^.Data;
+ NC:=0;NB:=0;
+ For I:=1 To Dt_^.G.NS-1 Do Begin
+  Sg:=SegPara[I];
+  If (M16(Sg,6)=2) And (M16(Sg,2)>=$10) And (M16(Sg,2)<$100) And (M16(Sg,10)<=400) Then Begin
+   Inc(NB);
+   HT:=M16(Sg,2);N:=M16(Sg,10);
+   For K:=0 To N-1 Do Begin
+    Off:=M16(Sg,Word(HT+2*K));
+    If (Off=0) Or (Off=$FFFF) Or (Off<4) Then Continue;
+    Sz:=M16(Sg,Word(Off-2));
+    If (Sz<8) Or (Sz>$400) Then Continue;
+    Rid:=M16(Sg,Off);Ent:=M16(Sg,Word(Off+2));Src:=Rid Shr 12;
+    Nm:='';
+    If (Src=3) And ((Rid And $FFF)<Dt_^.G.NL) Then Begin
+     LbName:=TrimStr(Dt_^.G.Libs[Rid And $FFF].Name);
+     Nm:=RtField(RtEntry(RtLibId(LbName),Ent),0);
+     If Nm='' Then Nm:=LbName+'#'+IntStr(Ent);
+    End Else If (Src=6) And ((Rid And $FFF)=0) And (Ent<20) Then Nm:='app#'+IntStr(Ent);
+    If Nm<>'' Then Begin
+     J:=1;While (J<=NC) And (Cl[J]<>Nm) Do Inc(J);
+     If J>NC Then Begin If NC<48 Then Begin Inc(NC);Cl[NC]:=Nm;Cc[NC]:=0;J:=NC;End Else J:=0;End;
+     If J>0 Then Inc(Cc[J]);
+    End;
+   End;
+  End;
+ End;
+ If NB=0 Then Exit;
+ GwAdd(Wd_,T3('Object blocks: ','Blocs d''objets : ','Objektbl'#148'cke: ')+IntStr(NB)+T3(', classes used:',', classes utilis'#130'es :',', verwendete Klassen:'));
+ S:='';
+ For J:=1 To NC Do Begin
+  If Length(S)+Length(Cl[J])>56 Then Begin GwAdd(Wd_,'  '+S);S:='';End;
+  S:=S+Cl[J]+'('+IntStr(Cc[J])+') ';
+ End;
+ If S<>'' Then GwAdd(Wd_,'  '+S);
+End;
+
 Procedure RtCoverage(Wd_: PWindow);
  Var Dt_: PGeodeWin;
 Var I,J,L,Known,Tot: Integer; T: TRtSeen; S,E,Nm: String;
@@ -21022,6 +21166,7 @@ Begin
   S:=S+Nm+'('+IntStr(RtSeen[I].Cnt)+') ';
  End;
  If S<>'' Then GwAdd(Wd_,'  '+S);
+ RtObjects(Wd_);
 End;
 
 { Execute un point d'entree synthetique et journalise ce qui se passe }
