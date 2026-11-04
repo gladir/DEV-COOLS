@@ -159,6 +159,7 @@ Type
   HTot,HPage,HPos : LongInt;
   Body     : Integer;      { couleur de fond du client }
   IconX,IconY : Integer;
+  IconFixed : Boolean;     { icone deplacee par l'utilisateur }
   Data     : Pointer;      { donnees de l'application }
   Param    : LongInt;
  End;
@@ -254,6 +255,8 @@ Var
  PrinterName : String;
  PrintPort   : String;
  SpoolN      : Integer;
+ SelIcon     : Pointer;     { icone selectionnee }
+ IniFile     : String;
  SpoolT0     : LongInt;
  NPrn        : Integer;
  SpoolNames  : Array[1..8] Of String[40];
@@ -1289,9 +1292,9 @@ Var I,N: Integer;
 Begin
  N:=0;
  For I:=1 To NWins Do
-  If Wins[I]^.State=1 Then Begin
-   Wins[I]^.IconX:=4+N*ICON_W;
-   Wins[I]^.IconY:=SCR_H-ICON_H-4;
+  If (Wins[I]^.State=1) And Not Wins[I]^.IconFixed Then Begin
+   Wins[I]^.IconX:=4+(N Mod 9)*ICON_W;
+   Wins[I]^.IconY:=SCR_H-ICON_H-4-(N Div 9)*(ICON_H+6);
    Inc(N);
   End;
  CalcIconStrip;
@@ -1668,7 +1671,15 @@ Begin
  AppDrawIcon(W,X+(ICON_W-32) Div 2-4,Y);
  T:=W^.Title;
  If Length(T)>8 Then T:=Copy(T,1,8);
- GText(X+(ICON_W-Length(T)*8) Div 2-4,Y+36,T,cBlk);
+ If SelIcon=W Then Begin
+  { icone selectionnee : titre complet sur fond blanc, contour }
+  T:=W^.Title;
+  If Length(T)>(ICON_W Div 8) Then T:=Copy(T,1,ICON_W Div 8);
+  GBar(X-4,Y+34,X+ICON_W-4,Y+ICON_H,cBlk);
+  GText(X+(ICON_W-Length(T)*8) Div 2-4,Y+36,T,cWht);
+  GRect(X-4,Y-2,X+ICON_W-4,Y+ICON_H,cWht);
+ End Else
+  GText(X+(ICON_W-Length(T)*8) Div 2-4,Y+36,T,cBlk);
  ClipFull;
 End;
 
@@ -1857,11 +1868,11 @@ Begin
  Inc(SysDef.N);SetSysItem(SysDef.N,'&Restore~&Restaurer~&Wiederherstellen',CM_RESTORE,
   W^.State=0,'Alt+F5');
  Inc(SysDef.N);SetSysItem(SysDef.N,'&Move~&D'#130'placer~&Verschieben',CM_MOVE,
-  W^.State<>0,'Alt+F7');
+  W^.State=2,'Alt+F7');
  Inc(SysDef.N);SetSysItem(SysDef.N,'&Size~&Taille~&Gr'#148#225'e',CM_SIZE,
   (Not W^.Sizable) Or (W^.State<>0),'Alt+F8');
  Inc(SysDef.N);SetSysItem(SysDef.N,'Mi&nimize~R'#130'&duire~&Minimieren',CM_MINIMIZE,
-  False,'Alt+F9');
+  W^.State=1,'Alt+F9');
  Inc(SysDef.N);SetSysItem(SysDef.N,'Ma&ximize~&Agrandir~Ma&ximieren',CM_MAXIMIZE,
   (Not W^.Sizable) Or (W^.State=2),'Alt+F10');
  Inc(SysDef.N);SetSysItem(SysDef.N,'-',0,False,'');
@@ -2911,11 +2922,13 @@ Begin
  Dirty:=True;
 End;
 
+Procedure IconDrag(W: PWindow); Forward;
+
 Procedure DoSysCmd(W: PWindow; Cmd: Integer);
 Begin
  Case Cmd Of
   CM_RESTORE: RestoreWin(W);
-  CM_MOVE: If W^.State=0 Then OutlineOp(W,0,True);
+  CM_MOVE: If W^.State=0 Then OutlineOp(W,0,True) Else If W^.State=1 Then Begin MX:=W^.IconX+ICON_W Div 2;MY:=W^.IconY+ICON_H Div 2;IconDrag(W);End;
   CM_SIZE: If W^.Sizable And (W^.State=0) Then OutlineOp(W,10,True);
   CM_MINIMIZE: MinimizeWin(W);
   CM_MAXIMIZE: MaximizeWin(W);
@@ -2993,14 +3006,60 @@ Begin
  If Cmd<>0 Then AppMenu(W,Cmd);
 End;
 
+{ deplacement d'une icone a la souris }
+Procedure IconDrag(W: PWindow);
+Var Sc: TScreenSave; E: TEvent; X,Y,GX,GY: Integer; Done,Ok: Boolean;
+Begin
+ GX:=MX-W^.IconX;GY:=MY-W^.IconY;X:=W^.IconX;Y:=W^.IconY;
+ HideMouse;SaveScreen(Sc);DrawOutline(X-4,Y-2,ICON_W+1,ICON_H+3);ShowMouse;
+ Done:=False;Ok:=False;
+ Repeat
+  PollEvent(E);
+  If E.Kind=EV_MOVE Then Begin
+   X:=Clamp(E.X-GX,4,SCR_W-ICON_W);Y:=Clamp(E.Y-GY,40,SCR_H-ICON_H-2);
+   HideMouse;PutScreen(Sc);DrawOutline(X-4,Y-2,ICON_W+1,ICON_H+3);ShowMouse;
+  End;
+  If E.Kind=EV_KEY Then Begin
+   Case E.Key Of
+    K_ESC: Done:=True;
+    K_ENTER: Begin Done:=True;Ok:=True;End;
+    K_LEFT: Dec(X,8);K_RIGHT: Inc(X,8);K_UP: Dec(Y,8);K_DOWN: Inc(Y,8);
+   End;
+   If Not Done Then Begin HideMouse;PutScreen(Sc);DrawOutline(X-4,Y-2,ICON_W+1,ICON_H+3);ShowMouse;End;
+  End;
+  If E.Kind=EV_UP Then Begin Done:=True;Ok:=True;End;
+ Until Done;
+ HideMouse;PutScreen(Sc);FreeScreen(Sc);ShowMouse;
+ If Ok Then Begin W^.IconX:=Clamp(X,4,SCR_W-ICON_W);W^.IconY:=Clamp(Y,40,SCR_H-ICON_H-2);W^.IconFixed:=True;End;
+ Dirty:=True;
+End;
+
 Procedure HandleDown(Var E: TEvent);
-Var W,A: PWindow; Part,Cmd: Integer; Md: Integer;
+Var W,A: PWindow; Part,Cmd: Integer; Md: Integer; X0,Y0,SX,SY,SW,SH: Integer; Mv: Boolean; E2: TEvent;
 Begin
  W:=WinAt(E.X,E.Y,Part);
  If W=Nil Then Exit;
  A:=ActiveWin;
  If Part=HT_ICON Then Begin
-  If E.Dbl Then Begin RestoreWin(W);RedrawAll;End;
+  If E.Dbl Then Begin SelIcon:=Nil;RestoreWin(W);RedrawAll;End
+  Else Begin
+   SelIcon:=W;Dirty:=True;RedrawAll;
+   { clic simple : menu Systeme de l'icone ; glissement : deplacement }
+   X0:=E.X;Y0:=E.Y;Mv:=False;
+   Repeat
+    PollEvent(E2);
+    If (E2.Kind=EV_MOVE) And ((Abs(E2.X-X0)>3) Or (Abs(E2.Y-Y0)>3)) Then Mv:=True;
+   Until (E2.Kind=EV_UP) Or Mv;
+   If Mv Then Begin MX:=X0;MY:=Y0;IconDrag(W);End
+   Else Begin
+    SX:=W^.X;SY:=W^.Y;SW:=W^.W;SH:=W^.H;
+    W^.X:=W^.IconX-4;W^.Y:=Max2(20,W^.IconY-118);
+    Cmd:=RunMenus(W,1,True);
+    W^.X:=SX;W^.Y:=SY;W^.W:=SW;W^.H:=SH;
+    If Cmd<>0 Then DoSysCmd(W,Cmd);
+   End;
+  End;
+  Dirty:=True;
   Exit;
  End;
  If W<>A Then Begin BringToFront(W);RedrawAll;End;
@@ -3188,6 +3247,7 @@ Const
   16784,59872,41360,6416,10640,64864,3584,32592,168672,39744,42240,
   11760,67040,162272,3696,25360,25308);
 
+Procedure IniWrite(Const Fn,Sec,Key,Val_: String); Forward;
 Function Launch(App: Integer; Const Arg: String): PWindow; Forward;
 Procedure RunFile(Const Path,Args: String; AsIcon: Boolean); Forward;
 Procedure ShowAboutMs(Const AppName: String; Ico: Integer; Free: Boolean); Forward;
@@ -3773,6 +3833,28 @@ Begin
  End;
 End;
 
+{ Format Data Disk / Make System Disk : choix du lecteur puis confirmation }
+Procedure ExecDiskTool(SysDisk: Boolean);
+Var D: TDlg; R: Integer; Dr: Char;
+Begin
+ DlgInit(D,IfThenS(SysDisk,T3('Make System Disk','Disquette syst'#138'me','Systemdiskette'),T3('Format Data Disk','Formater une disquette','Datendiskette formatieren')),260,130);
+ DlgText(D,10,8,T3('Select drive to '+IfThenS(SysDisk,'make system disk:','format:'),
+   'Choisissez le lecteur '#133' '+IfThenS(SysDisk,'rendre amor'#135'able :','formater :'),'Laufwerk w'#132'hlen:'));
+ DlgRadio(D,10,20,30,1,'A:',True);
+ DlgRadio(D,11,70,30,1,'B:',False);
+ DlgButton(D,ID_OK,40,90,80,'OK',True);
+ DlgButton(D,ID_CANCEL,140,90,80,T3('Cancel','Annuler','Abbrechen'),False);
+ R:=RunDialog(D,@NoHook);
+ If R<>ID_OK Then Exit;
+ If DlgGetVal(D,11)=1 Then Dr:='B' Else Dr:='A';
+ If MsgBox(T3('This will '+IfThenS(SysDisk,'put the DOS system on','erase all data on')+' drive '+Dr+':.|Insert the diskette and choose OK.',
+    IfThenS(SysDisk,'Le syst'#138'me DOS va '#136'tre copi'#130' sur','Toutes les donn'#130'es du lecteur')+' '+Dr+': '+IfThenS(SysDisk,'.','vont '#136'tre effac'#130'es.')+'|Ins'#130'rez la disquette puis choisissez OK.',
+    IfThenS(SysDisk,'DOS wird auf Laufwerk ','Alle Daten auf Laufwerk ')+Dr+IfThenS(SysDisk,': kopiert.',': werden gel'#148'scht.')+'|Diskette einlegen und OK w'#132'hlen.'),1,2)<>ID_OK Then Exit;
+ { aucun lecteur de disquette physique accessible }
+ InfoBox(IfThenS(SysDisk,T3('Cannot put DOS system on the diskette.','Impossible de copier le syst'#138'me DOS sur la disquette.','DOS kann nicht auf die Diskette kopiert werden.'),
+   T3('Cannot format diskette in drive '+Dr+':.','Impossible de formater la disquette du lecteur '+Dr+': .','Diskette in Laufwerk '+Dr+': kann nicht formatiert werden.')));
+End;
+
 Procedure ExecEndSession; Forward;
 
 Procedure ExecMenu(W: PWindow; Cmd: Integer);
@@ -3801,14 +3883,13 @@ Begin
   CM_X_BYKIND: Begin X^.Sort:=3;ExecRefresh(W);End;
   CM_X_MKDIR: ExecMkDir(W);
   CM_X_CHDIR: ExecChDirDlg(W);
-  CM_X_FORMAT,CM_X_SYSDISK:
-    InfoBox(T3('Please insert a disk in drive A:|(not available in this version).',
-     'Ins'#130'rez une disquette dans le lecteur A:|(non disponible dans cette version).',
-     'Legen Sie eine Diskette in Laufwerk A: ein|(in dieser Version nicht verf'#129'gbar).'));
+  CM_X_FORMAT,CM_X_SYSDISK: ExecDiskTool(Cmd=CM_X_SYSDISK);
   CM_X_VOLNAME: Begin
     S:=VolNames[UpCase(X^.Dir[1])];
     If InputBox(T3('Volume name for drive '+X^.Dir[1]+':','Nom du volume du lecteur '+X^.Dir[1]+': ',
-      'Datentr'#132'germame f'#129'r Laufwerk '+X^.Dir[1]+':'),S,11,320) Then VolNames[UpCase(X^.Dir[1])]:=S;
+      'Datentr'#132'germame f'#129'r Laufwerk '+X^.Dir[1]+':'),S,11,320) Then Begin
+     VolNames[UpCase(X^.Dir[1])]:=S;IniWrite(IniFile,'volumes',UpCase(X^.Dir[1]),S);Dirty:=True;
+    End;
    End;
  End;
 End;
@@ -5578,26 +5659,63 @@ End;
 
 { ---------------- CLIPBOARD ---------------- }
 
-Procedure ClipDraw(W: PWindow);
-Var X1,Y1,X2,Y2,I,Row,Col: Integer; Ch: Char; P: PByteArr_; X,Y: Integer;
+{ dimensions du contenu : lignes, colonnes (texte) ou pixels (bitmap) }
+Procedure ClipExtent(Var Lines,Cols: Integer);
+Var I,Col: Integer;
 Begin
- WinClient(W,X1,Y1,X2,Y2);
- Row:=0;Col:=0;
+ Lines:=0;Cols:=0;
  If ClipKind=1 Then Begin
+  Lines:=1;Col:=0;
+  For I:=0 To ClipLen-1 Do
+   If ClipTxt[I]=#13 Then Begin Inc(Lines);Col:=0;End
+   Else If ClipTxt[I]<>#10 Then Begin Inc(Col);If Col>Cols Then Cols:=Col;End;
+ End Else If (ClipKind=2) And (ClipBmp<>Nil) Then Begin
+  Lines:=(ClipBmpH+9) Div 10;Cols:=(ClipBmpW+7) Div 8;
+ End;
+End;
+
+Procedure ClipDraw(W: PWindow);
+Var X1,Y1,X2,Y2,I,Row,Col,L,C,Pg,Pw: Integer; Ch: Char; P: PByteArr_; X,Y: Integer; Lab: String;
+Begin
+ ClipExtent(L,C);
+ { barres de defilement selon le contenu }
+ WinClient(W,X1,Y1,X2,Y2);
+ W^.HasVS:=L*10>(Y2-Y1-18);
+ W^.HasHS:=C*8>(X2-X1-8);
+ WinClient(W,X1,Y1,X2,Y2);
+ W^.HasVS:=L*10>(Y2-Y1-18);
+ W^.HasHS:=C*8>(X2-X1-8);
+ WinClient(W,X1,Y1,X2,Y2);
+ Pg:=Max2(1,(Y2-Y1-18) Div 10);Pw:=Max2(1,(X2-X1-8) Div 8);
+ W^.VTot:=Max2(L,1);W^.VPage:=Pg;W^.HTot:=Max2(C,1);W^.HPage:=Pw;
+ If W^.VPos>W^.VTot-W^.VPage Then W^.VPos:=Max2(0,W^.VTot-W^.VPage);
+ If W^.HPos>W^.HTot-W^.HPage Then W^.HPos:=Max2(0,W^.HTot-W^.HPage);
+ { barre indiquant le type de contenu }
+ Case ClipKind Of
+  1: Lab:='Text';
+  2: Lab:=T3('Bitmap','Bitmap','Bitmap');
+ Else Lab:='';
+ End;
+ If ClipKind=1 Then Lab:=T3('Text','Texte','Text');
+ GText(X1+4,Y1+3,Lab,cBlk);
+ GHLine(X1,X2,Y1+13,cBlk);
+ If ClipKind=1 Then Begin
+  Row:=0;Col:=0;
   For I:=0 To ClipLen-1 Do Begin
    Ch:=ClipTxt[I];
    If Ch=#13 Then Begin Inc(Row);Col:=0;End
    Else If Ch<>#10 Then Begin
-    GText(X1+4+Col*8,Y1+4+Row*10,Ch,cBlk);Inc(Col);
-    If X1+4+Col*8>X2 Then Begin Col:=0;Inc(Row);End;
+    If (Row>=W^.VPos) And (Col>=W^.HPos) And (X1+4+(Col-W^.HPos)*8<=X2-8) And (Y1+16+(Row-W^.VPos)*10<=Y2-8) Then
+     GText(X1+4+(Col-W^.HPos)*8,Y1+16+(Row-W^.VPos)*10,Ch,cBlk);
+    Inc(Col);
    End;
   End;
  End Else If (ClipKind=2) And (ClipBmp<>Nil) Then Begin
   P:=ClipBmp;
-  For Y:=0 To Min2(ClipBmpH-1,Y2-Y1-4) Do
-   For X:=0 To Min2(ClipBmpW-1,X2-X1-4) Do
-    If P^[Y*ClipBmpW+X]<>0 Then GPix(X1+2+X,Y1+2+Y,cBlk);
- End Else GText(X1+8,Y1+8,T3('(Clipboard is empty)','(Le Presse-papiers est vide)','(Zwischenablage ist leer)'),cDGr);
+  For Y:=W^.VPos*10 To Min2(ClipBmpH-1,W^.VPos*10+Y2-Y1-20) Do
+   For X:=W^.HPos*8 To Min2(ClipBmpW-1,W^.HPos*8+X2-X1-8) Do
+    If P^[Y*ClipBmpW+X]<>0 Then GPix(X1+2+X-W^.HPos*8,Y1+16+Y-W^.VPos*10,cBlk);
+ End;
 End;
 
 Procedure ClipMenu(W: PWindow; Cmd: Integer);
@@ -5609,6 +5727,7 @@ Begin
  End;
  Dirty:=True;
 End;
+
 
 Function ClipCreate: PWindow;
 Var W: PWindow;
@@ -6029,7 +6148,6 @@ Var
  CommBaud,CommBits,CommStop: Integer;
  CommParity: Char;
  CountryName: String[24];
- IniFile : String;
 
 Const
  NKNOWNP = 9;
@@ -6203,6 +6321,7 @@ Begin
   P:=Pos(',',V);If P>0 Then Begin CommBits:=StrVal(Copy(V,1,P-1),CommBits);Delete(V,1,P);End;
   P:=Pos(',',V);If P>0 Then CommStop:=StrVal(Copy(V,1,P-1),CommStop) Else CommStop:=StrVal(V,CommStop);
  End;
+ For P:=0 To 3 Do If IniRead(IniFile,'volumes',Chr(65+P),V) Then VolNames[Chr(65+P)]:=Copy(V,1,11);
  ApplyScreenColors;
 End;
 
@@ -11998,7 +12117,7 @@ Function W16Load(T: PW16; Const VPath: String): String;
 Var F: File; Hd: Array[0..63] Of Byte; NeOfs: LongInt; N: Word;
     Ne: Array[0..63] Of Byte;
     SegTab: Array[1..128,0..7] Of Byte; SegOfs,SegLen,SegFl,SegMin: Array[1..128] Of LongInt;
-    NSeg,I,J,K,Shift,AutoIdx,CsIdx,SsIdx: Integer; NextSeg: Word; EntTab,ModTab,ImpTab: LongInt;
+    NSeg,I,J,K,Shift,AutoIdx,CsIdx,SsIdx: Integer; NextSeg,NextUmb: Word; EntTab,ModTab,ImpTab: LongInt;
     NMod,EntLen: Integer; Ip,Sp,StackSz,HeapSz: Word; Len: LongInt;
     Ent: Array[0..16383] Of Byte; ModNames: Array[1..16] Of String[16]; ModOfs: Word; Lg: Byte;
     Pth: String; Cnt: Word; Rec: Array[0..7] Of Byte;
@@ -12070,7 +12189,7 @@ Begin
  W16ReadResources(T,F,NeOfs,Ne[$24]+Ne[$25]*256,Ne[$26]+Ne[$27]*256);
  ArenaInit(V);
  T^.AutoSeg:=0;
- NextSeg:=$0900;
+ NextSeg:=$0900;NextUmb:=$C000;
  DgLen:=0;
  For I:=1 To NSeg Do Begin
   Len:=SegMin[I];If Len<SegLen[I] Then Len:=SegLen[I];
@@ -12082,9 +12201,15 @@ Begin
    If Len>65520 Then Len:=65520;
    DgLen:=Len;
   End;
-  T^.SegBase[I]:=NextSeg;
-  NextSeg:=NextSeg+((Len+15) Div 16);
-  If NextSeg>$8E00 Then Begin Close(F);W16Load:='Not enough memory';Exit;End;
+  { les segments de code vont d'abord en memoire haute (C000-EFFF), le reste en memoire basse }
+  If (I<>AutoIdx) And ((SegFl[I] And 1)=0) And (LongInt(NextUmb)+((Len+15) Div 16)<=$F000) Then Begin
+   T^.SegBase[I]:=NextUmb;
+   NextUmb:=NextUmb+((Len+15) Div 16);
+  End Else Begin
+   T^.SegBase[I]:=NextSeg;
+   NextSeg:=NextSeg+((Len+15) Div 16);
+   If NextSeg>$9C00 Then Begin Close(F);W16Load:='Not enough memory';Exit;End;
+  End;
   SegMin[I]:=Len;
   If SegOfs[I]>0 Then Begin
    {$I-}
@@ -15481,11 +15606,28 @@ Begin
  {$ENDIF}
 End;
 
+Function AskSaveGeneric(W: PWindow; Modified: Boolean; Const FN: String; SaveCmd: Integer): Boolean;
+Var R: Integer;
+Begin
+ AskSaveGeneric:=True;
+ If Not Modified Then Exit;
+ R:=MsgBox(T3('Save changes to ','Enregistrer les modifications de ','Anderungen speichern in ')+
+   IfThenS(FN='',T3('(untitled)','(sans titre)','(unbenannt)'),BaseName(FN))+'?',3,2);
+ If R=ID_CANCEL Then Begin AskSaveGeneric:=False;Exit;End;
+ If R=ID_YES Then Begin
+  AppMenu(W,SaveCmd);
+ End;
+End;
+
 Function AppCanClose(W: PWindow): Boolean;
 Begin
  AppCanClose:=True;
  Case W^.App Of
   A_NOTE,A_WRITE: AppCanClose:=EdAskSave(W);
+  A_CARD: AppCanClose:=AskSaveGeneric(W,PCardF(W^.Data)^.Modified,PCardF(W^.Data)^.FileName,CM_D_SAVE);
+  A_CALEN: AppCanClose:=AskSaveGeneric(W,PCal(W^.Data)^.Modified,PCal(W^.Data)^.FileName,CM_L_SAVE);
+  A_PAINT: AppCanClose:=AskSaveGeneric(W,PPaint(W^.Data)^.Modified,PPaint(W^.Data)^.FileName,CM_G_SAVE);
+  A_PIF: AppCanClose:=AskSaveGeneric(W,PPif(W^.Data)^.Modified,PPif(W^.Data)^.FileName,CM_F_SAVE);
   A_EXEC: If CountApp(A_EXEC)<=1 Then Begin AppCanClose:=False;ExecEndSession;End;
   {$IFDEF FPC}A_W16: AppCanClose:=W16HostCanClose(W);{$ENDIF}
  End;
@@ -15510,12 +15652,18 @@ Begin
 End;
 
 Procedure ExecEndSession;
-Var R: Integer; Tp: String;
+Var R,I: Integer; Tp: String; Ok: Boolean;
 Begin
  R:=MsgBox(T3('This will end your Windows session.',
    'Ceci va terminer votre session Windows.',
    'Dadurch wird Ihre Windows-Sitzung beendet.'),1,2);
  If R=ID_OK Then Begin
+  { propose d'enregistrer les fichiers ouverts }
+  Ok:=True;
+  For I:=NWins Downto 1 Do
+   If (Wins[I]^.App<>A_EXEC) And (Wins[I]^.App<>A_W16) Then
+    If Not AppCanClose(Wins[I]) Then Begin Ok:=False;Break;End;
+  If Not Ok Then Begin Dirty:=True;Exit;End;
   QuitFlag:=True;
   { l'arret de la session supprime les fichiers temporaires }
   DelTmpIn(V2R('C:\'));
@@ -15603,6 +15751,10 @@ Begin
  {$IFDEF FPC}
  If (ExtOf(Path)='.EXE') And IsNEFile(V2R(Path)) Then Begin Win16Start(Path,Args);Exit;End;
  {$ENDIF}
+ If (IsProgExt(ExtOf(Path)) Or (ExtOf(Path)='.TXT') Or (ExtOf(Path)='.WRI')) And Not FileExists(V2R(Path)) And (BuiltIndex(Path)=0) Then Begin
+  InfoBox(T3('Cannot find '+BaseName(Path)+'.','Impossible de trouver '+BaseName(Path)+'.',BaseName(Path)+' kann nicht gefunden werden.'));
+  Exit;
+ End;
  If IsProgExt(ExtOf(Path)) Then Begin
   { un fichier .PIF de meme nom regit le lancement }
   If FileExists(V2R(Copy(Path,1,Length(Path)-Length(ExtOf(Path)))+'.PIF')) Then Begin RunPif(Copy(Path,1,Length(Path)-Length(ExtOf(Path)))+'.PIF');Exit;End;
