@@ -5341,7 +5341,7 @@ Procedure ClipClear;
 Var I: Integer;
 Begin
  For I:=1 To ClipN Do FreeStr(ClipL[I]);
- ClipN:=0;
+ ClipN:=0;ClipIconId:=-1;
 End;
 
 Procedure EdInit(Var Ed: TEdit);
@@ -7937,13 +7937,31 @@ Begin
 End;
 
 { ---------------------------------------------------------------------- }
-{ Scrapbook : galerie des images integrees                                 }
+{ Scrapbook : document de pages (images et textes)                        }
 { ---------------------------------------------------------------------- }
 
+Const
+ MAXSCRP = 80;
+ CM_SCCUT=740; CM_SCCOPY=741; CM_SCPASTE=742; CM_SCPASTEEND=743; CM_SCDEL=744;
+ CM_SCGOTO=745; CM_SCOPEN=746; CM_SCSAVE=747; CM_SCSAVEAS=748; CM_SCREVERT=749;
+ CM_SCIMPORT=750; CM_SCZ0=760;
+ ScrPct : Array[0..7] Of Integer = (25,50,75,100,125,150,175,200);
+
 Type
+ TScrPage = Record
+  Kind : Byte;                { 1 image, 2 texte }
+  Ic   : Integer;
+  Name : String[32];
+  Txt  : String[200];
+ End;
+
  PScrap = ^TScrap;
  TScrap = Record
-  Page : Integer;
+  Pg   : Array[1..MAXSCRP] Of TScrPage;
+  N,Cur: Integer;
+  Zoom : Integer;
+  FName: String;
+  Modified,NameFocus: Boolean;
  End;
 
 Function ScrNew(AX,AY: Integer): PWindow; Forward;
@@ -7951,41 +7969,291 @@ Procedure ScrDrawClient(Wd_: PWindow); Forward;
 Procedure ScrOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
 Procedure ScrOnKey(Wd_: PWindow; K: Word); Forward;
 Procedure ScrOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+Procedure ScrPrepareMenus(Wd_: PWindow); Forward;
+Function ScrCanClose(Wd_: PWindow): Boolean; Forward;
+
+Function ScrUnnamed: String;
+Begin
+ ScrUnnamed:=T3('Unnamed Graphic','Graphique sans nom','Unbenannte Grafik');
+End;
+
+{ Dessine une icone avec une echelle de pixel E en pour cent (300 = x3) }
+Procedure DrawIconPct(Id,X,Y,E: Integer);
+Var I,J,K,C,W,H: Integer; P: PByteArr;
+Begin
+ If (Id<0) Or (Id>=NICONS+NBIG) Then Exit;
+ W:=IconWd[Id];H:=IconHt[Id];P:=IconPx[Id];
+ For J:=0 To H-1 Do Begin
+  I:=0;
+  While I<W Do Begin
+   C:=P^[J*W+I];
+   If C=255 Then Inc(I)
+   Else Begin
+    K:=I;
+    While (K+1<W) And (P^[J*W+K+1]=C) Do Inc(K);
+    GBar(X+I*E Div 100,Y+J*E Div 100,X+(K+1)*E Div 100-1,Y+(J+1)*E Div 100-1,C);
+    I:=K+1;
+   End;
+  End;
+ End;
+End;
+
+Procedure ScrSave(Dt_: PScrap; Const P: String);
+Var F: Text; I: Integer;
+Begin
+ {$I-}
+ Assign(F,P);Rewrite(F);
+ WriteLn(F,'SCRAP1');
+ For I:=1 To Dt_^.N Do
+  If Dt_^.Pg[I].Kind=1 Then WriteLn(F,'I|',Dt_^.Pg[I].Ic,'|',Dt_^.Pg[I].Name)
+  Else WriteLn(F,'T|',Dt_^.Pg[I].Name,'|',Dt_^.Pg[I].Txt);
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Info('Scrapbook',T3('Cannot save file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'))
+ Else Dt_^.Modified:=False;
+End;
+
+Function ScrLoad(Dt_: PScrap; Const P: String): Boolean;
+Var F: Text; S: String; Q: Integer;
+Begin
+ ScrLoad:=False;
+ {$I-}
+ Assign(F,P);Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Dt_^.N:=0;
+ {$I-}
+ ReadLn(F,S);
+ While Not Eof(F) And (Dt_^.N<MAXSCRP) Do Begin
+  ReadLn(F,S);
+  If (Length(S)>2) And (S[2]='|') And ((S[1]='I') Or (S[1]='T')) Then Begin
+   Inc(Dt_^.N);
+   Dt_^.Pg[Dt_^.N].Txt:='';Dt_^.Pg[Dt_^.N].Ic:=0;
+   Q:=Pos('|',Copy(S,3,255));
+   If Q=0 Then Q:=Length(S)-1;
+   If S[1]='I' Then Begin
+    Dt_^.Pg[Dt_^.N].Kind:=1;
+    Dt_^.Pg[Dt_^.N].Ic:=StrVal(Copy(S,3,Q-1),0);
+    Dt_^.Pg[Dt_^.N].Name:=Copy(S,Q+3,32);
+    If (Dt_^.Pg[Dt_^.N].Ic<0) Or (Dt_^.Pg[Dt_^.N].Ic>=NICONS) Then Dt_^.Pg[Dt_^.N].Ic:=0;
+   End Else Begin
+    Dt_^.Pg[Dt_^.N].Kind:=2;
+    Dt_^.Pg[Dt_^.N].Name:=Copy(S,3,Q-1);
+    Dt_^.Pg[Dt_^.N].Txt:=Copy(S,Q+3,200);
+   End;
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Dt_^.N:=Dt_^.N;
+ Dt_^.Cur:=1;Dt_^.Modified:=False;
+ ScrLoad:=Dt_^.N>0;
+End;
+
+Procedure ScrDefault(Dt_: PScrap);
+Var I: Integer;
+Begin
+ Dt_^.N:=0;
+ For I:=0 To NICONS-1 Do
+  If Dt_^.N<MAXSCRP Then Begin
+   Inc(Dt_^.N);
+   Dt_^.Pg[Dt_^.N].Kind:=1;Dt_^.Pg[Dt_^.N].Ic:=I;Dt_^.Pg[Dt_^.N].Name:=ScrUnnamed;Dt_^.Pg[Dt_^.N].Txt:='';
+  End;
+ Dt_^.Cur:=1;Dt_^.Modified:=False;
+End;
 
 Function ScrNew(AX,AY: Integer): PWindow;
  Var Wd_: PWindow; Dt_: PScrap;
 Begin
  New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
- WinInit(Wd_,A_SCRAP,AX,AY,380,300,'Scrapbook');
- Wd_^.IconId:=IC_SCRAP;Wd_^.Resizable:=False;Dt_^.Page:=0;
+ WinInit(Wd_,A_SCRAP,AX,AY,460,380,'Scrapbook');
+ Wd_^.IconId:=IC_SCRAP;
+ Dt_^.Zoom:=3;
  WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_SCOPEN,'');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_SCSAVE,'');
+ WinAddItem(Wd_,'Save As...~Enregistrer sous...~Speichern unter...',CM_SCSAVEAS,'');
+ WinAddItem(Wd_,'Revert~Revenir~Zur'#129'cksetzen',CM_SCREVERT,'');
+ WinAddItem(Wd_,'Import Text File...~Importer un fichier texte...~Textdatei importieren...',CM_SCIMPORT,'');
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
- WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_COPYIC,'Ctrl+C');
+ WinAddItem(Wd_,'Cut~Couper~Ausschneiden',CM_SCCUT,'Ctrl+X');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_SCCOPY,'Ctrl+C');
+ WinAddItem(Wd_,'Paste~Coller~Einf'#129'gen',CM_SCPASTE,'Ctrl+V');
+ WinAddItem(Wd_,'Paste at End~Coller '#133' la fin~Am Ende einf'#129'gen',CM_SCPASTEEND,'');
+ WinAddItem(Wd_,'Delete~Supprimer~L'#148'schen',CM_SCDEL,'Del');
  WinAddMenu(Wd_,'View~Affichage~Ansicht');
- WinAddItem(Wd_,'Next~Suivant~Weiter',CM_NEXTP,'');
- WinAddItem(Wd_,'Previous~Pr'#130'c'#130'dent~Zur'#129'ck',CM_PREVP,'');
+ WinAddItem(Wd_,'Reduced to 25%~R'#130'duit '#133' 25 %~Verkleinert auf 25%',CM_SCZ0,'');
+ WinAddItem(Wd_,'Reduced to 50%~R'#130'duit '#133' 50 %~Verkleinert auf 50%',CM_SCZ0+1,'');
+ WinAddItem(Wd_,'Reduced to 75%~R'#130'duit '#133' 75 %~Verkleinert auf 75%',CM_SCZ0+2,'');
+ WinAddItem(Wd_,'Normal Size~Taille normale~Normale Gr'#148#225'e',CM_SCZ0+3,'');
+ WinAddItem(Wd_,'Enlarged to 125%~Agrandi '#133' 125 %~Vergr'#148#225'ert auf 125%',CM_SCZ0+4,'');
+ WinAddItem(Wd_,'Enlarged to 150%~Agrandi '#133' 150 %~Vergr'#148#225'ert auf 150%',CM_SCZ0+5,'');
+ WinAddItem(Wd_,'Enlarged to 175%~Agrandi '#133' 175 %~Vergr'#148#225'ert auf 175%',CM_SCZ0+6,'');
+ WinAddItem(Wd_,'Enlarged to 200%~Agrandi '#133' 200 %~Vergr'#148#225'ert auf 200%',CM_SCZ0+7,'');
+ WinAddItem(Wd_,'Go to Page...~Aller '#133' la page...~Gehe zu Seite...',CM_SCGOTO,'');
+ WinAddItem(Wd_,'Next~Suivant~Weiter',CM_NEXTP,'PgDn');
+ WinAddItem(Wd_,'Previous~Pr'#130'c'#130'dent~Zur'#129'ck',CM_PREVP,'PgUp');
+ Dt_^.FName:=JoinPath(HomeDir,'DEFAULT.SCR');
+ If Not ScrLoad(Dt_,Dt_^.FName) Then ScrDefault(Dt_);
  ScrNew:=Wd_;
+End;
+
+Procedure ScrPrepareMenus(Wd_: PWindow);
+ Var Dt_: PScrap; I: Integer; NoClip: Boolean;
+Begin
+ Dt_:=Wd_^.Data;
+ For I:=0 To 7 Do WinSetFlag(Wd_,CM_SCZ0+I,2,Dt_^.Zoom=I);
+ NoClip:=(ClipN=0) And (ClipIconId<0);
+ WinSetFlag(Wd_,CM_SCCUT,1,Dt_^.N=0);WinSetFlag(Wd_,CM_SCCOPY,1,Dt_^.N=0);WinSetFlag(Wd_,CM_SCDEL,1,Dt_^.N=0);
+ WinSetFlag(Wd_,CM_SCPASTE,1,NoClip);
+ WinSetFlag(Wd_,CM_SCPASTEEND,1,NoClip);
+ WinSetFlag(Wd_,CM_SCGOTO,1,Dt_^.N=0);
+ WinSetFlag(Wd_,CM_NEXTP,1,Dt_^.N<2);WinSetFlag(Wd_,CM_PREVP,1,Dt_^.N<2);
+End;
+
+Function ScrCanClose(Wd_: PWindow): Boolean;
+ Var Dt_: PScrap;
+Begin
+ Dt_:=Wd_^.Data;
+ If Dt_^.Modified Then ScrSave(Dt_,Dt_^.FName);
+ ScrCanClose:=True;
 End;
 
 Procedure ScrDrawClient(Wd_: PWindow);
  Var Dt_: PScrap;
-Var X1,Y1,X2,Y2: Integer; S: String;
+Var X1,Y1,X2,Y2,Id,W,H,Pct,E,CPL,L,Y,Sz: Integer; S,T: String;
 Begin
  Dt_:=Wd_^.Data;
  WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
- Sunken(X1+8,Y1+8,X2-8,Y2-44,cWht);
- If BigIcon(Dt_^.Page)>=0 Then Begin
-  DrawIconZ(BigIcon(Dt_^.Page),(X1+X2-IconWd[BigIcon(Dt_^.Page)]*3) Div 2,Y1+30,3);
-  S:=T3('Picture ','Image ','Bild ')+IntStr(Dt_^.Page+1)+T3(' of ',' sur ',' von ')+IntStr(NICONS)+'  (64x40)';
- End Else Begin
-  DrawIconZ(Dt_^.Page,(X1+X2-IconWd[Dt_^.Page]*4) Div 2,Y1+30,4);
-  S:=T3('Picture ','Image ','Bild ')+IntStr(Dt_^.Page+1)+T3(' of ',' sur ',' von ')+IntStr(NICONS)+'  (48x30)';
+ GText(X1+8,Y1+12,T3('Name:','Nom :','Name:'),cBlk);
+ Sunken(X1+56,Y1+6,X2-8,Y1+26,cWht);
+ If Dt_^.N>0 Then Begin
+  S:=Dt_^.Pg[Dt_^.Cur].Name;
+  GText(X1+62,Y1+12,Copy(S,1,(X2-X1-80) Div 8),cBlk);
+  If Dt_^.NameFocus Then GVLine(X1+62+Min2(Length(S),(X2-X1-80) Div 8)*8,Y1+9,Y1+23,cBlk);
  End;
- GTextCtr(X1,X2,Y2-36,S,cBlk);
- Button(X1+8,Y2-26,X1+80,Y2-4,'<<',False,False,Dt_^.Page>0);
- Button(X2-80,Y2-26,X2-8,Y2-4,'>>',False,False,Dt_^.Page<NICONS-1);
+ Sunken(X1+8,Y1+34,X2-8,Y2-52,cWht);
+ Pct:=ScrPct[Dt_^.Zoom];
+ If Dt_^.N=0 Then GTextCtr(X1,X2,(Y1+Y2) Div 2,T3('Empty scrapbook','Album vide','Leeres Album'),cDGr)
+ Else Begin
+  SetClip(Max2(CX1,X1+9),Max2(CY1,Y1+35),Min2(CX2,X2-9),Min2(CY2,Y2-53));
+  If Dt_^.Pg[Dt_^.Cur].Kind=1 Then Begin
+   Id:=Dt_^.Pg[Dt_^.Cur].Ic;
+   If BigIcon(Id)>=0 Then Begin Id:=BigIcon(Id);E:=Pct*2;End Else E:=Pct*3;
+   W:=IconWd[Id]*E Div 100;H:=IconHt[Id]*E Div 100;
+   DrawIconPct(Id,(X1+X2-W) Div 2,(Y1+34+Y2-52-H) Div 2,E);
+  End Else Begin
+   If Pct>100 Then Sz:=2 Else Sz:=1;
+   CPL:=(X2-X1-40) Div (8*Sz);
+   T:=Dt_^.Pg[Dt_^.Cur].Txt;
+   Y:=Y1+48;
+   While (T<>'') And (Y<Y2-60) Do Begin
+    L:=Min2(CPL,Length(T));
+    S:=Copy(T,1,L);Delete(T,1,L);
+    If Sz=1 Then GText(X1+20,Y,S,cBlk) Else GTextBig(X1+20,Y,S,2,cBlk);
+    Inc(Y,10*Sz+2);
+   End;
+  End;
+  ClipFull;
+ End;
+ Button(X1+8,Y2-44,X1+80,Y2-24,T3('Previous','Pr'#130'c.','Zur'#129'ck'),False,False,Dt_^.N>1);
+ Button(X1+88,Y2-44,X1+160,Y2-24,T3('Next','Suivant','Weiter'),False,False,Dt_^.N>1);
+ Button(X1+168,Y2-44,X1+300,Y2-24,T3('Go to Page','Aller '#133' la page','Gehe zu Seite'),False,False,Dt_^.N>0);
+ S:=T3('Page ','Page ','Seite ')+IntStr(Dt_^.Cur)+T3(' of ',' sur ',' von ')+IntStr(Dt_^.N);
+ If Dt_^.Modified Then S:=S+' *';
+ GText(X1+8,Y2-16,S,cBlk);
+ S:=IntStr(Pct)+'%';
+ GText(X2-8-TextW(S),Y2-16,S,cBlk);
+End;
+
+Procedure ScrGoto(Wd_: PWindow);
+ Var Dt_: PScrap; S: String; V: LongInt;
+Begin
+ Dt_:=Wd_^.Data;
+ S:=IntStr(Dt_^.Cur);
+ If InputBox('Scrapbook',T3('Go to page (1-','Aller '#133' la page (1-','Gehe zu Seite (1-')+IntStr(Dt_^.N)+'):',S,6) Then Begin
+  V:=StrVal(S,Dt_^.Cur);
+  If V<1 Then V:=1;
+  If V>Dt_^.N Then V:=Dt_^.N;
+  Dt_^.Cur:=V;
+ End;
+End;
+
+Procedure ScrDelete(Dt_: PScrap);
+ Var I: Integer;
+Begin
+ If Dt_^.N=0 Then Exit;
+ For I:=Dt_^.Cur To Dt_^.N-1 Do Dt_^.Pg[I]:=Dt_^.Pg[I+1];
+ Dec(Dt_^.N);
+ If Dt_^.Cur>Dt_^.N Then Dt_^.Cur:=Dt_^.N;
+ If (Dt_^.Cur<1) And (Dt_^.N>0) Then Dt_^.Cur:=1;
+ Dt_^.Modified:=True;
+End;
+
+Procedure ScrCopy(Dt_: PScrap);
+ Var S: String;
+Begin
+ If Dt_^.N=0 Then Exit;
+ ClipClear;
+ If Dt_^.Pg[Dt_^.Cur].Kind=1 Then ClipIconId:=Dt_^.Pg[Dt_^.Cur].Ic
+ Else Begin
+  S:=Dt_^.Pg[Dt_^.Cur].Txt;
+  ClipN:=1;ClipL[1]:=NewStr(S);
+ End;
+End;
+
+{ Insere la page du presse-papiers apres la page courante (ou a la fin) }
+Procedure ScrPaste(Dt_: PScrap; AtEnd: Boolean);
+ Var Pos_,I,K: Integer; S: String;
+Begin
+ If Dt_^.N>=MAXSCRP Then Exit;
+ If (ClipIconId<0) And (ClipN=0) Then Exit;
+ If AtEnd Or (Dt_^.N=0) Then Pos_:=Dt_^.N+1 Else Pos_:=Dt_^.Cur+1;
+ For I:=Dt_^.N DownTo Pos_ Do Dt_^.Pg[I+1]:=Dt_^.Pg[I];
+ Inc(Dt_^.N);
+ FillChar(Dt_^.Pg[Pos_],SizeOf(TScrPage),0);
+ If ClipIconId>=0 Then Begin
+  Dt_^.Pg[Pos_].Kind:=1;Dt_^.Pg[Pos_].Ic:=ClipIconId;Dt_^.Pg[Pos_].Name:=ScrUnnamed;
+ End Else Begin
+  S:='';
+  For K:=1 To ClipN Do Begin
+   If K>1 Then S:=S+' ';
+   If Length(S)+Length(ClipL[K]^)<=200 Then S:=S+ClipL[K]^;
+  End;
+  Dt_^.Pg[Pos_].Kind:=2;Dt_^.Pg[Pos_].Txt:=S;
+  Dt_^.Pg[Pos_].Name:=Copy(S,1,20);
+  If S='' Then Dt_^.Pg[Pos_].Name:=T3('Unnamed Text','Texte sans nom','Unbenannter Text');
+ End;
+ Dt_^.Cur:=Pos_;Dt_^.Modified:=True;
+End;
+
+Procedure ScrImport(Dt_: PScrap);
+ Var P,S,T: String; F: Text;
+Begin
+ P:='';
+ If Not FileDlg(T3('Import Text File','Importer un fichier texte','Textdatei importieren'),'*.TXT',P,False) Then Exit;
+ If Dt_^.N>=MAXSCRP Then Exit;
+ {$I-}
+ Assign(F,P);Reset(F);
+ {$I+}
+ If IOResult<>0 Then Begin Info('Scrapbook',T3('Cannot open file.','Impossible d''ouvrir.','Datei nicht ge'#148'ffnet.'));Exit;End;
+ T:='';
+ {$I-}
+ While Not Eof(F) And (Length(T)<190) Do Begin
+  ReadLn(F,S);
+  If T<>'' Then T:=T+' ';
+  T:=T+Copy(S,1,200-Length(T));
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then T:=T;
+ Inc(Dt_^.N);
+ FillChar(Dt_^.Pg[Dt_^.N],SizeOf(TScrPage),0);
+ Dt_^.Pg[Dt_^.N].Kind:=2;Dt_^.Pg[Dt_^.N].Txt:=Copy(T,1,200);
+ Dt_^.Pg[Dt_^.N].Name:=Copy(T,1,20);
+ Dt_^.Cur:=Dt_^.N;Dt_^.Modified:=True;
 End;
 
 Procedure ScrOnMouse(Wd_: PWindow; Var E: TEvent);
@@ -7995,29 +8263,75 @@ Begin
  Dt_:=Wd_^.Data;
  If E.Kind<>EV_DOWN Then Exit;
  WinClientRect(Wd_,X1,Y1,X2,Y2);
- If InBox(E.X,E.Y,X1+8,Y2-26,X1+80,Y2-4) And (Dt_^.Page>0) Then Dec(Dt_^.Page);
- If InBox(E.X,E.Y,X2-80,Y2-26,X2-8,Y2-4) And (Dt_^.Page<NICONS-1) Then Inc(Dt_^.Page);
+ Dt_^.NameFocus:=InBox(E.X,E.Y,X1+56,Y1+6,X2-8,Y1+26) And (Dt_^.N>0);
+ If InBox(E.X,E.Y,X1+8,Y2-44,X1+80,Y2-24) And (Dt_^.N>1) Then Begin
+  Dec(Dt_^.Cur);If Dt_^.Cur<1 Then Dt_^.Cur:=Dt_^.N;
+ End;
+ If InBox(E.X,E.Y,X1+88,Y2-44,X1+160,Y2-24) And (Dt_^.N>1) Then Begin
+  Inc(Dt_^.Cur);If Dt_^.Cur>Dt_^.N Then Dt_^.Cur:=1;
+ End;
+ If InBox(E.X,E.Y,X1+168,Y2-44,X1+300,Y2-24) And (Dt_^.N>0) Then ScrGoto(Wd_);
  Invalidate(Wd_);
 End;
 
 Procedure ScrOnKey(Wd_: PWindow; K: Word);
- Var Dt_: PScrap;
+ Var Dt_: PScrap; S: String;
 Begin
  Dt_:=Wd_^.Data;
- If (K=K_LEFT) And (Dt_^.Page>0) Then Dec(Dt_^.Page);
- If (K=K_RIGHT) And (Dt_^.Page<NICONS-1) Then Inc(Dt_^.Page);
- If K=K_CTRLC Then ScrOnCommand(Wd_,CM_COPYIC);
- Invalidate(Wd_);
+ If Dt_^.NameFocus And (Dt_^.N>0) Then Begin
+  S:=Dt_^.Pg[Dt_^.Cur].Name;
+  If K=K_BKSP Then Begin
+   If S<>'' Then Begin Delete(S,Length(S),1);Dt_^.Modified:=True;End;
+  End Else If (K>=32) And (K<256) Then Begin
+   If Length(S)<32 Then Begin S:=S+Chr(K);Dt_^.Modified:=True;End;
+  End Else If (K=K_ENTER) Or (K=K_ESC) Or (K=K_TAB) Then Dt_^.NameFocus:=False;
+  Dt_^.Pg[Dt_^.Cur].Name:=S;
+  Invalidate(Wd_);
+  Exit;
+ End;
+ Case K Of
+  K_LEFT,K_PGUP: ScrOnCommand(Wd_,CM_PREVP);
+  K_RIGHT,K_PGDN: ScrOnCommand(Wd_,CM_NEXTP);
+  K_HOME: Begin Dt_^.Cur:=1;Invalidate(Wd_);End;
+  K_END: Begin If Dt_^.N>0 Then Dt_^.Cur:=Dt_^.N;Invalidate(Wd_);End;
+  K_DEL: ScrOnCommand(Wd_,CM_SCDEL);
+  K_CTRLC: ScrOnCommand(Wd_,CM_SCCOPY);
+  K_CTRLX: ScrOnCommand(Wd_,CM_SCCUT);
+  K_CTRLV: ScrOnCommand(Wd_,CM_SCPASTE);
+ End;
 End;
 
 Procedure ScrOnCommand(Wd_: PWindow; Cmd: Integer);
- Var Dt_: PScrap;
+ Var Dt_: PScrap; P: String;
 Begin
  Dt_:=Wd_^.Data;
+ If (Cmd>=CM_SCZ0) And (Cmd<=CM_SCZ0+7) Then Begin Dt_^.Zoom:=Cmd-CM_SCZ0;Invalidate(Wd_);Exit;End;
  Case Cmd Of
-  CM_COPYIC: ClipIconId:=Dt_^.Page;
-  CM_NEXTP: If Dt_^.Page<NICONS-1 Then Inc(Dt_^.Page);
-  CM_PREVP: If Dt_^.Page>0 Then Dec(Dt_^.Page);
+  CM_SCCOPY,CM_COPYIC: ScrCopy(Dt_);
+  CM_SCCUT: Begin ScrCopy(Dt_);ScrDelete(Dt_);End;
+  CM_SCDEL: ScrDelete(Dt_);
+  CM_SCPASTE: ScrPaste(Dt_,False);
+  CM_SCPASTEEND: ScrPaste(Dt_,True);
+  CM_SCGOTO: ScrGoto(Wd_);
+  CM_NEXTP: If Dt_^.N>1 Then Begin Inc(Dt_^.Cur);If Dt_^.Cur>Dt_^.N Then Dt_^.Cur:=1;End;
+  CM_PREVP: If Dt_^.N>1 Then Begin Dec(Dt_^.Cur);If Dt_^.Cur<1 Then Dt_^.Cur:=Dt_^.N;End;
+  CM_SCSAVE: ScrSave(Dt_,Dt_^.FName);
+  CM_SCSAVEAS: Begin
+   P:=Dt_^.FName;
+   If FileDlg(T3('Save As','Enregistrer sous','Speichern unter'),'*.SCR',P,True) Then Begin
+    If Pos('.',P)=0 Then P:=P+'.SCR';
+    Dt_^.FName:=P;ScrSave(Dt_,P);
+   End;
+  End;
+  CM_SCOPEN: Begin
+   P:='';
+   If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.SCR',P,False) Then Begin
+    If ScrLoad(Dt_,P) Then Dt_^.FName:=P
+    Else Info('Scrapbook',T3('Cannot open file.','Impossible d''ouvrir.','Datei nicht ge'#148'ffnet.'));
+   End;
+  End;
+  CM_SCREVERT: If Not ScrLoad(Dt_,Dt_^.FName) Then ScrDefault(Dt_);
+  CM_SCIMPORT: ScrImport(Dt_);
  Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
  Invalidate(Wd_);
@@ -11673,6 +11987,7 @@ Begin
   A_SOLIT: SolPrepareMenus(W);
   A_BANNER: BanPrepareMenus(W);
   A_DRAW: DrwPrepareMenus(W);
+  A_SCRAP: ScrPrepareMenus(W);
  Else Begin End;
  End;
 End;
@@ -11705,6 +12020,7 @@ Begin
   A_PLANNER: WinCanClose:=PlnCanClose(W);
   A_DEX: WinCanClose:=DexCanClose(W);
   A_DRAW: WinCanClose:=DrwCanClose(W);
+  A_SCRAP: WinCanClose:=ScrCanClose(W);
   A_GEOCALC,A_GEOFILE: WinCanClose:=ShtCanClose(W);
  Else WinCanClose:=True;
  End;
