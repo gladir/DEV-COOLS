@@ -677,7 +677,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>GEOWORKS.PAS</b></td>
-			<td>Cette commande permet de lancer un clone graphique de l'environnement GeoWorks Ensemble / GeoWorks Pro : ecran d'accueil (Welcome), bureau, fenetres et menus deroulants, GeoManager (fichiers, icones des geodes, glisser-deposer), applications integrees (Calculatrice, Horloge, Notepad, Text File Editor, GeoWrite, GeoDraw, GeoCalc, GeoFile, GeoPlanner, GeoDex, GeoBanner, Scrapbook, Preferences, GeoComm, Graph, Universal Installer pour les paquets «.001», Screen Dumper, visionneuse de tableurs Lotus «.WK1» / Quattro «.WQ1», arbre des repertoires, GeoPoint (logiciel de presentation : diapositives, formes, tableaux, graphiques, plan, trieuse, notes, diaporama avec transitions ; fichiers .PPT partages avec POWERPNT.PAS), menu du bureau (clic droit ou F11 : applications en cours, lanceur avec icones, Extras, Games, GeoManager, sortie vers DOS), GeoBasic (editeur d'interface Add Object / Properties, interpreteur BASIC conforme au manuel geoBASIC : ecran texte 40x25 et graphique 320x200, menus, icones, boites de dialogue et bitmaps avec leurs editeurs, MAINLOOP, PROCESS, ONERR, DEF FN, debogueur pas a pas ; «geoworks /BAS:fichier.BAS» ; exemples dans DOC/GEOWORKS_BASIC), Tetris, Solitaire...) et chargeur de geodes «.GEO» avec emulateur 8086 minimal (geoworks /? pour l'aide ; «-maxscreen» sous Free Pascal : definition d'affichage maximale du pilote 16 couleurs, 800x600 avec PtcGraph ; langue selon la variable d'environnement LANGUAGE : EN, GR ou francais par defaut). Les icones (48x30 et 64x40), le logo et les fonds d'ecran proviennent de GeoWorks Ensemble 1.2.</td>
+			<td>Cette commande permet de lancer un clone graphique de l'environnement GeoWorks Ensemble / GeoWorks Pro avec bureau, GeoManager, applications intégrées, GeoBasic, GeoPoint et chargeur de geodes.</td>
 		</tr>
 		<tr>
 			<td><b>GOCW32.PAS</b></td>
@@ -1181,3 +1181,19 @@ Options d'exécution dans l'émulateur intégré : <b>/EMUL:programme.prg</b> ex
 <h2>DEVENV.PAS : émulateur Atari ST / GEM</h2>
 
 L'émulateur Atari ST de DEVENV (<b>-CATARIST</b>, <b>-emu:ATARIST,programme.prg</b>) s'exécute dans un onglet, comme les autres émulateurs de DEVENV, avec l'émulateur de DEVPAC.PAS : processeur 68000 vérifié instruction par instruction, GEMDOS, BIOS, XBIOS, VDI et AES complets, ligne A, console VT52, écran bitmap monochrome 640×400, sélecteur de fichiers, clavier et souris. Les programmes GEM d'origine (PASCAL.PRG, EDITOR.PRG d'OSS Personal Pascal) s'y exécutent et compilent. Le code est généré dans DEVENV.PAS par <b>OSSPAS_TESTS/devenv_port_st.py</b> (aucune unité ni inclusion supplémentaire) ; le noyau 68000 utilisé par Amiga et -C68000 est inchangé. Limites : un seul onglet Atari ST actif à la fois, Echap ferme l'onglet, pas de son, validé sous Linux seulement (voir OSSPAS_TESTS/LISEZMOI.TXT).
+
+<h2>GEOWORKS.PAS</h2>
+
+Cette commande permet de lancer un clone graphique de l'environnement GeoWorks Ensemble / GeoWorks Pro : écran d'accueil (Welcome), bureau, fenêtres et menus déroulants, GeoManager (fichiers, icônes des geodes, glisser-déposer, arbre des répertoires). Les icônes (48x30 et 64x40), le logo et les fonds d'écran proviennent de GeoWorks Ensemble 1.2.
+
+Applications intégrées : Calculatrice, Horloge, Notepad, Text File Editor, GeoWrite, GeoDraw, GeoCalc, GeoFile, GeoPlanner, GeoDex, GeoBanner, Scrapbook, Preferences, GeoComm, Graph, Universal Installer (paquets «.001»), Screen Dumper, visionneuse de tableurs Lotus «.WK1» / Quattro «.WQ1», Tetris et Solitaire.
+
+<b>Menu du bureau</b> (clic droit sur le bureau ou <b>F11</b>) : applications en cours, lanceur d'applications avec icônes, Extras, Games, Printer Status, Go to GeoManager et sortie vers DOS.
+
+<b>GeoPoint</b> : logiciel de présentation (diapositives, formes, tableaux, graphiques, plan, trieuse, notes, diaporama avec transitions). Les fichiers «.PPT» sont partagés avec POWERPNT.PAS (voir DOC/GEOWORKS_POINT).
+
+<b>GeoBasic</b> : éditeur d'interface (Add Object / Properties) et interpréteur BASIC conforme au manuel geoBASIC (écran texte 40x25 et graphique 320x200, menus, icônes, boîtes de dialogue et bitmaps avec leurs éditeurs, MAINLOOP, PROCESS, ONERR, DEF FN, débogueur pas à pas). Exemples dans DOC/GEOWORKS_BASIC.
+
+<b>Chargeur de geodes</b> «.GEO» avec émulateur 8086 minimal, noyau PC/GEOS logiciel, système d'objets et coprocesseur 8087 (voir DOC/GEOWORKS_API).
+
+Options de la ligne de commande : <b>/?</b> affiche l'aide, <b>/L:langue</b> force la langue (EN, FR ou GR), <b>/BAS:fichier.BAS</b> exécute un programme GeoBasic, <b>/R:application</b> lance une application au démarrage et <b>-maxscreen</b> utilise, sous Free Pascal, la définition d'affichage maximale du pilote 16 couleurs (800x600 avec PtcGraph). La langue peut aussi être choisie par la variable d'environnement LANGUAGE : EN, GR ou français par défaut.
