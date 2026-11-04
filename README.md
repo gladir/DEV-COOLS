@@ -677,7 +677,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>GEOWORKS.PAS</b></td>
-			<td>Cette commande permet de lancer un clone graphique de l'environnement GeoWorks Ensemble / GeoWorks Pro : ecran d'accueil (Welcome), bureau, fenetres et menus deroulants, GeoManager (fichiers, icones des geodes, glisser-deposer), applications integrees (Calculatrice, Horloge, Notepad, Text File Editor, GeoWrite, GeoDraw, GeoCalc, GeoFile, GeoPlanner, GeoDex, GeoBanner, Scrapbook, Preferences, GeoComm, Tetris, Solitaire...) et chargeur de geodes «.GEO» avec emulateur 8086 minimal (geoworks /? pour l'aide ; langue selon la variable d'environnement LANGUAGE : EN, GR ou francais par defaut). Les icones et les fonds d'ecran proviennent de GeoWorks Ensemble 1.2.</td>
+			<td>Cette commande permet de lancer un clone graphique de l'environnement GeoWorks Ensemble / GeoWorks Pro : ecran d'accueil (Welcome), bureau, fenetres et menus deroulants, GeoManager (fichiers, icones des geodes, glisser-deposer), applications integrees (Calculatrice, Horloge, Notepad, Text File Editor, GeoWrite, GeoDraw, GeoCalc, GeoFile, GeoPlanner, GeoDex, GeoBanner, Scrapbook, Preferences, GeoComm, Tetris, Solitaire...) et chargeur de geodes «.GEO» avec emulateur 8086 minimal (geoworks /? pour l'aide ; langue selon la variable d'environnement LANGUAGE : EN, GR ou francais par defaut). Les icones (48x30 et 64x40), le logo et les fonds d'ecran proviennent de GeoWorks Ensemble 1.2.</td>
 		</tr>
 		<tr>
 			<td><b>GOCW32.PAS</b></td>
