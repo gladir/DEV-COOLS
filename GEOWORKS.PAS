@@ -78,6 +78,7 @@ Const
  K_F5     = 319;
  K_F10    = 324;
  K_ALTF4  = 365;
+ K_F11    = 389;
  K_CTRLA  = 1;
  K_CTRLC  = 3;
  K_CTRLN  = 14;
@@ -106,7 +107,8 @@ Const
  A_GRAPH   = 25; A_INSTALL = 26; A_TREE    = 27; A_DUMP    = 28;
  A_WK1 = 29; A_GEOBASIC = 30; A_BASRUN = 31; A_GBADD = 32; A_GBPROP = 33;
  A_GBFORM = 34;
- NAPPS     = 34;
+ A_POINT   = 35;
+ NAPPS     = 35;
 
 { ====================================================================== }
 {                                TYPES                                   }
@@ -4009,6 +4011,27 @@ Begin
  End;
 End;
 
+{ Icone reduite de moitie (un pixel sur deux) : 24x15 pour une icone 48x30 }
+Procedure DrawIconHalf(Id,X,Y: Integer);
+Var I,J,C,W,H: Integer; P: PByteArr;
+Begin
+ If (Id<0) Or (Id>=NICONS+NBIG) Then Exit;
+ W:=IconWd[Id];H:=IconHt[Id];
+ P:=IconPx[Id];
+ J:=0;
+ While J<H-1 Do Begin
+  I:=0;
+  While I<W-1 Do Begin
+   C:=P^[J*W+I];
+   If C=255 Then C:=P^[J*W+I+1];
+   If C=255 Then C:=P^[(J+1)*W+I];
+   If C<>255 Then GBar(X+I Div 2,Y+J Div 2,X+I Div 2,Y+J Div 2,C);
+   Inc(I,2);
+  End;
+  Inc(J,2);
+ End;
+End;
+
 { Fonds d'ecran : bitmaps 1 bit, 1 = encre, 0 = papier }
 Procedure LoadBackgrounds;
 Var Blob: PByteArr; L,I,N,P,Id,W,H,Len,RB,Tot,Q,B,K,V: Integer; S: String;
@@ -5420,6 +5443,263 @@ Begin
 End;
 
 { ====================================================================== }
+{   MENU CONTEXTUEL A SOUS-MENUS EN CASCADE (menu du bureau)             }
+{   Les menus sont decrits dans PopM ; le menu 0 est la racine. Un       }
+{   element porte un texte, une commande, une icone et eventuellement    }
+{   le numero d'un sous-menu.                                            }
+{ ====================================================================== }
+Const
+ POP_MAXN = 32;
+ POP_MAXM = 6;
+ POP_IH   = 17;
+
+Type
+ TPopItem = Record
+  Txt  : String[34];
+  Cmd  : Integer;
+  Icon : Integer;
+  Sub  : Integer;
+  Sep  : Boolean;
+  Dis  : Boolean;
+ End;
+ TPopMenu = Record
+  N  : Integer;
+  It : Array[1..POP_MAXN] Of TPopItem;
+ End;
+
+Var
+ PopM  : Array[0..POP_MAXM] Of TPopMenu;
+ PopNM : Integer;
+
+Procedure PopClear;
+Var I: Integer;
+Begin
+ For I:=0 To POP_MAXM Do PopM[I].N:=0;
+ PopNM:=-1;
+End;
+
+Function PopNew: Integer;
+Begin
+ If PopNM<POP_MAXM Then Inc(PopNM);
+ PopM[PopNM].N:=0;
+ PopNew:=PopNM;
+End;
+
+Procedure PopAdd(M: Integer; Const T: String; C,Ic,Sb: Integer);
+Var K: Integer;
+Begin
+ If PopM[M].N>=POP_MAXN Then Exit;
+ Inc(PopM[M].N);K:=PopM[M].N;
+ PopM[M].It[K].Txt:=T;PopM[M].It[K].Cmd:=C;PopM[M].It[K].Icon:=Ic;
+ PopM[M].It[K].Sub:=Sb;PopM[M].It[K].Sep:=False;PopM[M].It[K].Dis:=False;
+End;
+
+Procedure PopSep(M: Integer);
+Begin
+ PopAdd(M,'',0,-1,0);
+ PopM[M].It[PopM[M].N].Sep:=True;
+End;
+
+{ largeur d'un menu }
+Function PopWidth(M: Integer): Integer;
+Var I,W,Mx: Integer; Ic: Boolean;
+Begin
+ Mx:=60;Ic:=False;
+ For I:=1 To PopM[M].N Do Begin
+  W:=TextW(PopM[M].It[I].Txt);
+  If PopM[M].It[I].Icon>=0 Then Ic:=True;
+  If W>Mx Then Mx:=W;
+ End;
+ PopWidth:=Mx+20+Ord(Ic)*28+8;
+End;
+
+Function PopHeight(M: Integer): Integer;
+Var I,H: Integer;
+Begin
+ H:=6;
+ For I:=1 To PopM[M].N Do
+  If PopM[M].It[I].Sep Then Inc(H,6) Else Inc(H,POP_IH);
+ PopHeight:=H;
+End;
+
+{ ordonnee du haut de l'element I }
+Function PopItemY(M,Y0,I: Integer): Integer;
+Var K,Y: Integer;
+Begin
+ Y:=Y0+3;
+ For K:=1 To I-1 Do
+  If PopM[M].It[K].Sep Then Inc(Y,6) Else Inc(Y,POP_IH);
+ PopItemY:=Y;
+End;
+
+Function PopItemAt(M,Y0,PY: Integer): Integer;
+Var K,Y,H: Integer;
+Begin
+ PopItemAt:=0;
+ Y:=Y0+3;
+ For K:=1 To PopM[M].N Do Begin
+  If PopM[M].It[K].Sep Then H:=6 Else H:=POP_IH;
+  If (PY>=Y) And (PY<Y+H) Then Begin
+   If Not PopM[M].It[K].Sep Then PopItemAt:=K;
+   Exit;
+  End;
+  Inc(Y,H);
+ End;
+End;
+
+Procedure PopDrawItem(M,X0,Y0,W,I: Integer; Sel: Boolean);
+Var Y,TX,Bg,Fg: Integer;
+Begin
+ Y:=PopItemY(M,Y0,I);
+ If PopM[M].It[I].Sep Then Begin
+  GHLine(X0+4,X0+W-5,Y+2,cDGr);GHLine(X0+4,X0+W-5,Y+3,cWht);
+  Exit;
+ End;
+ If Sel Then Begin Bg:=cBlk;Fg:=cWht;End Else Begin Bg:=cLGr;Fg:=cBlk;End;
+ GBar(X0+3,Y,X0+W-4,Y+POP_IH-1,Bg);
+ TX:=X0+8;
+ If PopM[M].It[I].Icon>=0 Then Begin
+  DrawIconHalf(PopM[M].It[I].Icon,X0+5,Y+1);
+  TX:=X0+36;
+ End;
+ If PopM[M].It[I].Dis Then Fg:=cDGr;
+ GText(TX,Y+5,PopM[M].It[I].Txt,Fg);
+ If PopM[M].It[I].Sub>0 Then Begin
+  GLine(X0+W-12,Y+5,X0+W-12,Y+13,Fg);
+  GLine(X0+W-11,Y+6,X0+W-11,Y+12,Fg);
+  GLine(X0+W-10,Y+7,X0+W-10,Y+11,Fg);
+  GLine(X0+W-9,Y+9,X0+W-9,Y+9,Fg);
+ End;
+End;
+
+{ ouvre le menu : rend la commande choisie (0 = rien) ; X,Y = coin haut gauche }
+Function RunPopup(X,Y: Integer): Integer;
+Var Lv: Integer;
+    LM,LX,LY,LW,LH,LHi: Array[0..POP_MAXM] Of Integer;
+    Sv: Array[0..POP_MAXM] Of TSave;
+    E: TEvent; Done: Boolean; Res,I,K,Lvl,H,NX,NY,MI,Hit: Integer;
+
+ Procedure OpenLevel(M,PX,PY: Integer);
+ Var W,Hh,X0,Y0,K: Integer;
+ Begin
+  W:=PopWidth(M);Hh:=PopHeight(M);
+  X0:=PX;Y0:=PY;
+  If X0+W>SCR_W-6 Then X0:=SCR_W-6-W;
+  If Y0+Hh>SCR_H-6 Then Y0:=SCR_H-6-Hh;
+  If X0<0 Then X0:=0;
+  If Y0<0 Then Y0:=0;
+  Inc(Lv);
+  LM[Lv]:=M;LX[Lv]:=X0;LY[Lv]:=Y0;LW[Lv]:=W;LH[Lv]:=Hh;LHi[Lv]:=0;
+  HideMouse;
+  SaveBack(Sv[Lv],X0,Y0,X0+W+5,Y0+Hh+5);
+  ClipFull;
+  GBar(X0+5,Y0+5,X0+W+4,Y0+Hh+4,cBlk);
+  GBar(X0,Y0,X0+W-1,Y0+Hh-1,cLGr);
+  Bevel1(X0,Y0,X0+W-1,Y0+Hh-1,cWht,cBlk);
+  Bevel1(X0+1,Y0+1,X0+W-2,Y0+Hh-2,cLGr,cDGr);
+  For K:=1 To PopM[M].N Do PopDrawItem(M,X0,Y0,W,K,False);
+  ShowMouse;
+ End;
+
+ Procedure CloseLevel;
+ Begin
+  If Lv<0 Then Exit;
+  HideMouse;
+  RestoreBack(Sv[Lv]);
+  ShowMouse;
+  Dec(Lv);
+ End;
+
+ Procedure Highlight(L,NewHi: Integer);
+ Begin
+  If LHi[L]=NewHi Then Exit;
+  HideMouse;ClipFull;
+  If LHi[L]>0 Then PopDrawItem(LM[L],LX[L],LY[L],LW[L],LHi[L],False);
+  LHi[L]:=NewHi;
+  If NewHi>0 Then PopDrawItem(LM[L],LX[L],LY[L],LW[L],NewHi,True);
+  ShowMouse;
+ End;
+
+ { ouvre le sous-menu de l'element Hi du niveau L }
+ Procedure OpenSub(L: Integer);
+ Var Sb,YY: Integer;
+ Begin
+  Sb:=PopM[LM[L]].It[LHi[L]].Sub;
+  If Sb<=0 Then Exit;
+  YY:=PopItemY(LM[L],LY[L],LHi[L]);
+  OpenLevel(Sb,LX[L]+LW[L]-4,YY-3);
+  If LX[Lv]<LX[L] Then Begin End;
+ End;
+
+ Function FindLevel(PX,PY: Integer): Integer;
+ Var J: Integer;
+ Begin
+  FindLevel:=-1;
+  For J:=Lv DownTo 0 Do
+   If InBox(PX,PY,LX[J],LY[J],LX[J]+LW[J]-1,LY[J]+LH[J]-1) Then Begin
+    FindLevel:=J;Exit;
+   End;
+ End;
+
+Begin
+ Lv:=-1;Res:=0;
+ OpenLevel(0,X,Y);
+ Done:=False;
+ Repeat
+  PollEvent(E);
+  Case E.Kind Of
+   EV_MOVE,EV_DOWN,EV_UP: Begin
+     Lvl:=FindLevel(E.X,E.Y);
+     If Lvl>=0 Then Begin
+      MI:=PopItemAt(LM[Lvl],LY[Lvl],E.Y);
+      If (MI>0) And PopM[LM[Lvl]].It[MI].Dis Then MI:=0;
+      If E.Kind<>EV_UP Then Begin
+       If (Lv>Lvl) And (MI>0) And (MI=LHi[Lvl]) Then Begin End
+       Else Begin
+        While Lv>Lvl Do CloseLevel;
+        Highlight(Lvl,MI);
+        If (MI>0) And (PopM[LM[Lvl]].It[MI].Sub>0) And (Lv=Lvl) Then
+            OpenSub(Lvl);
+       End;
+      End;
+      If (E.Kind=EV_DOWN) And (MI>0) And (PopM[LM[Lvl]].It[MI].Sub=0) Then Begin
+       Res:=PopM[LM[Lvl]].It[MI].Cmd;Done:=True;
+      End;
+     End Else If E.Kind=EV_DOWN Then Done:=True;
+    End;
+   EV_RDOWN: Done:=True;
+   EV_KEY: Begin
+     If Lv<0 Then Done:=True
+     Else Case E.Key Of
+      K_ESC: Done:=True;
+      K_UP,K_DOWN: Begin
+        I:=LHi[Lv];
+        Repeat
+         If E.Key=K_DOWN Then Inc(I) Else Dec(I);
+         If I>PopM[LM[Lv]].N Then I:=1;
+         If I<1 Then I:=PopM[LM[Lv]].N;
+        Until (Not PopM[LM[Lv]].It[I].Sep) And (Not PopM[LM[Lv]].It[I].Dis);
+        Highlight(Lv,I);
+       End;
+      K_RIGHT: If (LHi[Lv]>0) And (PopM[LM[Lv]].It[LHi[Lv]].Sub>0) Then Begin
+        OpenSub(Lv);
+        Highlight(Lv,1);
+       End;
+      K_LEFT: If Lv>0 Then CloseLevel;
+      K_ENTER: If LHi[Lv]>0 Then Begin
+        If PopM[LM[Lv]].It[LHi[Lv]].Sub>0 Then Begin OpenSub(Lv);
+        Highlight(Lv,1);End
+        Else Begin Res:=PopM[LM[Lv]].It[LHi[Lv]].Cmd;Done:=True;End;
+       End;
+     End;
+    End;
+  End;
+ Until Done;
+ While Lv>=0 Do CloseLevel;
+ RunPopup:=Res;
+End;
+
+{ ====================================================================== }
 {          OPERATIONS SUR LES FENETRES : DEPLACEMENT, TAILLE, ...        }
 { ====================================================================== }
 
@@ -5707,6 +5987,22 @@ End;
 { Gestion d'un clic sur le bureau                                          }
 { ---------------------------------------------------------------------- }
 
+{ fenetre visible la plus haute sous le pointeur, Nil si c'est le bureau }
+Function WinAt(PX,PY: Integer): PWindow;
+Var I: Integer;
+Begin
+ WinAt:=Nil;
+ I:=NWins;
+ While I>=1 Do Begin
+  If Not Wins[I]^.Iconic Then
+   If InBox(PX,PY,Wins[I]^.WinX,Wins[I]^.WinY,Wins[I]^.WinX+Wins[I]^.WinW-1,
+            Wins[I]^.WinY+Wins[I]^.WinH-1) Then Begin
+    WinAt:=Wins[I];Exit;
+   End;
+  Dec(I);
+ End;
+End;
+
 Procedure HandleDown(Var E: TEvent);
 Var I,Part,Cmd: Integer; W,Hit: PWindow; IX,IY: Integer;
 Begin
@@ -5783,6 +6079,8 @@ Begin
  ShowMouse;
 End;
 
+Procedure DeskMenu(X,Y: Integer); Forward;
+
 Function DesktopLoop: Integer;
 Var E: TEvent; Tick,Nw: LongInt; I: Integer; W: PWindow; Cmd: Integer;
 Begin
@@ -5798,11 +6096,12 @@ Begin
    EV_DOWN,EV_RDOWN:
      If E.Kind=EV_DOWN Then HandleDown(E)
      Else Begin
-      W:=TopWin;
+      W:=WinAt(E.X,E.Y);
       If W<>Nil Then Begin
        I:=WinFrameHit(W,E.X,E.Y);
-       If I=1 Then WinMouse(W,E);
-      End;
+       If I=1 Then Begin If W=TopWin Then WinMouse(W,E);End
+       Else DeskMenu(E.X,E.Y);
+      End Else DeskMenu(E.X,E.Y);
      End;
    EV_MOVE,EV_UP: Begin
      If Capture<>Nil Then WinMouse(Capture,E);
@@ -5818,6 +6117,7 @@ Begin
               If Cmd>0 Then WinCommand(W,Cmd);
              End;
       K_ALTF4: If W<>Nil Then CommonCmd(W,CM_CLOSE);
+      K_F11: DeskMenu(0,0);
       K_F6: If TaskOn And (TaskKey=K_F6) Then NextWindow Else If W<>Nil Then
           WinKey(W,E.Key);
      Else
@@ -6112,7 +6412,7 @@ Const
   IC_PLAN,IC_DEX,IC_BANNER,IC_SCRAP,IC_PREF,IC_CALC,IC_COMM,IC_AOL,
   IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP,
       IC_GEOS,IC_GEOS,IC_FOLDER,IC_COLORS,IC_CALC,IC_NOTE,IC_NOTE,IC_NOTE,
-      IC_NOTE,IC_NOTE);
+      IC_NOTE,IC_NOTE,IC_DRAW);
 
  AppNameTab : Array[1..NAPPS] Of String[64] = (
   'GeoManager','Calculator~Calculatrice~Rechner','Clock~Horloge~Uhr',
@@ -6126,7 +6426,7 @@ Const
       'pertoires~Verzeichnisbaum',
   'Screen Dumper~Capture d'''#130'cran~Bildschirmfoto',
       'Spreadsheet Viewer~Visionneuse '+'de tableur~Tabellenbetrachter',
-      'GeoBasic','GeoBASIC','Add Object','Properties','Form');
+      'GeoBasic','GeoBASIC','Add Object','Properties','Form','GeoPoint');
 
 Function AppTitle(A: Integer): String;
 Begin
@@ -6332,6 +6632,7 @@ Begin
   End Else LaunchApp(A_GEODE,Path);
  End Else If (E='WK1') Or (E='WKS') Or (E='WQ1') Then LaunchApp(A_WK1,Path)
  Else If (E='GBF') Or (E='BAS') Then LaunchApp(A_GEOBASIC,Path)
+ Else If E='PPT' Then LaunchApp(A_POINT,Path)
  Else If (E='EXE') Or (E='COM') Or (E='BAT') Then Begin
   If Confirm(T3('DOS program','Programme DOS','DOS-Programm'),
    T3('Run the DOS program|','Ex'#130'cuter le programme DOS|',
@@ -14860,6 +15161,2367 @@ Begin
  End;
  ShtUpdateTitle(Wd_);
  Invalidate(Wd_);
+End;
+
+{ ====================================================================== }
+{   GEOPOINT : logiciel de presentation (diapositives) dans le style     }
+{   GeoWorks. Modele et format de fichier compatibles avec POWERPNT.PAS  }
+{   (fichiers .PPT natifs "PPNT" version 1) : diapositives 1000x750      }
+{   logiques, formes, texte a puces, themes, transitions, animations,    }
+{   plan, trieuse, notes et diaporama plein ecran.                       }
+{ ====================================================================== }
+Const
+ CM_GPNEW=1700; CM_GPOPEN=1701; CM_GPSAVE=1702; CM_GPSAVEAS=1703;
+ CM_GPEXPORT=1704;
+ CM_GPPROPS=1705;
+ CM_GPUNDO=1710; CM_GPCUT=1711; CM_GPCOPY=1712; CM_GPPASTE=1713; CM_GPDUP=1714;
+ CM_GPDEL=1715; CM_GPFRONT=1716; CM_GPBACK=1717; CM_GPEDITTXT=1718;
+ CM_GPSELALL=1719;
+ CM_GPVNORM=1720; CM_GPVOUT=1721; CM_GPVSORT=1722; CM_GPVNOTES=1723;
+ CM_GPSNAP=1724;
+ CM_GPNEWSL=1730; CM_GPDUPSL=1731; CM_GPDELSL=1732; CM_GPSLUP=1733;
+ CM_GPSLDN=1734;
+ CM_GPLAYOUT=1735; CM_GPTHEME=1736; CM_GPBG=1737; CM_GPTRANS=1738;
+ CM_GPHIDE=1739;
+ CM_GPNOTES=1740;
+ CM_GPTEXTBOX=1750; CM_GPRECT=1751; CM_GPROUND=1752; CM_GPELL=1753;
+ CM_GPLINE=1754;
+ CM_GPARROW=1755; CM_GPTRI=1756; CM_GPDIAM=1757; CM_GPPENT=1758; CM_GPHEX=1759;
+ CM_GPSTAR=1760; CM_GPHEART=1761; CM_GPCALL=1762; CM_GPPARA=1763;
+ CM_GPTRAP=1764;
+ CM_GPCROSS=1765; CM_GPTABLE=1766; CM_GPCHART=1767; CM_GPCLIP=1768;
+ CM_GPFILL=1770; CM_GPLINEC=1771; CM_GPTEXTC=1772; CM_GPFSIZEUP=1773;
+ CM_GPFSIZEDN=1774; CM_GPBOLD=1775; CM_GPITAL=1776; CM_GPUND=1777;
+ CM_GPBUL=1778;
+ CM_GPALL=1779; CM_GPAC=1780; CM_GPAR=1781; CM_GPANIM=1782; CM_GPGEOM=1783;
+ CM_GPSHOW=1790; CM_GPSHOWCUR=1791; CM_GPFOOT=1792; CM_GPNUM=1793;
+ CM_GPDATE=1794;
+ CM_GPFOOTTX=1795; CM_GPABOUT=1796;
+
+ GP_MAXS   = 128;
+ GP_MAXSH  = 96;
+ GP_MAXTX  = 16;
+ GP_TXLEN  = 96;
+ GP_MAXIMG = 16;
+
+ { types de formes (identiques a POWERPNT.PAS) }
+ GS_TITLE=1; GS_CONTENT=2; GS_SUB=3; GS_TEXT=4; GS_RECT=10; GS_ROUND=11;
+ GS_ELL=12; GS_LINE=13; GS_ARROW=14; GS_TRI=15; GS_DIAM=16; GS_PENT=17;
+ GS_HEX=18; GS_STAR=19; GS_HEART=20; GS_CALL=21; GS_PARA=22; GS_TRAP=23;
+ GS_CROSS=24; GS_IMAGE=30; GS_TABLE=31; GS_CHART=32;
+ { mises en page }
+ GL_TITLE=0; GL_CONTENT=1; GL_TWO=2; GL_COMPARE=3; GL_TONLY=4; GL_BLANK=5;
+ GL_CAPT=6; GL_SECTION=7;
+ { vues }
+ GV_NORMAL=0; GV_OUTLINE=1; GV_SORTER=2; GV_NOTES=3;
+ { transitions }
+ GT_NONE=0; GT_FADE=1; GT_WL=2; GT_WR=3; GT_WU=4; GT_WD=5; GT_SPLIT=6;
+ GT_CHECK=7; GT_PUSH=8; GT_BLIND=9; GT_DISS=10;
+
+Type
+ PGpShape = ^TGpShape;
+ TGpShape = Record
+  Name   : String[24];
+  Typ    : Byte;
+  X,Y,W,H: Integer;
+  Fill,LineC,LineW: Byte;
+  Filled : Boolean;
+  Rot,Z  : Integer;
+  Locked,Hidden: Boolean;
+  NT     : Integer;
+  Tx     : Array[1..GP_MAXTX] Of String[GP_TXLEN];
+  Bul    : Array[1..GP_MAXTX] Of Boolean;
+  Ind    : Array[1..GP_MAXTX] Of Byte;
+  Bold,Ital,Und: Boolean;
+  FSize,TCol,Align: Byte;
+  Img    : Integer;
+  AEnt,AExit,AOrd: Byte;
+ End;
+
+ PGpSlide = ^TGpSlide;
+ TGpSlide = Record
+  Name   : String[32];
+  Title  : String[80];
+  Lay,Bg,Th,Trans,TSpd: Byte;
+  Notes  : String;
+  Hidden : Boolean;
+  NSh    : Integer;
+  Sh     : Array[1..GP_MAXSH] Of PGpShape;
+ End;
+
+ TGpPix = Array[0..199999] Of Byte;
+ PGpPix = ^TGpPix;
+ PGpImg = ^TGpImg;
+ TGpImg = Record
+  Name  : String[40];
+  FileN : String[80];
+  W,H   : Integer;
+  Loaded: Boolean;
+  Px    : PGpPix;
+ End;
+
+ PGp = ^TGp;
+ TGp = Record
+  Name,Author,Company,Title,Subject,Comments : String[80];
+  FileN  : String;
+  HeadT,FootT,DateT : String[60];
+  ShowH,ShowF,ShowD,ShowN : Boolean;
+  MBg,MTitle,MText : Byte;
+  ThemeIdx : Integer;
+  NS     : Integer;
+  S      : Array[1..GP_MAXS] Of PGpSlide;
+  NI     : Integer;
+  Img    : Array[1..GP_MAXIMG] Of PGpImg;
+  Cur,Sel,Top : Integer;
+  Tool,View : Integer;
+  Dirty,Snap : Boolean;
+  DMode,DHand : Integer;
+  DX0,DY0,DSX,DSY,DSW,DSH : Integer;
+  Undo   : PGpSlide;
+  UndoIdx: Integer;
+  Clip   : PGpShape;
+  OutTop : Integer;
+ End;
+
+Const
+ GpThemeN = 6;
+ GpThemeName : Array[1..GpThemeN] Of String[12] =
+  ('Office','Ocean','Dark','Green','GEOS','Sunset');
+ GpThemeBg : Array[1..GpThemeN] Of Byte = (15,9,0,10,7,14);
+ GpThemeTi : Array[1..GpThemeN] Of Byte = (1,15,14,2,1,4);
+ GpThemeTx : Array[1..GpThemeN] Of Byte = (0,0,15,0,0,0);
+ GpLayName : Array[0..7] Of String[24] = ('Title Slide','Title and Content',
+  'Two Contents','Comparison','Title Only','Blank','Content with Caption',
+  'Section Header');
+ GpTransName : Array[0..10] Of String[16] = ('None','Fade','Wipe Left',
+  'Wipe Right','Wipe Up','Wipe Down','Split','Checkerboard','Push','Blinds',
+  'Dissolve');
+ GpShapeName : Array[1..32] Of String[18] = ('Title','Content','Subtitle',
+  'Text box','','','','','','Rectangle','Rounded rect.','Ellipse','Line',
+  'Arrow','Triangle','Diamond','Pentagon','Hexagon','Star','Heart','Callout',
+  'Parallelogram','Trapezoid','Cross','','','','','','Image','Table','Chart');
+
+{ ---------------------- modele ---------------------- }
+
+Function GpNewShape(Typ: Integer): PGpShape;
+Var P: PGpShape;
+Begin
+ New(P);FillChar(P^,SizeOf(TGpShape),0);
+ P^.Typ:=Typ;P^.LineC:=cDGr;P^.LineW:=1;P^.Fill:=cLBl;P^.FSize:=18;
+ P^.TCol:=cBlk;P^.Name:=GpShapeName[Typ];
+ If P^.Name='' Then P^.Name:='Shape';
+ GpNewShape:=P;
+End;
+
+Function GpCopyShape(P: PGpShape): PGpShape;
+Var Q: PGpShape;
+Begin
+ New(Q);Q^:=P^;GpCopyShape:=Q;
+End;
+
+Function GpAddShape(S: PGpSlide; P: PGpShape): Boolean;
+Begin
+ GpAddShape:=False;
+ If S^.NSh>=GP_MAXSH Then Begin Dispose(P);Exit;End;
+ Inc(S^.NSh);S^.Sh[S^.NSh]:=P;P^.Z:=S^.NSh;
+ GpAddShape:=True;
+End;
+
+Procedure GpFreeSlide(S: PGpSlide);
+Var I: Integer;
+Begin
+ If S=Nil Then Exit;
+ For I:=1 To S^.NSh Do If S^.Sh[I]<>Nil Then Dispose(S^.Sh[I]);
+ Dispose(S);
+End;
+
+Function GpCopySlide(S: PGpSlide): PGpSlide;
+Var Q: PGpSlide; I: Integer;
+Begin
+ New(Q);Q^:=S^;
+ For I:=1 To S^.NSh Do Q^.Sh[I]:=GpCopyShape(S^.Sh[I]);
+ GpCopySlide:=Q;
+End;
+
+Procedure GpDelShape(S: PGpSlide; I: Integer);
+Var K: Integer;
+Begin
+ If (I<1) Or (I>S^.NSh) Then Exit;
+ Dispose(S^.Sh[I]);
+ For K:=I To S^.NSh-1 Do Begin S^.Sh[K]:=S^.Sh[K+1];S^.Sh[K]^.Z:=K;End;
+ S^.Sh[S^.NSh]:=Nil;Dec(S^.NSh);
+End;
+
+{ place les elements d'une mise en page }
+Procedure GpPlace(G: PGp; S: PGpSlide; Typ,X,Y,W,H,FS,Col,Al: Integer;
+                  Bd,Bl: Boolean; Const T: String);
+Var P: PGpShape;
+Begin
+ P:=GpNewShape(Typ);
+ P^.X:=X;P^.Y:=Y;P^.W:=W;P^.H:=H;P^.FSize:=FS;P^.TCol:=Col;P^.Align:=Al;
+ P^.Bold:=Bd;P^.LineW:=0;P^.NT:=1;P^.Tx[1]:=T;P^.Bul[1]:=Bl;
+ GpAddShape(S,P);
+End;
+
+Procedure GpApplyLayout(G: PGp; S: PGpSlide; Lay: Byte);
+Var Ti,Tx: Integer;
+Begin
+ S^.Lay:=Lay;
+ Ti:=G^.MTitle;Tx:=G^.MText;
+ Case Lay Of
+  GL_TITLE: Begin
+   GpPlace(G,S,GS_TITLE,80,200,840,140,36,Ti,1,True,False,
+       'Click to add a title');
+   GpPlace(G,S,GS_SUB,160,380,680,80,20,8,1,False,False,
+       'Click to add a subtitle');
+  End;
+  GL_CONTENT: Begin
+   GpPlace(G,S,GS_TITLE,60,40,880,90,28,Ti,0,True,False,'Click to add a title');
+   GpPlace(G,S,GS_CONTENT,60,150,880,540,18,Tx,0,False,True,
+       'Click to add text');
+  End;
+  GL_TWO: Begin
+   GpPlace(G,S,GS_TITLE,60,40,880,90,28,Ti,0,True,False,'Title');
+   GpPlace(G,S,GS_CONTENT,60,150,420,540,18,Tx,0,False,True,'Left content');
+   GpPlace(G,S,GS_CONTENT,520,150,420,540,18,Tx,0,False,True,'Right content');
+  End;
+  GL_COMPARE: Begin
+   GpPlace(G,S,GS_TITLE,60,40,880,90,28,Ti,0,True,False,'Comparison');
+   GpPlace(G,S,GS_TEXT,60,140,420,50,20,Ti,0,True,False,'Heading 1');
+   GpPlace(G,S,GS_CONTENT,60,200,420,490,16,Tx,0,False,True,'Content 1');
+   GpPlace(G,S,GS_TEXT,520,140,420,50,20,Ti,0,True,False,'Heading 2');
+   GpPlace(G,S,GS_CONTENT,520,200,420,490,16,Tx,0,False,True,'Content 2');
+  End;
+  GL_TONLY: GpPlace(G,S,GS_TITLE,60,40,880,90,28,Ti,0,True,False,'Title only');
+  GL_CAPT: Begin
+   GpPlace(G,S,GS_TITLE,60,60,300,150,24,Ti,0,True,False,'Caption');
+   GpPlace(G,S,GS_CONTENT,400,60,540,630,18,Tx,0,False,True,'Content');
+  End;
+  GL_SECTION: Begin
+   GpPlace(G,S,GS_RECT,0,300,1000,150,10,Ti,0,False,False,'');
+   S^.Sh[S^.NSh]^.NT:=0;S^.Sh[S^.NSh]^.Filled:=True;S^.Sh[S^.NSh]^.Fill:=Ti;
+   GpPlace(G,S,GS_TITLE,60,320,880,110,36,15,1,True,False,'New section');
+  End;
+ End;
+End;
+
+Function GpNewSlide(G: PGp; At,Lay: Integer): PGpSlide;
+Var S: PGpSlide; I: Integer;
+Begin
+ GpNewSlide:=Nil;
+ If G^.NS>=GP_MAXS Then Exit;
+ New(S);FillChar(S^,SizeOf(TGpSlide),0);
+ S^.Bg:=G^.MBg;S^.Th:=G^.ThemeIdx;S^.Name:='Slide';
+ GpApplyLayout(G,S,Lay);
+ If (At<1) Or (At>G^.NS+1) Then At:=G^.NS+1;
+ For I:=G^.NS DownTo At Do G^.S[I+1]:=G^.S[I];
+ G^.S[At]:=S;Inc(G^.NS);G^.Dirty:=True;
+ GpNewSlide:=S;
+End;
+
+Procedure GpDelSlide(G: PGp; I: Integer);
+Var K: Integer;
+Begin
+ If (I<1) Or (I>G^.NS) Then Exit;
+ GpFreeSlide(G^.S[I]);
+ For K:=I To G^.NS-1 Do G^.S[K]:=G^.S[K+1];
+ G^.S[G^.NS]:=Nil;Dec(G^.NS);G^.Dirty:=True;
+ If G^.Cur>G^.NS Then G^.Cur:=G^.NS;
+ G^.Sel:=0;
+End;
+
+Procedure GpClearAll(G: PGp);
+Var I: Integer;
+Begin
+ For I:=1 To G^.NS Do GpFreeSlide(G^.S[I]);
+ G^.NS:=0;
+ For I:=1 To GP_MAXIMG Do
+  If G^.Img[I]<>Nil Then Begin
+   If G^.Img[I]^.Px<>Nil Then FreeMem(G^.Img[I]^.Px,
+       LongInt(G^.Img[I]^.W)*G^.Img[I]^.H);
+   Dispose(G^.Img[I]);G^.Img[I]:=Nil;
+  End;
+ G^.NI:=0;G^.Cur:=0;G^.Sel:=0;
+ If G^.Undo<>Nil Then Begin GpFreeSlide(G^.Undo);G^.Undo:=Nil;End;
+ If G^.Clip<>Nil Then Begin Dispose(G^.Clip);G^.Clip:=Nil;End;
+End;
+
+Procedure GpInit(G: PGp);
+Begin
+ FillChar(G^,SizeOf(TGp),0);
+ G^.Name:='Presentation1';G^.Author:='';G^.Company:='';
+ G^.FootT:='GeoPoint';G^.DateT:='';
+ G^.ShowF:=False;G^.ShowN:=True;G^.ShowD:=False;G^.ShowH:=False;
+ G^.ThemeIdx:=1;G^.MBg:=cWht;G^.MTitle:=cBlu;G^.MText:=cBlk;
+ G^.Snap:=True;G^.Tool:=0;G^.View:=GV_NORMAL;
+End;
+
+Procedure GpApplyTheme(G: PGp; T: Integer; All: Boolean);
+Var I,J: Integer; S: PGpSlide;
+Begin
+ If (T<1) Or (T>GpThemeN) Then Exit;
+ G^.ThemeIdx:=T;G^.MBg:=GpThemeBg[T];G^.MTitle:=GpThemeTi[T];
+ G^.MText:=GpThemeTx[T];
+ For I:=1 To G^.NS Do
+  If All Or (I=G^.Cur) Then Begin
+   S:=G^.S[I];S^.Bg:=G^.MBg;S^.Th:=T;
+   For J:=1 To S^.NSh Do
+    If S^.Sh[J]^.Typ In [GS_TITLE] Then S^.Sh[J]^.TCol:=G^.MTitle
+    Else If S^.Sh[J]^.Typ In [GS_CONTENT,GS_TEXT] Then S^.Sh[J]^.TCol:=G^.MText
+    Else If S^.Sh[J]^.Typ=GS_SUB Then S^.Sh[J]^.TCol:=G^.MText;
+  End;
+ G^.Dirty:=True;
+End;
+
+{ presentation d'exemple }
+Procedure GpSeed(G: PGp);
+Var S: PGpSlide; P: PGpShape; I: Integer;
+ Procedure Bl(Sl: PGpSlide; K: Integer; Const T: String);
+ Begin
+  Sl^.Sh[2]^.Tx[K]:=T;Sl^.Sh[2]^.Bul[K]:=True;
+ End;
+Begin
+ S:=GpNewSlide(G,0,GL_TITLE);
+ S^.Sh[1]^.Tx[1]:='GeoPoint';
+ S^.Sh[2]^.Tx[1]:='Presentation software for the GeoWorks clone';
+ S:=GpNewSlide(G,0,GL_CONTENT);
+ S^.Sh[1]^.Tx[1]:='Features';
+ S^.Sh[2]^.NT:=6;
+ Bl(S,1,'Slides with titles, bulleted text and shapes');
+ Bl(S,2,'Eight layouts and six themes');
+ Bl(S,3,'Outline, sorter and notes views');
+ Bl(S,4,'Transitions and entrance animations');
+ Bl(S,5,'Slide show on the full screen');
+ Bl(S,6,'Native .PPT files shared with POWERPNT.PAS');
+ S^.Trans:=GT_WL;
+ S:=GpNewSlide(G,0,GL_TWO);
+ S^.Sh[1]^.Tx[1]:='Shapes and charts';
+ S^.Sh[2]^.Tx[1]:='Ellipses, stars, arrows, tables '+
+     'and bar charts can be inserted '+'from the Insert menu.';
+ S^.Sh[2]^.Bul[1]:=False;
+ P:=GpNewShape(GS_CHART);
+ P^.X:=520;P^.Y:=150;P^.W:=420;P^.H:=400;P^.NT:=4;
+ P^.Tx[1]:='Q1|40';P^.Tx[2]:='Q2|65';P^.Tx[3]:='Q3|50';P^.Tx[4]:='Q4|90';
+ P^.Filled:=True;P^.Fill:=cLBl;P^.LineC:=cBlk;
+ GpAddShape(S,P);
+ S^.Sh[3]^.NT:=0;
+ P:=GpNewShape(GS_STAR);
+ P^.X:=120;P^.Y:=420;P^.W:=200;P^.H:=200;P^.Filled:=True;P^.Fill:=cYel;
+ P^.LineC:=cBrn;
+ P^.AEnt:=1;
+ GpAddShape(S,P);
+ S^.Trans:=GT_DISS;
+ G^.Cur:=1;G^.Dirty:=False;
+End;
+
+{ ---------------------- dessin d'une diapositive ---------------------- }
+
+{ sommets (en pourcentage de la boite) d'une forme polygonale ; N = 0 sinon }
+Function GpShapePts(Typ: Integer; Var Px,Py: Array Of Integer): Integer;
+Const
+ TriX: Array[0..2] Of Integer = (50,100,0);
+ TriY: Array[0..2] Of Integer = (0,100,100);
+ DiX: Array[0..3] Of Integer = (50,100,50,0);
+ DiY: Array[0..3] Of Integer = (0,50,100,50);
+ PeX: Array[0..4] Of Integer = (50,100,81,19,0);
+ PeY: Array[0..4] Of Integer = (0,38,100,100,38);
+ HeX: Array[0..5] Of Integer = (25,75,100,75,25,0);
+ HeY: Array[0..5] Of Integer = (0,0,50,100,100,50);
+ StX: Array[0..9] Of Integer = (50,61,98,68,79,50,21,32,2,39);
+ StY: Array[0..9] Of Integer = (0,35,35,57,91,70,91,57,35,35);
+ PaX: Array[0..3] Of Integer = (25,100,75,0);
+ PaY: Array[0..3] Of Integer = (0,0,100,100);
+ TpX: Array[0..3] Of Integer = (20,80,100,0);
+ TpY: Array[0..3] Of Integer = (0,0,100,100);
+ CrX: Array[0..11] Of Integer = (33,67,67,100,100,67,67,33,33,0,0,33);
+ CrY: Array[0..11] Of Integer = (0,0,33,33,67,67,100,100,67,67,33,33);
+ HtX: Array[0..11] Of Integer = (50,40,25,10,2,10,50,90,98,90,75,60);
+ HtY: Array[0..11] Of Integer = (25,10,3,10,28,50,100,50,28,10,3,10);
+ CaX: Array[0..6] Of Integer = (0,100,100,40,20,25,0);
+ CaY: Array[0..6] Of Integer = (0,0,70,70,100,70,70);
+Var I,N: Integer;
+ Procedure Cp(Const AX,AY: Array Of Integer; K: Integer);
+ Var J: Integer;
+ Begin
+  For J:=0 To K-1 Do Begin Px[J]:=AX[J];Py[J]:=AY[J];End;
+  N:=K;
+ End;
+Begin
+ N:=0;
+ Case Typ Of
+  GS_TRI: Cp(TriX,TriY,3);
+  GS_DIAM: Cp(DiX,DiY,4);
+  GS_PENT: Cp(PeX,PeY,5);
+  GS_HEX: Cp(HeX,HeY,6);
+  GS_STAR: Cp(StX,StY,10);
+  GS_PARA: Cp(PaX,PaY,4);
+  GS_TRAP: Cp(TpX,TpY,4);
+  GS_CROSS: Cp(CrX,CrY,12);
+  GS_HEART: Cp(HtX,HtY,12);
+  GS_CALL: Cp(CaX,CaY,7);
+ End;
+ GpShapePts:=N;
+End;
+
+Procedure GpDrawGeom(Sh: PGpShape; X1,Y1,X2,Y2: Integer);
+Var Px,Py: Array[0..15] Of Integer; Pt: Array[0..16] Of PointType;
+    N,I,R: Integer; Lc,Fc: Integer;
+Begin
+ Lc:=Sh^.LineC;Fc:=Sh^.Fill;
+ Case Sh^.Typ Of
+  GS_RECT,GS_TEXT,GS_TITLE,GS_CONTENT,GS_SUB,GS_TABLE,GS_CHART: Begin
+    If Sh^.Filled Then GBar(X1,Y1,X2,Y2,Fc);
+    If Sh^.LineW>0 Then GRect(X1,Y1,X2,Y2,Lc);
+   End;
+  GS_ROUND: Begin
+    R:=Min2(8,Min2(X2-X1,Y2-Y1) Div 4);
+    If Sh^.Filled Then Begin
+     GBar(X1+R,Y1,X2-R,Y2,Fc);GBar(X1,Y1+R,X2,Y2-R,Fc);
+     GFillEllipse(X1+R,Y1+R,R,R,Fc);GFillEllipse(X2-R,Y1+R,R,R,Fc);
+     GFillEllipse(X1+R,Y2-R,R,R,Fc);GFillEllipse(X2-R,Y2-R,R,R,Fc);
+    End;
+    If Sh^.LineW>0 Then Begin
+     GHLine(X1+R,X2-R,Y1,Lc);GHLine(X1+R,X2-R,Y2,Lc);
+     GVLine(X1,Y1+R,Y2-R,Lc);GVLine(X2,Y1+R,Y2-R,Lc);
+     GPix(X1+1,Y1+1,Lc);GPix(X2-1,Y1+1,Lc);GPix(X1+1,Y2-1,Lc);
+     GPix(X2-1,Y2-1,Lc);
+    End;
+   End;
+  GS_ELL: Begin
+    If Sh^.Filled Then GFillEllipse((X1+X2) Div 2,(Y1+Y2) Div 2,(X2-X1) Div 2,
+        (Y2-Y1) Div 2,Fc);
+    If Sh^.LineW>0 Then GEllipse((X1+X2) Div 2,(Y1+Y2) Div 2,(X2-X1) Div 2,
+        (Y2-Y1) Div 2,Lc);
+   End;
+  GS_LINE,GS_ARROW: Begin
+    GLine(X1,Y1,X2,Y2,Lc);
+    If Sh^.LineW>1 Then Begin GLine(X1+1,Y1,X2+1,Y2,Lc);
+    GLine(X1,Y1+1,X2,Y2+1,Lc);End;
+    If Sh^.Typ=GS_ARROW Then Begin
+     { pointe a l'extremite }
+     R:=Max2(6,Max2(Abs(X2-X1),Abs(Y2-Y1)) Div 12);
+     If Abs(X2-X1)>=Abs(Y2-Y1) Then Begin
+      If X2>=X1 Then I:=-1 Else I:=1;
+      Pt[0].X:=X2;Pt[0].Y:=Y2;Pt[1].X:=X2+I*R;Pt[1].Y:=Y2-R Div 2;
+      Pt[2].X:=X2+I*R;Pt[2].Y:=Y2+R Div 2;
+     End Else Begin
+      If Y2>=Y1 Then I:=-1 Else I:=1;
+      Pt[0].X:=X2;Pt[0].Y:=Y2;Pt[1].X:=X2-R Div 2;Pt[1].Y:=Y2+I*R;
+      Pt[2].X:=X2+R Div 2;Pt[2].Y:=Y2+I*R;
+     End;
+     GPoly(3,Pt,Lc,True);
+    End;
+   End;
+ Else Begin
+   N:=GpShapePts(Sh^.Typ,Px,Py);
+   If N>0 Then Begin
+    For I:=0 To N-1 Do Begin
+     Pt[I].X:=X1+(Px[I]*(X2-X1)) Div 100;
+     Pt[I].Y:=Y1+(Py[I]*(Y2-Y1)) Div 100;
+    End;
+    Pt[N]:=Pt[0];
+    If Sh^.Filled Then GPoly(N,Pt,Fc,True);
+    If Sh^.LineW>0 Then GPoly(N+1,Pt,Lc,False);
+   End;
+  End;
+ End;
+End;
+
+{ coupe un paragraphe en lignes de largeur Mx caracteres }
+Function GpWrap(Const T: String; Mx: Integer; Var Ln: Array Of String): Integer;
+Var N,P,L: Integer; S,Cur,W: String;
+Begin
+ N:=0;S:=T;Cur:='';
+ If Mx<1 Then Mx:=1;
+ If S='' Then Begin Ln[0]:='';GpWrap:=1;Exit;End;
+ While S<>'' Do Begin
+  P:=Pos(' ',S);
+  If P=0 Then Begin W:=S;S:='';End
+  Else Begin W:=Copy(S,1,P-1);Delete(S,1,P);End;
+  While Length(W)>Mx Do Begin
+   If Cur<>'' Then Begin If N<High(Ln) Then Begin Ln[N]:=Cur;Inc(N);End;Cur:='';
+   End;
+   If N<High(Ln) Then Begin Ln[N]:=Copy(W,1,Mx);Inc(N);End;
+   Delete(W,1,Mx);
+  End;
+  If Cur='' Then Cur:=W
+  Else If Length(Cur)+1+Length(W)<=Mx Then Cur:=Cur+' '+W
+  Else Begin
+   If N<High(Ln) Then Begin Ln[N]:=Cur;Inc(N);End;
+   Cur:=W;
+  End;
+ End;
+ If N<=High(Ln) Then Begin Ln[N]:=Cur;Inc(N);End;
+ GpWrap:=N;
+End;
+
+{ texte d'une forme ; Em = hauteur du texte en pixels ecran }
+Procedure GpDrawText(Sh: PGpShape; X1,Y1,X2,Y2,Em: Integer; Show: Boolean);
+Var M,Lh,Cw,I,J,K,NL,TotH,YY,XX,Ind,AvW,CW1,LW,Bw: Integer;
+    Lines: Array[0..23] Of String; Rows: Array[1..60] Of String[GP_TXLEN];
+    RowPar: Array[1..60] Of Integer; NR,Cx: Integer; S: String; Hint: Boolean;
+    Cent: Boolean;
+Begin
+ If Sh^.NT=0 Then Exit;
+ M:=Em Div 8;
+ If M>6 Then M:=6;
+ Cw:=8*Max2(M,1);Lh:=8*Max2(M,1)+2*Max2(M,1);
+ AvW:=X2-X1-6;
+ NR:=0;
+ For I:=1 To Sh^.NT Do Begin
+  Ind:=Sh^.Ind[I]*Cw*2;
+  If Sh^.Bul[I] Then Ind:=Ind+Cw*2;
+  If M=0 Then Cx:=Max2(1,(AvW-Ind) Div Max2(1,Em*6 Div 10))
+  Else Cx:=Max2(1,(AvW-Ind) Div Cw);
+  NL:=GpWrap(Sh^.Tx[I],Cx,Lines);
+  For J:=0 To NL-1 Do
+   If NR<60 Then Begin Inc(NR);Rows[NR]:=Lines[J];RowPar[NR]:=I;End;
+ End;
+ If M=0 Then Lh:=Max2(2,Em*3 Div 2) Else Lh:=Lh;
+ TotH:=NR*Lh;
+ Cent:=Not (Sh^.Typ In [GS_CONTENT,GS_TEXT]);
+ If Sh^.Typ In [GS_TITLE,GS_SUB] Then YY:=Y1+((Y2-Y1)-TotH) Div 2
+ Else If Cent Then YY:=Y1+((Y2-Y1)-TotH) Div 2
+ Else YY:=Y1+3;
+ If YY<Y1 Then YY:=Y1+1;
+ K:=0;
+ For I:=1 To NR Do Begin
+  If YY+Lh>Y2+Lh Then Break;
+  S:=Rows[I];
+  J:=RowPar[I];
+  Ind:=Sh^.Ind[J]*Cw*2;
+  Bw:=0;
+  If Sh^.Bul[J] Then Begin Bw:=Cw*2;Ind:=Ind+Bw;End;
+  If M=0 Then LW:=Length(S)*Max2(1,Em*6 Div 10) Else LW:=Length(S)*Cw;
+  Case Sh^.Align Of
+   1: XX:=X1+(AvW-LW) Div 2+3;
+   2: XX:=X2-3-LW;
+  Else XX:=X1+3+Ind;
+  End;
+  If (Sh^.Align=1) Or (Sh^.Align=2) Then Begin If Sh^.Bul[J] Then XX:=XX+Bw
+      Div 2;End;
+  If Cent And (Sh^.Align=0) And (Sh^.Typ<>GS_TITLE) And (Sh^.Typ<>GS_SUB) Then
+   XX:=X1+(AvW-LW) Div 2+3;
+  If M=0 Then Begin
+   If LW>0 Then GBar(XX,YY+Lh Div 3,Min2(X2-2,XX+LW),YY+Lh Div 3+Max2(0,
+       Em Div 3),
+                     Sh^.TCol);
+  End Else Begin
+   If Sh^.Bul[J] And ((I=1) Or (RowPar[I-1]<>J)) Then
+    GBar(XX-Bw+2,YY+Lh Div 2-M,XX-Bw+2+2*M,YY+Lh Div 2+M,Sh^.TCol);
+   If M<=1 Then GText(XX,YY,S,Sh^.TCol) Else GTextBig(XX,YY,S,M,Sh^.TCol);
+   If Sh^.Bold Then Begin
+    If M<=1 Then GText(XX+1,YY,S,Sh^.TCol) Else GTextBig(XX+1,YY,S,M,Sh^.TCol);
+   End;
+   If Sh^.Und Then GHLine(XX,XX+LW,YY+8*M+1,Sh^.TCol);
+  End;
+  Inc(YY,Lh);
+ End;
+End;
+
+{ tableau : lignes = rangees, colonnes separees par | }
+Procedure GpDrawTable(Sh: PGpShape; X1,Y1,X2,Y2,Em: Integer);
+Var R,C,NC,I,K,CW,RH: Integer; S,T: String;
+Begin
+ If Sh^.NT=0 Then Begin GRect(X1,Y1,X2,Y2,Sh^.LineC);Exit;End;
+ NC:=1;
+ For R:=1 To Sh^.NT Do Begin
+  K:=1;S:=Sh^.Tx[R];
+  For I:=1 To Length(S) Do If S[I]='|' Then Inc(K);
+  If K>NC Then NC:=K;
+ End;
+ CW:=(X2-X1) Div NC;RH:=(Y2-Y1) Div Sh^.NT;
+ For R:=1 To Sh^.NT Do Begin
+  S:=Sh^.Tx[R];
+  For C:=1 To NC Do Begin
+   I:=Pos('|',S);
+   If I=0 Then Begin T:=S;S:='';End Else Begin T:=Copy(S,1,I-1);Delete(S,1,I);
+   End;
+   If R=1 Then GBar(X1+(C-1)*CW,Y1,X1+C*CW,Y1+RH,Sh^.Fill)
+   Else GBar(X1+(C-1)*CW+1,Y1+(R-1)*RH+1,X1+C*CW-1,Y1+R*RH-1,cWht);
+   GRect(X1+(C-1)*CW,Y1+(R-1)*RH,X1+C*CW,Y1+R*RH,Sh^.LineC);
+   If Em>=8 Then Begin
+    T:=Copy(T,1,Max2(1,(CW-4) Div 8));
+    If R=1 Then GText(X1+(C-1)*CW+3,Y1+(R-1)*RH+(RH-8) Div 2,T,cWht)
+    Else GText(X1+(C-1)*CW+3,Y1+(R-1)*RH+(RH-8) Div 2,T,cBlk);
+   End;
+  End;
+ End;
+End;
+
+{ graphique en barres : lignes "etiquette|valeur" }
+Procedure GpDrawChart(Sh: PGpShape; X1,Y1,X2,Y2,Em: Integer);
+Var I,P,V,Mx,N,BW,BH,BX: Integer; T,L: String;
+    Vals: Array[1..GP_MAXTX] Of Integer; Lab: Array[1..GP_MAXTX] Of String[12];
+Begin
+ GBar(X1,Y1,X2,Y2,cWht);GRect(X1,Y1,X2,Y2,cBlk);
+ N:=0;Mx:=1;
+ For I:=1 To Sh^.NT Do Begin
+  T:=Sh^.Tx[I];P:=Pos('|',T);
+  If P>0 Then Begin
+   Inc(N);Lab[N]:=Copy(T,1,P-1);Vals[N]:=StrVal(Copy(T,P+1,10),0);
+   If Vals[N]>Mx Then Mx:=Vals[N];
+  End;
+ End;
+ If N=0 Then Exit;
+ BW:=(X2-X1-8) Div N;
+ For I:=1 To N Do Begin
+  BH:=(Y2-Y1-24-Ord(Em>=8)*10)*Vals[I] Div Mx;
+  BX:=X1+4+(I-1)*BW;
+  GBar(BX+2,Y2-12-BH,BX+BW-4,Y2-12,Sh^.Fill);
+  GRect(BX+2,Y2-12-BH,BX+BW-4,Y2-12,cBlk);
+  If Em>=8 Then Begin
+   GText(BX+2,Y2-10,Copy(Lab[I],1,Max2(1,(BW-4) Div 8)),cBlk);
+   GText(BX+2,Y2-14-BH-8,IntStr(Vals[I]),cBlk);
+  End;
+ End;
+End;
+
+Procedure GpDrawImage(G: PGp; Sh: PGpShape; X1,Y1,X2,Y2: Integer);
+Var Im: PGpImg; DX,DY,SX,SY,SW,SH_,X,Y,X0,C: Integer;
+Begin
+ If (Sh^.Img<1) Or (Sh^.Img>GP_MAXIMG) Then Exit;
+ Im:=G^.Img[Sh^.Img];
+ If (Im=Nil) Or (Im^.Px=Nil) Then Begin GRect(X1,Y1,X2,Y2,cDGr);Exit;End;
+ DX:=X2-X1+1;DY:=Y2-Y1+1;
+ If (DX<1) Or (DY<1) Then Exit;
+ For Y:=0 To DY-1 Do Begin
+  SY:=(Y*Im^.H) Div DY;
+  X:=0;
+  While X<DX Do Begin
+   SX:=(X*Im^.W) Div DX;
+   C:=Im^.Px^[LongInt(SY)*Im^.W+SX];
+   X0:=X;
+   While (X+1<DX) And (Im^.Px^[LongInt(SY)*Im^.W+((X+1)*Im^.W) Div DX]=C) Do
+       Inc(X);
+   If C<>255 Then GBar(X1+X0,Y1+Y,X1+X,Y1+Y,C And 15);
+   Inc(X);
+  End;
+ End;
+End;
+
+{ dessine la diapositive S dans le rectangle (X0,Y0,W,W*3/4) ;
+  Mode 0 edition, 1 miniature, 2 diaporama ; Rev = formes animees deja
+    visibles }
+Procedure GpDrawSlide(G: PGp; S: PGpSlide; X0,Y0,W,Mode,Rev,Num: Integer);
+Var I,H,X1,Y1,X2,Y2,Em,Rk: Integer; Sh: PGpShape; T: String;
+ Function PX(V: Integer): Integer;
+ Begin
+  PX:=X0+(LongInt(V)*W) Div 1000;
+ End;
+ Function PY(V: Integer): Integer;
+ Begin
+  PY:=Y0+(LongInt(V)*W) Div 1000;
+ End;
+Begin
+ H:=(W*3) Div 4;
+ GBar(X0,Y0,X0+W-1,Y0+H-1,S^.Bg);
+ Rk:=0;
+ For I:=1 To S^.NSh Do Begin
+  Sh:=S^.Sh[I];
+  If Sh^.AEnt<>0 Then Inc(Rk);
+  If Sh^.Hidden Then Continue;
+  If (Mode=2) And (Sh^.AEnt<>0) And (Rk>Rev) And (Rev>=0) Then Continue;
+  X1:=PX(Sh^.X);Y1:=PY(Sh^.Y);X2:=PX(Sh^.X+Sh^.W);Y2:=PY(Sh^.Y+Sh^.H);
+  If (Sh^.Typ<>GS_LINE) And (Sh^.Typ<>GS_ARROW) Then Begin
+   If X2<=X1 Then X2:=X1+1;
+   If Y2<=Y1 Then Y2:=Y1+1;
+  End;
+  Em:=((Sh^.FSize*1389)*W) Div 1000000;
+  If (Sh^.Typ In [GS_TITLE,GS_CONTENT,GS_SUB,GS_TEXT]) Then Begin
+   If Mode=0 Then Begin
+    If (Sh^.Filled) Or (Sh^.LineW>0) Then GpDrawGeom(Sh,X1,Y1,X2,Y2);
+   End Else If Sh^.Filled Then GpDrawGeom(Sh,X1,Y1,X2,Y2);
+   If Not ((Mode=2) And (Copy(Sh^.Tx[1],1,12)='Click to add')) Then
+    GpDrawText(Sh,X1,Y1,X2,Y2,Em,Mode=2);
+   If (Mode=0) And (Sh^.LineW=0) And (Not Sh^.Filled) Then
+    GDotRect(X1,Y1,X2,Y2,cLGr);
+  End Else If Sh^.Typ=GS_TABLE Then GpDrawTable(Sh,X1,Y1,X2,Y2,Em)
+  Else If Sh^.Typ=GS_CHART Then GpDrawChart(Sh,X1,Y1,X2,Y2,Em)
+  Else If Sh^.Typ=GS_IMAGE Then GpDrawImage(G,Sh,X1,Y1,X2,Y2)
+  Else Begin
+   GpDrawGeom(Sh,X1,Y1,X2,Y2);
+   If (Sh^.NT>0) And (Sh^.Tx[1]<>'') Then GpDrawText(Sh,X1,Y1,X2,Y2,Em,Mode=2);
+  End;
+ End;
+ { pied de page }
+ Em:=(18*1389*W) Div 1000000;
+ If (Em>=8) Then Begin
+  If G^.ShowF And (G^.FootT<>'') Then
+   GText(X0+(W-TextW(G^.FootT)) Div 2,Y0+H-14,G^.FootT,cDGr);
+  If G^.ShowD And (G^.DateT<>'') Then GText(X0+8,Y0+H-14,G^.DateT,cDGr);
+  If G^.ShowH And (G^.HeadT<>'') Then GText(X0+8,Y0+6,G^.HeadT,cDGr);
+  If G^.ShowN And (Num>0) Then GText(X0+W-8-8*Length(IntStr(Num)),Y0+H-14,
+      IntStr(Num),cDGr);
+ End;
+ If Mode<>2 Then GRect(X0,Y0,X0+W-1,Y0+H-1,cBlk);
+End;
+
+{ ---------------------- fichiers .PPT (format PPNT v1) ---------------------- }
+
+Var
+ GpBuf : Array[0..3] Of Byte;
+
+Procedure GpWB(Var F: File; B: Byte);
+Begin
+ GpBuf[0]:=B;BlockWrite(F,GpBuf,1);
+End;
+
+Procedure GpWW(Var F: File; W: Word);
+Begin
+ GpBuf[0]:=W And $FF;GpBuf[1]:=(W Shr 8) And $FF;BlockWrite(F,GpBuf,2);
+End;
+
+Procedure GpWS(Var F: File; Const S: String);
+Var L: Integer;
+Begin
+ L:=Length(S);
+ GpWB(F,Byte(L));
+ If L>0 Then BlockWrite(F,S[1],L);
+End;
+
+Function GpRB(Var F: File): Byte;
+Begin
+ GpBuf[0]:=0;BlockRead(F,GpBuf,1);GpRB:=GpBuf[0];
+End;
+
+Function GpRW(Var F: File): Word;
+Begin
+ GpBuf[0]:=0;GpBuf[1]:=0;BlockRead(F,GpBuf,2);
+ GpRW:=Word(GpBuf[0]) Or (Word(GpBuf[1]) Shl 8);
+End;
+
+Function GpRS(Var F: File): String;
+Var L: Byte; S: String;
+Begin
+ L:=GpRB(F);S:='';
+ If L>0 Then Begin SetLength(S,L);BlockRead(F,S[1],L);End;
+ GpRS:=S;
+End;
+
+Function GpSave(G: PGp; Const FN: String): Boolean;
+Var F: File; I,J,K: Integer; S: PGpSlide; Sh: PGpShape; Im: PGpImg; V: LongInt;
+    Mg: Array[1..4] Of Char; Q: LongInt;
+Begin
+ GpSave:=False;
+ Assign(F,FN);
+ {$I-}Rewrite(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ Mg[1]:='P';Mg[2]:='P';Mg[3]:='N';Mg[4]:='T';
+ BlockWrite(F,Mg,4);
+ GpWB(F,1);GpWB(F,0);GpWB(F,0);GpWB(F,0);
+ GpWS(F,G^.Name);GpWS(F,G^.Author);GpWS(F,G^.Company);GpWS(F,G^.Title);
+ GpWS(F,G^.Subject);GpWS(F,G^.Comments);GpWS(F,G^.HeadT);GpWS(F,G^.FootT);
+ GpWS(F,G^.DateT);
+ GpWB(F,Ord(G^.ShowH));GpWB(F,Ord(G^.ShowF));GpWB(F,Ord(G^.ShowD));
+ GpWB(F,Ord(G^.ShowN));GpWB(F,G^.MBg);GpWB(F,G^.MTitle);GpWB(F,G^.MText);
+ GpWW(F,Word(G^.ThemeIdx));
+ GpWW(F,Word(G^.NI));
+ For I:=1 To GP_MAXIMG Do Begin
+  Im:=G^.Img[I];
+  If Im=Nil Then GpWB(F,0)
+  Else Begin
+   GpWB(F,1);GpWS(F,Im^.Name);GpWS(F,Im^.FileN);
+   GpWW(F,Word(Im^.W));GpWW(F,Word(Im^.H));GpWB(F,Ord(Im^.Loaded));
+   If Im^.Loaded And (Im^.Px<>Nil) Then
+    For Q:=0 To LongInt(Im^.W)*Im^.H-1 Do Begin
+     If Im^.Px^[Q]=255 Then GpWB(F,15) Else GpWB(F,Im^.Px^[Q]);
+    End;
+  End;
+ End;
+ GpWW(F,Word(G^.NS));
+ For I:=1 To G^.NS Do Begin
+  S:=G^.S[I];
+  GpWS(F,S^.Name);GpWS(F,S^.Title);
+  GpWB(F,S^.Lay);GpWB(F,S^.Bg);GpWB(F,S^.Th);GpWB(F,S^.Trans);GpWB(F,S^.TSpd);
+  GpWS(F,S^.Notes);GpWB(F,Ord(S^.Hidden));
+  GpWW(F,Word(S^.NSh));
+  For J:=1 To S^.NSh Do Begin
+   Sh:=S^.Sh[J];
+   GpWS(F,Sh^.Name);GpWB(F,Sh^.Typ);
+   GpWW(F,Word(Sh^.X));GpWW(F,Word(Sh^.Y));GpWW(F,Word(Sh^.W));
+   GpWW(F,Word(Sh^.H));
+   GpWB(F,Sh^.Fill);GpWB(F,Sh^.LineC);GpWB(F,Sh^.LineW);GpWB(F,Ord(Sh^.Filled));
+   GpWW(F,Word(Sh^.Rot));GpWW(F,Word(J));
+   GpWB(F,Ord(Sh^.Locked));GpWB(F,Ord(Sh^.Hidden));
+   GpWB(F,Byte(Sh^.NT));
+   For K:=1 To Sh^.NT Do Begin
+    GpWS(F,Sh^.Tx[K]);GpWB(F,Ord(Sh^.Bul[K]));GpWB(F,Sh^.Ind[K]);
+   End;
+   GpWB(F,Ord(Sh^.Bold));GpWB(F,Ord(Sh^.Ital));GpWB(F,Ord(Sh^.Und));
+   GpWB(F,Sh^.FSize);GpWB(F,Sh^.TCol);GpWB(F,Sh^.Align);
+   GpWW(F,Word(Sh^.Img));
+   GpWB(F,Sh^.AEnt);GpWB(F,Sh^.AExit);GpWB(F,Sh^.AOrd);
+  End;
+ End;
+ Close(F);
+ G^.FileN:=FN;G^.Dirty:=False;
+ GpSave:=True;
+End;
+
+Function GpLoad(G: PGp; Const FN: String): Boolean;
+Var F: File; I,J,K,NI,NS,NSh,NT,Cn: Integer; S: PGpSlide; Sh: PGpShape;
+    Im: PGpImg; Mg: Array[1..4] Of Char; Ver: Byte; Sz,Q: LongInt; T: String;
+    Mk: Byte;
+Begin
+ GpLoad:=False;
+ Assign(F,FN);
+ {$I-}FileMode:=0;Reset(F,1);{$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}BlockRead(F,Mg,4);{$I+}
+ If (IOResult<>0) Or (Mg[1]<>'P') Or (Mg[2]<>'P') Or (Mg[3]<>'N')
+     Or (Mg[4]<>'T') Then Begin
+  Close(F);Exit;
+ End;
+ Ver:=GpRB(F);
+ If Ver<>1 Then Begin Close(F);Exit;End;
+ GpRB(F);GpRB(F);GpRB(F);
+ GpClearAll(G);GpInit(G);
+ G^.Name:=GpRS(F);G^.Author:=GpRS(F);G^.Company:=GpRS(F);G^.Title:=GpRS(F);
+ G^.Subject:=GpRS(F);G^.Comments:=GpRS(F);G^.HeadT:=GpRS(F);G^.FootT:=GpRS(F);
+ G^.DateT:=GpRS(F);
+ G^.ShowH:=GpRB(F)<>0;G^.ShowF:=GpRB(F)<>0;G^.ShowD:=GpRB(F)<>0;
+ G^.ShowN:=GpRB(F)<>0;G^.MBg:=GpRB(F);G^.MTitle:=GpRB(F);G^.MText:=GpRB(F);
+ G^.ThemeIdx:=Integer(GpRW(F));
+ If (G^.ThemeIdx<1) Or (G^.ThemeIdx>GpThemeN) Then G^.ThemeIdx:=1;
+ NI:=Integer(GpRW(F));G^.NI:=NI;
+ For I:=1 To GP_MAXIMG Do Begin
+  Mk:=GpRB(F);
+  If Mk<>0 Then Begin
+   New(Im);Im^.Name:=GpRS(F);Im^.FileN:=GpRS(F);
+   Im^.W:=Integer(GpRW(F));Im^.H:=Integer(GpRW(F));
+   Im^.Loaded:=GpRB(F)<>0;Im^.Px:=Nil;
+   If Im^.Loaded And (Im^.W>0) And (Im^.H>0) And (LongInt(Im^.W)*Im^.H<=200000)
+       Then Begin
+    Sz:=LongInt(Im^.W)*Im^.H;
+    GetMem(Im^.Px,Sz);
+    BlockRead(F,Im^.Px^,Sz);
+   End Else If Im^.Loaded Then Im^.Loaded:=False;
+   G^.Img[I]:=Im;
+  End;
+ End;
+ NS:=Integer(GpRW(F));
+ If NS>GP_MAXS Then NS:=GP_MAXS;
+ For I:=1 To NS Do Begin
+  New(S);FillChar(S^,SizeOf(TGpSlide),0);
+  S^.Name:=GpRS(F);S^.Title:=GpRS(F);
+  S^.Lay:=GpRB(F);S^.Bg:=GpRB(F);S^.Th:=GpRB(F);S^.Trans:=GpRB(F);
+  S^.TSpd:=GpRB(F);
+  S^.Notes:=GpRS(F);S^.Hidden:=GpRB(F)<>0;
+  NSh:=Integer(GpRW(F));
+  For J:=1 To NSh Do Begin
+   Sh:=GpNewShape(GS_RECT);
+   Sh^.Name:=GpRS(F);Sh^.Typ:=GpRB(F);
+   Sh^.X:=Integer(GpRW(F));Sh^.Y:=Integer(GpRW(F));
+   Sh^.W:=Integer(GpRW(F));Sh^.H:=Integer(GpRW(F));
+   Sh^.Fill:=GpRB(F) And 15;Sh^.LineC:=GpRB(F) And 15;Sh^.LineW:=GpRB(F);
+   Sh^.Filled:=GpRB(F)<>0;Sh^.Rot:=Integer(GpRW(F));Sh^.Z:=Integer(GpRW(F));
+   Sh^.Locked:=GpRB(F)<>0;Sh^.Hidden:=GpRB(F)<>0;
+   NT:=GpRB(F);Sh^.NT:=Min2(NT,GP_MAXTX);
+   For K:=1 To NT Do Begin
+    T:=GpRS(F);
+    If K<=GP_MAXTX Then Begin
+     Sh^.Tx[K]:=Copy(T,1,GP_TXLEN);Sh^.Bul[K]:=GpRB(F)<>0;Sh^.Ind[K]:=GpRB(F);
+    End Else Begin GpRB(F);GpRB(F);End;
+   End;
+   Sh^.Bold:=GpRB(F)<>0;Sh^.Ital:=GpRB(F)<>0;Sh^.Und:=GpRB(F)<>0;
+   Sh^.FSize:=GpRB(F);Sh^.TCol:=GpRB(F) And 15;Sh^.Align:=GpRB(F);
+   Sh^.Img:=Integer(GpRW(F));
+   Sh^.AEnt:=GpRB(F);Sh^.AExit:=GpRB(F);Sh^.AOrd:=GpRB(F);
+   If Sh^.FSize<6 Then Sh^.FSize:=18;
+   If S^.NSh<GP_MAXSH Then Begin Inc(S^.NSh);S^.Sh[S^.NSh]:=Sh;End
+   Else Dispose(Sh);
+  End;
+  G^.S[I]:=S;
+ End;
+ G^.NS:=NS;
+ Close(F);
+ G^.FileN:=FN;G^.Dirty:=False;
+ If NS>0 Then G^.Cur:=1;
+ GpLoad:=True;
+End;
+
+{ plan en texte }
+Function GpExportText(G: PGp; Const FN: String): Boolean;
+Var T: Text; I,J,K: Integer; S: PGpSlide;
+Begin
+ GpExportText:=False;
+ Assign(T,FN);
+ {$I-}Rewrite(T);{$I+}
+ If IOResult<>0 Then Exit;
+ For I:=1 To G^.NS Do Begin
+  S:=G^.S[I];
+  WriteLn(T,'Slide ',I);
+  For J:=1 To S^.NSh Do
+   If S^.Sh[J]^.Typ In [GS_TITLE,GS_SUB,GS_CONTENT,GS_TEXT] Then
+    For K:=1 To S^.Sh[J]^.NT Do Begin
+     If S^.Sh[J]^.Bul[K] Then Write(T,
+         '  - ') Else If S^.Sh[J]^.Typ=GS_TITLE Then Write(T,'  ') Else Write(T,
+         '    ');
+     WriteLn(T,S^.Sh[J]^.Tx[K]);
+    End;
+  If S^.Notes<>'' Then WriteLn(T,'  Notes: ',S^.Notes);
+  WriteLn(T);
+ End;
+ Close(T);
+ GpExportText:=True;
+End;
+
+{ ---------------------- dialogues ---------------------- }
+
+{ choix d'une couleur parmi les 16 ; -1 si annule }
+Function GpPickColor(Const Title: String; Cur: Integer): Integer;
+Var Sv: TSave; X1,Y1,W,H,I,Sel: Integer; E: TEvent; Done: Boolean;
+ Function Cell(I: Integer; Var CX,CY: Integer): Boolean;
+ Begin
+  CX:=X1+BORDER+16+(I Mod 8)*34;CY:=Y1+BORDER+TITLE_H+16+(I Div 8)*34;
+  Cell:=True;
+ End;
+ Procedure Draw;
+ Var K,CX,CY: Integer;
+ Begin
+  HideMouse;ClipFull;
+  For K:=0 To 15 Do Begin
+   Cell(K,CX,CY);
+   GBar(CX,CY,CX+28,CY+28,K);
+   If K=Sel Then Begin GRect(CX-2,CY-2,CX+30,CY+30,cRed);
+   GRect(CX-3,CY-3,CX+31,CY+31,cRed);End
+   Else GRect(CX-2,CY-2,CX+30,CY+30,cLGr);
+   GRect(CX,CY,CX+28,CY+28,cBlk);
+  End;
+  ShowMouse;
+ End;
+Var K,CX,CY: Integer;
+Begin
+ W:=8*34+40;H:=2*34+TITLE_H+BORDER*2+70;
+ DlgBegin(Sv,W,H,Title,X1,Y1);
+ Sel:=Cur;
+ HideMouse;ClipFull;
+ Button(X1+W Div 2-40,Y1+H-BORDER-34,X1+W Div 2+40,Y1+H-BORDER-12,
+        T3('Cancel','Annuler','Abbruch'),False,False,True);
+ ShowMouse;
+ Draw;
+ Done:=False;GpPickColor:=-1;
+ Repeat
+  PollEvent(E);
+  If E.Kind=EV_KEY Then Begin
+   If E.Key=K_ESC Then Done:=True
+   Else If E.Key=K_ENTER Then Begin GpPickColor:=Sel;Done:=True;End
+   Else If E.Key=K_LEFT Then Begin Sel:=(Sel+15) Mod 16;Draw;End
+   Else If E.Key=K_RIGHT Then Begin Sel:=(Sel+1) Mod 16;Draw;End
+   Else If E.Key=K_UP Then Begin Sel:=(Sel+8) Mod 16;Draw;End
+   Else If E.Key=K_DOWN Then Begin Sel:=(Sel+8) Mod 16;Draw;End;
+  End Else If E.Kind=EV_DOWN Then Begin
+   For K:=0 To 15 Do Begin
+    Cell(K,CX,CY);
+    If InBox(E.X,E.Y,CX,CY,CX+28,CY+28) Then Begin GpPickColor:=K;Done:=True;
+    End;
+   End;
+   If InBox(E.X,E.Y,X1+W Div 2-40,Y1+H-BORDER-34,X1+W Div 2+40,
+       Y1+H-BORDER-12) Then Done:=True;
+  End;
+ Until Done;
+ DlgEnd(Sv);
+End;
+
+{ editeur de texte multi-lignes d'une forme ; True si valide }
+Function GpEditText(Sh: PGpShape; Const Title: String): Boolean;
+Const VR=12;
+Var Sv: TSave; X1,Y1,W,H,CL,CC,Sc,TX0,TY0,I,BY: Integer; E: TEvent;
+    Done,Ok: Boolean; Cp: TGpShape; C: Char;
+    BX: Array[1..8] Of Integer;
+ Procedure Draw;
+ Var K,R,Y,Vc: Integer; S: String;
+ Begin
+  HideMouse;ClipFull;
+  Sunken(TX0-2,TY0-2,TX0+W-BORDER*2-26,TY0+VR*16+2,cWht);
+  Vc:=(W-BORDER*2-40) Div 8;
+  If CC<Sc Then Sc:=CC;
+  If CC>=Sc+Vc Then Sc:=CC-Vc+1;
+  GBar(TX0,TY0,TX0+W-BORDER*2-28,TY0+VR*16,cWht);
+  For R:=0 To VR-1 Do Begin
+   K:=R+1;Y:=TY0+R*16;
+   If K<=Sh^.NT Then Begin
+    If Sh^.Bul[K] Then GText(TX0+2,Y+4,'*',cBlk);
+    S:=Copy(Sh^.Tx[K],Sc+1,Vc-2);
+    GText(TX0+16,Y+4,S,cBlk);
+   End;
+  End;
+  { curseur }
+  GVLine(TX0+16+(CC-Sc)*8,TY0+(CL-1)*16+1,TY0+(CL-1)*16+13,cRed);
+  { boutons a bascule }
+  Button(BX[1],BY,BX[1]+52,BY+20,'Bullet',False,Sh^.Bul[CL],True);
+  Button(BX[2],BY,BX[2]+36,BY+20,'B',False,Sh^.Bold,True);
+  Button(BX[3],BY,BX[3]+36,BY+20,'I',False,Sh^.Ital,True);
+  Button(BX[4],BY,BX[4]+36,BY+20,'U',False,Sh^.Und,True);
+  Button(BX[5],BY,BX[5]+36,BY+20,'L',False,Sh^.Align=0,True);
+  Button(BX[6],BY,BX[6]+36,BY+20,'C',False,Sh^.Align=1,True);
+  Button(BX[7],BY,BX[7]+36,BY+20,'R',False,Sh^.Align=2,True);
+  ShowMouse;
+ End;
+Begin
+ W:=560;H:=TITLE_H+BORDER*2+VR*16+120;
+ DlgBegin(Sv,W,H,Title,X1,Y1);
+ TX0:=X1+BORDER+10;TY0:=Y1+BORDER+TITLE_H+10;
+ BY:=TY0+VR*16+14;
+ BX[1]:=TX0;BX[2]:=TX0+60;BX[3]:=TX0+100;BX[4]:=TX0+140;BX[5]:=TX0+190;
+ BX[6]:=TX0+230;BX[7]:=TX0+270;
+ Cp:=Sh^;
+ If Sh^.NT=0 Then Begin Sh^.NT:=1;Sh^.Tx[1]:='';End;
+ CL:=1;CC:=Length(Sh^.Tx[1]);Sc:=0;
+ HideMouse;ClipFull;
+ Button(X1+W-BORDER-200,Y1+H-BORDER-34,X1+W-BORDER-112,Y1+H-BORDER-12,'OK',True,
+     False,True);
+ Button(X1+W-BORDER-100,Y1+H-BORDER-34,X1+W-BORDER-12,Y1+H-BORDER-12,
+        T3('Cancel','Annuler','Abbruch'),False,False,True);
+ GText(TX0,Y1+H-BORDER-26,'Enter: new line   Tab: bullet',cDGr);
+ ShowMouse;
+ Draw;
+ Done:=False;Ok:=False;
+ Repeat
+  PollEvent(E);
+  If E.Kind=EV_KEY Then Begin
+   Case E.Key Of
+    K_ESC: Done:=True;
+    K_ENTER: If Sh^.NT<GP_MAXTX Then Begin
+      For I:=Sh^.NT DownTo CL+1 Do Begin
+       Sh^.Tx[I+1]:=Sh^.Tx[I];Sh^.Bul[I+1]:=Sh^.Bul[I];Sh^.Ind[I+1]:=Sh^.Ind[I];
+      End;
+      Inc(Sh^.NT);
+      Sh^.Tx[CL+1]:=Copy(Sh^.Tx[CL],CC+1,GP_TXLEN);
+      Sh^.Tx[CL]:=Copy(Sh^.Tx[CL],1,CC);
+      Sh^.Bul[CL+1]:=Sh^.Bul[CL];Sh^.Ind[CL+1]:=Sh^.Ind[CL];
+      Inc(CL);CC:=0;
+     End;
+    K_BKSP: If CC>0 Then Begin Delete(Sh^.Tx[CL],CC,1);Dec(CC);End
+     Else If CL>1 Then Begin
+      CC:=Length(Sh^.Tx[CL-1]);
+      Sh^.Tx[CL-1]:=Copy(Sh^.Tx[CL-1]+Sh^.Tx[CL],1,GP_TXLEN);
+      For I:=CL To Sh^.NT-1 Do Begin
+       Sh^.Tx[I]:=Sh^.Tx[I+1];Sh^.Bul[I]:=Sh^.Bul[I+1];Sh^.Ind[I]:=Sh^.Ind[I+1];
+      End;
+      Dec(Sh^.NT);Dec(CL);
+     End;
+    K_DEL: If CC<Length(Sh^.Tx[CL]) Then Delete(Sh^.Tx[CL],CC+1,1)
+     Else If CL<Sh^.NT Then Begin
+      Sh^.Tx[CL]:=Copy(Sh^.Tx[CL]+Sh^.Tx[CL+1],1,GP_TXLEN);
+      For I:=CL+1 To Sh^.NT-1 Do Begin
+       Sh^.Tx[I]:=Sh^.Tx[I+1];Sh^.Bul[I]:=Sh^.Bul[I+1];Sh^.Ind[I]:=Sh^.Ind[I+1];
+      End;
+      Dec(Sh^.NT);
+     End;
+    K_LEFT: If CC>0 Then Dec(CC) Else If CL>1 Then Begin Dec(CL);
+    CC:=Length(Sh^.Tx[CL]);End;
+    K_RIGHT: If CC<Length(Sh^.Tx[CL]) Then Inc(CC)
+     Else If CL<Sh^.NT Then Begin Inc(CL);CC:=0;End;
+    K_UP: If CL>1 Then Begin Dec(CL);If CC>Length(Sh^.Tx[CL]) Then
+        CC:=Length(Sh^.Tx[CL]);End;
+    K_DOWN: If CL<Sh^.NT Then Begin Inc(CL);
+    If CC>Length(Sh^.Tx[CL]) Then CC:=Length(Sh^.Tx[CL]);End;
+    K_HOME: CC:=0;
+    K_END: CC:=Length(Sh^.Tx[CL]);
+    9: Sh^.Bul[CL]:=Not Sh^.Bul[CL];
+   Else
+    If (E.Key>=32) And (E.Key<256) And (Length(Sh^.Tx[CL])<GP_TXLEN) Then Begin
+     C:=Chr(E.Key);Insert(C,Sh^.Tx[CL],CC+1);Inc(CC);
+    End;
+   End;
+   Draw;
+  End Else If E.Kind=EV_DOWN Then Begin
+   If InBox(E.X,E.Y,X1+W-BORDER-200,Y1+H-BORDER-34,X1+W-BORDER-112,
+       Y1+H-BORDER-12) Then Begin Ok:=True;Done:=True;End
+   Else If InBox(E.X,E.Y,X1+W-BORDER-100,Y1+H-BORDER-34,X1+W-BORDER-12,
+       Y1+H-BORDER-12) Then Done:=True
+   Else If InBox(E.X,E.Y,BX[1],BY,BX[1]+52,
+       BY+20) Then Begin Sh^.Bul[CL]:=Not Sh^.Bul[CL];Draw;End
+   Else If InBox(E.X,E.Y,BX[2],BY,BX[2]+36,
+       BY+20) Then Begin Sh^.Bold:=Not Sh^.Bold;Draw;End
+   Else If InBox(E.X,E.Y,BX[3],BY,BX[3]+36,
+       BY+20) Then Begin Sh^.Ital:=Not Sh^.Ital;Draw;End
+   Else If InBox(E.X,E.Y,BX[4],BY,BX[4]+36,
+       BY+20) Then Begin Sh^.Und:=Not Sh^.Und;Draw;End
+   Else If InBox(E.X,E.Y,BX[5],BY,BX[5]+36,BY+20) Then Begin Sh^.Align:=0;Draw;
+   End
+   Else If InBox(E.X,E.Y,BX[6],BY,BX[6]+36,BY+20) Then Begin Sh^.Align:=1;Draw;
+   End
+   Else If InBox(E.X,E.Y,BX[7],BY,BX[7]+36,BY+20) Then Begin Sh^.Align:=2;Draw;
+   End
+   Else If InBox(E.X,E.Y,TX0,TY0,TX0+W-BORDER*2-28,TY0+VR*16) Then Begin
+    I:=(E.Y-TY0) Div 16+1;
+    If I<=Sh^.NT Then Begin CL:=I;CC:=Min2(Length(Sh^.Tx[CL]),Max2(0,
+        (E.X-TX0-16) Div 8+Sc));Draw;End;
+   End;
+  End;
+ Until Done;
+ DlgEnd(Sv);
+ If Not Ok Then Sh^:=Cp;
+ GpEditText:=Ok;
+End;
+
+{ ---------------------- diaporama ---------------------- }
+
+Procedure GpClipDraw(G: PGp; S: PGpSlide; Num,Rev,X1,Y1,X2,Y2: Integer);
+Begin
+ SetClip(X1,Y1,X2,Y2);
+ GpDrawSlide(G,S,0,0,SCR_W,2,Rev,Num);
+ ClipFull;
+End;
+
+Procedure GpTransition(G: PGp; S: PGpSlide; Num,Kind,Speed: Integer);
+Var Steps,I,J,K,BW,BH,NB,P,T,Dl: Integer; Ord_: Array[0..191] Of Integer;
+Begin
+ Case Speed Of 0: Steps:=18; 2: Steps:=7; Else Steps:=11; End;
+ Dl:=14;
+ Case Kind Of
+  GT_WL,GT_PUSH: For I:=1 To Steps Do Begin
+    GpClipDraw(G,S,Num,0,0,0,SCR_W*I Div Steps-1,SCR_H-1);Delay(Dl);End;
+  GT_WR: For I:=1 To Steps Do Begin
+    GpClipDraw(G,S,Num,0,0,SCR_W-SCR_W*I Div Steps,SCR_W-1,SCR_H-1);Delay(Dl);
+    End;
+  GT_WU: For I:=1 To Steps Do Begin
+    GpClipDraw(G,S,Num,0,0,SCR_H-SCR_H*I Div Steps,SCR_W-1,SCR_H-1);Delay(Dl);
+    End;
+  GT_WD: For I:=1 To Steps Do Begin
+    GpClipDraw(G,S,Num,0,0,0,SCR_W-1,SCR_H*I Div Steps-1);Delay(Dl);End;
+  GT_SPLIT: For I:=1 To Steps Do Begin
+    GpClipDraw(G,S,Num,0,SCR_W Div 2-SCR_W*I Div (2*Steps),0,
+               SCR_W Div 2+SCR_W*I Div (2*Steps),SCR_H-1);Delay(Dl);End;
+  GT_BLIND: For I:=1 To Steps Do
+    For J:=0 To 11 Do
+     GpClipDraw(G,S,Num,0,0,J*40,SCR_W-1,J*40+(40*I Div Steps)-1);
+  GT_CHECK: Begin
+    For K:=0 To 1 Do Begin
+     For J:=0 To 5 Do
+      For I:=0 To 7 Do
+       If ((I+J) And 1)=K Then
+        GpClipDraw(G,S,Num,0,I*80,J*80,I*80+79,J*80+79);
+     Delay(120);
+    End;
+   End;
+  GT_FADE,GT_DISS: Begin
+    If Kind=GT_FADE Then Begin BW:=64;BH:=48;End Else Begin BW:=40;BH:=40;End;
+    NB:=(SCR_W Div BW)*(SCR_H Div BH);
+    If NB>192 Then NB:=192;
+    For I:=0 To NB-1 Do Ord_[I]:=I;
+    For I:=NB-1 DownTo 1 Do Begin
+     J:=Random(I+1);T:=Ord_[I];Ord_[I]:=Ord_[J];Ord_[J]:=T;
+    End;
+    For I:=0 To NB-1 Do Begin
+     P:=Ord_[I];
+     GpClipDraw(G,S,Num,0,(P Mod (SCR_W Div BW))*BW,(P Div (SCR_W Div BW))*BH,
+                (P Mod (SCR_W Div BW))*BW+BW-1,(P Div (SCR_W Div BW))*BH+BH-1);
+     If (I Mod 6)=5 Then Delay(Dl);
+    End;
+   End;
+ End;
+ GpClipDraw(G,S,Num,0,0,0,SCR_W-1,SCR_H-1);
+End;
+
+Function GpAnimCount(S: PGpSlide): Integer;
+Var I,N: Integer;
+Begin
+ N:=0;
+ For I:=1 To S^.NSh Do If S^.Sh[I]^.AEnt<>0 Then Inc(N);
+ GpAnimCount:=N;
+End;
+
+Function GpNextVisible(G: PGp; From,Dir: Integer): Integer;
+Var I: Integer;
+Begin
+ I:=From+Dir;
+ While (I>=1) And (I<=G^.NS) And G^.S[I]^.Hidden Do I:=I+Dir;
+ If (I<1) Or (I>G^.NS) Then I:=0;
+ GpNextVisible:=I;
+End;
+
+Procedure GpShow(G: PGp; From: Integer);
+Var I,J,Rev,N,Nx: Integer; E: TEvent; Done,Adv,Back: Boolean;
+Begin
+ If G^.NS=0 Then Exit;
+ I:=From;
+ If (I<1) Or (I>G^.NS) Then I:=1;
+ If G^.S[I]^.Hidden Then Begin J:=GpNextVisible(G,I,1);If J>0 Then I:=J;End;
+ HideMouse;ClipFull;
+ GBar(0,0,SCR_W-1,SCR_H-1,cBlk);
+ Rev:=0;
+ GpDrawSlide(G,G^.S[I],0,0,SCR_W,2,Rev,I);
+ Done:=False;
+ Repeat
+  PollEvent(E);
+  Adv:=False;Back:=False;
+  If E.Kind=EV_KEY Then Begin
+   Case E.Key Of
+    K_ESC,K_END: Done:=True;
+    K_RIGHT,K_DOWN,K_PGDN,K_ENTER,32,78,110: Adv:=True;
+    K_LEFT,K_UP,K_PGUP,K_BKSP,80,112: Back:=True;
+    K_HOME: Begin
+      GBar(0,0,SCR_W-1,SCR_H-1,cBlk);I:=1;Rev:=0;
+      GpDrawSlide(G,G^.S[I],0,0,SCR_W,2,Rev,I);
+     End;
+   End;
+  End Else If E.Kind=EV_DOWN Then Adv:=True
+  Else If E.Kind=EV_RDOWN Then Back:=True;
+  If Adv Then Begin
+   N:=GpAnimCount(G^.S[I]);
+   If Rev<N Then Begin
+    Inc(Rev);GpDrawSlide(G,G^.S[I],0,0,SCR_W,2,Rev,I);
+   End Else Begin
+    Nx:=GpNextVisible(G,I,1);
+    If Nx=0 Then Done:=True
+    Else Begin
+     I:=Nx;Rev:=0;
+     If G^.S[I]^.Trans<>GT_NONE Then Begin
+      GpTransition(G,G^.S[I],I,G^.S[I]^.Trans,G^.S[I]^.TSpd);
+     End Else Begin
+      GBar(0,0,SCR_W-1,SCR_H-1,cBlk);
+      GpDrawSlide(G,G^.S[I],0,0,SCR_W,2,Rev,I);
+     End;
+    End;
+   End;
+  End;
+  If Back Then Begin
+   If Rev>0 Then Begin
+    Dec(Rev);GpDrawSlide(G,G^.S[I],0,0,SCR_W,2,Rev,I);
+   End Else Begin
+    Nx:=GpNextVisible(G,I,-1);
+    If Nx>0 Then Begin
+     I:=Nx;Rev:=GpAnimCount(G^.S[I]);
+     GBar(0,0,SCR_W-1,SCR_H-1,cBlk);
+     GpDrawSlide(G,G^.S[I],0,0,SCR_W,2,Rev,I);
+    End;
+   End;
+  End;
+ Until Done;
+ NeedFull:=True;
+ ShowMouse;
+End;
+
+{ ---------------------- fenetre GeoPoint ---------------------- }
+
+Const
+ GP_TB = 24;
+ GP_PW = 98;
+ GP_ST = 14;
+ GP_NTOOL = 23;
+
+Type
+ TGpGeo = Record
+  TX1,TY1,TX2,TY2 : Integer;
+  PX1,PY1,PX2,PY2 : Integer;
+  CX1,CY1,CX2,CY2 : Integer;
+  SX,SY,SW        : Integer;
+ End;
+
+Procedure GpUpdateTitle(Wd_: PWindow);
+Var G: PGp; N: String;
+Begin
+ G:=Wd_^.Data;
+ If G^.FileN='' Then N:=G^.Name Else N:=ShortName(G^.FileN);
+ Wd_^.Title:='GeoPoint - '+N;
+ If G^.Dirty Then Wd_^.Title:=Wd_^.Title+' *';
+End;
+
+Procedure GpGeo(Wd_: PWindow; G: PGp; Var Go: TGpGeo);
+Var X1,Y1,X2,Y2,AW,AH: Integer;
+Begin
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ Go.TX1:=X1;Go.TY1:=Y1;Go.TX2:=X2;Go.TY2:=Y1+GP_TB-1;
+ If G^.View=GV_NORMAL Then Go.PX2:=X1+GP_PW-1 Else Go.PX2:=X1-1;
+ Go.PX1:=X1;Go.PY1:=Y1+GP_TB;Go.PY2:=Y2-GP_ST;
+ Go.CX1:=Go.PX2+1;Go.CY1:=Go.PY1;Go.CX2:=X2;Go.CY2:=Y2-GP_ST;
+ AW:=Go.CX2-Go.CX1-24;AH:=Go.CY2-Go.CY1-24;
+ If AH<10 Then AH:=10;
+ Go.SW:=Min2(AW,AH*4 Div 3);
+ If Go.SW<40 Then Go.SW:=40;
+ Go.SX:=Go.CX1+(Go.CX2-Go.CX1-Go.SW) Div 2;
+ Go.SY:=Go.CY1+(Go.CY2-Go.CY1-Go.SW*3 Div 4) Div 2;
+End;
+
+Function GpToolX(I: Integer): Integer;
+Begin
+ GpToolX:=4+I*23+Ord(I>7)*6+Ord(I>14)*6+Ord(I>17)*6+Ord(I>19)*6+Ord(I>21)*6;
+End;
+
+Function GpCurSlide(G: PGp): PGpSlide;
+Begin
+ If (G^.Cur>=1) And (G^.Cur<=G^.NS) Then GpCurSlide:=G^.S[G^.Cur] Else
+     GpCurSlide:=Nil;
+End;
+
+Function GpSelShape(G: PGp): PGpShape;
+Var S: PGpSlide;
+Begin
+ GpSelShape:=Nil;
+ S:=GpCurSlide(G);
+ If (S<>Nil) And (G^.Sel>=1) And (G^.Sel<=S^.NSh) Then
+     GpSelShape:=S^.Sh[G^.Sel];
+End;
+
+Procedure GpTouch(Wd_: PWindow);
+Var G: PGp;
+Begin
+ G:=Wd_^.Data;G^.Dirty:=True;GpUpdateTitle(Wd_);Invalidate(Wd_);
+End;
+
+Procedure GpPushUndo(G: PGp);
+Begin
+ If G^.Undo<>Nil Then Begin GpFreeSlide(G^.Undo);G^.Undo:=Nil;End;
+ If GpCurSlide(G)<>Nil Then Begin
+  G^.Undo:=GpCopySlide(GpCurSlide(G));G^.UndoIdx:=G^.Cur;
+ End;
+End;
+
+{ icone d'un bouton de la barre d'outils }
+Procedure GpToolIcon(I,X,Y: Integer; G: PGp);
+Var Pt: Array[0..5] Of PointType; Sh: PGpShape;
+ Procedure Sw(C: Integer);
+ Begin
+  GBar(X+4,Y+12,X+17,Y+16,C);GRect(X+4,Y+12,X+17,Y+16,cBlk);
+ End;
+Begin
+ Sh:=GpSelShape(G);
+ Case I Of
+  0: Begin Pt[0].X:=X+5;Pt[0].Y:=Y+3;Pt[1].X:=X+5;Pt[1].Y:=Y+16;Pt[2].X:=X+9;
+  Pt[2].Y:=Y+12;
+      Pt[3].X:=X+13;Pt[3].Y:=Y+17;Pt[4].X:=X+15;Pt[4].Y:=Y+15;Pt[5].X:=X+11;
+      Pt[5].Y:=Y+10;
+      GPoly(6,Pt,cBlk,True);End;
+  1: GTextB(X+6,Y+6,'T',cBlk);
+  2: GRect(X+4,Y+5,X+17,Y+14,cBlk);
+  3: GEllipse(X+11,Y+10,7,5,cBlk);
+  4: GLine(X+4,Y+15,X+17,Y+4,cBlk);
+  5: Begin GLine(X+4,Y+15,X+17,Y+5,cBlk);GLine(X+17,Y+5,X+11,Y+6,cBlk);
+  GLine(X+17,Y+5,X+15,Y+11,cBlk);End;
+  6: Begin Pt[0].X:=X+11;Pt[0].Y:=Y+4;Pt[1].X:=X+18;Pt[1].Y:=Y+16;Pt[2].X:=X+4;
+  Pt[2].Y:=Y+16;
+      Pt[3]:=Pt[0];GPoly(4,Pt,cBlk,False);End;
+  7: GText(X+7,Y+6,'*',cBlk);
+  8: GTextB(X+6,Y+6,'B',cBlk);
+  9: GText(X+7,Y+6,'I',cBlk);
+  10: Begin GText(X+7,Y+4,'U',cBlk);GHLine(X+6,X+14,Y+14,cBlk);End;
+  11: Begin GHLine(X+4,X+17,Y+5,cBlk);GHLine(X+4,X+12,Y+9,cBlk);
+  GHLine(X+4,X+17,Y+13,cBlk);End;
+  12: Begin GHLine(X+4,X+17,Y+5,cBlk);GHLine(X+7,X+14,Y+9,cBlk);
+  GHLine(X+4,X+17,Y+13,cBlk);End;
+  13: Begin GHLine(X+4,X+17,Y+5,cBlk);GHLine(X+9,X+17,Y+9,cBlk);
+  GHLine(X+4,X+17,Y+13,cBlk);End;
+  14: Begin GBar(X+4,Y+5,X+6,Y+7,cBlk);GHLine(X+9,X+17,Y+6,cBlk);
+      GBar(X+4,Y+11,X+6,Y+13,cBlk);GHLine(X+9,X+17,Y+12,cBlk);End;
+  15: Begin GText(X+7,Y+3,'F',cBlk);If Sh<>Nil Then Sw(Sh^.Fill) Else Sw(cLBl);
+  End;
+  16: Begin GText(X+7,Y+3,'L',cBlk);If Sh<>Nil Then Sw(Sh^.LineC) Else Sw(cDGr);
+  End;
+  17: Begin GText(X+7,Y+3,'A',cBlk);If Sh<>Nil Then Sw(Sh^.TCol) Else Sw(cBlk);
+  End;
+  18: GText(X+7,Y+6,'-',cBlk);
+  19: GText(X+7,Y+6,'+',cBlk);
+  20: Begin GRect(X+4,Y+4,X+14,Y+13,cBlk);GText(X+12,Y+8,'+',cRed);End;
+  21: Begin GRect(X+4,Y+4,X+14,Y+13,cBlk);GText(X+12,Y+8,'x',cRed);End;
+  22: Begin Pt[0].X:=X+6;Pt[0].Y:=Y+4;Pt[1].X:=X+6;Pt[1].Y:=Y+16;Pt[2].X:=X+17;
+  Pt[2].Y:=Y+10;
+      Pt[3]:=Pt[0];GPoly(4,Pt,cGrn,True);End;
+ End;
+End;
+
+Function GpToolDown(I: Integer; G: PGp): Boolean;
+Var Sh: PGpShape;
+Begin
+ GpToolDown:=False;
+ Sh:=GpSelShape(G);
+ If I<=7 Then GpToolDown:=G^.Tool=I
+ Else If Sh<>Nil Then Case I Of
+  8: GpToolDown:=Sh^.Bold;
+  9: GpToolDown:=Sh^.Ital;
+  10: GpToolDown:=Sh^.Und;
+  11: GpToolDown:=Sh^.Align=0;
+  12: GpToolDown:=Sh^.Align=1;
+  13: GpToolDown:=Sh^.Align=2;
+  14: GpToolDown:=(Sh^.NT>0) And Sh^.Bul[1];
+ End;
+End;
+
+{ position (X,Y) du coin des 8 poignees d'une forme (pixels) }
+Procedure GpHandlePos(Var Go: TGpGeo; Sh: PGpShape; H: Integer; Var HX,
+    HY: Integer);
+Var X1,Y1,X2,Y2: Integer;
+Begin
+ X1:=Go.SX+(Sh^.X*Go.SW) Div 1000;Y1:=Go.SY+(Sh^.Y*Go.SW) Div 1000;
+ X2:=Go.SX+((Sh^.X+Sh^.W)*Go.SW) Div 1000;
+ Y2:=Go.SY+((Sh^.Y+Sh^.H)*Go.SW) Div 1000;
+ Case H Of
+  1: Begin HX:=X1;HY:=Y1;End;
+  2: Begin HX:=(X1+X2) Div 2;HY:=Y1;End;
+  3: Begin HX:=X2;HY:=Y1;End;
+  4: Begin HX:=X2;HY:=(Y1+Y2) Div 2;End;
+  5: Begin HX:=X2;HY:=Y2;End;
+  6: Begin HX:=(X1+X2) Div 2;HY:=Y2;End;
+  7: Begin HX:=X1;HY:=Y2;End;
+ Else Begin HX:=X1;HY:=(Y1+Y2) Div 2;End;
+ End;
+End;
+
+Function GpThumbTop(G: PGp; Var Go: TGpGeo): Integer;
+Begin
+ GpThumbTop:=Go.PY1+22;
+End;
+
+Function GpVisThumbs(Var Go: TGpGeo): Integer;
+Begin
+ GpVisThumbs:=Max2(1,(Go.PY2-Go.PY1-44) Div 66);
+End;
+
+Procedure GpDrawNormal(Wd_: PWindow; G: PGp; Var Go: TGpGeo);
+Var I,Y,V,K,HX,HY: Integer; S: PGpSlide; Sh: PGpShape; Tx: String;
+Begin
+ S:=GpCurSlide(G);
+ { panneau des miniatures }
+ GBar(Go.PX1,Go.PY1,Go.PX2,Go.PY2,cLGr);
+ Sunken(Go.PX1+2,Go.PY1+2,Go.PX2-2,Go.PY2-2,cDGr);
+ V:=GpVisThumbs(Go);
+ If G^.Cur<G^.Top+1 Then G^.Top:=G^.Cur-1;
+ If G^.Cur>G^.Top+V Then G^.Top:=G^.Cur-V;
+ If G^.Top<0 Then G^.Top:=0;
+ Button(Go.PX1+6,Go.PY1+4,Go.PX2-6,Go.PY1+18,'^',False,False,G^.Top>0);
+ Button(Go.PX1+6,Go.PY2-18,Go.PX2-6,Go.PY2-4,'v',False,False,G^.Top+V<G^.NS);
+ SetClip(Go.PX1+3,Go.PY1+20,Go.PX2-3,Go.PY2-20);
+ For I:=G^.Top+1 To Min2(G^.NS,G^.Top+V) Do Begin
+  Y:=GpThumbTop(G,Go)+(I-G^.Top-1)*66-2;
+  If I=G^.Cur Then Begin
+   GBar(Go.PX1+4,Y-2,Go.PX2-4,Y+62,cBlu);
+  End;
+  GText(Go.PX1+6,Y+22,IntStr(I),Ord(I=G^.Cur)*cWht+Ord(I<>G^.Cur)*cWht);
+  GpDrawSlide(G,G^.S[I],Go.PX1+22,Y,68,1,-1,I);
+  If G^.S[I]^.Hidden Then GLine(Go.PX1+22,Y,Go.PX1+90,Y+51,cRed);
+ End;
+ ClipFull;
+ { surface de la diapositive }
+ GBar(Go.CX1,Go.CY1,Go.CX2,Go.CY2,cDGr);
+ If S=Nil Then Begin
+  GText(Go.CX1+20,Go.CY1+20,'No slide. Use Slide > New Slide.',cWht);
+  Exit;
+ End;
+ SetClip(Go.CX1,Go.CY1,Go.CX2,Go.CY2);
+ GBar(Go.SX+5,Go.SY+5,Go.SX+Go.SW+4,Go.SY+Go.SW*3 Div 4+4,cBlk);
+ GpDrawSlide(G,S,Go.SX,Go.SY,Go.SW,0,-1,G^.Cur);
+ Sh:=GpSelShape(G);
+ If Sh<>Nil Then Begin
+  GpHandlePos(Go,Sh,1,HX,HY);
+  K:=HX;Y:=HY;
+  GpHandlePos(Go,Sh,5,HX,HY);
+  GDotRect(K,Y,HX,HY,cRed);
+  For I:=1 To 8 Do Begin
+   GpHandlePos(Go,Sh,I,HX,HY);
+   GBar(HX-3,HY-3,HX+3,HY+3,cWht);GRect(HX-3,HY-3,HX+3,HY+3,cBlk);
+  End;
+ End;
+ ClipFull;
+End;
+
+Procedure GpDrawOutline(Wd_: PWindow; G: PGp; Var Go: TGpGeo);
+Var I,J,K,Y: Integer; S: PGpSlide; Sh: PGpShape; T: String;
+Begin
+ GBar(Go.CX1,Go.CY1,Go.CX2,Go.CY2,cWht);
+ SetClip(Go.CX1,Go.CY1,Go.CX2,Go.CY2);
+ Y:=Go.CY1+6-G^.OutTop*0;
+ For I:=1 To G^.NS Do Begin
+  S:=G^.S[I];
+  If Y>Go.CY2 Then Break;
+  If I=G^.Cur Then GBar(Go.CX1+2,Y-2,Go.CX2-2,Y+12,cBlu);
+  GpDrawSlide(G,S,Go.CX1+8,Y-2,22,1,-1,I);
+  T:=IntStr(I)+'  ';
+  For J:=1 To S^.NSh Do
+   If S^.Sh[J]^.Typ=GS_TITLE Then If S^.Sh[J]^.NT>0 Then T:=T+S^.Sh[J]^.Tx[1];
+  If I=G^.Cur Then GText(Go.CX1+40,Y,T,cWht) Else GTextB(Go.CX1+40,Y,T,cBlk);
+  Inc(Y,18);
+  For J:=1 To S^.NSh Do
+   If S^.Sh[J]^.Typ In [GS_CONTENT,GS_SUB] Then
+    For K:=1 To S^.Sh[J]^.NT Do Begin
+     If Y<=Go.CY2 Then GText(Go.CX1+60,Y,'- '+S^.Sh[J]^.Tx[K],cBlk);
+     Inc(Y,12);
+    End;
+  Inc(Y,6);
+ End;
+ ClipFull;
+End;
+
+Procedure GpSorterCell(Var Go: TGpGeo; I: Integer; Var X,Y: Integer);
+Var Cols: Integer;
+Begin
+ Cols:=Max2(1,(Go.CX2-Go.CX1-8) Div 116);
+ X:=Go.CX1+8+((I-1) Mod Cols)*116;
+ Y:=Go.CY1+8+((I-1) Div Cols)*100;
+End;
+
+Procedure GpDrawSorter(Wd_: PWindow; G: PGp; Var Go: TGpGeo);
+Var I,X,Y: Integer;
+Begin
+ GBar(Go.CX1,Go.CY1,Go.CX2,Go.CY2,cLGr);
+ SetClip(Go.CX1,Go.CY1,Go.CX2,Go.CY2);
+ For I:=1 To G^.NS Do Begin
+  GpSorterCell(Go,I,X,Y);
+  If Y>Go.CY2 Then Break;
+  If I=G^.Cur Then GBar(X-3,Y-3,X+99,Y+81,cBlu);
+  GpDrawSlide(G,G^.S[I],X,Y,96,1,-1,I);
+  GText(X,Y+75,IntStr(I),Ord(I=G^.Cur)*cWht+Ord(I<>G^.Cur)*cBlk);
+  If G^.S[I]^.Trans<>GT_NONE Then GText(X+84,Y+75,'>>',cRed);
+  If G^.S[I]^.Hidden Then GLine(X,Y,X+95,Y+71,cRed);
+ End;
+ ClipFull;
+End;
+
+Procedure GpDrawNotes(Wd_: PWindow; G: PGp; Var Go: TGpGeo);
+Var S: PGpSlide; Ln: Array[0..15] Of String; N,I: Integer;
+Begin
+ GBar(Go.CX1,Go.CY1,Go.CX2,Go.CY2,cLGr);
+ S:=GpCurSlide(G);
+ If S=Nil Then Exit;
+ SetClip(Go.CX1,Go.CY1,Go.CX2,Go.CY2);
+ GpDrawSlide(G,S,Go.CX1+(Go.CX2-Go.CX1-240) Div 2,Go.CY1+10,240,1,-1,G^.Cur);
+ Sunken(Go.CX1+20,Go.CY1+200,Go.CX2-20,Go.CY2-10,cWht);
+ GText(Go.CX1+26,Go.CY1+205,'Speaker notes (double-click to edit):',cDGr);
+ N:=GpWrap(S^.Notes,Max2(10,(Go.CX2-Go.CX1-60) Div 8),Ln);
+ For I:=0 To N-1 Do GText(Go.CX1+26,Go.CY1+222+I*12,Ln[I],cBlk);
+ ClipFull;
+End;
+
+Procedure GpDrawClient(Wd_: PWindow);
+Var G: PGp; Go: TGpGeo; I,X: Integer; S: String; Sh: PGpShape;
+Begin
+ G:=Wd_^.Data;
+ GpGeo(Wd_,G,Go);
+ GBar(Go.TX1,Go.TY1,Go.TX2,Go.TY2,cLGr);
+ For I:=0 To GP_NTOOL-1 Do Begin
+  X:=Go.TX1+GpToolX(I);
+  Button(X,Go.TY1+2,X+21,Go.TY1+GP_TB-2,'',False,GpToolDown(I,G),True);
+  GpToolIcon(I,X,Go.TY1+1,G);
+ End;
+ Case G^.View Of
+  GV_OUTLINE: Begin GBar(Go.PX1,Go.PY1,Go.PX2,Go.PY2,cLGr);
+  GpDrawOutline(Wd_,G,Go);End;
+  GV_SORTER: GpDrawSorter(Wd_,G,Go);
+  GV_NOTES: GpDrawNotes(Wd_,G,Go);
+ Else GpDrawNormal(Wd_,G,Go);
+ End;
+ { barre d'etat }
+ GBar(Go.CX1-Ord(G^.View=GV_NORMAL)*GP_PW,Go.CY2+1,Go.CX2,Go.CY2+GP_ST,cLGr);
+ S:='Slide '+IntStr(G^.Cur)+' / '+IntStr(G^.NS);
+ If GpCurSlide(G)<>Nil Then Begin
+  S:=S+'   '+GpLayName[Min2(7,GpCurSlide(G)^.Lay)]+'   '+
+      GpThemeName[Clamp(GpCurSlide(G)^.Th,1,GpThemeN)];
+  Sh:=GpSelShape(G);
+  If Sh<>Nil Then S:=S+'   ['+Sh^.Name+' '+IntStr(Sh^.X)+','+IntStr(Sh^.Y)+' '+
+      IntStr(Sh^.W)+'x'+IntStr(Sh^.H)+']';
+ End;
+ GText(Go.PX1+6,Go.CY2+4,Copy(S,1,(Go.CX2-Go.PX1-8) Div 8),cBlk);
+End;
+
+{ ---------------------- operations ---------------------- }
+
+Function GpAddNew(Wd_: PWindow; Typ: Integer): PGpShape;
+Var G: PGp; S: PGpSlide; P: PGpShape;
+Begin
+ GpAddNew:=Nil;
+ G:=Wd_^.Data;S:=GpCurSlide(G);
+ If S=Nil Then Exit;
+ GpPushUndo(G);
+ P:=GpNewShape(Typ);
+ P^.X:=300;P^.Y:=250;P^.W:=300;P^.H:=200;
+ P^.Filled:=Not (Typ In [GS_LINE,GS_ARROW,GS_TEXT]);
+ If Typ In [GS_LINE,GS_ARROW] Then Begin P^.H:=0;P^.LineW:=2;P^.LineC:=cBlu;End;
+ If Typ=GS_TEXT Then Begin P^.H:=100;P^.NT:=1;P^.Tx[1]:='Text';P^.LineW:=1;End;
+ If Typ=GS_TABLE Then Begin
+  P^.NT:=3;P^.Tx[1]:='Name|Value|Unit';P^.Tx[2]:='One|1|a';P^.Tx[3]:='Two|2|b';
+  P^.Filled:=False;P^.LineC:=cBlk;P^.Fill:=cBlu;
+ End;
+ If Typ=GS_CHART Then Begin
+  P^.NT:=3;P^.Tx[1]:='A|30';P^.Tx[2]:='B|60';P^.Tx[3]:='C|45';P^.Filled:=True;
+ End;
+ If Not GpAddShape(S,P) Then Exit;
+ G^.Sel:=S^.NSh;G^.Dirty:=True;
+ GpAddNew:=P;
+ GpUpdateTitle(Wd_);Invalidate(Wd_);
+End;
+
+Procedure GpEditSel(Wd_: PWindow);
+Var G: PGp; P: PGpShape; T: String;
+Begin
+ G:=Wd_^.Data;P:=GpSelShape(G);
+ If P=Nil Then Exit;
+ If P^.Typ In [GS_LINE,GS_ARROW,GS_IMAGE] Then Exit;
+ GpPushUndo(G);
+ If P^.Typ=GS_TABLE Then T:='Table (rows, | between cells)'
+ Else If P^.Typ=GS_CHART Then T:='Chart (label|value)'
+ Else T:='Edit Text - '+P^.Name;
+ If GpEditText(P,T) Then GpTouch(Wd_) Else Invalidate(Wd_);
+End;
+
+Procedure GpMoveSlide(Wd_: PWindow; D: Integer);
+Var G: PGp; T: PGpSlide; N: Integer;
+Begin
+ G:=Wd_^.Data;N:=G^.Cur+D;
+ If (G^.Cur<1) Or (N<1) Or (N>G^.NS) Then Exit;
+ T:=G^.S[G^.Cur];G^.S[G^.Cur]:=G^.S[N];G^.S[N]:=T;
+ G^.Cur:=N;GpTouch(Wd_);
+End;
+
+{ rend un indice d'image libre ou 0 }
+Function GpClipArt(G: PGp; AppId: Integer): Integer;
+Var Ic,Bg,W,H,I,Slot: Integer; Im: PGpImg;
+Begin
+ GpClipArt:=0;
+ Slot:=0;
+ For I:=1 To GP_MAXIMG Do If (Slot=0) And (G^.Img[I]=Nil) Then Slot:=I;
+ If Slot=0 Then Exit;
+ Ic:=AppIcon(AppId);
+ Bg:=BigIcon(Ic);
+ If Bg>=0 Then Ic:=Bg;
+ If (Ic<0) Or (Ic>=NICONS+NBIG) Then Exit;
+ W:=IconWd[Ic];H:=IconHt[Ic];
+ New(Im);Im^.Name:=AppTitle(AppId);Im^.FileN:='';Im^.W:=W;Im^.H:=H;
+ Im^.Loaded:=True;GetMem(Im^.Px,LongInt(W)*H);
+ For I:=0 To W*H-1 Do Im^.Px^[I]:=IconPx[Ic]^[I];
+ G^.Img[Slot]:=Im;Inc(G^.NI);
+ GpClipArt:=Slot;
+End;
+
+{ ---------------------- souris ---------------------- }
+
+Function GpSnapV(G: PGp; V: Integer): Integer;
+Begin
+ If G^.Snap Then GpSnapV:=(V+5) Div 10*10 Else GpSnapV:=V;
+End;
+
+Function GpHitShape(G: PGp; S: PGpSlide; LX,LY: Integer): Integer;
+Var I,M: Integer; Sh: PGpShape;
+Begin
+ GpHitShape:=0;
+ For I:=S^.NSh DownTo 1 Do Begin
+  Sh:=S^.Sh[I];
+  If Sh^.Hidden Then Continue;
+  M:=0;
+  If (Sh^.Typ=GS_LINE) Or (Sh^.Typ=GS_ARROW) Then M:=12;
+  If (LX>=Sh^.X-M) And (LX<=Sh^.X+Sh^.W+M) And (LY>=Sh^.Y-M)
+      And (LY<=Sh^.Y+Sh^.H+M) Then Begin
+   GpHitShape:=I;Exit;
+  End;
+ End;
+End;
+
+Procedure GpResize(G: PGp; Sh: PGpShape; H,DX,DY: Integer);
+Var X1,Y1,X2,Y2: Integer;
+Begin
+ X1:=G^.DSX;Y1:=G^.DSY;X2:=G^.DSX+G^.DSW;Y2:=G^.DSY+G^.DSH;
+ Case H Of
+  1: Begin X1:=X1+DX;Y1:=Y1+DY;End;
+  2: Y1:=Y1+DY;
+  3: Begin X2:=X2+DX;Y1:=Y1+DY;End;
+  4: X2:=X2+DX;
+  5: Begin X2:=X2+DX;Y2:=Y2+DY;End;
+  6: Y2:=Y2+DY;
+  7: Begin X1:=X1+DX;Y2:=Y2+DY;End;
+  8: X1:=X1+DX;
+ End;
+ X1:=GpSnapV(G,X1);X2:=GpSnapV(G,X2);Y1:=GpSnapV(G,Y1);Y2:=GpSnapV(G,Y2);
+ If X2-X1<10 Then Begin If H In [1,7,8] Then X1:=X2-10 Else X2:=X1+10;End;
+ If (Y2-Y1<10) And (Sh^.Typ<>GS_LINE) And (Sh^.Typ<>GS_ARROW) Then Begin
+  If H In [1,2,3] Then Y1:=Y2-10 Else Y2:=Y1+10;
+ End;
+ If Y2<Y1 Then Y2:=Y1;
+ Sh^.X:=X1;Sh^.Y:=Y1;Sh^.W:=X2-X1;Sh^.H:=Y2-Y1;
+End;
+
+Procedure GpOnMouse(Wd_: PWindow; Var E: TEvent);
+Var G: PGp; Go: TGpGeo; S: PGpSlide; Sh: PGpShape;
+I,H,HX,HY,LX,LY,T,V,X,Y,Typ: Integer;
+Begin
+ G:=Wd_^.Data;
+ GpGeo(Wd_,G,Go);
+ S:=GpCurSlide(G);
+ { fin de glissement }
+ If E.Kind=EV_UP Then Begin
+  If (G^.DMode=3) And (S<>Nil) Then Begin
+   Sh:=GpSelShape(G);
+   If (Sh<>Nil) And (Sh^.W<20) And (Sh^.H<20) Then Begin
+    If Not (Sh^.Typ In [GS_LINE,GS_ARROW]) Then Begin Sh^.W:=300;Sh^.H:=200;End
+    Else Begin Sh^.W:=300;End;
+   End;
+   If (Sh<>Nil) And (Sh^.Typ=GS_TEXT) Then Begin G^.DMode:=0;GpEditSel(Wd_);End;
+  End;
+  G^.DMode:=0;Exit;
+ End;
+ If (E.Kind=EV_MOVE) And (G^.DMode>0) And (S<>Nil) Then Begin
+  Sh:=GpSelShape(G);
+  If Sh=Nil Then Exit;
+  LX:=((E.X-Go.SX)*1000) Div Go.SW;LY:=((E.Y-Go.SY)*1000) Div Go.SW;
+  If G^.DMode=1 Then Begin
+   Sh^.X:=GpSnapV(G,G^.DSX+LX-G^.DX0);Sh^.Y:=GpSnapV(G,G^.DSY+LY-G^.DY0);
+  End Else If G^.DMode=2 Then GpResize(G,Sh,G^.DHand,LX-G^.DX0,LY-G^.DY0)
+  Else Begin
+   Sh^.X:=GpSnapV(G,Min2(G^.DX0,LX));Sh^.Y:=GpSnapV(G,Min2(G^.DY0,LY));
+   Sh^.W:=Abs(GpSnapV(G,LX)-GpSnapV(G,G^.DX0));
+   Sh^.H:=Abs(GpSnapV(G,LY)-GpSnapV(G,G^.DY0));
+   If Sh^.Typ In [GS_LINE,GS_ARROW] Then Begin
+    Sh^.X:=GpSnapV(G,G^.DX0);Sh^.Y:=GpSnapV(G,G^.DY0);
+    Sh^.W:=GpSnapV(G,LX)-Sh^.X;Sh^.H:=GpSnapV(G,LY)-Sh^.Y;
+    If Sh^.W<0 Then Sh^.W:=0;If Sh^.H<0 Then Sh^.H:=0;
+   End;
+  End;
+  G^.Dirty:=True;Invalidate(Wd_);Exit;
+ End;
+ If E.Kind<>EV_DOWN Then Exit;
+ { barre d'outils }
+ If InBox(E.X,E.Y,Go.TX1,Go.TY1,Go.TX2,Go.TY2) Then Begin
+  For I:=0 To GP_NTOOL-1 Do Begin
+   X:=Go.TX1+GpToolX(I);
+   If InBox(E.X,E.Y,X,Go.TY1+2,X+21,Go.TY1+GP_TB-2) Then Begin
+    Case I Of
+     0..7: Begin G^.Tool:=I;Invalidate(Wd_);End;
+     8: WinCommand(Wd_,CM_GPBOLD);
+     9: WinCommand(Wd_,CM_GPITAL);
+     10: WinCommand(Wd_,CM_GPUND);
+     11: WinCommand(Wd_,CM_GPALL);
+     12: WinCommand(Wd_,CM_GPAC);
+     13: WinCommand(Wd_,CM_GPAR);
+     14: WinCommand(Wd_,CM_GPBUL);
+     15: WinCommand(Wd_,CM_GPFILL);
+     16: WinCommand(Wd_,CM_GPLINEC);
+     17: WinCommand(Wd_,CM_GPTEXTC);
+     18: WinCommand(Wd_,CM_GPFSIZEDN);
+     19: WinCommand(Wd_,CM_GPFSIZEUP);
+     20: WinCommand(Wd_,CM_GPNEWSL);
+     21: WinCommand(Wd_,CM_GPDELSL);
+     22: WinCommand(Wd_,CM_GPSHOWCUR);
+    End;
+   End;
+  End;
+  Exit;
+ End;
+ { vues autres que Normal }
+ If G^.View=GV_SORTER Then Begin
+  For I:=1 To G^.NS Do Begin
+   GpSorterCell(Go,I,X,Y);
+   If InBox(E.X,E.Y,X,Y,X+96,Y+80) Then Begin
+    G^.Cur:=I;G^.Sel:=0;
+    If E.Dbl Then Begin G^.View:=GV_NORMAL;End;
+    Invalidate(Wd_);
+   End;
+  End;
+  Exit;
+ End;
+ If G^.View=GV_OUTLINE Then Begin
+  Y:=Go.CY1+6;
+  For I:=1 To G^.NS Do Begin
+   T:=18;
+   For H:=1 To G^.S[I]^.NSh Do
+    If G^.S[I]^.Sh[H]^.Typ In [GS_CONTENT,GS_SUB] Then Inc(T,
+        12*G^.S[I]^.Sh[H]^.NT);
+   If (E.Y>=Y-2) And (E.Y<Y+T) Then Begin
+    G^.Cur:=I;G^.Sel:=0;
+    If E.Dbl Then Begin G^.View:=GV_NORMAL;End;
+    Invalidate(Wd_);Exit;
+   End;
+   Inc(Y,T+6);
+  End;
+  Exit;
+ End;
+ If G^.View=GV_NOTES Then Begin
+  If E.Dbl And (S<>Nil) Then WinCommand(Wd_,CM_GPNOTES);
+  Exit;
+ End;
+ { panneau des miniatures }
+ If InBox(E.X,E.Y,Go.PX1,Go.PY1,Go.PX2,Go.PY2) Then Begin
+  V:=GpVisThumbs(Go);
+  If E.Y<Go.PY1+20 Then Begin If G^.Top>0 Then Dec(G^.Top);End
+  Else If E.Y>Go.PY2-20 Then Begin If G^.Top+V<G^.NS Then Inc(G^.Top);End
+  Else Begin
+   I:=G^.Top+1+(E.Y-GpThumbTop(G,Go)+2) Div 66;
+   If (I>=1) And (I<=G^.NS) Then Begin G^.Cur:=I;G^.Sel:=0;End;
+  End;
+  Invalidate(Wd_);Exit;
+ End;
+ { surface de la diapositive }
+ If (S=Nil) Or (Not InBox(E.X,E.Y,Go.CX1,Go.CY1,Go.CX2,Go.CY2)) Then Exit;
+ LX:=((E.X-Go.SX)*1000) Div Go.SW;LY:=((E.Y-Go.SY)*1000) Div Go.SW;
+ If G^.Tool>0 Then Begin
+  Typ:=0;
+  Case G^.Tool Of
+   1: Typ:=GS_TEXT;2: Typ:=GS_RECT;3: Typ:=GS_ELL;4: Typ:=GS_LINE;
+   5: Typ:=GS_ARROW;
+   6: Typ:=GS_TRI;7: Typ:=GS_STAR;
+  End;
+  If Typ<>0 Then Begin
+   Sh:=GpAddNew(Wd_,Typ);
+   If Sh<>Nil Then Begin
+    Sh^.X:=GpSnapV(G,LX);Sh^.Y:=GpSnapV(G,LY);Sh^.W:=0;Sh^.H:=0;
+    If Sh^.Typ=GS_TEXT Then Sh^.NT:=1;
+    G^.DMode:=3;G^.DX0:=LX;G^.DY0:=LY;
+   End;
+  End;
+  G^.Tool:=0;Exit;
+ End;
+ { poignees de la forme selectionnee }
+ Sh:=GpSelShape(G);
+ If Sh<>Nil Then
+  For H:=1 To 8 Do Begin
+   GpHandlePos(Go,Sh,H,HX,HY);
+   If InBox(E.X,E.Y,HX-4,HY-4,HX+4,HY+4) Then Begin
+    GpPushUndo(G);
+    G^.DMode:=2;G^.DHand:=H;G^.DX0:=LX;G^.DY0:=LY;
+    G^.DSX:=Sh^.X;G^.DSY:=Sh^.Y;G^.DSW:=Sh^.W;G^.DSH:=Sh^.H;
+    Exit;
+   End;
+  End;
+ I:=GpHitShape(G,S,LX,LY);
+ G^.Sel:=I;
+ If I>0 Then Begin
+  Sh:=S^.Sh[I];
+  If E.Dbl Then Begin GpEditSel(Wd_);Exit;End;
+  If Not Sh^.Locked Then Begin
+   GpPushUndo(G);
+   G^.DMode:=1;G^.DX0:=LX;G^.DY0:=LY;G^.DSX:=Sh^.X;G^.DSY:=Sh^.Y;
+  End;
+ End;
+ Invalidate(Wd_);
+End;
+
+{ ---------------------- clavier ---------------------- }
+
+Procedure GpOnKey(Wd_: PWindow; K: Word);
+Var G: PGp; Sh: PGpShape; S: PGpSlide; D: Integer;
+Begin
+ G:=Wd_^.Data;S:=GpCurSlide(G);Sh:=GpSelShape(G);
+ If G^.Snap Then D:=10 Else D:=2;
+ Case K Of
+  K_DEL: WinCommand(Wd_,CM_GPDEL);
+  K_ESC: Begin G^.Sel:=0;G^.Tool:=0;Invalidate(Wd_);End;
+  K_ENTER: If Sh<>Nil Then WinCommand(Wd_,CM_GPEDITTXT);
+  9: If S<>Nil Then Begin
+      If G^.Sel>=S^.NSh Then G^.Sel:=0 Else Inc(G^.Sel);
+      Invalidate(Wd_);
+     End;
+  K_LEFT: If Sh<>Nil Then Begin GpPushUndo(G);Dec(Sh^.X,D);GpTouch(Wd_);End
+          Else If G^.Cur>1 Then Begin Dec(G^.Cur);Invalidate(Wd_);End;
+  K_RIGHT: If Sh<>Nil Then Begin GpPushUndo(G);Inc(Sh^.X,D);GpTouch(Wd_);End
+          Else If G^.Cur<G^.NS Then Begin Inc(G^.Cur);Invalidate(Wd_);End;
+  K_UP: If Sh<>Nil Then Begin GpPushUndo(G);Dec(Sh^.Y,D);GpTouch(Wd_);End
+          Else If G^.Cur>1 Then Begin Dec(G^.Cur);Invalidate(Wd_);End;
+  K_DOWN: If Sh<>Nil Then Begin GpPushUndo(G);Inc(Sh^.Y,D);GpTouch(Wd_);End
+          Else If G^.Cur<G^.NS Then Begin Inc(G^.Cur);Invalidate(Wd_);End;
+  K_PGUP: If G^.Cur>1 Then Begin Dec(G^.Cur);G^.Sel:=0;Invalidate(Wd_);End;
+  K_PGDN: If G^.Cur<G^.NS Then Begin Inc(G^.Cur);G^.Sel:=0;Invalidate(Wd_);End;
+  K_HOME: Begin G^.Cur:=Min2(1,G^.NS);G^.Sel:=0;Invalidate(Wd_);End;
+  K_END: Begin G^.Cur:=G^.NS;G^.Sel:=0;Invalidate(Wd_);End;
+  K_F5: WinCommand(Wd_,CM_GPSHOW);
+  K_CTRLN: WinCommand(Wd_,CM_GPNEW);
+  K_CTRLO: WinCommand(Wd_,CM_GPOPEN);
+  K_CTRLS: WinCommand(Wd_,CM_GPSAVE);
+  K_CTRLZ: WinCommand(Wd_,CM_GPUNDO);
+  K_CTRLX: WinCommand(Wd_,CM_GPCUT);
+  K_CTRLC: WinCommand(Wd_,CM_GPCOPY);
+  K_CTRLV: WinCommand(Wd_,CM_GPPASTE);
+  4: WinCommand(Wd_,CM_GPDUP);
+ End;
+End;
+
+{ ---------------------- commandes ---------------------- }
+
+Function GpLayoutList: String;
+Var I: Integer; S: String;
+Begin
+ S:='';
+ For I:=0 To 7 Do Begin
+  If I>0 Then S:=S+'|';
+  S:=S+GpLayName[I];
+ End;
+ GpLayoutList:=S;
+End;
+
+Procedure GpSetLayout(G: PGp; S: PGpSlide; Lay: Byte);
+Var I: Integer;
+Begin
+ I:=1;
+ While I<=S^.NSh Do
+  If S^.Sh[I]^.Typ In [GS_TITLE,GS_CONTENT,GS_SUB] Then GpDelShape(S,
+      I) Else Inc(I);
+ GpApplyLayout(G,S,Lay);
+End;
+
+Procedure GpNewPres(Wd_: PWindow);
+Var G: PGp; S: PGpSlide;
+Begin
+ G:=Wd_^.Data;
+ GpClearAll(G);GpInit(G);
+ S:=GpNewSlide(G,0,GL_TITLE);
+ G^.Cur:=1;G^.Dirty:=False;
+ GpUpdateTitle(Wd_);Invalidate(Wd_);
+End;
+
+Function GpOkToDiscard(Wd_: PWindow): Boolean;
+Var G: PGp;
+Begin
+ G:=Wd_^.Data;
+ If Not G^.Dirty Then GpOkToDiscard:=True
+ Else GpOkToDiscard:=Confirm('GeoPoint',
+   T3('Discard the changes?','Abandonner les modifications ?',
+      #196'nderungen verwerfen?'));
+End;
+
+Procedure GpDoSave(Wd_: PWindow; AsNew: Boolean);
+Var G: PGp; P: String;
+Begin
+ G:=Wd_^.Data;
+ P:=G^.FileN;
+ If AsNew Or (P='') Then Begin
+  If P='' Then P:=JoinPath(CurDirStr,'PRESENT.PPT');
+  If Not FileDlg(T3('Save Presentation','Enregistrer la pr'#130'sentation',
+     'Pr'#228'sentation speichern'),'*.PPT',P,True) Then Exit;
+ End;
+ If Pos('.',ShortName(P))=0 Then P:=P+'.PPT';
+ If Not GpSave(G,P) Then
+  Info('GeoPoint',T3('Cannot write the file.','Ecriture impossible.',
+      'Schreibfehler.'));
+ GpUpdateTitle(Wd_);Invalidate(Wd_);
+End;
+
+Procedure GpOpenFile(Wd_: PWindow; Const P: String);
+Var G: PGp;
+Begin
+ G:=Wd_^.Data;
+ If Not GpLoad(G,P) Then Begin
+  Info('GeoPoint',T3('Not a GeoPoint / PowerPnt (.PPT) file.',
+   'Ce n''est pas un fichier GeoPoint / PowerPnt (.PPT).',
+   'Keine GeoPoint-/PowerPnt-Datei (.PPT).'));
+  Exit;
+ End;
+ GpUpdateTitle(Wd_);Invalidate(Wd_);
+End;
+
+Procedure GpOnCommand(Wd_: PWindow; Cmd: Integer);
+Var G: PGp; S: PGpSlide; Sh,P2: PGpShape; I,N,K,Map: Integer; T,L: String;
+    AppMap: Array[1..40] Of Integer; Sv: PGpSlide; DY,DM,DD,DW: Word;
+ Procedure NeedSel;
+ Begin
+ End;
+Begin
+ G:=Wd_^.Data;S:=GpCurSlide(G);Sh:=GpSelShape(G);
+ Case Cmd Of
+  CM_GPNEW: If GpOkToDiscard(Wd_) Then GpNewPres(Wd_);
+  CM_GPOPEN: If GpOkToDiscard(Wd_) Then Begin
+    T:='';
+    If FileDlg(T3('Open Presentation','Ouvrir une pr'#130'sentation',
+        'Pr'#228'sentation '#246'ffnen'),
+       '*.PPT',T,False) Then GpOpenFile(Wd_,T);
+   End;
+  CM_GPSAVE: GpDoSave(Wd_,False);
+  CM_GPSAVEAS: GpDoSave(Wd_,True);
+  CM_GPEXPORT: Begin
+    T:=JoinPath(CurDirStr,'OUTLINE.TXT');
+    If FileDlg(T3('Export Outline','Exporter le plan','Gliederung exportieren'),
+        '*.TXT',T,True) Then
+     If Not GpExportText(G,T) Then Info('GeoPoint',T3('Cannot write the file.',
+         'Ecriture impossible.','Schreibfehler.'));
+   End;
+  CM_GPPROPS: Begin
+    T:=G^.Title;
+    If InputBox('GeoPoint',T3('Title:','Titre :','Titel:'),T,
+        60) Then G^.Title:=T;
+    T:=G^.Author;
+    If InputBox('GeoPoint',T3('Author:','Auteur :','Autor:'),T,
+        60) Then G^.Author:=T;
+    T:=G^.Company;
+    If InputBox('GeoPoint',T3('Company:','Soci'#130't'#130' :','Firma:'),T,
+        60) Then G^.Company:=T;
+    GpTouch(Wd_);
+   End;
+  CM_GPUNDO: If (G^.Undo<>Nil) And (G^.UndoIdx>=1) And (G^.UndoIdx<=G^.NS) Then
+      Begin
+    Sv:=G^.S[G^.UndoIdx];
+    G^.S[G^.UndoIdx]:=G^.Undo;G^.Undo:=Sv;
+    G^.Cur:=G^.UndoIdx;G^.Sel:=0;GpTouch(Wd_);
+   End;
+  CM_GPCUT,CM_GPCOPY: If Sh<>Nil Then Begin
+    If G^.Clip<>Nil Then Dispose(G^.Clip);
+    G^.Clip:=GpCopyShape(Sh);
+    If Cmd=CM_GPCUT Then Begin GpPushUndo(G);GpDelShape(S,G^.Sel);G^.Sel:=0;
+    GpTouch(Wd_);End;
+   End;
+  CM_GPPASTE: If (G^.Clip<>Nil) And (S<>Nil) Then Begin
+    GpPushUndo(G);
+    P2:=GpCopyShape(G^.Clip);
+    P2^.X:=P2^.X+30;P2^.Y:=P2^.Y+30;
+    If GpAddShape(S,P2) Then Begin G^.Sel:=S^.NSh;GpTouch(Wd_);End;
+   End;
+  CM_GPDUP: If Sh<>Nil Then Begin
+    GpPushUndo(G);
+    P2:=GpCopyShape(Sh);P2^.X:=P2^.X+30;P2^.Y:=P2^.Y+30;
+    If GpAddShape(S,P2) Then Begin G^.Sel:=S^.NSh;GpTouch(Wd_);End;
+   End;
+  CM_GPDEL: If Sh<>Nil Then Begin
+    GpPushUndo(G);GpDelShape(S,G^.Sel);G^.Sel:=0;GpTouch(Wd_);
+   End;
+  CM_GPFRONT: If (Sh<>Nil) And (G^.Sel<S^.NSh) Then Begin
+    GpPushUndo(G);
+    For I:=G^.Sel To S^.NSh-1 Do S^.Sh[I]:=S^.Sh[I+1];
+    S^.Sh[S^.NSh]:=Sh;G^.Sel:=S^.NSh;GpTouch(Wd_);
+   End;
+  CM_GPBACK: If (Sh<>Nil) And (G^.Sel>1) Then Begin
+    GpPushUndo(G);
+    For I:=G^.Sel DownTo 2 Do S^.Sh[I]:=S^.Sh[I-1];
+    S^.Sh[1]:=Sh;G^.Sel:=1;GpTouch(Wd_);
+   End;
+  CM_GPEDITTXT: GpEditSel(Wd_);
+  CM_GPGEOM: If Sh<>Nil Then Begin
+    GpPushUndo(G);
+    T:=IntStr(Sh^.X);If InputBox('Position',T3('X (0-1000):','X (0-1000) :',
+        'X (0-1000):'),T,5) Then Sh^.X:=Clamp(StrVal(T,Sh^.X),-500,1500);
+    T:=IntStr(Sh^.Y);If InputBox('Position',T3('Y (0-750):','Y (0-750) :',
+        'Y (0-750):'),T,5) Then Sh^.Y:=Clamp(StrVal(T,Sh^.Y),-500,1250);
+    T:=IntStr(Sh^.W);If InputBox('Size',T3('Width:','Largeur :','Breite:'),T,
+        5) Then Sh^.W:=Clamp(StrVal(T,Sh^.W),0,2000);
+    T:=IntStr(Sh^.H);If InputBox('Size',T3('Height:','Hauteur :','H'#246'he:'),
+        T,5) Then Sh^.H:=Clamp(StrVal(T,Sh^.H),0,1500);
+    T:=IntStr(Sh^.LineW);If InputBox('Line',T3('Line width (0-5):',
+        'Epaisseur (0-5) :','Linienbreite (0-5):'),T,
+        2) Then Sh^.LineW:=Clamp(StrVal(T,1),0,5);
+    Sh^.Filled:=Confirm('Fill',T3('Fill the shape?','Remplir la forme ?',
+        'Form f'#252'llen?'));
+    GpTouch(Wd_);
+   End;
+  CM_GPVNORM: Begin G^.View:=GV_NORMAL;Invalidate(Wd_);End;
+  CM_GPVOUT: Begin G^.View:=GV_OUTLINE;Invalidate(Wd_);End;
+  CM_GPVSORT: Begin G^.View:=GV_SORTER;Invalidate(Wd_);End;
+  CM_GPVNOTES: Begin G^.View:=GV_NOTES;Invalidate(Wd_);End;
+  CM_GPSNAP: G^.Snap:=Not G^.Snap;
+  CM_GPNEWSL: Begin
+    N:=ChoiceBox(T3('New Slide','Nouvelle diapositive','Neue Folie'),
+       T3('Layout','Mise en page','Layout'),GpLayoutList,2);
+    If N>0 Then Begin
+     If GpNewSlide(G,G^.Cur+1,N-1)<>Nil Then Begin G^.Cur:=G^.Cur+1;G^.Sel:=0;
+     GpTouch(Wd_);End;
+    End;
+   End;
+  CM_GPDUPSL: If S<>Nil Then Begin
+    If G^.NS<GP_MAXS Then Begin
+     For I:=G^.NS DownTo G^.Cur+1 Do G^.S[I+1]:=G^.S[I];
+     G^.S[G^.Cur+1]:=GpCopySlide(S);Inc(G^.NS);Inc(G^.Cur);GpTouch(Wd_);
+    End;
+   End;
+  CM_GPDELSL: If (S<>Nil) And Confirm('GeoPoint',T3('Delete this slide?',
+      'Supprimer cette diapositive ?','Diese Folie l'#246'schen?')) Then Begin
+    GpDelSlide(G,G^.Cur);GpTouch(Wd_);
+   End;
+  CM_GPSLUP: GpMoveSlide(Wd_,-1);
+  CM_GPSLDN: GpMoveSlide(Wd_,1);
+  CM_GPLAYOUT: If S<>Nil Then Begin
+    N:=ChoiceBox('Layout',T3('Layout','Mise en page','Layout'),GpLayoutList,
+        S^.Lay+1);
+    If N>0 Then Begin GpPushUndo(G);GpSetLayout(G,S,N-1);G^.Sel:=0;GpTouch(Wd_);
+    End;
+   End;
+  CM_GPTHEME: If S<>Nil Then Begin
+    L:='';
+    For I:=1 To GpThemeN Do Begin If I>1 Then L:=L+'|';L:=L+GpThemeName[I];End;
+    N:=ChoiceBox('Theme',T3('Theme','Th'#232'me','Thema'),L,G^.ThemeIdx);
+    If N>0 Then Begin
+     GpPushUndo(G);
+     GpApplyTheme(G,N,Confirm('Theme',T3('Apply to all slides?',
+         'Appliquer '#133' toutes les diapositives ?',
+         'Auf alle Folien anwenden?')));
+     GpTouch(Wd_);
+    End;
+   End;
+  CM_GPBG: If S<>Nil Then Begin
+    N:=GpPickColor(T3('Background','Arri'#138're-plan','Hintergrund'),S^.Bg);
+    If N>=0 Then Begin GpPushUndo(G);S^.Bg:=N;GpTouch(Wd_);End;
+   End;
+  CM_GPTRANS: If S<>Nil Then Begin
+    L:='';
+    For I:=0 To 10 Do Begin If I>0 Then L:=L+'|';L:=L+GpTransName[I];End;
+    N:=ChoiceBox('Transition',T3('Transition','Transition','Wechsel'),L,
+        S^.Trans+1);
+    If N>0 Then Begin
+     S^.Trans:=N-1;
+     If S^.Trans<>GT_NONE Then Begin
+      K:=ChoiceBox('Transition',T3('Speed','Vitesse','Tempo'),
+          'Slow|Medium|Fast',S^.TSpd+1);
+      If K>0 Then S^.TSpd:=K-1;
+     End;
+     GpTouch(Wd_);
+    End;
+   End;
+  CM_GPHIDE: If S<>Nil Then Begin S^.Hidden:=Not S^.Hidden;GpTouch(Wd_);End;
+  CM_GPNOTES: If S<>Nil Then Begin
+    T:=S^.Notes;
+    If InputBox(T3('Notes','Commentaires','Notizen'),T3('Speaker notes:',
+        'Commentaires :','Notizen:'),T,250) Then Begin
+     S^.Notes:=T;GpTouch(Wd_);
+    End;
+   End;
+  CM_GPTEXTBOX..CM_GPCHART: Begin
+    N:=0;
+    Case Cmd Of
+     CM_GPTEXTBOX: N:=GS_TEXT; CM_GPRECT: N:=GS_RECT; CM_GPROUND: N:=GS_ROUND;
+     CM_GPELL: N:=GS_ELL; CM_GPLINE: N:=GS_LINE; CM_GPARROW: N:=GS_ARROW;
+     CM_GPTRI: N:=GS_TRI; CM_GPDIAM: N:=GS_DIAM; CM_GPPENT: N:=GS_PENT;
+     CM_GPHEX: N:=GS_HEX; CM_GPSTAR: N:=GS_STAR; CM_GPHEART: N:=GS_HEART;
+     CM_GPCALL: N:=GS_CALL; CM_GPPARA: N:=GS_PARA; CM_GPTRAP: N:=GS_TRAP;
+     CM_GPCROSS: N:=GS_CROSS; CM_GPTABLE: N:=GS_TABLE; CM_GPCHART: N:=GS_CHART;
+    End;
+    If N>0 Then Begin
+     P2:=GpAddNew(Wd_,N);
+     If (P2<>Nil) And (N=GS_TEXT) Then GpEditSel(Wd_);
+    End;
+   End;
+  CM_GPCLIP: If S<>Nil Then Begin
+    L:='';N:=0;
+    For I:=1 To NAPPS Do
+     If Not (I In [A_GBADD,A_GBPROP,A_GBFORM,A_BASRUN,A_GEODE,A_ABOUT]) Then
+      If N<40 Then Begin
+       If N>0 Then L:=L+'|';
+       L:=L+Copy(AppTitle(I),1,20);Inc(N);AppMap[N]:=I;
+      End;
+    K:=ChoiceBox('Clip Art',T3('Choose a picture','Choisir une image',
+        'Bild w'#228'hlen'),L,1);
+    If K>0 Then Begin
+     Map:=GpClipArt(G,AppMap[K]);
+     If Map>0 Then Begin
+      GpPushUndo(G);
+      P2:=GpNewShape(GS_IMAGE);
+      P2^.Img:=Map;P2^.X:=350;P2^.Y:=250;P2^.W:=280;
+      P2^.H:=280*G^.Img[Map]^.H Div G^.Img[Map]^.W;P2^.LineW:=0;
+      If GpAddShape(S,P2) Then Begin G^.Sel:=S^.NSh;GpTouch(Wd_);End;
+     End Else Info('Clip Art',T3('No free picture slot.',
+         'Plus d''emplacement d''image.','Kein Bildplatz frei.'));
+    End;
+   End;
+  CM_GPFILL: If Sh<>Nil Then Begin
+    N:=GpPickColor(T3('Fill Color','Couleur de remplissage','F'#252'llfarbe'),
+        Sh^.Fill);
+    If N>=0 Then Begin GpPushUndo(G);Sh^.Fill:=N;Sh^.Filled:=True;GpTouch(Wd_);
+    End;
+   End;
+  CM_GPLINEC: If Sh<>Nil Then Begin
+    N:=GpPickColor(T3('Line Color','Couleur du trait','Linienfarbe'),Sh^.LineC);
+    If N>=0 Then Begin GpPushUndo(G);Sh^.LineC:=N;
+    If Sh^.LineW=0 Then Sh^.LineW:=1;GpTouch(Wd_);End;
+   End;
+  CM_GPTEXTC: If Sh<>Nil Then Begin
+    N:=GpPickColor(T3('Text Color','Couleur du texte','Textfarbe'),Sh^.TCol);
+    If N>=0 Then Begin GpPushUndo(G);Sh^.TCol:=N;GpTouch(Wd_);End;
+   End;
+  CM_GPFSIZEUP: If Sh<>Nil Then Begin GpPushUndo(G);
+  Sh^.FSize:=Min2(72,Sh^.FSize+4);GpTouch(Wd_);End;
+  CM_GPFSIZEDN: If Sh<>Nil Then Begin GpPushUndo(G);
+  Sh^.FSize:=Max2(8,Sh^.FSize-4);GpTouch(Wd_);End;
+  CM_GPBOLD: If Sh<>Nil Then Begin Sh^.Bold:=Not Sh^.Bold;GpTouch(Wd_);End;
+  CM_GPITAL: If Sh<>Nil Then Begin Sh^.Ital:=Not Sh^.Ital;GpTouch(Wd_);End;
+  CM_GPUND: If Sh<>Nil Then Begin Sh^.Und:=Not Sh^.Und;GpTouch(Wd_);End;
+  CM_GPBUL: If Sh<>Nil Then Begin
+    For I:=1 To Sh^.NT Do Sh^.Bul[I]:=Not ((Sh^.NT>0) And Sh^.Bul[1]);
+    GpTouch(Wd_);
+   End;
+  CM_GPALL: If Sh<>Nil Then Begin Sh^.Align:=0;GpTouch(Wd_);End;
+  CM_GPAC: If Sh<>Nil Then Begin Sh^.Align:=1;GpTouch(Wd_);End;
+  CM_GPAR: If Sh<>Nil Then Begin Sh^.Align:=2;GpTouch(Wd_);End;
+  CM_GPANIM: If Sh<>Nil Then Begin
+    N:=ChoiceBox('Animation',T3('Entrance effect','Effet d''entr'#130'e',
+        'Eingangseffekt'),
+       'None|Appear|Fade|Slide Left|Slide '+
+           'Right|Slide Up|Slide Down|Zoom|Spin',Sh^.AEnt+1);
+    If N>0 Then Begin Sh^.AEnt:=N-1;GpTouch(Wd_);End;
+   End;
+  CM_GPSHOW: Begin GpShow(G,1);Invalidate(Wd_);End;
+  CM_GPSHOWCUR: Begin GpShow(G,G^.Cur);Invalidate(Wd_);End;
+  CM_GPFOOT: Begin G^.ShowF:=Not G^.ShowF;GpTouch(Wd_);End;
+  CM_GPNUM: Begin G^.ShowN:=Not G^.ShowN;GpTouch(Wd_);End;
+  CM_GPDATE: Begin G^.ShowD:=Not G^.ShowD;
+    If G^.DateT='' Then Begin
+     GetDate(DY,DM,DD,DW);G^.DateT:=ShortDateStr(DY,DM,DD);
+    End;
+    GpTouch(Wd_);End;
+  CM_GPFOOTTX: Begin
+    T:=G^.FootT;
+    If InputBox('GeoPoint',T3('Footer text:','Texte du pied de page :',
+        'Fu'#225'zeile:'),T,60) Then Begin
+     G^.FootT:=T;G^.ShowF:=True;GpTouch(Wd_);
+    End;
+   End;
+  CM_GPABOUT: Info('GeoPoint','GeoPoint 1.00|'+
+     T3('Presentation software for the GeoWorks clone.',
+        'Logiciel de pr'#130'sentation pour le clone GeoWorks.',
+        'Pr'#228'sentationsprogramm f'#252'r den GeoWorks-Klon.')+'|'+
+     T3('Files: native .PPT (shared with POWERPNT.PAS).',
+        'Fichiers : .PPT natifs (comme POWERPNT.PAS).',
+        'Dateien: native .PPT (wie POWERPNT.PAS).'));
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ End;
+ If S<>Nil Then GpUpdateTitle(Wd_);
+ Invalidate(Wd_);
+End;
+
+Procedure GpPrepareMenus(Wd_: PWindow);
+Var G: PGp; Sh: PGpShape; S: PGpSlide; B: Boolean;
+Begin
+ G:=Wd_^.Data;Sh:=GpSelShape(G);S:=GpCurSlide(G);
+ B:=Sh=Nil;
+ WinSetFlag(Wd_,CM_GPUNDO,1,G^.Undo=Nil);
+ WinSetFlag(Wd_,CM_GPCUT,1,B);WinSetFlag(Wd_,CM_GPCOPY,1,B);
+ WinSetFlag(Wd_,CM_GPDUP,1,B);WinSetFlag(Wd_,CM_GPDEL,1,B);
+ WinSetFlag(Wd_,CM_GPFRONT,1,B);WinSetFlag(Wd_,CM_GPBACK,1,B);
+ WinSetFlag(Wd_,CM_GPEDITTXT,1,B);WinSetFlag(Wd_,CM_GPGEOM,1,B);
+ WinSetFlag(Wd_,CM_GPPASTE,1,G^.Clip=Nil);
+ WinSetFlag(Wd_,CM_GPFILL,1,B);WinSetFlag(Wd_,CM_GPLINEC,1,B);
+ WinSetFlag(Wd_,CM_GPTEXTC,1,B);WinSetFlag(Wd_,CM_GPFSIZEUP,1,B);
+ WinSetFlag(Wd_,CM_GPFSIZEDN,1,B);WinSetFlag(Wd_,CM_GPBOLD,1,B);
+ WinSetFlag(Wd_,CM_GPITAL,1,B);WinSetFlag(Wd_,CM_GPUND,1,B);
+ WinSetFlag(Wd_,CM_GPBUL,1,B);WinSetFlag(Wd_,CM_GPALL,1,B);
+ WinSetFlag(Wd_,CM_GPAC,1,B);WinSetFlag(Wd_,CM_GPAR,1,B);
+ WinSetFlag(Wd_,CM_GPANIM,1,B);
+ WinSetFlag(Wd_,CM_GPVNORM,2,G^.View=GV_NORMAL);
+ WinSetFlag(Wd_,CM_GPVOUT,2,G^.View=GV_OUTLINE);
+ WinSetFlag(Wd_,CM_GPVSORT,2,G^.View=GV_SORTER);
+ WinSetFlag(Wd_,CM_GPVNOTES,2,G^.View=GV_NOTES);
+ WinSetFlag(Wd_,CM_GPSNAP,2,G^.Snap);
+ WinSetFlag(Wd_,CM_GPFOOT,2,G^.ShowF);WinSetFlag(Wd_,CM_GPNUM,2,G^.ShowN);
+ WinSetFlag(Wd_,CM_GPDATE,2,G^.ShowD);
+ WinSetFlag(Wd_,CM_GPHIDE,2,(S<>Nil) And S^.Hidden);
+End;
+
+Function GpCanClose(Wd_: PWindow): Boolean;
+Begin
+ GpCanClose:=GpOkToDiscard(Wd_);
+End;
+
+Procedure GpFree(Wd_: PWindow);
+Var G: PGp;
+Begin
+ G:=Wd_^.Data;
+ GpClearAll(G);
+ Dispose(G);
+End;
+
+Function GpNew(AX,AY: Integer; Const AFile: String): PWindow;
+Var Wd_: PWindow; G: PGp; M: Integer;
+Begin
+ New(Wd_);New(G);GpInit(G);Wd_^.Data:=G;
+ WinInit(Wd_,A_POINT,AX,AY,610,430,'GeoPoint');
+ Wd_^.IconId:=AppIcon(A_POINT);Wd_^.MinW:=420;Wd_^.MinH:=280;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'New~Nouveau~Neu',CM_GPNEW,'Ctrl+N');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_GPOPEN,'Ctrl+O');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_GPSAVE,'Ctrl+S');
+ WinAddItem(Wd_,'Save As...~Enregistrer sous...~Speichern unter...',CM_GPSAVEAS,
+     '');
+ WinAddItem(Wd_,'Export Outline...~Exporter le '+
+     'plan...~Gliederung exportieren...',CM_GPEXPORT,'');
+ WinAddItem(Wd_,'Properties...~Propri'#130't'#130's...~Eigenschaften...',
+     CM_GPPROPS,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Undo~Annuler~R'#129'ckg'#132'ngig',CM_GPUNDO,'Ctrl+Z');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Cut~Couper~Ausschneiden',CM_GPCUT,'Ctrl+X');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_GPCOPY,'Ctrl+C');
+ WinAddItem(Wd_,'Paste~Coller~Einf'#129'gen',CM_GPPASTE,'Ctrl+V');
+ WinAddItem(Wd_,'Duplicate~Dupliquer~Duplizieren',CM_GPDUP,'Ctrl+D');
+ WinAddItem(Wd_,'Delete~Supprimer~L'#148'schen',CM_GPDEL,'Del');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Edit Text...~Modifier le texte...~Text bearbeiten...',
+     CM_GPEDITTXT,'Enter');
+ WinAddItem(Wd_,'Position and Size...~Position et taille...~Position und Gr'+
+     #148#225'e...',CM_GPGEOM,'');
+ WinAddItem(Wd_,'Bring to Front~Premier plan~In den Vordergrund',CM_GPFRONT,'');
+ WinAddItem(Wd_,'Send to Back~Arri'#138're-plan~In den Hintergrund',CM_GPBACK,
+     '');
+ WinAddMenu(Wd_,'View~Affichage~Ansicht');
+ WinAddItem(Wd_,'Normal~Normal~Normal',CM_GPVNORM,'');
+ WinAddItem(Wd_,'Outline~Plan~Gliederung',CM_GPVOUT,'');
+ WinAddItem(Wd_,'Slide Sorter~Trieuse~Foliensortierer',CM_GPVSORT,'');
+ WinAddItem(Wd_,'Notes~Commentaires~Notizen',CM_GPVNOTES,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Snap to Grid~Grille magn'#130'tique~Am Raster ausrichten',
+     CM_GPSNAP,'');
+ WinAddMenu(Wd_,'Insert~Insertion~Einf'#129'gen');
+ WinAddItem(Wd_,'Text Box~Zone de texte~Textfeld',CM_GPTEXTBOX,'');
+ WinAddItem(Wd_,'Rectangle~Rectangle~Rechteck',CM_GPRECT,'');
+ WinAddItem(Wd_,'Rounded Rectangle~Rectangle arrondi~Abger. Rechteck',
+     CM_GPROUND,'');
+ WinAddItem(Wd_,'Ellipse~Ellipse~Ellipse',CM_GPELL,'');
+ WinAddItem(Wd_,'Line~Ligne~Linie',CM_GPLINE,'');
+ WinAddItem(Wd_,'Arrow~Fl'#138'che~Pfeil',CM_GPARROW,'');
+ WinAddItem(Wd_,'Triangle~Triangle~Dreieck',CM_GPTRI,'');
+ WinAddItem(Wd_,'Diamond~Losange~Raute',CM_GPDIAM,'');
+ WinAddItem(Wd_,'Pentagon~Pentagone~F'#129'nfeck',CM_GPPENT,'');
+ WinAddItem(Wd_,'Hexagon~Hexagone~Sechseck',CM_GPHEX,'');
+ WinAddItem(Wd_,'Star~'#144'toile~Stern',CM_GPSTAR,'');
+ WinAddItem(Wd_,'Heart~Coeur~Herz',CM_GPHEART,'');
+ WinAddItem(Wd_,'Callout~Bulle~Sprechblase',CM_GPCALL,'');
+ WinAddItem(Wd_,'Parallelogram~Parall'#130'logramme~Parallelogramm',CM_GPPARA,
+     '');
+ WinAddItem(Wd_,'Trapezoid~Trap'#138'ze~Trapez',CM_GPTRAP,'');
+ WinAddItem(Wd_,'Cross~Croix~Kreuz',CM_GPCROSS,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Table~Tableau~Tabelle',CM_GPTABLE,'');
+ WinAddItem(Wd_,'Chart~Graphique~Diagramm',CM_GPCHART,'');
+ WinAddItem(Wd_,'Clip Art...~Image...~Clipart...',CM_GPCLIP,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Footer~Pied de page~Fu'#225'zeile',CM_GPFOOT,'');
+ WinAddItem(Wd_,'Slide Number~Num'#130'ro de diapositive~Foliennummer',CM_GPNUM,
+     '');
+ WinAddItem(Wd_,'Date~Date~Datum',CM_GPDATE,'');
+ WinAddItem(Wd_,'Footer Text...~Texte du pied...~Fu'#225'zeilentext...',
+     CM_GPFOOTTX,'');
+ WinAddMenu(Wd_,'Slide~Diapositive~Folie');
+ WinAddItem(Wd_,'New Slide...~Nouvelle diapositive...~Neue Folie...',CM_GPNEWSL,
+     '');
+ WinAddItem(Wd_,'Duplicate Slide~Dupliquer~Folie duplizieren',CM_GPDUPSL,'');
+ WinAddItem(Wd_,'Delete Slide~Supprimer~Folie l'#148'schen',CM_GPDELSL,'');
+ WinAddItem(Wd_,'Move Up~Monter~Nach oben',CM_GPSLUP,'');
+ WinAddItem(Wd_,'Move Down~Descendre~Nach unten',CM_GPSLDN,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Layout...~Mise en page...~Layout...',CM_GPLAYOUT,'');
+ WinAddItem(Wd_,'Theme...~Th'#138'me...~Thema...',CM_GPTHEME,'');
+ WinAddItem(Wd_,'Background Color...~Arri'#138're-plan...~Hintergrund...',
+     CM_GPBG,'');
+ WinAddItem(Wd_,'Transition...~Transition...~Wechsel...',CM_GPTRANS,'');
+ WinAddItem(Wd_,'Hide Slide~Masquer~Folie ausblenden',CM_GPHIDE,'');
+ WinAddItem(Wd_,'Notes...~Commentaires...~Notizen...',CM_GPNOTES,'');
+ WinAddMenu(Wd_,'Format~Format~Format');
+ WinAddItem(Wd_,'Fill Color...~Remplissage...~F'#252'llfarbe...',CM_GPFILL,'');
+ WinAddItem(Wd_,'Line Color...~Couleur du trait...~Linienfarbe...',CM_GPLINEC,
+     '');
+ WinAddItem(Wd_,'Text Color...~Couleur du texte...~Textfarbe...',CM_GPTEXTC,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Larger Font~Police plus grande~Gr'#148#225'ere Schrift',
+     CM_GPFSIZEUP,'');
+ WinAddItem(Wd_,'Smaller Font~Police plus petite~Kleinere Schrift',CM_GPFSIZEDN,
+     '');
+ WinAddItem(Wd_,'Bold~Gras~Fett',CM_GPBOLD,'');
+ WinAddItem(Wd_,'Italic~Italique~Kursiv',CM_GPITAL,'');
+ WinAddItem(Wd_,'Underline~Soulign'#130'~Unterstrichen',CM_GPUND,'');
+ WinAddItem(Wd_,'Bullets~Puces~Aufz'#132'hlung',CM_GPBUL,'');
+ WinAddItem(Wd_,'Align Left~Aligner '#133' gauche~Linksb'#252'ndig',CM_GPALL,
+     '');
+ WinAddItem(Wd_,'Center~Centrer~Zentriert',CM_GPAC,'');
+ WinAddItem(Wd_,'Align Right~Aligner '#133' droite~Rechtsb'#252'ndig',CM_GPAR,
+     '');
+ WinAddItem(Wd_,'Animation...~Animation...~Animation...',CM_GPANIM,'');
+ WinAddMenu(Wd_,'Show~Diaporama~Pr'#228'sentation');
+ WinAddItem(Wd_,'View Show~Lancer le diaporama~Pr'#228'sentation starten',
+     CM_GPSHOW,'F5');
+ WinAddItem(Wd_,'From Current Slide~'#133+
+     ' partir de cette diapositive~Ab aktueller Folie',CM_GPSHOWCUR,'');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ WinAddItem(Wd_,'About GeoPoint~A propos de GeoPoint~'#154'ber GeoPoint',
+     CM_GPABOUT,'');
+ If (AFile<>'') And GpLoad(G,AFile) Then Begin End
+ Else If AFile='' Then GpSeed(G);
+ If (AFile<>'') And (G^.NS=0) Then GpSeed(G);
+ GpUpdateTitle(Wd_);
+ GpNew:=Wd_;
 End;
 
 { ====================================================================== }
@@ -26849,6 +29511,7 @@ Begin
   A_PLANNER: PlnDrawClient(W);
   A_DEX: DexDrawClient(W);
   A_DRAW: DrwDrawClient(W);
+  A_POINT: GpDrawClient(W);
   A_GEOCALC,A_GEOFILE: ShtDrawClient(W);
   A_GEODE: GwDrawClient(W);
  Else Begin
@@ -26881,6 +29544,7 @@ Begin
   A_PLANNER: PlnOnMouse(W,E);
   A_DEX: DexOnMouse(W,E);
   A_DRAW: DrwOnMouse(W,E);
+  A_POINT: GpOnMouse(W,E);
   A_GEOCALC,A_GEOFILE: ShtOnMouse(W,E);
   A_GEODE: GwOnMouse(W,E);
  Else Begin End;
@@ -26909,6 +29573,7 @@ Begin
   A_PLANNER: PlnOnKey(W,K);
   A_DEX: DexOnKey(W,K);
   A_DRAW: DrwOnKey(W,K);
+  A_POINT: GpOnKey(W,K);
   A_GEOCALC,A_GEOFILE: ShtOnKey(W,K);
   A_GEODE: GwOnKey(W,K);
  Else Begin End;
@@ -26938,6 +29603,7 @@ Begin
   A_PLANNER: PlnOnCommand(W,Cmd);
   A_DEX: DexOnCommand(W,Cmd);
   A_DRAW: DrwOnCommand(W,Cmd);
+  A_POINT: GpOnCommand(W,Cmd);
   A_GEOCALC,A_GEOFILE: ShtOnCommand(W,Cmd);
   A_GEODE: GwOnCommand(W,Cmd);
  Else CommonCmd(W,Cmd);
@@ -26957,6 +29623,7 @@ Begin
   A_SOLIT: SolPrepareMenus(W);
   A_BANNER: BanPrepareMenus(W);
   A_DRAW: DrwPrepareMenus(W);
+  A_POINT: GpPrepareMenus(W);
   A_SCRAP: ScrPrepareMenus(W);
  Else Begin End;
  End;
@@ -26993,6 +29660,7 @@ Begin
   A_PLANNER: WinCanClose:=PlnCanClose(W);
   A_DEX: WinCanClose:=DexCanClose(W);
   A_DRAW: WinCanClose:=DrwCanClose(W);
+  A_POINT: WinCanClose:=GpCanClose(W);
   A_SCRAP: WinCanClose:=ScrCanClose(W);
   A_GEOCALC,A_GEOFILE: WinCanClose:=ShtCanClose(W);
  Else WinCanClose:=True;
@@ -27025,6 +29693,7 @@ Begin
   A_PLANNER: Begin Dispose(PPlanner(W^.Data)) End;
   A_DEX: Begin Dispose(PDex(W^.Data)) End;
   A_DRAW: Begin Dispose(PDraw(W^.Data)) End;
+  A_POINT: GpFree(W);
   A_GEOCALC,A_GEOFILE: Begin ShtDone(W);Dispose(PSheet(W^.Data)) End;
   A_GEODE: Begin GwDone(W);Dispose(PGeodeWin(W^.Data)) End;
  End;
@@ -27072,6 +29741,7 @@ Begin
   A_PERF: W:=PerfNew(X,Y);
   A_BOUNCE: W:=BncNew(X,Y);
   A_DRAW: W:=DrwNew(X,Y,Param);
+  A_POINT: W:=GpNew(X,Y,Param);
   A_GEOCALC: W:=ShtNew(X,Y,False,Param);
   A_GEOFILE: W:=ShtNew(X,Y,True,Param);
   A_GEODE: W:=GwNew(X,Y,Param);
@@ -27101,6 +29771,101 @@ Begin
   WinResize(W);
   AddWindow(W);
   If AppId=A_GEOBASIC Then GbOpenAll;
+ End;
+End;
+
+{ ====================================================================== }
+{   MENU DU BUREAU : applications en cours, lanceur d'applications avec  }
+{   icones, Extras, Games, Printer Status, GeoManager, sortie vers DOS   }
+{   (clic droit sur le bureau ou F11)                                    }
+{ ====================================================================== }
+Const
+ DM_APP   = 1000;     { +numero d'application }
+ DM_WIN   = 2000;     { +indice de fenetre }
+ DM_PRN   = 3001;
+ DM_GOMGR = 3002;
+ DM_EXIT  = 3003;
+
+Procedure DeskPrinterInfo;
+Const Pn : Array[1..10] Of String[20] = ('Epson FX-80','Epson LQ-1050',
+  'HP LaserJet II','HP LaserJet III','HP DeskJet 500','Canon BubbleJet',
+  'IBM Proprinter','PostScript','Fax Modem','Text only');
+Var N: Integer;
+Begin
+ N:=Clamp(PrinterSel,1,10);
+ Info(T3('Printer Status','Etat de l''imprimante','Druckerstatus'),
+  T3('Printer: ','Imprimante : ','Drucker: ')+Pn[N]+'|'+
+  T3('Port: LPT','Port : LPT','Anschlu'#225': LPT')+IntStr(PrinterPort)+'|'+
+  T3('No print job is waiting.','Aucune impression en attente.',
+     'Kein Druckauftrag in der Warteschlange.'));
+End;
+
+Procedure DeskMenu(X,Y: Integer);
+Var Root,Run,Ext,Gam: Integer; I,C,N: Integer; W: PWindow; T: String;
+
+ Procedure App(M,A: Integer);
+ Begin
+  PopAdd(M,AppTitle(A),DM_APP+A,AppIcon(A),0);
+ End;
+
+Begin
+ PopClear;
+ Root:=PopNew;
+ Run:=PopNew;Ext:=PopNew;Gam:=PopNew;
+ { applications en cours }
+ N:=0;
+ For I:=1 To NWins Do Begin
+  W:=Wins[I];
+  If W^.Kind In [A_GBADD,A_GBPROP,A_GBFORM] Then
+  Else If N<20 Then Begin
+   T:=W^.Title;
+   If Length(T)>30 Then T:=Copy(T,1,30);
+   PopAdd(Run,T,DM_WIN+I,W^.IconId,0);Inc(N);
+  End;
+ End;
+ PopAdd(Root,T3('Running Applications','Applications actives',
+        'Laufende Anwendungen'),0,-1,Run);
+ If N=0 Then PopM[Root].It[1].Dis:=True;
+ PopSep(Root);
+ App(Root,A_CALC);App(Root,A_CLOCK);App(Root,A_PERF);App(Root,A_SCRAP);
+ App(Root,A_DUMP);App(Root,A_TEXTED);App(Root,A_NOTEPAD);
+ PopSep(Root);
+ App(Root,A_PLANNER);App(Root,A_DEX);App(Root,A_COMM);App(Root,A_GEOCALC);
+ App(Root,A_DRAW);App(Root,A_GEOFILE);App(Root,A_POINT);App(Root,A_WRITE);
+ App(Root,A_PREFS);App(Root,A_GEOBASIC);
+ PopSep(Root);
+ PopAdd(Root,'Extras',0,-1,Ext);
+ PopAdd(Root,'Games',0,-1,Gam);
+ PopSep(Root);
+ PopAdd(Root,T3('Printer Status...','Etat de l''imprimante...',
+     'Druckerstatus...'),
+        DM_PRN,-1,0);
+ PopAdd(Root,T3('Go to GeoManager','Aller '#133' GeoManager','Zu GeoManager'),
+        DM_GOMGR,-1,0);
+ PopAdd(Root,T3('Exit to DOS','Quitter vers DOS','Zur'#129'ck zu DOS'),DM_EXIT,
+     -1,0);
+ App(Ext,A_TREE);App(Ext,A_WK1);App(Ext,A_INSTALL);App(Ext,A_GRAPH);
+ App(Ext,A_BANNER);App(Ext,A_AOL);App(Ext,A_DOSPRG);App(Ext,A_HELP);
+ App(Ext,A_ABOUT);
+ App(Gam,A_TETRIS);App(Gam,A_SOLIT);App(Gam,A_BOUNCE);
+ C:=RunPopup(X,Y);
+ If C=0 Then Exit;
+ If (C>DM_APP) And (C<=DM_APP+NAPPS) Then Begin
+  If C-DM_APP=A_ABOUT Then AboutBox Else LaunchApp(C-DM_APP,'');
+ End Else If (C>DM_WIN) And (C<=DM_WIN+NWins) Then Begin
+  W:=Wins[C-DM_WIN];
+  If W^.Iconic Then RestoreWin(W) Else BringToFront(W);
+ End Else If C=DM_PRN Then DeskPrinterInfo
+ Else If C=DM_GOMGR Then Begin
+  W:=Nil;
+  For I:=1 To NWins Do If Wins[I]^.Kind=A_MANAGER Then W:=Wins[I];
+  If W<>Nil Then Begin
+   If W^.Iconic Then RestoreWin(W) Else BringToFront(W);
+  End Else LaunchApp(A_MANAGER,'');
+ End Else If C=DM_EXIT Then Begin
+  If Confirm(T3('Exit','Quitter','Beenden'),
+     T3('Exit to DOS?','Quitter vers DOS ?',
+         'Zur'#129'ck zu DOS?')) Then ExitDesk:=2;
  End;
 End;
 
