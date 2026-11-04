@@ -676,6 +676,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet d'analyser des formats de fichiers PC/GEOS.</td>
 		</tr>
 		<tr>
+			<td><b>GEOWORKS.PAS</b></td>
+			<td>Cette commande permet de lancer un clone graphique de l'environnement GeoWorks Ensemble / GeoWorks Pro : ecran d'accueil (Welcome), bureau, fenetres et menus deroulants, GeoManager (fichiers, icones des geodes, glisser-deposer), applications integrees (Calculatrice, Horloge, Notepad, Text File Editor, GeoWrite, GeoDraw, GeoCalc, GeoFile, GeoPlanner, GeoDex, GeoBanner, Scrapbook, Preferences, GeoComm, Tetris, Solitaire...) et chargeur de geodes «.GEO» avec emulateur 8086 minimal (geoworks /? pour l'aide ; langue selon la variable d'environnement LANGUAGE : EN, GR ou francais par defaut). Les icones et les fonds d'ecran proviennent de GeoWorks Ensemble 1.2.</td>
+		</tr>
+		<tr>
 			<td><b>GOCW32.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Go pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
