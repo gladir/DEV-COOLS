@@ -164,6 +164,16 @@ Var
  Metric    : Boolean;
  CurSym    : String[4];
  CurAfter  : Boolean;
+ LeftHand  : Boolean;      { souris pour gaucher }
+ LightsMin : Integer;      { veille : minutes (0 = jamais) }
+ LightsOk  : Boolean;      { veille autorisee (bureau actif) }
+ LastActCs : LongInt;
+ KeyDelay,KeyRate: Integer;
+ ModemPort,ModemBaud: Integer;
+ ModemTone : Boolean;
+ ModemInit : String[40];
+ PrinterSel,PrinterPort: Integer;
+ TextSize  : Integer;
  Clock24   : Boolean;
  DblCs     : LongInt;      { delai du double-clic (centiemes) }
  ClipIconId: Integer;      { icone copiee depuis le Scrapbook }
@@ -2073,13 +2083,15 @@ Var Ch: Char; K: Word; Nw: LongInt;
 Begin
  E.Kind:=EV_NONE;E.Key:=0;E.X:=MX;E.Y:=MY;E.B:=MB;E.Dbl:=False;
  If KeyPressed Then Begin
-  Ch:=ReadKey;
+  Ch:=ReadKey;LastActCs:=NowCs;
   If Ch=#0 Then K:=256+Ord(ReadKey) Else K:=Ord(Ch);
   E.Kind:=EV_KEY;E.Key:=K;
   Exit;
  End;
  PrevMX:=MX;PrevMY:=MY;LastB:=MB;
  GetMouseState(MX,MY,MB);
+ If LeftHand Then MB:=(MB And 4) Or ((MB And 1) Shl 1) Or ((MB And 2) Shr 1);
+ If (MX<>PrevMX) Or (MY<>PrevMY) Or (MB<>LastB) Then LastActCs:=NowCs;
  If MX<0 Then MX:=0;
  If MY<0 Then MY:=0;
  If MX>SCR_W-1 Then MX:=SCR_W-1;
@@ -3568,15 +3580,33 @@ Begin
 End;
 
 { Boucle principale du bureau ; retourne 1 (accueil) ou 2 (quitter) }
+{ Veille : ecran noir jusqu'a la prochaine activite }
+Procedure LightsOut;
+Var Ch: Char; X,Y,B,X0,Y0: LongInt;
+Begin
+ HideMouse;ClipFull;
+ GBar(0,0,SCR_W-1,SCR_H-1,cBlk);
+ X0:=MX;Y0:=MY;
+ GetMouseState(X,Y,B);X0:=X;Y0:=Y;
+ Repeat
+  GetMouseState(X,Y,B);
+ Until KeyPressed Or (B<>0) Or (Abs(X-X0)>3) Or (Abs(Y-Y0)>3);
+ While KeyPressed Do Ch:=ReadKey;
+ LastActCs:=NowCs;
+ NeedFull:=True;
+ ShowMouse;
+End;
+
 Function DesktopLoop: Integer;
 Var E: TEvent; Tick,Nw: LongInt; I: Integer; W: PWindow; Cmd: Integer;
 Begin
- ExitDesk:=0;Capture:=Nil;
+ ExitDesk:=0;Capture:=Nil;LastActCs:=NowCs;LightsOk:=True;
  NeedFull:=True;
  FlushPaint;
  Tick:=NowCs;
  Repeat
   PollEvent(E);
+  If LightsOk And (LightsMin>0) And (NowCs>=LastActCs) And (NowCs-LastActCs>LightsMin*6000) Then LightsOut;
   Case E.Kind Of
    EV_DOWN,EV_RDOWN:
      If E.Kind=EV_DOWN Then HandleDown(E)
@@ -3615,6 +3645,7 @@ Begin
   If NWins=0 Then ExitDesk:=1;
   FlushPaint;
  Until ExitDesk<>0;
+ LightsOk:=False;
  DesktopLoop:=ExitDesk;
 End;
 
@@ -7814,6 +7845,17 @@ Begin
  WriteLn(F,'Background=',DeskBack);
  WriteLn(F,'BackInk=',DeskInk);
  WriteLn(F,'BackPaper=',DeskPaper);
+ WriteLn(F,'LeftHand=',Ord(LeftHand));
+ WriteLn(F,'LightsOut=',LightsMin);
+ WriteLn(F,'KeyDelay=',KeyDelay);
+ WriteLn(F,'KeyRate=',KeyRate);
+ WriteLn(F,'ModemPort=',ModemPort);
+ WriteLn(F,'ModemBaud=',ModemBaud);
+ WriteLn(F,'ModemTone=',Ord(ModemTone));
+ WriteLn(F,'ModemInit=',ModemInit);
+ WriteLn(F,'Printer=',PrinterSel);
+ WriteLn(F,'PrinterPort=',PrinterPort);
+ WriteLn(F,'TextSize=',TextSize);
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
@@ -7843,7 +7885,18 @@ Begin
    Else If K='SOUND' Then SoundOn:=StrVal(V,1)<>0
    Else If K='BACKGROUND' Then DeskBack:=StrVal(V,DeskBack)
    Else If K='BACKINK' Then DeskInk:=StrVal(V,DeskInk)
-   Else If K='BACKPAPER' Then DeskPaper:=StrVal(V,DeskPaper);
+   Else If K='BACKPAPER' Then DeskPaper:=StrVal(V,DeskPaper)
+   Else If K='LEFTHAND' Then LeftHand:=StrVal(V,0)<>0
+   Else If K='LIGHTSOUT' Then LightsMin:=StrVal(V,0)
+   Else If K='KEYDELAY' Then KeyDelay:=StrVal(V,2)
+   Else If K='KEYRATE' Then KeyRate:=StrVal(V,3)
+   Else If K='MODEMPORT' Then ModemPort:=StrVal(V,1)
+   Else If K='MODEMBAUD' Then ModemBaud:=StrVal(V,5)
+   Else If K='MODEMTONE' Then ModemTone:=StrVal(V,1)<>0
+   Else If K='MODEMINIT' Then ModemInit:=Copy(V,1,40)
+   Else If K='PRINTER' Then PrinterSel:=StrVal(V,1)
+   Else If K='PRINTERPORT' Then PrinterPort:=StrVal(V,1)
+   Else If K='TEXTSIZE' Then TextSize:=StrVal(V,2);
   End;
  End;
  Close(F);
@@ -7933,6 +7986,99 @@ Begin
 End;
 
 
+
+Const
+ BaudTab : Array[1..8] Of LongInt = (300,1200,2400,4800,9600,19200,38400,57600);
+ LightsTab : Array[1..7] Of Integer = (0,1,2,5,10,15,30);
+
+Procedure PrefMouse;
+Var R: Integer; Done: Boolean;
+Begin
+ Done:=False;
+ While Not Done Do Begin
+  R:=ChoiceBox(T3('Mouse','Souris','Maus'),
+     T3('Double-click: ','Double-clic : ','Doppelklick: ')+IntStr(DblCs*10)+' ms   '+
+     T3('Buttons: ','Boutons : ','Tasten: ')+T3('right-handed','droitier','Rechtsh'#132'nder')+Copy('',1,Ord(LeftHand)*0),
+     T3('Double-click speed...|Right-handed|Left-handed|OK','Vitesse du double-clic...|Droitier|Gaucher|OK',
+        'Doppelklick-Geschwindigkeit...|Rechtsh'#132'nder|Linksh'#132'nder|OK'),4);
+  Case R Of
+   1: Begin
+       R:=ChoiceBox(T3('Mouse','Souris','Maus'),T3('Double-click speed:','Vitesse du double-clic :','Doppelklick-Geschwindigkeit:'),
+          T3('Fast|Medium|Slow','Rapide|Moyenne|Lente','Schnell|Mittel|Langsam'),2-Ord(DblCs<=25)+Ord(DblCs>=55));
+       Case R Of 1: DblCs:=25; 2: DblCs:=40; 3: DblCs:=60; End;
+      End;
+   2: LeftHand:=False;
+   3: LeftHand:=True;
+  Else Done:=True;
+  End;
+ End;
+ PrefsSave;
+End;
+
+Procedure PrefModem;
+Var R,K: Integer; S: String; Done: Boolean;
+Begin
+ Done:=False;
+ While Not Done Do Begin
+  S:='COM'+IntStr(ModemPort)+'  '+IntStr(BaudTab[ModemBaud])+' bauds  ';
+  If ModemTone Then S:=S+T3('Tone','Tonalit'#130,'Ton') Else S:=S+T3('Pulse','Impulsions','Impuls');
+  R:=ChoiceBox('Modem',S+'  '+ModemInit,T3('Port...|Speed...|Dialing mode...|Initialization string...|OK',
+     'Port...|Vitesse...|Mode de num'#130'rotation...|Cha'#140'ne d''initialisation...|OK',
+     'Anschlu'#225'...|Geschwindigkeit...|W'#132'hlverfahren...|Initialisierung...|OK'),5);
+  Case R Of
+   1: Begin K:=ChoiceBox('Modem',T3('Serial port:','Port s'#130'rie :','Serielle Schnittstelle:'),'COM1|COM2|COM3|COM4',ModemPort);If K>0 Then ModemPort:=K;End;
+   2: Begin K:=ChoiceBox('Modem',T3('Speed (bps):','Vitesse (bps) :','Geschwindigkeit (bps):'),'300|1200|2400|4800|9600|19200|38400|57600',ModemBaud);If K>0 Then ModemBaud:=K;End;
+   3: Begin K:=ChoiceBox('Modem',T3('Dialing:','Num'#130'rotation :','W'#132'hlen:'),T3('Tone|Pulse','Tonalit'#130'|Impulsions','Ton|Impuls'),2-Ord(ModemTone));If K>0 Then ModemTone:=K=1;End;
+   4: Begin S:=ModemInit;If InputBox('Modem',T3('Initialization string:','Cha'#140'ne d''initialisation :','Initialisierung:'),S,40) Then ModemInit:=S;End;
+  Else Done:=True;
+  End;
+ End;
+ PrefsSave;
+End;
+
+Procedure PrefPrinter;
+Var R: Integer;
+Begin
+ R:=ChoiceBox(T3('Printer','Imprimante','Drucker'),T3('Printer:','Imprimante :','Drucker:'),
+    'Epson FX-80|Epson LQ-1050|HP LaserJet II|HP LaserJet III|HP DeskJet 500|Canon BubbleJet|IBM Proprinter|PostScript|Fax Modem|Text only',PrinterSel);
+ If R>0 Then PrinterSel:=R;
+ R:=ChoiceBox(T3('Printer','Imprimante','Drucker'),T3('Port:','Port :','Anschlu'#225':'),'LPT1|LPT2|LPT3|COM1|COM2|FILE',PrinterPort);
+ If R>0 Then PrinterPort:=R;
+ PrefsSave;
+End;
+
+Procedure PrefKeyboard;
+Var R: Integer;
+Begin
+ R:=ChoiceBox(T3('Keyboard','Clavier','Tastatur'),T3('Key repeat delay:','D'#130'lai de r'#130'p'#130'tition :','Tastenwiederholung:'),
+    T3('Short|Medium|Long|Very long','Court|Moyen|Long|Tr'#138's long','Kurz|Mittel|Lang|Sehr lang'),KeyDelay);
+ If R>0 Then KeyDelay:=R;
+ R:=ChoiceBox(T3('Keyboard','Clavier','Tastatur'),T3('Key repeat rate:','Vitesse de r'#130'p'#130'tition :','Wiederholrate:'),
+    T3('Slow|Medium|Fast|Very fast','Lente|Moyenne|Rapide|Tr'#138's rapide','Langsam|Mittel|Schnell|Sehr schnell'),KeyRate);
+ If R>0 Then KeyRate:=R;
+ PrefsSave;
+End;
+
+Procedure PrefLights;
+Var R: Integer;
+Begin
+ R:=ChoiceBox(T3('Lights Out','Veille','Dunkelschaltung'),T3('Blank the screen after:','Eteindre l'''#130'cran apr'#138's :','Bildschirm abschalten nach:'),
+    T3('Never|1 minute|2 minutes|5 minutes|10 minutes|15 minutes|30 minutes','Jamais|1 minute|2 minutes|5 minutes|10 minutes|15 minutes|30 minutes',
+       'Nie|1 Minute|2 Minuten|5 Minuten|10 Minuten|15 Minuten|30 Minuten'),
+    1+Ord(LightsMin>=1)+Ord(LightsMin>=2)+Ord(LightsMin>=5)+Ord(LightsMin>=10)+Ord(LightsMin>=15)+Ord(LightsMin>=30));
+ If R>0 Then LightsMin:=LightsTab[R];
+ PrefsSave;
+End;
+
+Procedure PrefText;
+Var R: Integer;
+Begin
+ R:=ChoiceBox(T3('Text','Texte','Text'),T3('Default text size:','Taille de texte par d'#130'faut :','Standardtextgr'#148#225'e:'),
+    T3('Small (8)|Medium (10)|Large (14)','Petite (8)|Moyenne (10)|Grande (14)','Klein (8)|Mittel (10)|Gro'#225' (14)'),TextSize);
+ If R>0 Then TextSize:=R;
+ PrefsSave;
+End;
+
 Procedure PrefModule(Wd_: PWindow; I: Integer);
  Var Dt_: PPrefs;
 Var R,K: Integer; S: String; Y,M,D,W,H,Mi,Sc,C: Word;
@@ -7955,12 +8101,12 @@ Begin
      End;
   1: PrefIntl;
   8: PrefDateTime;
-  3: Begin
-      R:=ChoiceBox(T3('Mouse','Souris','Maus'),T3('Double-click speed:','Vitesse du double-clic :','Doppelklick-Geschwindigkeit:'),
-        T3('Fast|Medium|Slow','Rapide|Moyenne|Lente','Schnell|Mittel|Langsam'),3-Ord(DblCs<=25)-Ord(DblCs>=55)*2+1);
-      Case R Of 1: DblCs:=25; 2: DblCs:=40; 3: DblCs:=60; End;
-      PrefsSave;
-     End;
+  3: PrefMouse;
+  4: PrefModem;
+  5: PrefPrinter;
+  11: PrefKeyboard;
+  12: PrefLights;
+  2: PrefText;
   7: Begin
       Info(T3('Computer','Ordinateur','Computer'),
        'PC/GEOS clone '+VERSION_TEXT+'|'+T3('Video: VGA 640x480, 16 colors','Vid'#130'o : VGA 640x480, 16 couleurs','Video: VGA 640x480, 16 Farben')+'|'+
@@ -12959,6 +13105,7 @@ BEGIN
  Level:=StartLvl-1;
  NWins:=0;NextId:=1;NewWinCount:=0;Capture:=Nil;
  DeskBack:=-1;DeskInk:=cBlk;DeskPaper:=cDGr;
+ LeftHand:=False;LightsMin:=0;LightsOk:=False;LastActCs:=0;KeyDelay:=2;KeyRate:=3;ModemPort:=1;ModemBaud:=5;ModemTone:=True;ModemInit:='ATZ';PrinterSel:=1;PrinterPort:=1;TextSize:=2;
  IntlDefaults;Clock24:=Lang<>0;DblCs:=40;ClipIconId:=-1;SoundOn:=True;Randomize;
  If Not MouseDriverFound Then Begin
   WriteLn('Pilote de souris non trouve.');
