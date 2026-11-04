@@ -7250,7 +7250,9 @@ Const
  { classes/fenetres/file de messages, un seul programme charge a la fois  }
  { (meme limitation deja assumee que Win16_ImportModIdx[] etc.). }
  WIN16_MAX_WNDCLASSES = 16;
- WIN16_MAX_WINDOWS    = 8;
+ WIN16_MAX_WINDOWS    = 24;
+ WIN16_MAX_POP        = 16;   { entrees max. d'un menu deroulant }
+ WIN16_MAX_LB         = 24;   { elements max. d'une zone de liste }
  { Barre de titre reelle (2026-09-12, demande explicite) - hissee en        }
  { constante GLOBALE (pas locale a Win16_DrawWindowFrame) car CreateWindow/ }
  { $41 doit AUSSI la connaitre pour garantir une marge suffisante au-dessus }
@@ -7259,14 +7261,16 @@ Const
  { donc cette seule verification/reservation de marge a la creation suffit  }
  { a rendre la barre TOUJOURS visible sans toucher aux ~37 conversions       }
  { CLIENT->ABSOLU deja etablies (Win16_WindowY+1) dans tout ce chantier. }
- WIN16_TITLEBAR_H     = 9;
+ WIN16_TITLEBAR_H     = 14;
+ WIN16_CHAR_W         = 8;   { police systeme 8x8 }
+ WIN16_CHAR_H         = 8;
  { Barre de menu reelle (2026-09-24, demande explicite - "le menu Edit ne  }
  { s'affiche pas") - MEME discipline NON-INVASIVE que WIN16_TITLEBAR_H     }
  { ci-dessus : reservee AU-DESSUS de la boite bordure+client existante,     }
  { entre le bas de la barre de titre et Win16_WindowY, donc AUCUNE des      }
  { ~128 conversions CLIENT->ABSOLU (Win16_WindowY+1) n'a besoin d'etre       }
  { retouchee. }
- WIN16_MENUBAR_H      = 9;
+ WIN16_MENUBAR_H      = 14;
  WIN16_MAX_MENUS      = 8;
  WIN16_MAX_MENU_ITEMS = 8;
  WIN16_MAX_MSGQUEUE   = 32;
@@ -9432,6 +9436,8 @@ Var
  Win16_WindowHWnd      : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
  Win16_WindowClassIdx  : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
  Win16_WindowTitle     : Array[0..WIN16_MAX_WINDOWS - 1] Of String;
+ Win16_WindowStyle     : Array[0..WIN16_MAX_WINDOWS - 1] Of LongInt;
+ Win16_WindowParent    : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
  Win16_WindowX         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
  Win16_WindowY         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
  Win16_WindowW         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
@@ -9475,6 +9481,19 @@ Var
  { menu par fenetre, aucun rendu (Rendu GDI reel HORS DE PORTEE, meme       }
  { discipline que GetSystemMenu/$156). }
  Win16_WindowMenu      : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
+ { Menus deroulants (entrees de chaque menu de la barre) }
+ Win16_PopCount        : Array[0..WIN16_MAX_MENUS - 1, 0..WIN16_MAX_MENU_ITEMS - 1] Of Integer;
+ Win16_PopText         : Array[0..WIN16_MAX_MENUS - 1, 0..WIN16_MAX_MENU_ITEMS - 1, 0..WIN16_MAX_POP - 1] Of String[31];
+ Win16_PopId           : Array[0..WIN16_MAX_MENUS - 1, 0..WIN16_MAX_MENU_ITEMS - 1, 0..WIN16_MAX_POP - 1] Of Word;
+ Win16_PopFlag         : Array[0..WIN16_MAX_MENUS - 1, 0..WIN16_MAX_MENU_ITEMS - 1, 0..WIN16_MAX_POP - 1] Of Word;
+ Win16_MenuParseDepth, Win16_MenuParseTop: Integer;
+ Win16_MenuOpenWin, Win16_MenuOpenTop: Integer;   { -1 : aucun menu ouvert }
+ { Controles predefinis : identifiant, etat, contenu des zones de liste }
+ Win16_WindowId        : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
+ Win16_CtlState        : Array[0..WIN16_MAX_WINDOWS - 1] Of Word;
+ Win16_LbCount         : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_LbSel           : Array[0..WIN16_MAX_WINDOWS - 1] Of Integer;
+ Win16_LbText          : Array[0..WIN16_MAX_WINDOWS - 1, 0..WIN16_MAX_LB - 1] Of String[40];
  { CreateCaret/DestroyCaret/SetCaretPos/HideCaret/ShowCaret/                 }
  { SetCaretBlinkTime/GetCaretBlinkTime/GetCaretPos ($163-169/183,            }
  { 2026-09-23, demande explicite) - UN SEUL caret systeme (mono-tache,       }
@@ -107571,6 +107590,12 @@ Var
  LongTmp: LongInt;
  ChainOfs, ChainNext: Word;
  ChainGuard: Integer;
+ ModMap: Array[1..32] Of Word;
+ MI: Integer;
+ MName: String;
+ MOff: Word;
+ MLen: Byte;
+ MC: Byte;
 Begin
  AutoDataMinAlloc := 0;
  AutoDataLimit := 0;
@@ -107612,6 +107637,8 @@ Begin
  End;
  Win16_WndClassCount := 6;
  Win16_WindowCount := 0;
+ Win16_MenuOpenWin := -1;
+ Win16_MenuOpenTop := -1;
  Win16_NextHWnd := 1;
  Win16_MsgQueueHead := 0;
  Win16_MsgQueueTail := 0;
@@ -107754,6 +107781,31 @@ Begin
   Exit;
  End;
 
+ { Numero de module -> module canonique (1=KERNEL 2=GDI 3=USER 4=KEYBOARD   }
+ { 5=SOUND) PAR NOM : l'ordre de la table des modules importes depend du    }
+ { programme (PAINT.EXE liste GDI en premier, CALENDAR.EXE KERNEL), alors   }
+ { que tout le dispatch suppose l'ordre KERNEL,GDI,USER. }
+ For MI := 1 To 32 Do ModMap[MI] := Word(MI);
+ For MI := 1 To Hdr.ne_cmod Do
+  If MI <= 32 Then Begin
+   Seek(F, HdrOfs + Hdr.ne_modtab + (MI - 1) * 2);
+   BlockRead(F, MOff, 2, BytesRead);
+   Seek(F, HdrOfs + Hdr.ne_imptab + MOff);
+   BlockRead(F, MLen, 1, BytesRead);
+   MName := '';
+   While MLen > 0 Do Begin
+    BlockRead(F, MC, 1, BytesRead);
+    MName := MName + Chr(MC);
+    Dec(MLen);
+   End;
+   MName := UpCaseStr(MName);
+   If MName = 'KERNEL' Then ModMap[MI] := 1
+   Else If MName = 'GDI' Then ModMap[MI] := 2
+   Else If MName = 'USER' Then ModMap[MI] := 3
+   Else If MName = 'KEYBOARD' Then ModMap[MI] := 4
+   Else If MName = 'SOUND' Then ModMap[MI] := 5;
+  End;
+
  { Passe 1 : allouer un segment reel pour chaque segment NE et copier ses  }
  { octets bruts. BOGUE REEL trouve au Stage 5 (2026-08-29, via WIN16RUN    }
  { sur un vrai CLOCK.EXE - voir project_devenv_win16.md) : la queue d'un   }
@@ -107890,6 +107942,7 @@ Begin
     End;
     1: Begin { IMPORTORDINAL }
      ModIdx := Word(Rec[4] Or (Rec[5] Shl 8));
+     If (ModIdx >= 1) And (ModIdx <= 32) Then ModIdx := ModMap[ModIdx];
      Ordinal := Word(Rec[6] Or (Rec[7] Shl 8));
      Slot := Win16_ResolveImportSlot(C, ModIdx, True, Ordinal);
      If Slot >= 0 Then Begin
@@ -107900,6 +107953,7 @@ Begin
     End;
     2: Begin { IMPORTNAME }
      ModIdx := Word(Rec[4] Or (Rec[5] Shl 8));
+     If (ModIdx >= 1) And (ModIdx <= 32) Then ModIdx := ModMap[ModIdx];
      NameOfs := Word(Rec[6] Or (Rec[7] Shl 8));
      Slot := Win16_ResolveImportSlot(C, ModIdx, False, NameOfs);
      If Slot >= 0 Then Begin
@@ -109200,9 +109254,10 @@ End;
 
 Procedure Win16_MenuParseList(CollectTop: Boolean);
 Var
- Opt: Word;
+ Opt, ItemId: Word;
  IsLast, IsPopup: Boolean;
  Txt: String;
+ PopN: Integer;
 Begin
  Repeat
   If Win16_MenuParsePos + 2 > Win16_MenuParseLen Then Exit;
@@ -109211,14 +109266,33 @@ Begin
   Inc(Win16_MenuParsePos, 2);
   IsPopup := (Opt And $0010) <> 0;
   IsLast := (Opt And $0080) <> 0;
-  If Not IsPopup Then Inc(Win16_MenuParsePos, 2); { mtID, absent pour un popup }
+  ItemId := 0;
+  If Not IsPopup Then Begin
+   ItemId := Word(Win16_MenuParseBuf[Win16_MenuParsePos]) Or
+     (Word(Win16_MenuParseBuf[Win16_MenuParsePos + 1]) Shl 8);
+   Inc(Win16_MenuParsePos, 2); { mtID, absent pour un popup }
+  End;
   Txt := Win16_MenuReadText;
   If CollectTop And (Win16_MenuParseOutCnt < WIN16_MAX_MENU_ITEMS) Then Begin
    Win16_MenuParseOutText[Win16_MenuParseOutCnt] := Txt;
+   Win16_MenuParseTop := Win16_MenuParseOutCnt;
+   Win16_PopCount[Win16_MenuSlotCount, Win16_MenuParseTop] := 0;
    Inc(Win16_MenuParseOutCnt);
+  End Else If (Not CollectTop) And (Win16_MenuParseDepth = 1) And
+     (Win16_MenuParseTop >= 0) And (Win16_MenuSlotCount < WIN16_MAX_MENUS) Then
+   If Win16_PopCount[Win16_MenuSlotCount, Win16_MenuParseTop] <
+      WIN16_MAX_POP Then Begin
+    PopN := Win16_PopCount[Win16_MenuSlotCount, Win16_MenuParseTop];
+    Win16_PopText[Win16_MenuSlotCount, Win16_MenuParseTop, PopN] := Txt;
+    Win16_PopId[Win16_MenuSlotCount, Win16_MenuParseTop, PopN] := ItemId;
+    Win16_PopFlag[Win16_MenuSlotCount, Win16_MenuParseTop, PopN] := Opt;
+    Inc(Win16_PopCount[Win16_MenuSlotCount, Win16_MenuParseTop]);
+   End;
+  If IsPopup Then Begin
+   Inc(Win16_MenuParseDepth);
+   Win16_MenuParseList(False); { sous-menu : entrees collectees si niveau 1 }
+   Dec(Win16_MenuParseDepth);
   End;
-  If IsPopup Then Win16_MenuParseList(False); { sous-menu : saute, jamais
-    collecte }
  Until IsLast;
 End;
 
@@ -109311,6 +109385,8 @@ Begin
  Win16_MenuParsePos := 0; { AUCUN MENUHEADER a sauter ici, voir
    Win16_LogMenuDump }
  Win16_MenuParseOutCnt := 0;
+ Win16_MenuParseDepth := 0;
+ Win16_MenuParseTop := -1;
  Win16_MenuParseList(True);
  { Diagnostic temporaire (2026-09-24, "je ne vois toujours pas Edit",     }
  { 2e passe - texte de sous-menu apparait dans la barre) - dump brut       }
@@ -109770,6 +109846,10 @@ End;
 { ce fichier (avec le reste de la police 5x7, TextOut/$33). }
 Procedure Win16_DrawChar5x7(X, Y: Integer; Ch: Char; FgColor, BgColor: Byte);
   Forward;
+Procedure Win16_DrawChar8(X, Y: Integer; Ch: Char; FgColor, BgColor: Byte);
+  Forward;
+Procedure Win16_Rect(X1, Y1, X2, Y2: Integer; Color: Byte); Forward;
+Procedure Win16_FrameRect(X1, Y1, X2, Y2: Integer; Color: Byte); Forward;
 
 { Icone de barre de titre (fleche haut/bas dans un petit carre blanc a      }
 { bordure noire, 7x7) - utilise par Win16_DrawWindowFrame ci-dessous pour   }
@@ -109810,108 +109890,82 @@ End;
 Procedure Win16_DrawWindowFrame(Var P: TEmulatorPanel; WIndex: Integer);
 Var
  X1, Y1, X2, Y2: Integer;
- X, Y: Integer;
- TY1, TY2, TXR: Integer;
- TChI: Integer;
- MenuH, MenuSlot, MBY1, MBX, MI: Integer;
- MItem: String;
+ TY1, TY2, BS, TX1, TX2, TL: Integer;
+ MenuH, MenuSlot, MBY1, MBX, MI, TChI: Integer;
+ MItem, Cap: String;
 Begin
  If (WIndex < 0) Or (WIndex >= Win16_WindowCount) Then Exit;
  X1 := Win16_WindowX[WIndex];
  Y1 := Win16_WindowY[WIndex];
  X2 := X1 + Win16_WindowW[WIndex] - 1;
  Y2 := Y1 + Win16_WindowH[WIndex] - 1;
- { Barre de menu reelle (2026-09-24, demande explicite - "le menu Edit ne  }
- { s'affiche pas") - reservee juste au-dessus de la boite (donc juste sous }
- { la barre de titre, qui remonte d'autant), MEME discipline non-invasive  }
- { que la barre de titre ci-dessous (voir CreateWindow/$41, CWMenuH). }
  MenuSlot := Win16_FindMenuSlot(Win16_WindowMenu[WIndex]);
  If MenuSlot >= 0 Then MenuH := WIN16_MENUBAR_H Else MenuH := 0;
- { Barre de titre BLEUE dessinee AU-DESSUS de la boite bordure+client        }
- { existante (2026-09-12, demande explicite) - DELIBEREMENT NON-INVASIF :   }
- { Win16_WindowX/Y continuent de designer exactement la MEME chose qu avant  }
- { (le coin de la boite bordure+client), donc AUCUNE des ~37 conversions     }
- { CLIENT->ABSOLU deja etablies dans tout ce chantier (Win16_WindowY+1,      }
- { utilisees par MoveTo/LineTo/GetDC/etc.) n a besoin d etre retouchee - un  }
- { refactor global de ce calcul, repete dans des dizaines d ordinaux GDI     }
- { deja verifies un par un cette session, aurait ete disproportionnellement }
- { risque pour ce simple ajout visuel. Necessite une marge d au moins         }
- { WIN16_TITLEBAR_H pixels au-dessus de Win16_WindowY - CreateWindow/$41      }
- { utilise deja Y=10 par defaut (CW_USEDEFAULT, $8000), largement suffisant. }
+ { Fenetre ENFANT (WS_CHILD) : ni titre ni menu ; blanche, bordee de noir   }
+ { seulement avec WS_BORDER ($00800000) ou WS_DLGFRAME. Les controles       }
+ { predefinis (classe sans procedure) se dessinent eux-memes.               }
+ If (Win16_WindowStyle[WIndex] And $40000000) <> 0 Then Begin
+  Win16_Rect(X1, Y1, X2, Y2, 15);
+  If (Win16_WindowStyle[WIndex] And $00C00000) <> 0 Then
+   Win16_FrameRect(X1, Y1, X2, Y2, 0);
+  Exit;
+ End;
+ { Style Windows 2.03 : fond blanc, filets noirs de 1 pixel, boite de menu  }
+ { systeme a gauche, deux boutons fleche (reduire/agrandir) a droite, titre }
+ { centre en noir ; barre de menus blanche sous le titre. }
  If Y1 >= WIN16_TITLEBAR_H + MenuH Then Begin
   TY1 := Y1 - MenuH - WIN16_TITLEBAR_H;
   TY2 := Y1 - MenuH - 1;
-  For Y := TY1 To TY2 Do
-   For X := X1 To X2 Do
-    Emu_VidSetPixel(X, Y, 1); { bleu }
-  { Icone systeme (petit carre blanc a bordure noire + barre horizontale,   }
-  { placeholder generique - aucune icone par application reelle disponible  }
-  { dans ce projet). }
-  For Y := 0 To 6 Do
-   For X := 0 To 6 Do
-    If (X = 0) Or (X = 6) Or (Y = 0) Or (Y = 6) Then
-     Emu_VidSetPixel(X1 + 1 + X, TY1 + 1 + Y, 0)
-    Else
-     Emu_VidSetPixel(X1 + 1 + X, TY1 + 1 + Y, 15);
-  For X := 1 To 5 Do Emu_VidSetPixel(X1 + 1 + X, TY1 + 4, 0);
-  { 2 icones minimiser (fleche bas)/agrandir (fleche haut) a droite. }
-  TXR := X2 - 15;
-  Win16_DrawTitleIcon(TXR, TY1 + 1, False);
-  Win16_DrawTitleIcon(TXR + 8, TY1 + 1, True);
-  { Titre de la fenetre (police 5x7 MAISON, Win16_Font5x7) en blanc sur      }
-  { bleu, apres l icone systeme. }
-  For TChI := 1 To Length(Win16_WindowTitle[WIndex]) Do
-   Win16_DrawChar5x7(X1 + 10 + (TChI - 1) * 6, TY1 + 1,
-    Win16_WindowTitle[WIndex][TChI], 15, 1);
+  BS := WIN16_TITLEBAR_H - 4;                      { cote d'une boite }
+  Win16_Rect(X1, TY1, X2, TY2, 15);
+  Win16_FrameRect(X1, TY1, X2, TY2, 0);
+  { boite du menu systeme (tiret horizontal au centre) }
+  Win16_FrameRect(X1 + 2, TY1 + 2, X1 + 1 + BS, TY1 + 1 + BS, 0);
+  Win16_Rect(X1 + 4, TY1 + 2 + BS Div 2, X1 - 1 + BS, TY1 + 2 + BS Div 2, 0);
+  { boutons reduire (fleche bas) et agrandir (fleche haut) }
+  TX2 := X2 - 2;
+  TX1 := TX2 - 2 * BS - 1;
+  Win16_FrameRect(TX1, TY1 + 2, TX1 + BS - 1, TY1 + 1 + BS, 0);
+  Win16_FrameRect(TX1 + BS + 1, TY1 + 2, TX2, TY1 + 1 + BS, 0);
+  For TChI := 0 To 2 Do Begin
+   Win16_Rect(TX1 + BS Div 2 - TChI, TY1 + 4 + TChI, TX1 + BS Div 2 + TChI,
+     TY1 + 4 + TChI, 0);                                          { bas }
+   Win16_Rect(TX1 + BS + 1 + BS Div 2 - (2 - TChI), TY1 + 4 + TChI,
+     TX1 + BS + 1 + BS Div 2 + (2 - TChI), TY1 + 4 + TChI, 0);    { haut }
+  End;
+  { titre centre entre la boite systeme et les boutons }
+  Cap := Win16_WindowTitle[WIndex];
+  TL := (TX1 - (X1 + BS + 6)) Div WIN16_CHAR_W;
+  If Length(Cap) > TL Then Cap := Copy(Cap, 1, TL);
+  MBX := X1 + BS + 4 + ((TX1 - (X1 + BS + 4)) - Length(Cap) * WIN16_CHAR_W)
+    Div 2;
+  For TChI := 1 To Length(Cap) Do
+   Win16_DrawChar8(MBX + (TChI - 1) * WIN16_CHAR_W, TY1 + 3, Cap[TChI], 0, 15);
  End;
- { Barre de menu GRISE, juste au-dessus de la boite (sous la barre de       }
- { titre remontee ci-dessus) - texte des items de premier niveau REELS       }
- { (Win16_MenuItemText), "&" (mnemonique clavier) simplement omis (aucun     }
- { soulignement modelise). }
  If MenuH > 0 Then Begin
   MBY1 := Y1 - MenuH;
-  For Y := MBY1 To Y1 - 1 Do
-   For X := X1 To X2 Do
-    Emu_VidSetPixel(X, Y, 7); { gris clair }
-  MBX := X1 + 4;
+  Win16_Rect(X1, MBY1, X2, Y1 - 1, 15);
+  Win16_Rect(X1, Y1 - 1, X2, Y1 - 1, 0);
+  Win16_Rect(X1, MBY1, X1, Y1 - 1, 0);
+  Win16_Rect(X2, MBY1, X2, Y1 - 1, 0);
+  MBX := X1 + 8;
   For MI := 0 To Win16_MenuItemCount[MenuSlot] - 1 Do Begin
    MItem := Win16_MenuItemText[MenuSlot, MI];
    For TChI := 1 To Length(MItem) Do
     If MItem[TChI] <> '&' Then Begin
-     Win16_DrawChar5x7(MBX, MBY1 + 1, MItem[TChI], 0, 7);
-     MBX := MBX + 6;
+     Win16_DrawChar8(MBX, MBY1 + 3, MItem[TChI], 0, 15);
+     MBX := MBX + WIN16_CHAR_W;
     End;
-   MBX := MBX + 6;
+   MBX := MBX + 16;
   End;
  End;
- { Fond de la zone client (2026-08-30, signale par l'utilisateur : "le    }
- { fond devrait etre blanc par defaut" - un vrai Windows 2.x/3.x remplit   }
- { l'interieur de la fenetre en blanc (COLOR_WINDOW/WHITE_BRUSH, le pinceau}
- { de fond par defaut de la quasi-totalite des WNDCLASS reelles) AVANT que }
- { l'appli ne dessine quoi que ce soit dessus - jusqu'ici seul le cadre    }
- { 1px etait trace, laissant l'interieur au contenu precedent (souvent     }
- { noir) du framebuffer EmuVideo. Win16_WndClassBg (hbrBackground) est     }
- { deja capture par RegisterClass mais reste un handle GDI synthetique     }
- { (aucune resolution reelle de couleur de pinceau, Stage 6c) - blanc      }
- { simple assume ici, plausible pour la quasi-totalite des vraies apps     }
- { Win16 de cette epoque. }
- For Y := Y1 + 1 To Y2 - 1 Do
-  For X := X1 + 1 To X2 - 1 Do
-   Emu_VidSetPixel(X, Y, 15);
- For X := X1 To X2 Do Begin
-  Emu_VidSetPixel(X, Y1, 15);
-  Emu_VidSetPixel(X, Y2, 15);
- End;
- For Y := Y1 To Y2 Do Begin
-  Emu_VidSetPixel(X1, Y, 15);
-  Emu_VidSetPixel(X2, Y, 15);
- End;
+ { zone cliente blanche bordee de noir }
+ Win16_Rect(X1 + 1, Y1, X2 - 1, Y2 - 1, 15);
+ Win16_Rect(X1, Y1, X1, Y2, 0);
+ Win16_Rect(X2, Y1, X2, Y2, 0);
+ Win16_Rect(X1, Y2, X2, Y2, 0);
 End;
 
-{ Poste un message dans la file circulaire Win16_MsgQueue (Stage 6b/6d/6e  }
-{ - deja cablee ici puisque WM_CREATE, poste au Stage 6b, en a besoin).    }
-{ Simplification documentee : file PLEINE = message silencieusement       }
-{ perdu (jamais observe en pratique, taille 32, un seul programme). }
 Procedure Win16_PostMessage(HWnd, Msg, WParam, LParamLo, LParamHi: Word);
 Begin
  If Win16_MsgQueueCount >= WIN16_MAX_MSGQUEUE Then Exit;
@@ -109933,6 +109987,153 @@ End;
 { CALC.EXE et la quasi-totalite des apps de cette epoque dessinent leurs     }
 { boutons a la main et ne testent QUE WM_LBUTTONDOWN/UP contre leurs           }
 { propres rectangles, jamais le bouton droit/du milieu. }
+{ ---- Menus deroulants (barre de menus Windows 2.03) -------------------- }
+{ Longueur affichee d'un texte de menu ('&' omis). }
+Function Win16_MenuTextLen(Const S: String): Integer;
+Var I, N: Integer;
+Begin
+ N := 0;
+ For I := 1 To Length(S) Do
+  If S[I] <> '&' Then Inc(N);
+ Win16_MenuTextLen := N;
+End;
+
+{ Abscisse du texte du menu Idx de la barre de la fenetre WIdx. }
+Function Win16_MenuTopX(WIdx, Slot, Idx: Integer): Integer;
+Var I, X: Integer;
+Begin
+ X := Win16_WindowX[WIdx] + 8;
+ For I := 0 To Idx - 1 Do
+  X := X + Win16_MenuTextLen(Win16_MenuItemText[Slot, I]) * WIN16_CHAR_W + 16;
+ Win16_MenuTopX := X;
+End;
+
+Function Win16_PopWidth(Slot, Top: Integer): Integer;
+Var I, W, L: Integer;
+Begin
+ W := 0;
+ For I := 0 To Win16_PopCount[Slot, Top] - 1 Do Begin
+  L := Win16_MenuTextLen(Win16_PopText[Slot, Top, I]);
+  If L > W Then W := L;
+ End;
+ Win16_PopWidth := W * WIN16_CHAR_W + 28;
+End;
+
+Procedure Win16_RedrawAll(Var P: TEmulatorPanel);
+Var I: Integer;
+Begin
+ For I := 0 To Win16_WindowCount - 1 Do Begin
+  Win16_DrawWindowFrame(P, I);
+  Win16_WindowNeedsPaint[I] := True;
+ End;
+End;
+
+Procedure Win16_MenuClose(Var P: TEmulatorPanel);
+Begin
+ If Win16_MenuOpenWin >= 0 Then Begin
+  Win16_MenuOpenWin := -1;
+  Win16_MenuOpenTop := -1;
+  Win16_RedrawAll(P);
+ End;
+End;
+
+Procedure Win16_MenuPopupDraw(WIdx: Integer);
+Var
+ Slot, X0, Y0, W, H, K, TX: Integer;
+ T: String;
+ Clr: Byte;
+Begin
+ Slot := Win16_FindMenuSlot(Win16_WindowMenu[WIdx]);
+ If (Slot < 0) Or (Win16_MenuOpenTop < 0) Then Exit;
+ X0 := Win16_MenuTopX(WIdx, Slot, Win16_MenuOpenTop) - 6;
+ Y0 := Win16_WindowY[WIdx];
+ W := Win16_PopWidth(Slot, Win16_MenuOpenTop);
+ H := Win16_PopCount[Slot, Win16_MenuOpenTop] * 10 + 4;
+ Win16_Rect(X0 + 3, Y0 + 3, X0 + W + 2, Y0 + H + 2, 0);   { ombre }
+ Win16_Rect(X0, Y0, X0 + W - 1, Y0 + H - 1, 15);
+ Win16_FrameRect(X0, Y0, X0 + W - 1, Y0 + H - 1, 0);
+ For K := 0 To Win16_PopCount[Slot, Win16_MenuOpenTop] - 1 Do Begin
+  T := Win16_PopText[Slot, Win16_MenuOpenTop, K];
+  If (Win16_PopFlag[Slot, Win16_MenuOpenTop, K] And $0800) <> 0 Then
+   Win16_Rect(X0 + 2, Y0 + 2 + K * 10 + 4, X0 + W - 3, Y0 + 2 + K * 10 + 4, 0)
+  Else Begin
+   If (Win16_PopFlag[Slot, Win16_MenuOpenTop, K] And 3) <> 0 Then Clr := 8
+   Else Clr := 0;
+   TX := X0 + 14;
+   If (Win16_PopFlag[Slot, Win16_MenuOpenTop, K] And 8) <> 0 Then
+    Win16_DrawChar8(X0 + 4, Y0 + 2 + K * 10, #251, Clr, 15);
+   While Length(T) > 0 Do Begin
+    If T[1] = #9 Then Break;
+    If T[1] <> '&' Then Begin
+     Win16_DrawChar8(TX, Y0 + 2 + K * 10, T[1], Clr, 15);
+     TX := TX + WIN16_CHAR_W;
+    End;
+    Delete(T, 1, 1);
+   End;
+  End;
+ End;
+End;
+
+{ Traite un clic gauche (pixels ecran Windows) sur la barre de menus ou un   }
+{ menu deroulant ; True si le clic est consomme. }
+Function Win16_MenuClick(Var P: TEmulatorPanel; ScrX, ScrY: Integer): Boolean;
+Var
+ W, Slot, J, K, X0, Y0, PW, PH, MenuH, NextX: Integer;
+ Id: Word;
+Begin
+ Win16_MenuClick := False;
+ If Win16_MenuOpenWin >= 0 Then Begin
+  W := Win16_MenuOpenWin;
+  Slot := Win16_FindMenuSlot(Win16_WindowMenu[W]);
+  If Slot >= 0 Then Begin
+   X0 := Win16_MenuTopX(W, Slot, Win16_MenuOpenTop) - 6;
+   Y0 := Win16_WindowY[W];
+   PW := Win16_PopWidth(Slot, Win16_MenuOpenTop);
+   PH := Win16_PopCount[Slot, Win16_MenuOpenTop] * 10 + 4;
+   If (ScrX >= X0) And (ScrX < X0 + PW) And (ScrY >= Y0) And (ScrY < Y0 + PH)
+   Then Begin
+    K := (ScrY - Y0 - 2) Div 10;
+    If (K >= 0) And (K < Win16_PopCount[Slot, Win16_MenuOpenTop]) And
+       ((Win16_PopFlag[Slot, Win16_MenuOpenTop, K] And $0803) = 0) Then Begin
+     Id := Win16_PopId[Slot, Win16_MenuOpenTop, K];
+     Win16_MenuClose(P);
+     Win16_PostMessage(Win16_WindowHWnd[W], $0111, Id, 0, 0);
+     Win16_MenuClick := True;
+     Exit;
+    End;
+    Win16_MenuClick := True;
+    Exit;
+   End;
+  End;
+  Win16_MenuClose(P);
+  Win16_MenuClick := True;
+  Exit;
+ End;
+ For W := 0 To Win16_WindowCount - 1 Do Begin
+  Slot := Win16_FindMenuSlot(Win16_WindowMenu[W]);
+  If (Slot >= 0) And ((Win16_WindowStyle[W] And $40000000) = 0) Then Begin
+   MenuH := WIN16_MENUBAR_H;
+   If (ScrX >= Win16_WindowX[W]) And
+      (ScrX <= Win16_WindowX[W] + Win16_WindowW[W]) And
+      (ScrY >= Win16_WindowY[W] - MenuH) And (ScrY < Win16_WindowY[W]) Then Begin
+    For J := 0 To Win16_MenuItemCount[Slot] - 1 Do Begin
+     X0 := Win16_MenuTopX(W, Slot, J) - 6;
+     NextX := X0 + Win16_MenuTextLen(Win16_MenuItemText[Slot, J]) *
+       WIN16_CHAR_W + 12;
+     If (ScrX >= X0) And (ScrX < NextX) And (Win16_PopCount[Slot, J] > 0) Then
+      Begin
+      Win16_MenuOpenWin := W;
+      Win16_MenuOpenTop := J;
+      Win16_MenuPopupDraw(W);
+      Win16_MenuClick := True;
+      Exit;
+     End;
+    End;
+   End;
+  End;
+ End;
+End;
+
 Procedure Win16_HandleMouseEvent(Var P: TEmulatorPanel; HostX, HostY, Kind:
   Integer);
 Var
@@ -109969,7 +110170,11 @@ Begin
  { fenetre dont le rectangle contient ce pixel suffit ; repli sur la        }
  { fenetre 0 si aucune ne correspond exactement (bord arrondi, marge...). }
  WIdx := -1;
- For I := 0 To Win16_WindowCount - 1 Do
+ { clic sur la barre de menus / un menu deroulant : traite a part }
+ If (Kind = 1) And Win16_MenuClick(P, ScrX, ScrY) Then Exit;
+ { fenetre la plus HAUTE (la derniere creee) contenant le point : les      }
+ { enfants sont crees apres leur parent et doivent recevoir le clic. }
+ For I := Win16_WindowCount - 1 DownTo 0 Do
   If (WIdx < 0) And
      (ScrX >= Win16_WindowX[I]) And (ScrX <= Win16_WindowX[I] +
        Win16_WindowW[I]) And
@@ -110526,6 +110731,136 @@ End;
 { 5 bits utiles par octet (bit 4 = colonne la plus a gauche), 7 octets      }
 { (lignes) par glyphe, 37 glyphes (0..25=A-Z, 26..35=0-9, 36=espace). }
 Const
+ Win16_Font8 : Array[0..255,0..7] Of Byte = (
+  ($00,$00,$00,$00,$00,$00,$00,$00),($7E,$81,$A5,$81,$BD,$99,$81,$7E),
+  ($7E,$FF,$DB,$FF,$C3,$E7,$FF,$7E),($6C,$FE,$FE,$FE,$7C,$38,$10,$00),
+  ($10,$38,$7C,$FE,$7C,$38,$10,$00),($38,$7C,$38,$FE,$FE,$7C,$38,$7C),
+  ($10,$10,$38,$7C,$FE,$7C,$38,$7C),($00,$00,$18,$3C,$3C,$18,$00,$00),
+  ($FF,$FF,$E7,$C3,$C3,$E7,$FF,$FF),($00,$3C,$66,$42,$42,$66,$3C,$00),
+  ($FF,$C3,$99,$BD,$BD,$99,$C3,$FF),($0F,$07,$0F,$7D,$CC,$CC,$CC,$78),
+  ($3C,$66,$66,$66,$3C,$18,$7E,$18),($3F,$33,$3F,$30,$30,$70,$F0,$E0),
+  ($7F,$63,$7F,$63,$63,$67,$E6,$C0),($99,$5A,$3C,$E7,$E7,$3C,$5A,$99),
+  ($80,$E0,$F8,$FE,$F8,$E0,$80,$00),($02,$0E,$3E,$FE,$3E,$0E,$02,$00),
+  ($18,$3C,$7E,$18,$18,$7E,$3C,$18),($66,$66,$66,$66,$66,$00,$66,$00),
+  ($7F,$DB,$DB,$7B,$1B,$1B,$1B,$00),($3E,$63,$38,$6C,$6C,$38,$CC,$78),
+  ($00,$00,$00,$00,$7E,$7E,$7E,$00),($18,$3C,$7E,$18,$7E,$3C,$18,$FF),
+  ($18,$3C,$7E,$18,$18,$18,$18,$00),($18,$18,$18,$18,$7E,$3C,$18,$00),
+  ($00,$18,$0C,$FE,$0C,$18,$00,$00),($00,$30,$60,$FE,$60,$30,$00,$00),
+  ($00,$00,$C0,$C0,$C0,$FE,$00,$00),($00,$24,$66,$FF,$66,$24,$00,$00),
+  ($00,$18,$3C,$7E,$FF,$FF,$00,$00),($00,$FF,$FF,$7E,$3C,$18,$00,$00),
+  ($00,$00,$00,$00,$00,$00,$00,$00),($30,$78,$78,$78,$30,$00,$30,$00),
+  ($6C,$6C,$6C,$00,$00,$00,$00,$00),($6C,$6C,$FE,$6C,$FE,$6C,$6C,$00),
+  ($30,$7C,$C0,$78,$0C,$F8,$30,$00),($00,$C6,$CC,$18,$30,$66,$C6,$00),
+  ($38,$6C,$38,$76,$DC,$CC,$76,$00),($60,$60,$C0,$00,$00,$00,$00,$00),
+  ($18,$30,$60,$60,$60,$30,$18,$00),($60,$30,$18,$18,$18,$30,$60,$00),
+  ($00,$66,$3C,$FF,$3C,$66,$00,$00),($00,$30,$30,$FC,$30,$30,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$60),($00,$00,$00,$FC,$00,$00,$00,$00),
+  ($00,$00,$00,$00,$00,$30,$30,$00),($06,$0C,$18,$30,$60,$C0,$80,$00),
+  ($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),($30,$70,$30,$30,$30,$30,$FC,$00),
+  ($78,$CC,$0C,$38,$60,$CC,$FC,$00),($78,$CC,$0C,$38,$0C,$CC,$78,$00),
+  ($1C,$3C,$6C,$CC,$FE,$0C,$1E,$00),($FC,$C0,$F8,$0C,$0C,$CC,$78,$00),
+  ($38,$60,$C0,$F8,$CC,$CC,$78,$00),($FC,$CC,$0C,$18,$30,$30,$30,$00),
+  ($78,$CC,$CC,$78,$CC,$CC,$78,$00),($78,$CC,$CC,$7C,$0C,$18,$70,$00),
+  ($00,$30,$30,$00,$00,$30,$30,$00),($00,$30,$30,$00,$00,$30,$30,$60),
+  ($18,$30,$60,$C0,$60,$30,$18,$00),($00,$00,$FC,$00,$00,$FC,$00,$00),
+  ($60,$30,$18,$0C,$18,$30,$60,$00),($78,$CC,$0C,$18,$30,$00,$30,$00),
+  ($7C,$C6,$DE,$DE,$DE,$C0,$78,$00),($38,$6C,$C6,$C6,$FE,$C6,$C6,$00),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$FC,$00),($7C,$C6,$C6,$C0,$C0,$C6,$7C,$00),
+  ($F8,$CC,$C6,$C6,$C6,$CC,$F8,$00),($FE,$C0,$C0,$FC,$C0,$C0,$FE,$00),
+  ($FE,$C0,$C0,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C0,$CE,$C6,$C6,$7E,$00),
+  ($C6,$C6,$C6,$FE,$C6,$C6,$C6,$00),($78,$30,$30,$30,$30,$30,$78,$00),
+  ($1E,$06,$06,$06,$C6,$C6,$7C,$00),($C6,$CC,$D8,$F0,$D8,$CC,$C6,$00),
+  ($C0,$C0,$C0,$C0,$C0,$C0,$FE,$00),($C6,$EE,$FE,$D6,$C6,$C6,$C6,$00),
+  ($C6,$E6,$F6,$DE,$CE,$C6,$C6,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($FC,$C6,$C6,$FC,$C0,$C0,$C0,$00),($7C,$C6,$C6,$C6,$C6,$C6,$7C,$06),
+  ($FC,$C6,$C6,$FC,$C6,$C6,$C6,$00),($78,$CC,$60,$30,$18,$CC,$78,$00),
+  ($FC,$30,$30,$30,$30,$30,$30,$00),($C6,$C6,$C6,$C6,$C6,$C6,$7C,$00),
+  ($C6,$C6,$C6,$C6,$C6,$6C,$38,$00),($C6,$C6,$C6,$D6,$FE,$EE,$C6,$00),
+  ($C6,$C6,$6C,$38,$6C,$C6,$C6,$00),($C3,$C3,$66,$3C,$18,$18,$18,$00),
+  ($FE,$0C,$18,$30,$60,$C0,$FE,$00),($3C,$30,$30,$30,$30,$30,$3C,$00),
+  ($C0,$60,$30,$18,$0C,$06,$03,$00),($3C,$0C,$0C,$0C,$0C,$0C,$3C,$00),
+  ($00,$38,$6C,$C6,$00,$00,$00,$00),($00,$00,$00,$00,$00,$00,$00,$FF),
+  ($30,$30,$18,$00,$00,$00,$00,$00),($00,$00,$7C,$06,$7E,$C6,$7E,$00),
+  ($C0,$C0,$FC,$C6,$C6,$E6,$DC,$00),($00,$00,$7C,$C6,$C0,$C0,$7E,$00),
+  ($06,$06,$7E,$C6,$C6,$CE,$76,$00),($00,$00,$7C,$C6,$FE,$C0,$7E,$00),
+  ($1E,$30,$7C,$30,$30,$30,$30,$00),($00,$00,$7E,$C6,$CE,$76,$06,$7C),
+  ($C0,$C0,$FC,$C6,$C6,$C6,$C6,$00),($18,$00,$38,$18,$18,$18,$3C,$00),
+  ($18,$00,$38,$18,$18,$18,$18,$F0),($C0,$C0,$CC,$D8,$F0,$D8,$CC,$00),
+  ($38,$18,$18,$18,$18,$18,$3C,$00),($00,$00,$CC,$FE,$D6,$C6,$C6,$00),
+  ($00,$00,$FC,$C6,$C6,$C6,$C6,$00),($00,$00,$7C,$C6,$C6,$C6,$7C,$00),
+  ($00,$00,$FC,$C6,$C6,$E6,$DC,$C0),($00,$00,$7E,$C6,$C6,$CE,$76,$06),
+  ($00,$00,$6E,$70,$60,$60,$60,$00),($00,$00,$7C,$C0,$7C,$06,$FC,$00),
+  ($30,$30,$7C,$30,$30,$30,$1C,$00),($00,$00,$C6,$C6,$C6,$C6,$7E,$00),
+  ($00,$00,$C6,$C6,$C6,$6C,$38,$00),($00,$00,$C6,$C6,$D6,$FE,$6C,$00),
+  ($00,$00,$C6,$6C,$38,$6C,$C6,$00),($00,$00,$C6,$C6,$CE,$76,$06,$7C),
+  ($00,$00,$FC,$18,$30,$60,$FC,$00),($1C,$30,$30,$E0,$30,$30,$1C,$00),
+  ($18,$18,$18,$00,$18,$18,$18,$00),($E0,$30,$30,$1C,$30,$30,$E0,$00),
+  ($76,$DC,$00,$00,$00,$00,$00,$00),($00,$10,$38,$6C,$C6,$C6,$FE,$00),
+  ($78,$CC,$C0,$CC,$78,$18,$0C,$78),($00,$CC,$00,$CC,$CC,$CC,$7E,$00),
+  ($1C,$00,$78,$CC,$FC,$C0,$78,$00),($7E,$C3,$3C,$06,$3E,$66,$3F,$00),
+  ($CC,$00,$78,$0C,$7C,$CC,$7E,$00),($E0,$00,$78,$0C,$7C,$CC,$7E,$00),
+  ($30,$30,$78,$0C,$7C,$CC,$7E,$00),($00,$00,$78,$C0,$C0,$78,$0C,$38),
+  ($7E,$C3,$3C,$66,$7E,$60,$3C,$00),($CC,$00,$78,$CC,$FC,$C0,$78,$00),
+  ($E0,$00,$78,$CC,$FC,$C0,$78,$00),($CC,$00,$70,$30,$30,$30,$78,$00),
+  ($7C,$C6,$38,$18,$18,$18,$3C,$00),($E0,$00,$70,$30,$30,$30,$78,$00),
+  ($C6,$38,$6C,$C6,$FE,$C6,$C6,$00),($30,$30,$00,$78,$CC,$FC,$CC,$00),
+  ($1C,$00,$FC,$60,$78,$60,$FC,$00),($00,$00,$7F,$0C,$7F,$CC,$7F,$00),
+  ($3E,$6C,$CC,$FE,$CC,$CC,$CE,$00),($78,$CC,$00,$78,$CC,$CC,$78,$00),
+  ($00,$CC,$00,$78,$CC,$CC,$78,$00),($00,$E0,$00,$78,$CC,$CC,$78,$00),
+  ($78,$CC,$00,$CC,$CC,$CC,$7E,$00),($00,$E0,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$CC,$00,$CC,$CC,$7C,$0C,$F8),($C3,$18,$3C,$66,$66,$3C,$18,$00),
+  ($CC,$00,$CC,$CC,$CC,$CC,$78,$00),($18,$18,$7E,$C0,$C0,$7E,$18,$18),
+  ($38,$6C,$64,$F0,$60,$E6,$FC,$00),($CC,$CC,$78,$FC,$30,$FC,$30,$30),
+  ($F8,$CC,$CC,$FA,$C6,$CF,$C6,$C7),($0E,$1B,$18,$3C,$18,$18,$D8,$70),
+  ($1C,$00,$78,$0C,$7C,$CC,$7E,$00),($38,$00,$70,$30,$30,$30,$78,$00),
+  ($00,$1C,$00,$78,$CC,$CC,$78,$00),($00,$1C,$00,$CC,$CC,$CC,$7E,$00),
+  ($00,$F8,$00,$F8,$CC,$CC,$CC,$00),($FC,$00,$CC,$EC,$FC,$DC,$CC,$00),
+  ($3C,$6C,$6C,$3E,$00,$7E,$00,$00),($38,$6C,$6C,$38,$00,$7C,$00,$00),
+  ($30,$00,$30,$60,$C0,$CC,$78,$00),($00,$00,$00,$FC,$C0,$C0,$00,$00),
+  ($00,$00,$00,$FC,$0C,$0C,$00,$00),($C3,$C6,$CC,$DE,$33,$66,$CC,$0F),
+  ($C3,$C6,$CC,$DB,$37,$6F,$CF,$03),($18,$18,$00,$18,$18,$18,$18,$00),
+  ($00,$33,$66,$CC,$66,$33,$00,$00),($00,$CC,$66,$33,$66,$CC,$00,$00),
+  ($22,$88,$22,$88,$22,$88,$22,$88),($55,$AA,$55,$AA,$55,$AA,$55,$AA),
+  ($DB,$77,$DB,$EE,$DB,$77,$DB,$EE),($18,$18,$18,$18,$18,$18,$18,$18),
+  ($18,$18,$18,$18,$F8,$18,$18,$18),($18,$18,$F8,$18,$F8,$18,$18,$18),
+  ($36,$36,$36,$36,$F6,$36,$36,$36),($00,$00,$00,$00,$FE,$36,$36,$36),
+  ($00,$00,$F8,$18,$F8,$18,$18,$18),($36,$36,$F6,$06,$F6,$36,$36,$36),
+  ($36,$36,$36,$36,$36,$36,$36,$36),($00,$00,$FE,$06,$F6,$36,$36,$36),
+  ($36,$36,$F6,$06,$FE,$00,$00,$00),($36,$36,$36,$36,$FE,$00,$00,$00),
+  ($18,$18,$F8,$18,$F8,$00,$00,$00),($00,$00,$00,$00,$F8,$18,$18,$18),
+  ($18,$18,$18,$18,$1F,$00,$00,$00),($18,$18,$18,$18,$FF,$00,$00,$00),
+  ($00,$00,$00,$00,$FF,$18,$18,$18),($18,$18,$18,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$00,$00,$00),($18,$18,$18,$18,$FF,$18,$18,$18),
+  ($18,$18,$1F,$18,$1F,$18,$18,$18),($36,$36,$36,$36,$37,$36,$36,$36),
+  ($36,$36,$37,$30,$3F,$00,$00,$00),($00,$00,$3F,$30,$37,$36,$36,$36),
+  ($36,$36,$F7,$00,$FF,$00,$00,$00),($00,$00,$FF,$00,$F7,$36,$36,$36),
+  ($36,$36,$37,$30,$37,$36,$36,$36),($00,$00,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$F7,$00,$F7,$36,$36,$36),($18,$18,$FF,$00,$FF,$00,$00,$00),
+  ($36,$36,$36,$36,$FF,$00,$00,$00),($00,$00,$FF,$00,$FF,$18,$18,$18),
+  ($00,$00,$00,$00,$FF,$36,$36,$36),($36,$36,$36,$36,$3F,$00,$00,$00),
+  ($18,$18,$1F,$18,$1F,$00,$00,$00),($00,$00,$1F,$18,$1F,$18,$18,$18),
+  ($00,$00,$00,$00,$3F,$36,$36,$36),($36,$36,$36,$36,$FF,$36,$36,$36),
+  ($18,$18,$FF,$18,$FF,$18,$18,$18),($18,$18,$18,$18,$F8,$00,$00,$00),
+  ($00,$00,$00,$00,$1F,$18,$18,$18),($FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF),
+  ($00,$00,$00,$00,$FF,$FF,$FF,$FF),($F0,$F0,$F0,$F0,$F0,$F0,$F0,$F0),
+  ($0F,$0F,$0F,$0F,$0F,$0F,$0F,$0F),($FF,$FF,$FF,$FF,$00,$00,$00,$00),
+  ($00,$00,$76,$DC,$C8,$DC,$76,$00),($00,$78,$CC,$F8,$CC,$F8,$C0,$C0),
+  ($00,$FC,$CC,$C0,$C0,$C0,$C0,$00),($00,$FE,$6C,$6C,$6C,$6C,$6C,$00),
+  ($FC,$CC,$60,$30,$60,$CC,$FC,$00),($00,$00,$7E,$D8,$D8,$D8,$70,$00),
+  ($00,$66,$66,$66,$66,$7C,$60,$C0),($00,$76,$DC,$18,$18,$18,$18,$00),
+  ($FC,$30,$78,$CC,$CC,$78,$30,$FC),($38,$6C,$C6,$FE,$C6,$6C,$38,$00),
+  ($38,$6C,$C6,$C6,$6C,$6C,$EE,$00),($1C,$30,$18,$7C,$CC,$CC,$78,$00),
+  ($00,$00,$7E,$DB,$DB,$7E,$00,$00),($06,$0C,$7E,$DB,$DB,$7E,$60,$C0),
+  ($38,$60,$C0,$F8,$C0,$60,$38,$00),($78,$CC,$CC,$CC,$CC,$CC,$CC,$00),
+  ($00,$FC,$00,$FC,$00,$FC,$00,$00),($30,$30,$FC,$30,$30,$00,$FC,$00),
+  ($60,$30,$18,$30,$60,$00,$FC,$00),($18,$30,$60,$30,$18,$00,$FC,$00),
+  ($0E,$1B,$1B,$18,$18,$18,$18,$18),($18,$18,$18,$18,$18,$D8,$D8,$70),
+  ($30,$30,$00,$FC,$00,$30,$30,$00),($00,$76,$DC,$00,$76,$DC,$00,$00),
+  ($38,$6C,$6C,$38,$00,$00,$00,$00),($00,$00,$00,$18,$18,$00,$00,$00),
+  ($00,$00,$00,$00,$18,$00,$00,$00),($0F,$0C,$0C,$0C,$EC,$6C,$3C,$1C),
+  ($78,$6C,$6C,$6C,$6C,$00,$00,$00),($70,$18,$30,$60,$78,$00,$00,$00),
+  ($00,$00,$3C,$3C,$3C,$3C,$00,$00),($00,$00,$00,$00,$00,$00,$00,$00)
+ );
  Win16_Font5x7: Array[0..43, 0..6] Of Byte = (
   (14,17,17,31,17,17,17),  { A }
   (30,17,17,30,17,17,30),  { B }
@@ -110618,6 +110953,46 @@ Begin
  End;
 End;
 
+{ Caractere de la police SYSTEME 8x8 (table CP437 complete, minuscules      }
+{ comprises). BgColor = 255 : fond transparent (ne touche que l'encre). }
+Procedure Win16_DrawChar8(X, Y: Integer; Ch: Char; FgColor, BgColor: Byte);
+Var
+ Row, Col: Integer;
+ Bits: Byte;
+Begin
+ For Row := 0 To 7 Do Begin
+  Bits := Win16_Font8[Ord(Ch), Row];
+  For Col := 0 To 7 Do Begin
+   If (Bits And (128 Shr Col)) <> 0 Then
+    Emu_VidSetPixel(X + Col, Y + Row, FgColor)
+   Else If BgColor <> 255 Then
+    Emu_VidSetPixel(X + Col, Y + Row, BgColor);
+  End;
+ End;
+End;
+
+{ Rectangle plein / cadre 1 pixel (pixels absolus du framebuffer). }
+Procedure Win16_Rect(X1, Y1, X2, Y2: Integer; Color: Byte);
+Var X, Y: Integer;
+Begin
+ For Y := Y1 To Y2 Do
+  For X := X1 To X2 Do
+   Emu_VidSetPixel(X, Y, Color);
+End;
+
+Procedure Win16_FrameRect(X1, Y1, X2, Y2: Integer; Color: Byte);
+Var X, Y: Integer;
+Begin
+ For X := X1 To X2 Do Begin
+  Emu_VidSetPixel(X, Y1, Color);
+  Emu_VidSetPixel(X, Y2, Color);
+ End;
+ For Y := Y1 To Y2 Do Begin
+  Emu_VidSetPixel(X1, Y, Color);
+  Emu_VidSetPixel(X2, Y, Color);
+ End;
+End;
+
 { Trace une CHAINE via Win16_DrawChar5x7 - utilise par TextOut (GDI          }
 { ordinal 33, 2026-09-12, demande explicite). Avancement par caractere =    }
 { 5 (largeur du glyphe) + 1 (espacement fixe) + CharExtra - REUTILISE       }
@@ -110635,8 +111010,11 @@ Begin
  BgColor := Byte(Win16_CurrentBkColor And $FF);
  PenX := X;
  For I := 1 To Length(S) Do Begin
-  Win16_DrawChar5x7(PenX, Y, S[I], FgColor, BgColor);
-  PenX := PenX + 5 + 1 + Win16_CurrentTextCharExtra;
+  If Win16_CurrentBkMode = 1 Then
+   Win16_DrawChar8(PenX, Y, S[I], FgColor, 255)
+  Else
+   Win16_DrawChar8(PenX, Y, S[I], FgColor, BgColor);
+  PenX := PenX + WIN16_CHAR_W + Win16_CurrentTextCharExtra;
  End;
 End;
 
@@ -110651,7 +111029,7 @@ End;
 { plutot que locale" que Win16_FFStackX/Y (evite tout risque de              }
 { depassement de pile d'appel reelle). }
 Var
- Win16_BlitBuf: Array[0..64099] Of Byte;
+ Win16_BlitBuf: Array[0..256099] Of Byte;
 
 { Copie un rectangle de pixels (BitBlt, GDI ordinal 34, 2026-09-12,          }
 { demande explicite). CE SOUS-ENSEMBLE N'A QU'UN SEUL VRAI CONTEXTE DE       }
@@ -110826,6 +111204,290 @@ End;
 { octets, RETF 000Ah) - jamais variable d'un programme a l'autre, donc      }
 { jamais besoin de la (re)vérifier au cas par cas comme pour les ordinaux    }
 { KERNEL/USER/GDI eux-memes. }
+{ ---- Controles predefinis (EDIT, BUTTON, STATIC, LISTBOX, SCROLLBAR) -------- }
+Function Win16_WindowIndex(HWnd: Word): Integer;
+Var I, R: Integer;
+Begin
+ R := -1;
+ For I := 0 To Win16_WindowCount - 1 Do
+  If Win16_WindowHWnd[I] = HWnd Then R := I;
+ Win16_WindowIndex := R;
+End;
+
+Procedure Win16_CtlText(X, Y: Integer; Const S: String; Fg, Bg: Byte);
+Var I: Integer;
+Begin
+ For I := 1 To Length(S) Do
+  Win16_DrawChar8(X + (I - 1) * WIN16_CHAR_W, Y, S[I], Fg, Bg);
+End;
+
+Function Win16_StripAmp(Const S: String): String;
+Var I: Integer; R: String;
+Begin
+ R := '';
+ For I := 1 To Length(S) Do
+  If S[I] <> '&' Then R := R + S[I];
+ Win16_StripAmp := R;
+End;
+
+{ Dessine le controle de la fenetre WIdx a partir de sa classe et de son style. }
+Procedure Win16_PaintControl(WIdx: Integer);
+Var
+ X1, Y1, X2, Y2, W, H, I, K, Line, PerLine, TY, TX, ThumbPos, Rng, Sz: Integer;
+ Cls, T, Seg: String;
+ St: LongInt;
+ Kind: Integer;
+Begin
+ If (WIdx < 0) Or (WIdx >= Win16_WindowCount) Then Exit;
+ X1 := Win16_WindowX[WIdx]; Y1 := Win16_WindowY[WIdx];
+ W := Win16_WindowW[WIdx]; H := Win16_WindowH[WIdx];
+ X2 := X1 + W - 1; Y2 := Y1 + H - 1;
+ St := Win16_WindowStyle[WIdx];
+ Cls := UpCaseStr(Win16_WndClassName[Win16_WindowClassIdx[WIdx]]);
+ T := Win16_StripAmp(Win16_WindowTitle[WIdx]);
+ If Cls = 'BUTTON' Then Begin
+  Kind := Integer(St And $F);
+  Case Kind Of
+   0, 1: Begin                                   { bouton poussoir }
+    If (Win16_CtlState[WIdx] And 4) <> 0 Then Win16_Rect(X1, Y1, X2, Y2, 0)
+    Else Win16_Rect(X1, Y1, X2, Y2, 15);
+    Win16_FrameRect(X1, Y1, X2, Y2, 0);
+    Win16_FrameRect(X1 + 1, Y1 + 1, X2 - 1, Y2 - 1, 0);
+    If Kind = 1 Then Win16_FrameRect(X1 - 1, Y1 - 1, X2 + 1, Y2 + 1, 0);
+    TX := X1 + (W - Length(T) * WIN16_CHAR_W) Div 2;
+    TY := Y1 + (H - WIN16_CHAR_H) Div 2;
+    If (Win16_CtlState[WIdx] And 4) <> 0 Then Win16_CtlText(TX, TY, T, 15, 0)
+    Else Win16_CtlText(TX, TY, T, 0, 15);
+   End;
+   7: Begin                                      { groupe }
+    Win16_Rect(X1, Y1, X2, Y2, 15);
+    Win16_FrameRect(X1, Y1 + 4, X2, Y2, 0);
+    Win16_CtlText(X1 + 8, Y1, ' ' + T + ' ', 0, 15);
+   End;
+   4, 9: Begin                                   { bouton radio }
+    Win16_Rect(X1, Y1, X2, Y2, 15);
+    TY := Y1 + (H - 8) Div 2;
+    Win16_FrameRect(X1 + 1, TY + 1, X1 + 6, TY + 6, 0);
+    Win16_Rect(X1 + 2, TY, X1 + 5, TY, 0);
+    Win16_Rect(X1 + 2, TY + 7, X1 + 5, TY + 7, 0);
+    Win16_Rect(X1, TY + 2, X1, TY + 5, 0);
+    Win16_Rect(X1 + 7, TY + 2, X1 + 7, TY + 5, 0);
+    If (Win16_CtlState[WIdx] And 3) <> 0 Then
+     Win16_Rect(X1 + 3, TY + 3, X1 + 4, TY + 4, 0);
+    Win16_CtlText(X1 + 12, Y1 + (H - WIN16_CHAR_H) Div 2, T, 0, 15);
+   End;
+   Else Begin                                    { case a cocher }
+    Win16_Rect(X1, Y1, X2, Y2, 15);
+    TY := Y1 + (H - 8) Div 2;
+    Win16_FrameRect(X1, TY, X1 + 7, TY + 7, 0);
+    If (Win16_CtlState[WIdx] And 3) <> 0 Then Begin
+     For I := 0 To 5 Do Begin
+      Emu_VidSetPixel(X1 + 1 + I, TY + 1 + I, 0);
+      Emu_VidSetPixel(X1 + 6 - I, TY + 1 + I, 0);
+     End;
+    End;
+    Win16_CtlText(X1 + 12, Y1 + (H - WIN16_CHAR_H) Div 2, T, 0, 15);
+   End;
+  End;
+ End Else If Cls = 'STATIC' Then Begin
+  Kind := Integer(St And $1F);
+  Case Kind Of
+   4: Win16_Rect(X1, Y1, X2, Y2, 0);
+   5: Win16_Rect(X1, Y1, X2, Y2, 8);
+   6: Win16_Rect(X1, Y1, X2, Y2, 15);
+   7: Win16_FrameRect(X1, Y1, X2, Y2, 0);
+   8: Win16_FrameRect(X1, Y1, X2, Y2, 8);
+   9: Win16_FrameRect(X1, Y1, X2, Y2, 15);
+   3: Begin
+    Win16_Rect(X1, Y1, X2, Y2, 15);
+    Win16_FrameRect(X1 + 4, Y1 + 4, X2 - 4, Y2 - 4, 0);
+   End;
+   Else Begin
+    Win16_Rect(X1, Y1, X2, Y2, 15);
+    If Kind = 1 Then TX := X1 + (W - Length(T) * WIN16_CHAR_W) Div 2
+    Else If Kind = 2 Then TX := X2 + 1 - Length(T) * WIN16_CHAR_W
+    Else TX := X1;
+    Win16_CtlText(TX, Y1, T, 0, 15);
+   End;
+  End;
+ End Else If Cls = 'EDIT' Then Begin
+  Win16_Rect(X1, Y1, X2, Y2, 15);
+  If (St And $00800000) <> 0 Then Win16_FrameRect(X1, Y1, X2, Y2, 0);
+  T := Win16_WindowTitle[WIdx];
+  PerLine := (W - 4) Div WIN16_CHAR_W;
+  If PerLine < 1 Then PerLine := 1;
+  If (St And 4) <> 0 Then Begin                  { multiligne }
+   Line := 0;
+   While (Length(T) > 0) And (Y1 + 2 + Line * 10 + 8 <= Y2) Do Begin
+    K := Pos(#13, T);
+    If (K = 0) Or (K > PerLine + 1) Then K := PerLine + 1;
+    Seg := Copy(T, 1, K - 1);
+    Win16_CtlText(X1 + 2, Y1 + 2 + Line * 10, Seg, 0, 15);
+    Delete(T, 1, K);
+    If (Length(T) > 0) And (T[1] = #10) Then Delete(T, 1, 1);
+    Inc(Line);
+   End;
+  End Else
+   Win16_CtlText(X1 + 2, Y1 + (H - WIN16_CHAR_H) Div 2, Copy(T, 1, PerLine),
+    0, 15);
+ End Else If Cls = 'LISTBOX' Then Begin
+  Win16_Rect(X1, Y1, X2, Y2, 15);
+  Win16_FrameRect(X1, Y1, X2, Y2, 0);
+  For I := 0 To Win16_LbCount[WIdx] - 1 Do
+   If Y1 + 2 + I * 10 + 8 <= Y2 Then
+    If I = Win16_LbSel[WIdx] Then Begin
+     Win16_Rect(X1 + 1, Y1 + 1 + I * 10, X2 - 1, Y1 + 2 + I * 10 + 8, 0);
+     Win16_CtlText(X1 + 2, Y1 + 2 + I * 10, Win16_LbText[WIdx, I], 15, 0);
+    End Else
+     Win16_CtlText(X1 + 2, Y1 + 2 + I * 10, Win16_LbText[WIdx, I], 0, 15);
+ End Else If Cls = 'SCROLLBAR' Then Begin
+  { barre de defilement : fleches aux extremites, piste grisee, curseur }
+  Win16_Rect(X1, Y1, X2, Y2, 7);
+  Win16_FrameRect(X1, Y1, X2, Y2, 0);
+  If (St And 1) <> 0 Then Begin                   { verticale }
+   Sz := W;
+   Win16_Rect(X1, Y1, X2, Y1 + Sz - 1, 15);
+   Win16_FrameRect(X1, Y1, X2, Y1 + Sz - 1, 0);
+   Win16_Rect(X1, Y2 - Sz + 1, X2, Y2, 15);
+   Win16_FrameRect(X1, Y2 - Sz + 1, X2, Y2, 0);
+   For I := 0 To 2 Do Begin
+    Win16_Rect(X1 + Sz Div 2 - I, Y1 + Sz Div 2 - 1 + I, X1 + Sz Div 2 + I,
+      Y1 + Sz Div 2 - 1 + I, 0);
+    Win16_Rect(X1 + Sz Div 2 - I, Y2 - Sz Div 2 + 1 - I, X1 + Sz Div 2 + I,
+      Y2 - Sz Div 2 + 1 - I, 0);
+   End;
+   Rng := Win16_ScrollMaxV[WIdx] - Win16_ScrollMinV[WIdx];
+   If (Rng > 0) And (H > 3 * Sz) Then
+    ThumbPos := ((Win16_ScrollPosV[WIdx] - Win16_ScrollMinV[WIdx]) *
+      (H - 3 * Sz)) Div Rng
+   Else ThumbPos := 0;
+   Win16_Rect(X1, Y1 + Sz + ThumbPos, X2, Y1 + 2 * Sz + ThumbPos - 1, 15);
+   Win16_FrameRect(X1, Y1 + Sz + ThumbPos, X2, Y1 + 2 * Sz + ThumbPos - 1, 0);
+  End Else Begin                                  { horizontale }
+   Sz := H;
+   Win16_Rect(X1, Y1, X1 + Sz - 1, Y2, 15);
+   Win16_FrameRect(X1, Y1, X1 + Sz - 1, Y2, 0);
+   Win16_Rect(X2 - Sz + 1, Y1, X2, Y2, 15);
+   Win16_FrameRect(X2 - Sz + 1, Y1, X2, Y2, 0);
+   For I := 0 To 2 Do Begin
+    Win16_Rect(X1 + Sz Div 2 - 1 + I, Y1 + Sz Div 2 - I, X1 + Sz Div 2 - 1 + I,
+      Y1 + Sz Div 2 + I, 0);
+    Win16_Rect(X2 - Sz Div 2 + 1 - I, Y1 + Sz Div 2 - I, X2 - Sz Div 2 + 1 - I,
+      Y1 + Sz Div 2 + I, 0);
+   End;
+   Rng := Win16_ScrollMaxH[WIdx] - Win16_ScrollMinH[WIdx];
+   If (Rng > 0) And (W > 3 * Sz) Then
+    ThumbPos := ((Win16_ScrollPosH[WIdx] - Win16_ScrollMinH[WIdx]) *
+      (W - 3 * Sz)) Div Rng
+   Else ThumbPos := 0;
+   Win16_Rect(X1 + Sz + ThumbPos, Y1, X1 + 2 * Sz + ThumbPos - 1, Y2, 15);
+   Win16_FrameRect(X1 + Sz + ThumbPos, Y1, X1 + 2 * Sz + ThumbPos - 1, Y2, 0);
+  End;
+ End;
+End;
+
+{ Procedure de fenetre NATIVE des classes predefinies. }
+Function Win16_NativeProc(Var P: TEmulatorPanel; HWnd, Msg, WParam, LpLo,
+  LpHi: Word): LongInt;
+Var
+ WIdx, I, N: Integer;
+ Cls, S: String;
+ Res: LongInt;
+Begin
+ Res := 0;
+ WIdx := Win16_WindowIndex(HWnd);
+ If WIdx < 0 Then Begin Win16_NativeProc := 0; Exit; End;
+ Cls := UpCaseStr(Win16_WndClassName[Win16_WindowClassIdx[WIdx]]);
+ Case Msg Of
+  $000F: Win16_PaintControl(WIdx);                     { WM_PAINT }
+  $000C: Begin                                         { WM_SETTEXT }
+   Win16_WindowTitle[WIdx] := Win16_ReadGuestString(P.CPU, LpHi, LpLo);
+   Win16_PaintControl(WIdx);
+   Res := 1;
+  End;
+  $000D: Begin                                         { WM_GETTEXT }
+   S := Win16_WindowTitle[WIdx];
+   N := Length(S);
+   If N > Integer(WParam) - 1 Then N := Integer(WParam) - 1;
+   If N < 0 Then N := 0;
+   For I := 1 To N Do Emu_WriteByte(P.CPU, LpHi, Word(LpLo + I - 1), Ord(S[I]));
+   Emu_WriteByte(P.CPU, LpHi, Word(LpLo + N), 0);
+   Res := N;
+  End;
+  $000E: Res := Length(Win16_WindowTitle[WIdx]);       { WM_GETTEXTLENGTH }
+  $0201: Begin                                         { WM_LBUTTONDOWN }
+   If Cls = 'BUTTON' Then Begin
+    Win16_CtlState[WIdx] := Win16_CtlState[WIdx] Or 4;
+    Win16_PaintControl(WIdx);
+   End Else If Cls = 'LISTBOX' Then Begin
+    N := (Integer(SmallInt(LpHi)) - 2) Div 10;
+    If (N >= 0) And (N < Win16_LbCount[WIdx]) Then Win16_LbSel[WIdx] := N;
+    Win16_PaintControl(WIdx);
+    Win16_PostMessage(Win16_WindowParent[WIdx], $0111, Win16_WindowId[WIdx],
+     HWnd, 1);                                         { LBN_SELCHANGE }
+   End;
+  End;
+  $0202: Begin                                         { WM_LBUTTONUP }
+   If Cls = 'BUTTON' Then Begin
+    Win16_CtlState[WIdx] := Win16_CtlState[WIdx] And Word(Not 4);
+    N := Integer(Win16_WindowStyle[WIdx] And $F);
+    If (N = 3) Or (N = 6) Then
+     Win16_CtlState[WIdx] := Win16_CtlState[WIdx] Xor 1
+    Else If N = 9 Then Begin
+     For I := 0 To Win16_WindowCount - 1 Do
+      If (Win16_WindowParent[I] = Win16_WindowParent[WIdx]) And
+         (Win16_WindowClassIdx[I] = Win16_WindowClassIdx[WIdx]) Then Begin
+       Win16_CtlState[I] := Win16_CtlState[I] And Word(Not 3);
+       Win16_PaintControl(I);
+      End;
+     Win16_CtlState[WIdx] := 1;
+    End;
+    Win16_PaintControl(WIdx);
+    Win16_PostMessage(Win16_WindowParent[WIdx], $0111, Win16_WindowId[WIdx],
+     HWnd, 0);                                         { BN_CLICKED }
+   End;
+  End;
+  $0400: If Cls = 'BUTTON' Then Res := Win16_CtlState[WIdx] And 3;
+  $0401: Begin                         { BM_SETCHECK / LB_ADDSTRING }
+   If Cls = 'BUTTON' Then Begin
+    Win16_CtlState[WIdx] := (Win16_CtlState[WIdx] And Word(Not 3)) Or
+      (WParam And 3);
+    Win16_PaintControl(WIdx);
+   End Else If Cls = 'LISTBOX' Then Begin
+    If Win16_LbCount[WIdx] < WIN16_MAX_LB Then Begin
+     Win16_LbText[WIdx, Win16_LbCount[WIdx]] :=
+       Win16_ReadGuestString(P.CPU, LpHi, LpLo);
+     Res := Win16_LbCount[WIdx];
+     Inc(Win16_LbCount[WIdx]);
+     Win16_PaintControl(WIdx);
+    End Else Res := -1;
+   End;
+  End;
+  $0405: If Cls = 'LISTBOX' Then Begin                 { LB_RESETCONTENT }
+   Win16_LbCount[WIdx] := 0;
+   Win16_LbSel[WIdx] := -1;
+   Win16_PaintControl(WIdx);
+  End;
+  $0407: If Cls = 'LISTBOX' Then Begin                 { LB_SETCURSEL }
+   Win16_LbSel[WIdx] := SmallInt(WParam);
+   Win16_PaintControl(WIdx);
+  End;
+  $0409: If Cls = 'LISTBOX' Then Res := Win16_LbSel[WIdx];     { LB_GETCURSEL }
+  $040C: If Cls = 'LISTBOX' Then Res := Win16_LbCount[WIdx];   { LB_GETCOUNT }
+  $040A: If Cls = 'LISTBOX' Then Begin                 { LB_GETTEXT }
+   N := SmallInt(WParam);
+   If (N >= 0) And (N < Win16_LbCount[WIdx]) Then Begin
+    S := Win16_LbText[WIdx, N];
+    For I := 1 To Length(S) Do
+     Emu_WriteByte(P.CPU, LpHi, Word(LpLo + I - 1), Ord(S[I]));
+    Emu_WriteByte(P.CPU, LpHi, Word(LpLo + Length(S)), 0);
+    Res := Length(S);
+   End Else Res := -1;
+  End;
+ End;
+ Win16_NativeProc := Res;
+End;
+
 Function Win16_CallWndProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
  HWnd, Msg, WParam, LParamLo, LParamHi: Word): LongInt;
 Var
@@ -110835,7 +111497,8 @@ Begin
  { Fenetre d'une classe predefinie (Edit, Button...) : pas de code invite   }
  { a appeler, resultat 0 (traitement par defaut).                           }
  If ProcSeg = 0 Then Begin
-  Win16_CallWndProc := 0;
+  Win16_CallWndProc := Win16_NativeProc(P, HWnd, Msg, WParam, LParamLo,
+    LParamHi);
   Exit;
  End;
  { Bogue reel trouve+corrige (2026-08-30) : convention Pascal/WINAPI reelle  }
@@ -113678,6 +114341,44 @@ Begin
    { raisons cumulatives (signature registre non verifiee ET mecanisme de      }
    { controle de flux structurellement non supporte), plutot que d'inventer    }
    { l'un ou l'autre. }
+   55: Begin
+    { Catch(lpCatchBuf):int - setjmp Windows 16 bits (ordinal Windows 2.x/3.x, }
+    { utilise par PAINT.EXE). CATCHBUF = 9 mots : IP, CS de retour, SP apres   }
+    { retour (adresse + argument depiles), BP, SI, DI, DS, reserve, SS.        }
+    { Retourne 0 ; Throw/$56 revient ici avec une autre valeur.                }
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    Emu_WriteWord(P.CPU, ANSeg1, ANOfs1, Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+      P.CPU.Regs.SP));
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 2), Emu_ReadWord(P.CPU,
+      P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 2)));
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 4), Word(P.CPU.Regs.SP + 8));
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 6), P.CPU.Regs.BP);
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 8), P.CPU.Regs.SI);
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 10), P.CPU.Regs.DI);
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 12), P.CPU.Segs.DS);
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 14), 0);
+    Emu_WriteWord(P.CPU, ANSeg1, Word(ANOfs1 + 16), P.CPU.Segs.SS);
+    P.CPU.Regs.AX := 0;
+    ArgWords := 2;
+   End;
+   56: Begin
+    { Throw(lpCatchBuf, nRet) - longjmp : restaure SS:SP, BP, SI, DI, DS et    }
+    { reprend apres l'appel de Catch/$55 avec AX = nRet.                       }
+    ANSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    P.CPU.IP := Emu_ReadWord(P.CPU, ANSeg1, ANOfs1);
+    P.CPU.Segs.CS := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 2));
+    P.CPU.Regs.BP := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 6));
+    P.CPU.Regs.SI := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 8));
+    P.CPU.Regs.DI := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 10));
+    P.CPU.Segs.DS := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 12));
+    P.CPU.Segs.SS := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 16));
+    P.CPU.Regs.SP := Emu_ReadWord(P.CPU, ANSeg1, Word(ANOfs1 + 4));
+    P.CPU.Regs.AX := ANSeg2;
+    Exit;
+   End;
    57: Begin
     { GetProfileInt(lpAppName,lpKeyName,nDefault):int - ordinal VERIFIE via }
     { le VRAI source Wine (krnl386.exe16.spec : "pascal -ret16               }
@@ -118049,10 +118750,29 @@ Begin
      { defaut plausible plutot que la valeur litterale (qui placerait la   }
      { fenetre hors de l'ecran virtuel reel 320x200 - mode $13, voir       }
      { ShowEmulatorPanel). }
+     { Style et parent : une fenetre ENFANT (WS_CHILD $40000000) est placee   }
+     { relativement a la zone cliente de son parent et n'a ni titre ni menu. }
+     Win16_WindowStyle[CWIdx] := LongInt(Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.SP + 22))) Or (LongInt(Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 24))) Shl 16);
+     Win16_WindowParent[CWIdx] := Emu_ReadWord(P.CPU, P.CPU.Segs.SS,
+       Word(P.CPU.Regs.SP + 12));
+     CWI := -1;
+     If ((Win16_WindowStyle[CWIdx] And $40000000) <> 0) And
+        (Win16_WindowParent[CWIdx] <> 0) Then
+      For CWMenuH := 0 To Win16_WindowCount - 1 Do
+       If Win16_WindowHWnd[CWMenuH] = Win16_WindowParent[CWIdx] Then
+        CWI := CWMenuH;
+     If CWI >= 0 Then Begin
+      CWX := Word(Win16_WindowX[CWI] + 1 + SmallInt(CWX));
+      CWY := Word(Win16_WindowY[CWI] + 1 + SmallInt(CWY));
+      Win16_WindowX[CWIdx] := SmallInt(CWX);
+      Win16_WindowY[CWIdx] := SmallInt(CWY);
+     End;
      If CWX = $8000 Then CWX := 10;
      If CWY = $8000 Then CWY := 10;
-     If (CWW = $8000) Or (CWW = 0) Then CWW := 280;
-     If (CWH = $8000) Or (CWH = 0) Then CWH := 160;
+     If (CWW = $8000) Or (CWW = 0) Then CWW := 560;
+     If (CWH = $8000) Or (CWH = 0) Then CWH := 300;
      { Barre de menu reelle (2026-09-24, demande explicite) : hMenu (SP+10, }
      { jamais lu jusqu'ici) resolu via Win16_ParseMenuResource/LoadMenu -     }
      { reserve WIN16_MENUBAR_H pixels de marge SUPPLEMENTAIRE au-dessus,      }
@@ -118066,6 +118786,13 @@ Begin
      CWHMenu := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
      If (CWHMenu = 0) And (CWClassIdx >= 0) Then CWHMenu :=
        Win16_WndClassMenu[CWClassIdx];
+     If (Win16_WindowStyle[CWIdx] And $40000000) <> 0 Then Begin
+      Win16_WindowId[CWIdx] := CWHMenu;   { enfant : hMenu = ID du controle }
+      CWHMenu := 0;
+     End Else Win16_WindowId[CWIdx] := 0;
+     Win16_CtlState[CWIdx] := 0;
+     Win16_LbCount[CWIdx] := 0;
+     Win16_LbSel[CWIdx] := -1;
      If Win16_FindMenuSlot(CWHMenu) >= 0 Then CWMenuH := WIN16_MENUBAR_H
      Else CWMenuH := 0;
      { Marge REELLE pour la barre de titre (2026-09-12, demande explicite,   }
@@ -118077,8 +118804,10 @@ Begin
      { la fenetre vers le bas plutot que de dessiner une barre tronquee ou    }
      { de l omettre - meme esprit que le "plausible par defaut" deja           }
      { applique 2 lignes plus haut pour $8000. }
-     If SmallInt(CWY) < WIN16_TITLEBAR_H + CWMenuH Then CWY := WIN16_TITLEBAR_H
-       + CWMenuH;
+     If ((Win16_WindowStyle[CWIdx] And $40000000) = 0) And
+        (SmallInt(CWY) < WIN16_TITLEBAR_H + CWMenuH) Then
+      CWY := WIN16_TITLEBAR_H + CWMenuH;
+     If (Win16_WindowStyle[CWIdx] And $40000000) <> 0 Then CWMenuH := 0;
      Win16_WindowX[CWIdx] := SmallInt(CWX);
      Win16_WindowY[CWIdx] := SmallInt(CWY);
      Win16_WindowW[CWIdx] := SmallInt(CWW);
@@ -121140,11 +121869,11 @@ Begin
     { en page. Index non couvert -> 0 (honnete, non modelise). }
     GDIIdx := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     Case GDIIdx Of
-     0:  P.CPU.Regs.AX := 320;  { CXSCREEN - mode $13 reel }
-     1:  P.CPU.Regs.AX := 200;  { CYSCREEN - mode $13 reel }
+     0:  P.CPU.Regs.AX := 640;  { CXSCREEN }
+     1:  P.CPU.Regs.AX := 400;  { CYSCREEN }
      2, 21: P.CPU.Regs.AX := 16; { CXVSCROLL/CXHSCROLL }
      3, 20: P.CPU.Regs.AX := 16; { CYHSCROLL/CYVSCROLL }
-     4:  P.CPU.Regs.AX := 18;   { CYCAPTION }
+     4:  P.CPU.Regs.AX := WIN16_TITLEBAR_H;   { CYCAPTION }
      5:  P.CPU.Regs.AX := 1;    { CXBORDER }
      6:  P.CPU.Regs.AX := 1;    { CYBORDER }
      7, 32: P.CPU.Regs.AX := 3; { CXDLGFRAME/CXFRAME }
@@ -121153,9 +121882,9 @@ Begin
      10: P.CPU.Regs.AX := 16;   { CXHTHUMB }
      11, 13: P.CPU.Regs.AX := 32; { CXICON/CXCURSOR }
      12, 14: P.CPU.Regs.AX := 32; { CYICON/CYCURSOR }
-     15: P.CPU.Regs.AX := 18;   { CYMENU }
-     16: P.CPU.Regs.AX := 320;  { CXFULLSCREEN - mode $13 reel }
-     17: P.CPU.Regs.AX := 182;  { CYFULLSCREEN (200-18, assorti a CYSCREEN=200)
+     15: P.CPU.Regs.AX := WIN16_MENUBAR_H;   { CYMENU }
+     16: P.CPU.Regs.AX := 640;  { CXFULLSCREEN }
+     17: P.CPU.Regs.AX := 400 - WIN16_TITLEBAR_H;  { CYFULLSCREEN (200-18, assorti a CYSCREEN=200)
        }
      19: P.CPU.Regs.AX := 1;    { MOUSEPRESENT }
      28, 34: P.CPU.Regs.AX := 112; { CXMIN/CXMINTRACK }
@@ -121494,8 +122223,8 @@ Begin
      CTSY := SmallInt(Win16_WindowY[Win16_ActiveDCWindow] + 1 + CTSY);
      Win16_DrawTextOut(CTSX, CTSY, TOStr);
     End;
-    P.CPU.Regs.AX := Word(Length(TOStr) * 6);
-    P.CPU.Regs.DX := 7;
+    P.CPU.Regs.AX := Word(Length(TOStr) * WIN16_CHAR_W);
+    P.CPU.Regs.DX := WIN16_CHAR_H;
     ArgWords := 10;
    End;
    197: Begin
@@ -121522,8 +122251,8 @@ Begin
     TOStr := '';
     For TOI := 0 To Integer(TOCount) - 1 Do
      TOStr := TOStr + Chr(Emu_ReadByte(P.CPU, TOStrSeg, Word(TOStrOfs + TOI)));
-    P.CPU.Regs.AX := Word(Length(TOStr) * 6);
-    P.CPU.Regs.DX := 7;
+    P.CPU.Regs.AX := Word(Length(TOStr) * WIN16_CHAR_W);
+    P.CPU.Regs.DX := WIN16_CHAR_H;
     ArgWords := 7;
    End;
    198: Begin
@@ -125033,8 +125762,8 @@ Begin
      Win16_WindowTitle[CWIdx] := CWTitleStr;
      If CWX = $8000 Then CWX := 10;
      If CWY = $8000 Then CWY := 10;
-     If (CWW = $8000) Or (CWW = 0) Then CWW := 280;
-     If (CWH = $8000) Or (CWH = 0) Then CWH := 160;
+     If (CWW = $8000) Or (CWW = 0) Then CWW := 560;
+     If (CWH = $8000) Or (CWH = 0) Then CWH := 300;
      If SmallInt(CWY) < WIN16_TITLEBAR_H Then CWY := WIN16_TITLEBAR_H;
      Win16_WindowX[CWIdx] := SmallInt(CWX);
      Win16_WindowY[CWIdx] := SmallInt(CWY);
@@ -127439,12 +128168,12 @@ Begin
      For EFI := 1 To Length(EFFaceName) Do
       Emu_WriteByte(P.CPU, Win16_StackSeg, Word(EFLogFontOfs + 18 + EFI - 1),
         Ord(EFFaceName[EFI]));
-     Emu_WriteWord(P.CPU, Win16_StackSeg, EFTextMetOfs, 7);         { tmHeight }
+     Emu_WriteWord(P.CPU, Win16_StackSeg, EFTextMetOfs, 8);         { tmHeight }
      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 2), 7); {
        tmAscent }
-     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 10), 6); {
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 10), 8); {
        tmAveCharWidth }
-     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 12), 6); {
+     Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 12), 8); {
        tmMaxCharWidth }
      Emu_WriteWord(P.CPU, Win16_StackSeg, Word(EFTextMetOfs + 14), 400); {
        tmWeight }
@@ -127686,9 +128415,9 @@ Begin
     Case GDIIdx Of
      2:  P.CPU.Regs.AX := 1;    { TECHNOLOGY = DT_RASDISPLAY }
      4:  P.CPU.Regs.AX := 210;  { HORZSIZE (mm) }
-     6:  P.CPU.Regs.AX := 160;  { VERTSIZE (mm) }
-     8:  P.CPU.Regs.AX := 320;  { HORZRES - mode $13 reel }
-     10: P.CPU.Regs.AX := 200;  { VERTRES - mode $13 reel }
+     6:  P.CPU.Regs.AX := 130;  { VERTSIZE (mm) }
+     8:  P.CPU.Regs.AX := 640;  { HORZRES }
+     10: P.CPU.Regs.AX := 400;  { VERTRES }
      12: P.CPU.Regs.AX := 8;    { BITSPIXEL - mode $13 = 8 bits/pixel }
      14: P.CPU.Regs.AX := 1;    { PLANES }
      24: P.CPU.Regs.AX := 256;  { NUMCOLORS - mode $13 = 256 couleurs }
@@ -127825,8 +128554,8 @@ Begin
       }
     { compte pour cette police a chasse fixe). }
     GTECount := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    P.CPU.Regs.AX := Word(GTECount * (6 + Win16_CurrentTextCharExtra));
-    P.CPU.Regs.DX := 7;
+    P.CPU.Regs.AX := Word(GTECount * (WIN16_CHAR_W + Win16_CurrentTextCharExtra));
+    P.CPU.Regs.DX := WIN16_CHAR_H;
     ArgWords := 4;
    End;
    92: Begin
@@ -127863,13 +128592,15 @@ Begin
     LBSeg := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
     LBOfs := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
     For EFI := 0 To 30 Do Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + EFI), 0);
-    Emu_WriteWord(P.CPU, LBSeg, LBOfs, 7);              { tmHeight }
+    Emu_WriteWord(P.CPU, LBSeg, LBOfs, 8);              { tmHeight }
     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 2), 7);    { tmAscent }
-    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 10), 6);   { tmAveCharWidth }
-    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 12), 6);   { tmMaxCharWidth }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 4), 1);    { tmDescent }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 8), 2);    { tmExternalLeading }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 10), 8);   { tmAveCharWidth }
+    Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 12), 8);   { tmMaxCharWidth }
     Emu_WriteWord(P.CPU, LBSeg, Word(LBOfs + 14), 400); { tmWeight }
     Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 19), 32);  { tmFirstChar }
-    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 20), 90);  { tmLastChar }
+    Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 20), 255); { tmLastChar }
     Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 21), 32);  { tmDefaultChar }
     Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 22), 32);  { tmBreakChar }
     Emu_WriteByte(P.CPU, LBSeg, Word(LBOfs + 23), $31); { tmPitchAndFamily }
@@ -202307,8 +203038,8 @@ Begin
   End;
   $13: Begin
    { VGA 320x200x256 : 1 octet par pixel, lineaire }
-   Lin := Y * 320 + X;
-   If Lin < $10000 Then
+   Lin := LongInt(Y) * EmuVideo.Width + X;
+   If Lin < $3E800 Then
     EmuVideo.Mem^[Lin] := Color;
   End;
   EMU_MODE_GS640x16: Begin
@@ -202406,8 +203137,8 @@ Begin
    Emu_VidGetPixel := Color;
   End;
   $13: Begin
-   Lin := Y * 320 + X;
-   If Lin < $10000 Then
+   Lin := LongInt(Y) * EmuVideo.Width + X;
+   If Lin < $3E800 Then
     Emu_VidGetPixel := EmuVideo.Mem^[Lin];
   End;
   EMU_MODE_GS640x16: Begin
@@ -258212,6 +258943,7 @@ Begin NesActive := False;
   { $13 (320x200x256) au chargement suffit donc a rendre visible tout ce    }
   { que GDI dessine, sans dupliquer le mecanisme de rendu. }
   Emu_VidSetMode($13, P);
+  EmuVideo.Width := 640; EmuVideo.Height := 400; { ecran Windows 640x400 }
   { Meme init peripherique 8086 que le backend DOS -CD juste plus bas       }
   { (DOS_RunOneChunk, partage sans changement par les deux backends,        }
   { s attend a un BDA/IVT/etc. valides - voir le commentaire de tete de     }
@@ -258253,6 +258985,7 @@ Begin NesActive := False;
   { fichier) pour que les coordonnees GDI du programme correspondent       }
   { DIRECTEMENT aux pixels reels, sans mise a l'echelle. }
   Emu_VidSetMode($13, P);
+  EmuVideo.Width := 640; EmuVideo.Height := 400; { ecran Windows 640x400 }
   { Bureau cyan clair (2026-09-12, demande explicite, capture d ecran       }
   { Windows 2.x/3.x fournie comme reference) - un vrai Windows 2.x/3.x        }
   { peint tout le bureau en cyan clair (COLOR_BACKGROUND par defaut) avant   }
@@ -258261,8 +258994,8 @@ Begin NesActive := False;
   { couleur de bureau. Index 11 = lightcyan, la partie EGA-compatible du     }
   { VRAI palette par defaut du mode $13 (les 16 premiers index reproduisent  }
   { fidelement la palette EGA 16 couleurs standard). }
-  For Win16DeskY := 0 To 199 Do
-   For Win16DeskX := 0 To 319 Do
+  For Win16DeskY := 0 To 399 Do
+   For Win16DeskX := 0 To 639 Do
     Emu_VidSetPixel(Win16DeskX, Win16DeskY, 11);
   DrawEmulatorPanel(P);
   EmuDbg.Active := True;
