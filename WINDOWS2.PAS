@@ -10278,7 +10278,7 @@ Begin
   $46: Begin Rg[R_AX]:=Rg[R_AX];End;
   $47: Begin
      Pth:=Copy(CV^.CurDir,4,200);
-     WrZ(Sg[SG_DS],Rg[R_SI],Pth);
+     WrZ(Sg[SG_DS],Rg[R_SI],Pth);Rg[R_AX]:=$0100;
     End;
   $48: Begin
      Cnt:=ArenaAlloc(CV,Rg[R_BX],CV^.PSP);
@@ -10916,7 +10916,7 @@ Begin
  N:=Steps;
  While N>0 Do Begin
   CpuBlock:=False;
-  If TraceOn And (TrApi=9) Then WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' SP=',HexStr(Rg[R_SP],4));
+  If TraceOn And (TrApi>=-5) And (TrApi<=-5) Then WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' SP=',HexStr(Rg[R_SP],4));
   CpuStep;
   Inc(InstCnt);
   If CpuHalt Then Begin
@@ -11189,7 +11189,7 @@ End;
 
 Const
  MAXW16W = 48; MAXW16C = 16; MAXW16Q = 96; MAXW16T = 8; MAXW16O = 200; MAXW16D = 20;
- MAXW16R = 120; MAXW16MT = 6; MAXW16SYS = 8;
+ MAXW16R = 120; MAXW16MT = 12; MAXW16SYS = 8;
  W16_TRAP_RET = $3FC;
  HDL_EDITPROC = 4090; HDL_DEFPROC = 4091;
  WM_CREATE=$0001; WM_DESTROY=$0002; WM_MOVE=$0003; WM_SIZE=$0005; WM_ACTIVATE=$0006; WM_SETFOCUS=$0007;
@@ -11201,7 +11201,7 @@ Const
  WM_LBUTTONDBLCLK=$0203; WM_RBUTTONDOWN=$0204; WM_RBUTTONUP=$0205; WM_CUT=$0300; WM_COPY=$0301;
  WM_PASTE=$0302; WM_CLEAR=$0303; WM_UNDO=$0304;
  K_W16SYS = 1000;
- WK_TOP=0; WK_EDIT=1; WK_OTHER=2; WK_DLG=3; WK_STATIC=4; WK_BUTTON=5;
+ WK_TOP=0; WK_EDIT=1; WK_OTHER=2; WK_DLG=3; WK_STATIC=4; WK_BUTTON=5; WK_SCROLL=6;
 
 Type
  TMsg16 = Record Hw,Msg,Wp: Word; Lp: LongInt; Tm: LongInt; Px,Py: Integer; End;
@@ -11255,6 +11255,7 @@ Type
   ClipOn : Boolean;
   CX1,CY1,CX2,CY2 : Integer;
   OrgX,OrgY : Integer;
+  WOx,WOy,VOx,VOy : Integer;
   SvPen,SvBrush : Word;
   SvText,SvBk : LongInt;
  End;
@@ -11293,7 +11294,7 @@ Type
   Exe : String[100];
   FilePath : String[120];
   RsrcOfs : LongInt;
-  SegBase : Array[1..64] Of Word;
+  SegBase : Array[1..128] Of Word;
   SegCnt : Integer;
   Entries : Array[0..255] Of Word;
   Done : Boolean;
@@ -11411,13 +11412,13 @@ End;
 Function W16Load(T: PW16; Const VPath: String): String;
 Var F: File; Hd: Array[0..63] Of Byte; NeOfs: LongInt; N: Word;
     Ne: Array[0..63] Of Byte;
-    SegTab: Array[1..64,0..7] Of Byte; SegOfs,SegLen,SegFl,SegMin: Array[1..64] Of LongInt;
+    SegTab: Array[1..128,0..7] Of Byte; SegOfs,SegLen,SegFl,SegMin: Array[1..128] Of LongInt;
     NSeg,I,J,K,Shift,AutoIdx,CsIdx,SsIdx: Integer; NextSeg: Word; EntTab,ModTab,ImpTab: LongInt;
     NMod,EntLen: Integer; Ip,Sp,StackSz,HeapSz: Word; Len: LongInt;
-    Ent: Array[0..2047] Of Byte; ModNames: Array[1..16] Of String[16]; ModOfs: Word; Lg: Byte;
+    Ent: Array[0..16383] Of Byte; ModNames: Array[1..16] Of String[16]; ModOfs: Word; Lg: Byte;
     Pth: String; Cnt: Word; Rec: Array[0..7] Of Byte;
     Ofs,Nx,Tw: Word; Ty,Fl,TgtT: Byte; Mod_,Ord_: Word; Add_: Boolean;
-    EntIdx: Integer; Es,Eo: Word; Segn: Byte; V: PVM; DgLen: LongInt;
+    EntIdx: Integer; Es,Eo: Word; Segn: Byte; V: PVM; DgLen: LongInt; DataEnd: LongInt;
  Function EntryOf(OrdN: Integer; Var S: Word; Var O: Word): Boolean;
  Var P,B,Nn,K2,Cur: Integer;
  Begin
@@ -11460,7 +11461,7 @@ Begin
  NSeg:=Ne[$1C]+Ne[$1D]*256;NMod:=Ne[$1E]+Ne[$1F]*256;
  Shift:=Ne[$32]+Ne[$33]*256;If Shift=0 Then Shift:=9;
  ModTab:=Ne[$28]+Ne[$29]*256;ImpTab:=Ne[$2A]+Ne[$2B]*256;
- If NSeg>64 Then Begin Close(F);W16Load:='Too many segments';Exit;End;
+ If NSeg>128 Then Begin Close(F);W16Load:='Too many segments';Exit;End;
  {$I-}
  Seek(F,NeOfs+Ne[$22]+Ne[$23]*256);
  For I:=1 To NSeg Do Begin
@@ -11471,8 +11472,8 @@ Begin
   SegFl[I]:=SegTab[I,4]+SegTab[I,5]*256;
   SegMin[I]:=SegTab[I,6]+SegTab[I,7]*256;If SegMin[I]=0 Then SegMin[I]:=65536;
  End;
- If EntLen>2048 Then EntLen:=2048;
- Seek(F,NeOfs+EntTab);BlockRead(F,Ent,EntLen,N);
+ If EntLen>16384 Then EntLen:=16384;
+ Seek(F,NeOfs+EntTab);If EntLen>16384 Then EntLen:=16384;BlockRead(F,Ent,EntLen,N);
  For I:=1 To Min2(NMod,16) Do Begin
   Seek(F,NeOfs+ModTab+(I-1)*2);BlockRead(F,ModOfs,2,N);
   Seek(F,NeOfs+ImpTab+ModOfs);BlockRead(F,Lg,1,N);
@@ -11489,7 +11490,9 @@ Begin
  For I:=1 To NSeg Do Begin
   Len:=SegMin[I];If Len<SegLen[I] Then Len:=SegLen[I];
   If (I=AutoIdx) Then Begin
-   Len:=SegLen[I]+StackSz+Max2(HeapSz,$3000);
+   DataEnd:=SegMin[I];
+   If DataEnd<SegLen[I] Then DataEnd:=SegLen[I];
+   Len:=DataEnd+StackSz+Max2(HeapSz,$3000);
    If Len<SegMin[I] Then Len:=SegMin[I];
    If Len>65520 Then Len:=65520;
    DgLen:=Len;
@@ -11562,20 +11565,25 @@ Begin
   {$I+}
  End;
  Close(F);
+ If TraceOn Then For I:=1 To NSeg Do WriteLn(TraceF,'SEGMAP ',I,' ',HexStr(T^.SegBase[I],4));
  If AutoIdx>0 Then T^.AutoSeg:=T^.SegBase[AutoIdx];
  If (CsIdx<1) Or (CsIdx>NSeg) Then Begin W16Load:='Invalid entry point';Exit;End;
  For I:=0 To 7 Do Rg[I]:=0;
  Rg[R_AX]:=0;Rg[R_BX]:=StackSz;Rg[R_CX]:=HeapSz;Rg[R_DI]:=T^.AutoSeg;Rg[R_SI]:=0;
  Sg[SG_DS]:=T^.AutoSeg;
  If (SsIdx>0) And (SsIdx<=NSeg) Then Sg[SG_SS]:=T^.SegBase[SsIdx] Else Sg[SG_SS]:=T^.AutoSeg;
- If Sp=0 Then Rg[R_SP]:=Word(SegLen[AutoIdx]+StackSz) Else Rg[R_SP]:=Sp;
+ If Sp=0 Then Rg[R_SP]:=Word(DataEnd+StackSz) Else Rg[R_SP]:=Sp;
  If Rg[R_SP]=0 Then Rg[R_SP]:=$FFFE;
+ { en-tete du segment de donnees : limites de la pile (verification de pile du compilateur C) }
+ If Sg[SG_SS]=T^.AutoSeg Then Begin
+  WrW(Lin(T^.AutoSeg,$0A),Word(DataEnd+8));WrW(Lin(T^.AutoSeg,$0C),Rg[R_SP]);WrW(Lin(T^.AutoSeg,$0E),Rg[R_SP]);
+ End;
  Sg[SG_ES]:=0;
  Sg[SG_CS]:=T^.SegBase[CsIdx];IPr:=Ip;
  { tas local : apres la pile }
- T^.HeapStart:=Word(SegLen[AutoIdx]+StackSz+16);
+ T^.HeapStart:=Word(DataEnd+StackSz+16);
  T^.HeapEnd:=Word(Min2(65520,DgLen-2));
- If T^.HeapStart>=T^.HeapEnd Then T^.HeapStart:=Word(SegLen[AutoIdx]+16);
+ If T^.HeapStart>=T^.HeapEnd Then T^.HeapStart:=Word(DataEnd+16);
  { bloc libre initial }
  WrW(Lin(T^.AutoSeg,T^.HeapStart),(T^.HeapEnd-T^.HeapStart-2) And $FFFE);
  T^.CsSeg:=$0800;T^.CsOfs:=$00F0;
@@ -11860,6 +11868,7 @@ Begin
  While Not ((Sg[SG_CS]=ROMSEG) And (IPr=W16_TRAP_RET)) And (Guard<4000000) And Not CpuHalt Do Begin
   CpuBlock:=False;
   If T<>Nil Then If T^.Done Then Break;
+  If TraceOn And (TrApi>=-5) And (TrApi<=-5) Then WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' AX=',HexStr(Rg[R_AX],4),' SP=',HexStr(Rg[R_SP],4));
   CpuStep;
   Inc(Guard);
   If CpuBlock And Not ((Sg[SG_CS]=ROMSEG) And (IPr=W16_TRAP_RET)) Then Break;
@@ -12008,6 +12017,18 @@ End;
 
 { preparation d'un DC avant dessin ; retourne False si rien a faire }
 
+
+Var AtomTab: Array[1..64] Of String[40];
+    PropTab: Array[1..32] Of Record Hw: Word; Nm: String[30]; V: Word; End;
+
+Function AtomFind(Const S: String; Add: Boolean): Word;
+Var I: Integer;
+Begin
+ AtomFind:=0;
+ For I:=1 To 64 Do If (AtomTab[I]<>'') And (Upper(AtomTab[I])=Upper(S)) Then Begin AtomFind:=$C000+I;Exit;End;
+ If Add Then For I:=1 To 64 Do If AtomTab[I]='' Then Begin AtomTab[I]:=Copy(S,1,40);AtomFind:=$C000+I;Exit;End;
+End;
+
 { origine absolue (ecran) du client d'une fenetre (haute ou enfant) et rectangle de clip absolu }
 Function W16ClientOrg(T: PW16; Hw: Word; Var Ox,Oy,X1,Y1,X2,Y2: Integer): Boolean;
 Var W: PWindow; Px,Py,A1,B1,A2,B2,Bd: Integer;
@@ -12039,6 +12060,21 @@ Begin
  End;
 End;
 
+Procedure W16GetClient(T: PW16; Hw: Word; Var X1,Y1,X2,Y2: Integer);
+Var W: PWindow;
+Begin
+ X1:=0;Y1:=0;X2:=0;Y2:=0;
+ If (Hw>=1) And (Hw<=MAXW16W) And T^.Wn[Hw].Used And (T^.Wn[Hw].Parent<>0) Then Begin
+  X2:=T^.Wn[Hw].W-1;Y2:=T^.Wn[Hw].H-1;
+  If (T^.Wn[Hw].Style And $00800000)<>0 Then Begin Dec(X2,2);Dec(Y2,2);End;
+  If (T^.Wn[Hw].Style And $00200000)<>0 Then Dec(X2,SB);
+  If (T^.Wn[Hw].Style And $00100000)<>0 Then Dec(Y2,SB);
+  Exit;
+ End;
+ W:=W16HostOf(T,Hw);
+ If W<>Nil Then Begin WinClient(W,X1,Y1,X2,Y2);X2:=X2-X1;Y2:=Y2-Y1;X1:=0;Y1:=0;End;
+End;
+
 Function DcBegin(T: PW16; D: Integer): Boolean;
 Var W: PWindow; X1,Y1,X2,Y2: Integer;
 Begin
@@ -12050,6 +12086,7 @@ Begin
        W:=W16HostOf(T,Hw);
        If (W=Nil) Or (W^.State=1) Then Exit;
        If Not W16ClientOrg(T,Hw,OrgX,OrgY,X1,Y1,X2,Y2) Then Exit;
+       OrgX:=OrgX+VOx-WOx;OrgY:=OrgY+VOy-WOy;
        If Not Paint Then Begin
         If W<>ActiveWin Then Exit;
         If Not Active Then Begin HideMouse;Active:=True;End;
@@ -12467,11 +12504,10 @@ Begin
  Level(True,0);
 End;
 
-Function W16MenuLoad(T: PW16; NameS,NameO: Word): Word;
-Var R,K: Integer; Sg_: Word; Fnd: Integer;
+Function W16MenuLoadIdx(T: PW16; R: Integer): Word;
+Var K: Integer; Sg_: Word; Fnd: Integer;
 Begin
- W16MenuLoad:=0;
- R:=W16FindRes(T,NameS,NameO,0,4);
+ W16MenuLoadIdx:=0;
  If R=0 Then Exit;
  Sg_:=W16LoadRes(T,R);
  If Sg_=0 Then Exit;
@@ -12480,7 +12516,12 @@ Begin
  If Fnd=0 Then Exit;
  New(T^.MTpl[Fnd]);FillChar(T^.MTpl[Fnd]^,SizeOf(TW16MenuTpl),0);
  MnuParse(Sg_,@T^.MTpl[Fnd]^.Menus,@T^.MTpl[Fnd]^.NMenu);
- W16MenuLoad:=$7C00+Fnd;
+ W16MenuLoadIdx:=$7C00+Fnd;
+End;
+
+Function W16MenuLoad(T: PW16; NameS,NameO: Word): Word;
+Begin
+ W16MenuLoad:=W16MenuLoadIdx(T,W16FindRes(T,NameS,NameO,0,4));
 End;
 
 Procedure W16ApplyMenu(T: PW16; Hw: Word; Tpl: Word);
@@ -12545,7 +12586,14 @@ Begin
    For K:=I To Ms^[Pop].N-1 Do Ms^[Pop].It[K]:=Ms^[Pop].It[K+1];
    Dec(Ms^[Pop].N);Break;
   End;
- End Else If (Fl And $100)<>0 Then MnuAddItem(Ms,Pop,S,NewId,Fl)
+ End Else If ((Fl And $10)<>0) And (NewId>=$7C00) And (NewId<$7C00+MAXW16MT) And (T^.MTpl[NewId-$7C00]<>Nil) And (H>=$7000) And (H<$7C00) Then Begin
+  { sous-menu cree par CreateMenu : ajoute un menu deroulant a la barre }
+  MnuAddPopup(Ms,Nm,S);
+  For I:=1 To T^.MTpl[NewId-$7C00]^.Menus[1].N Do Begin
+   Inc(Ms^[Nm^].N);Ms^[Nm^].It[Ms^[Nm^].N]:=T^.MTpl[NewId-$7C00]^.Menus[1].It[I];
+  End;
+ End
+ Else If (Fl And $100)<>0 Then MnuAddItem(Ms,Pop,S,NewId,Fl)
  Else MnuAddItem(Ms,Pop,S,NewId,Fl);
  Dirty:=True;
 End;
@@ -12644,11 +12692,12 @@ Begin
    EdSetText(T^.Wn[Hw].Ed,Title);
   End Else If T^.Cl[C].Name='STATIC' Then T^.Wn[Hw].Kind:=WK_STATIC
   Else If T^.Cl[C].Name='BUTTON' Then T^.Wn[Hw].Kind:=WK_BUTTON
+  Else If T^.Cl[C].Name='SCROLLBAR' Then Begin T^.Wn[Hw].Kind:=WK_SCROLL;T^.Wn[Hw].VMin:=0;T^.Wn[Hw].VMax:=0;End
   Else T^.Wn[Hw].Kind:=WK_OTHER;
  End Else Begin
   If (X=-32768) Then X:=-1;
-  If (Wd<=0) Then Wd:=400;
-  If (Ht<=0) Then Ht:=280;
+  If (Wd<=0) Then Wd:=560;
+  If (Ht<=0) Then Ht:=380;
   If Wd<120 Then Wd:=120;If Ht<80 Then Ht:=80;
   Sz:=(Style And $00040000)<>0;
   W:=NewWindow(A_W16,Title,X,Y,Wd,Ht,Sz);
@@ -12662,9 +12711,8 @@ Begin
   If (Menu>=$7C00) And (Menu<$7C00+MAXW16MT) Then Tpl:=Menu
   Else If T^.Cl[C].MenuId<>0 Then Tpl:=W16MenuLoad(T,0,T^.Cl[C].MenuId)
   Else If T^.Cl[C].MenuName<>'' Then Begin
-   R:=W16FindRes(T,0,0,0,4);
-   For K:=1 To T^.NRs Do If (T^.Rs[K].Typ=$8004) And (T^.Rs[K].Name=T^.Cl[C].MenuName) Then Begin
-    Tpl:=0;
+   For K:=1 To T^.NRs Do If (T^.Rs[K].Typ=$8004) And (Upper(T^.Rs[K].Name)=T^.Cl[C].MenuName) Then Begin
+    Tpl:=W16MenuLoadIdx(T,K);Break;
    End;
   End;
   If Tpl<>0 Then W16ApplyMenu(T,Hw,Tpl);
@@ -13332,15 +13380,104 @@ Begin
      End;
      W16PutStr(GPS(4),GPO(4),S2,60);RetW(L);
     End;
+  25: Begin SetSig('l');RetL($100000);End;                  { GlobalCompact }
+  50: Begin SetSig('wp');RetL(0);End;                      { GetProcAddress }
+  69: Begin SetSig('p');RetW(AtomFind(GStr(1),False));End; { FindAtom }
+  70: Begin SetSig('p');RetW(AtomFind(GStr(1),True));End;  { AddAtom }
+  71: Begin SetSig('w');RetW(0);End;                       { DeleteAtom }
+  72: Begin SetSig('wpw');I:=GW(1)-$C000;                  { GetAtomName }
+     If (I>=1) And (I<=64) Then Begin W16PutStr(GPS(2),GPO(2),AtomTab[I],GW(3));RetW(Min2(Length(AtomTab[I]),GW(3)-1));End Else RetW(0);End;
+  95: Begin SetSig('p');RetW(2);End;                       { LoadLibrary : introuvable }
+  96: Begin SetSig('w');RetW(0);End;                       { FreeLibrary }
  Else W16Trap(T,1,O);
  End;
+End;
+
+{ remplissage par germe jusqu'a une couleur de bord }
+Procedure FloodRun(T: PW16; D: Integer; X0,Y0,Border,Fc: Integer);
+Const MAXSTK=12000;
+Var W,H,X1,Y1,X2,Y2,Ob,Sp,X,Y,Xl,Xr,Nx,I: Integer; Vis: PByteArr_; Stk: Array[0..MAXSTK] Of LongInt; Sx,Sy: Integer;
+    Mono: Boolean; Cn,Cf: Integer;
+ Function Fillable(Px,Py: Integer): Boolean;
+ Var M: Boolean; Cc: Integer;
+ Begin
+  Fillable:=False;
+  If (Px<0) Or (Py<0) Or (Px>=W) Or (Py>=H) Then Exit;
+  If Vis^[Py*W+Px]<>0 Then Exit;
+  Cc:=DcGet(T,D,Px,Py,M);
+  If M Then Cc:=IfThen_(Cc=0,0,15);
+  Fillable:=Cc<>Border;
+ End;
+Begin
+ If T^.Dc[D].Kind=2 Then Begin
+  Ob:=ObjOf(T,T^.Dc[D].Bmp);If Ob=0 Then Exit;
+  W:=T^.Ob[Ob].BW;H:=T^.Ob[Ob].BH;
+ End Else Begin
+  W16GetClient(T,T^.Dc[D].Hw,X1,Y1,X2,Y2);W:=X2+1;H:=Y2+1;
+ End;
+ If (W<=0) Or (H<=0) Or (LongInt(W)*H>400000) Then Exit;
+ GetMem(Vis,LongInt(W)*H);FillChar(Vis^,LongInt(W)*H,0);
+ Sp:=0;Stk[0]:=LongInt(X0)*4096+Y0;Sp:=1;
+ While Sp>0 Do Begin
+  Dec(Sp);X:=Stk[Sp] Div 4096;Y:=Stk[Sp] Mod 4096;
+  If Not Fillable(X,Y) Then Continue;
+  Xl:=X;While Fillable(Xl-1,Y) Do Dec(Xl);
+  Xr:=X;While Fillable(Xr+1,Y) Do Inc(Xr);
+  For X:=Xl To Xr Do Begin
+   Vis^[Y*W+X]:=1;
+   Cf:=Fc;If Cf<0 Then Cf:=cWht;
+   DcPix(T,D,X,Y,Cf);
+  End;
+  For Sy:=-1 To 1 Do If Sy<>0 Then Begin
+   Nx:=0;
+   For X:=Xl To Xr Do Begin
+    If Fillable(X,Y+Sy) Then Begin
+     If Nx=0 Then Begin If Sp<MAXSTK Then Begin Stk[Sp]:=LongInt(X)*4096+Y+Sy;Inc(Sp);End;Nx:=1;End;
+    End Else Nx:=0;
+   End;
+  End;
+ End;
+ FreeMem(Vis,LongInt(W)*H);
+End;
+
+{ enumeration de polices : trois familles, tailles 8/10/12 }
+Procedure W16EnumFonts(T: PW16; NmS,NmO,CbS,CbO,DaS,DaO: Word);
+Const Faces: Array[1..3] Of String[8]=('Courier','Helv','Tms Rmn');
+Var Buf,Fi,Sz,I,Hh: Integer; Seg_: Word; A,Lf,Tm: LongInt; Nm: String; Ar: Array[0..6] Of Word; R: LongInt; Stop: Boolean;
+Begin
+ Seg_:=ArenaAlloc(T^.V,8,T^.V^.PSP);
+ If Seg_=0 Then Begin RetW(0);Exit;End;
+ Lf:=Lin(Seg_,0);Tm:=Lin(Seg_,64);
+ If (NmS<>0) Or (NmO<>0) Then Nm:=Upper(W16Str(T,NmS,NmO,30)) Else Nm:='';
+ R:=1;Stop:=False;
+ For Fi:=1 To 3 Do Begin
+  If (Nm<>'') And (Upper(Faces[Fi])<>Nm) Then Continue;
+  For Sz:=0 To IfThen_(Nm='',0,2) Do Begin
+   If Stop Then Break;
+   Hh:=8+Sz*2;
+   For I:=0 To 49 Do WrB(Lf+I,0);
+   WrW(Lf,Hh);WrW(Lf+4,0);WrW(Lf+6,0);WrW(Lf+8,400);
+   WrB(Lf+13,255);WrB(Lf+17,IfThen_(Fi=1,$31,$22));
+   For I:=1 To Length(Faces[Fi]) Do WrB(Lf+18+I-1,Ord(Faces[Fi][I]));
+   For I:=0 To 30 Do WrB(Tm+I,0);
+   WrW(Tm,Hh);WrW(Tm+2,Hh-1);WrW(Tm+4,1);WrW(Tm+10,8);WrW(Tm+12,8);WrW(Tm+14,400);
+   WrB(Tm+20,255);WrB(Tm+21,32);WrB(Tm+22,32);WrW(Tm+27,36);WrW(Tm+29,36);
+   Ar[0]:=Seg_;Ar[1]:=0;Ar[2]:=Seg_;Ar[3]:=64;Ar[4]:=1;Ar[5]:=DaS;Ar[6]:=DaO;
+   AT:=T;
+   R:=W16CallFar(CbS,CbO,Ar,7);
+   AT:=T;
+   If (R And $FFFF)=0 Then Stop:=True;
+  End;
+  If Stop Then Break;
+ End;
+ RetW(R And $FFFF);
 End;
 
 { ---------------- API : GDI ---------------- }
 
 Procedure W16Gdi(T: PW16; O: Integer);
 Var Ok_: Boolean; D,D2,I,X,Y,X2,Y2,N,C: Integer; H: Word; L: LongInt; S: String; Nl: Boolean; Pts: Array[1..64] Of Integer;
-    Ob: Integer; Pat: Integer; Old: Word; A: LongInt; W_,H_: Integer; Hd: Word;
+    Ob: Integer; Pat: Integer; Old: Word; A: LongInt; W_,H_: Integer; Hd: Word; Ad_: LongInt; BrushRow,X1_,Y1_: Integer;
  Function Dc1: Integer;
  Begin
   Dc1:=DcIdx(T,GW(1));
@@ -13353,7 +13490,8 @@ Begin
   4: Begin SetSig('ww');If TraceOn Then WriteLn(TraceF,'   ROP2=',GW(2));D:=Dc1;If D>0 Then Begin RetW(T^.Dc[D].Rop2);T^.Dc[D].Rop2:=GW(2);End Else RetW(0);End;
   9: Begin SetSig('wl');D:=Dc1;If D>0 Then Begin L:=T^.Dc[D].TextCol;T^.Dc[D].TextCol:=GL(2);RetL(L);End Else RetL(0);End;
   12,14: Begin SetSig('www');RetL(0);End;
-  13: Begin SetSig('www');RetL(0);End;
+  13: Begin SetSig('www');D:=Dc1;
+     If D>0 Then Begin RetL(LongInt(T^.Dc[D].VOx And $FFFF)+(LongInt(T^.Dc[D].VOy And $FFFF) Shl 16));T^.Dc[D].VOx:=GI(2);T^.Dc[D].VOy:=GI(3);End Else RetL(0);End;
   19: Begin SetSig('www');D:=Dc1;                                   { LineTo }
      If (D>0) And DcBegin(T,D) Then Begin DcPenLine(T,D,T^.Dc[D].PenX,T^.Dc[D].PenY,GI(2),GI(3));DcEnd(T,D);End;
      If D>0 Then Begin T^.Dc[D].PenX:=GI(2);T^.Dc[D].PenY:=GI(3);End;RetW(1);End;
@@ -13361,6 +13499,7 @@ Begin
      If D>0 Then Begin RetL(LongInt(T^.Dc[D].PenX And $FFFF)+(LongInt(T^.Dc[D].PenY And $FFFF) Shl 16));
       T^.Dc[D].PenX:=GI(2);T^.Dc[D].PenY:=GI(3);End Else RetL(0);End;
   22: Begin SetSig('wwwww');D:=Dc1;                                  { IntersectClipRect }
+     If TraceOn Then WriteLn(TraceF,'ICLIP ',GI(2),',',GI(3),',',GI(4),',',GI(5));
      If D>0 Then Begin
       If Not T^.Dc[D].ClipOn Then Begin T^.Dc[D].CX1:=GI(2);T^.Dc[D].CY1:=GI(3);T^.Dc[D].CX2:=GI(4);T^.Dc[D].CY2:=GI(5);End
       Else Begin T^.Dc[D].CX1:=Max2(T^.Dc[D].CX1,GI(2));T^.Dc[D].CY1:=Max2(T^.Dc[D].CY1,GI(3));
@@ -13374,6 +13513,7 @@ Begin
   28: Begin SetSig('wwwwwww');D:=Dc1;
      If (D>0) And DcBegin(T,D) Then Begin DcRectangle(T,D,GI(2),GI(3),GI(4),GI(5));DcEnd(T,D);End;RetW(1);End;
   29: Begin SetSig('wwwwwl');D:=Dc1;                                 { PatBlt }
+     If TraceOn Then WriteLn(TraceF,'PATBLT ',GI(2),',',GI(3),' ',GI(4),'x',GI(5),' rop=',HexStr(GL(6),8),' dc=',D,' clip=',Ord(T^.Dc[D].ClipOn),' ',T^.Dc[D].CX1,',',T^.Dc[D].CY1,',',T^.Dc[D].CX2,',',T^.Dc[D].CY2);
      If (D>0) And DcBegin(T,D) Then Begin W16BitBlt(T,D,GI(2),GI(3),GI(4),GI(5),D,0,0,GI(4),GI(5),GL(6));DcEnd(T,D);End;RetW(1);End;
   30: Begin SetSig('w');D:=Dc1;
      If D>0 Then Begin T^.Dc[D].SvPen:=T^.Dc[D].Pen;T^.Dc[D].SvBrush:=T^.Dc[D].Brush;T^.Dc[D].SvText:=T^.Dc[D].TextCol;
@@ -13383,10 +13523,12 @@ Begin
   33: Begin SetSig('wwwpw');D:=Dc1;N:=GW(5);                         { TextOut }
      S:='';For I:=0 To Min2(N,255)-1 Do S:=S+Chr(RdB(Lin(GPS(4),GPO(4)+I)));
      If TraceOn Then WriteLn(TraceF,'TEXTOUT ',GI(2),',',GI(3),' [',S,'] dc=',D,' col=',HexStr(T^.Dc[D].TextCol,6),' bk=',T^.Dc[D].BkMode);
-     If (D>0) And DcBegin(T,D) Then Begin DcText(T,D,GI(2),GI(3),S);DcEnd(T,D);End;RetW(1);End;
+     If (D>0) And DcBegin(T,D) Then Begin If TraceOn Then WriteLn(TraceF,'  ORG ',T^.Dc[D].OrgX,',',T^.Dc[D].OrgY,' hw=',T^.Dc[D].Hw,' kind=',T^.Dc[D].Kind);DcText(T,D,GI(2),GI(3),S);DcEnd(T,D);End;RetW(1);End;
   34: Begin SetSig('wwwwwwwwl');D:=Dc1;D2:=DcIdx(T,GW(6));           { BitBlt }
+     If TraceOn Then WriteLn(TraceF,'BITBLT0 dst=',HexStr(GW(1),4),' D=',D,' src=',HexStr(GW(6),4),' D2=',D2,' ',GI(2),',',GI(3),' ',GI(4),'x',GI(5));
      If (D>0) And (D2>0) Then Begin
       Ok_:=DcBegin(T,D);
+      If TraceOn Then WriteLn(TraceF,'BITBLT dst(kind=',T^.Dc[D].Kind,' hw=',T^.Dc[D].Hw,' org=',T^.Dc[D].OrgX,',',T^.Dc[D].OrgY,') ',GI(2),',',GI(3),' ',GI(4),'x',GI(5),' src(kind=',T^.Dc[D2].Kind,') ',GI(7),',',GI(8),' rop=',HexStr(GL(9),8),' ok=',Ord(Ok_));
       If Ok_ Then Begin
        If (T^.Dc[D2].Kind=1) And (D2<>D) Then DcBegin(T,D2);
        W16BitBlt(T,D,GI(2),GI(3),GI(4),GI(5),D2,GI(7),GI(8),GI(4),GI(5),GL(9));
@@ -13442,11 +13584,12 @@ Begin
        Case T^.Ob[Ob].Kind Of
         2: Begin Old:=T^.Dc[D].Pen;T^.Dc[D].Pen:=H;End;
         1: Begin Old:=T^.Dc[D].Brush;T^.Dc[D].Brush:=H;End;
-        4: Begin Old:=T^.Dc[D].Bmp;T^.Dc[D].Bmp:=H;End;
+        4: Begin Old:=T^.Dc[D].Bmp;If Old=0 Then Old:=$29;T^.Dc[D].Bmp:=H;End;
         3: Old:=$2D;
        End;
       End Else Begin
-       If (H>=$20) And (H<=$28) Then Begin
+       If H=$29 Then Begin Old:=T^.Dc[D].Bmp;If Old=0 Then Old:=$29;T^.Dc[D].Bmp:=0;End
+       Else If (H>=$20) And (H<=$28) Then Begin
         If H>=$26 Then Begin Old:=T^.Dc[D].Pen;T^.Dc[D].Pen:=H;End Else Begin Old:=T^.Dc[D].Brush;T^.Dc[D].Brush:=H;End;
        End Else Old:=$2D;
       End;
@@ -13460,7 +13603,7 @@ Begin
      If (Hd<>0) And (RdW(Lin(GPS(1),GPO(1)))=1) Then T^.Ob[Hd-$100].Style:=1;
      RetW(Hd);End;
   51: Begin SetSig('www');RetW(W16BmpNew(T,GI(2),GI(3),False));End;
-  52: Begin SetSig('w');RetW(W16DcNew(T,2,0));End;
+  52: Begin SetSig('w');RetW(W16DcNew(T,2,0));If TraceOn Then WriteLn(TraceF,'CCDC -> ',HexStr(Rg[R_AX],4));End;
   53: Begin SetSig('pppp');RetW(0);End;
   153: Begin SetSig('pppp');RetW(W16DcNew(T,3,0));End;
   58: Begin SetSig('wl');RetW(W16ObjNew(T,1,GL(2),0,0));End;
@@ -13477,7 +13620,7 @@ Begin
   61: Begin SetSig('wwl');RetW(W16ObjNew(T,2,GL(3),GW(1),GW(2)));End;
   66: Begin SetSig('l');RetW(W16ObjNew(T,1,GL(1),0,0));End;
   67: Begin SetSig('wpw');RetW(1);End;
-  68: Begin SetSig('w');D:=Dc1;If D>0 Then T^.Dc[D].Used:=False;RetW(1);End;
+  68: Begin SetSig('w');D:=Dc1;If TraceOn Then WriteLn(TraceF,'DELDC ',HexStr(GW(1),4),' D=',D);If D>0 Then T^.Dc[D].Used:=False;RetW(1);End;
   69: Begin SetSig('w');W16ObjFree(T,GW(1));RetW(1);End;
   74: Begin SetSig('wlp');RetL(0);End;
   80: Begin SetSig('ww');
@@ -13507,26 +13650,76 @@ Begin
   123: Begin SetSig('wp');RetW(1);End;
   148: Begin SetSig('www');RetL(0);End;
   150: Begin SetSig('w');RetW(1);End;
+  7: Begin SetSig('ww');RetW(1);End;                       { SetStretchBltMode }
+  10: Begin SetSig('www');RetW(1);End;                     { SetTextJustification }
+  11: Begin SetSig('www');D:=Dc1;                          { SetWindowOrg }
+     If D>0 Then Begin RetL(LongInt(T^.Dc[D].WOx And $FFFF)+(LongInt(T^.Dc[D].WOy And $FFFF) Shl 16));T^.Dc[D].WOx:=GI(2);T^.Dc[D].WOy:=GI(3);End Else RetL(0);End;
+  25: Begin SetSig('wwwl');D:=Dc1;                         { FloodFill (jusqu'a la couleur de bord) }
+     If (D>0) And DcBegin(T,D) Then Begin
+      C:=W16Col(GL(4));X:=GI(2);Y:=GI(3);
+      BrushRow:=BrushPix(T,D,0,0);
+      FloodRun(T,D,X,Y,C,BrushRow);
+      DcEnd(T,D);
+     End;RetW(1);End;
+  44: Begin SetSig('ww');RetW(2);End;                      { SelectClipRgn }
+  49: Begin SetSig('p');Ad_:=Lin(GPS(1),GPO(1));           { CreateBitmapIndirect }
+     W_:=RdW(Ad_+2);H_:=RdW(Ad_+4);
+     RetW(W16BmpNew(T,W_,H_,(RdB(Ad_+9)*RdB(Ad_+8))=1));End;
+  57: Begin SetSig('p');RetW(W16ObjNew(T,3,0,0,0));End;    { CreateFontIndirect }
+  70: Begin SetSig('wppp');W16EnumFonts(T,GPS(2),GPO(2),GPS(3),GPO(3),GPS(4),GPO(4));End; { EnumFonts }
+  76: Begin SetSig('w');D:=Dc1;If D>0 Then RetW(T^.Dc[D].BkMode) Else RetW(0);End;
+  77: Begin SetSig('wp');D:=Dc1;Ad_:=Lin(GPS(2),GPO(2));  { GetClipBox }
+     W16GetClient(T,T^.Dc[D].Hw,X,Y,X2,Y2);
+     WrW(Ad_,0);WrW(Ad_+2,0);WrW(Ad_+4,X2+1);WrW(Ad_+6,Y2+1);RetW(2);End;
+  79: Begin SetSig('w');D:=Dc1;                            { GetDCOrg }
+     If (D>0) And W16ClientOrg(T,T^.Dc[D].Hw,X,Y,X2,Y2,N,C) Then RetL(LongInt(X And $FFFF)+(LongInt(Y And $FFFF) Shl 16)) Else RetL(0);End;
+  83: Begin SetSig('www');D:=Dc1;L:=0;                     { GetPixel }
+     If (D>0) And DcBegin(T,D) Then Begin
+      C:=DcGet(T,D,GI(2),GI(3),Nl);
+      If Nl Then Begin If C=0 Then L:=0 Else L:=$FFFFFF;End
+      Else L:=VgaRGB[C And 15,0]+VgaRGB[C And 15,1]*256+LongInt(VgaRGB[C And 15,2])*65536;
+      DcEnd(T,D);
+     End;RetL(L);End;
+  90: Begin SetSig('w');D:=Dc1;If D>0 Then RetL(T^.Dc[D].TextCol) Else RetL(0);End;
+  92: Begin SetSig('wwp');W16PutStr(GPS(3),GPO(3),'System',GW(2));RetW(6);End;   { GetTextFace }
+  106: Begin SetSig('wlp');RetL(0);End;                    { SetBitmapBits }
+  128: Begin SetSig('www');If GW(3)=0 Then RetW($7FFF) Else RetW(Word((LongInt(SmallInt(GW(1)))*SmallInt(GW(2))+SmallInt(GW(3)) Div 2) Div SmallInt(GW(3))));End;
+  135: Begin SetSig('wwwlw');D:=Dc1;                       { ScanLR }
+     L:=$FFFF;
+     If (D>0) And DcBegin(T,D) Then Begin
+      X:=GI(2);Y:=GI(3);C:=W16Col(GL(4));N:=GW(5);
+      W16GetClient(T,T^.Dc[D].Hw,X1_,Y1_,X2,Y2);
+      If T^.Dc[D].Kind=2 Then Begin Ob:=ObjOf(T,T^.Dc[D].Bmp);If Ob>0 Then X2:=T^.Ob[Ob].BW-1;End;
+      While (X>=0) And (X<=X2) Do Begin
+       Nl:=False;I:=DcGet(T,D,X,Y,Nl);
+       If Nl Then I:=IfThen_(I=0,0,15);
+       If ((N And 2)=0) = (I=C) Then Begin L:=X;Break;End;
+       If (N And 1)<>0 Then Dec(X) Else Inc(X);
+      End;
+      DcEnd(T,D);
+     End;RetW(L);End;
+  154: Begin SetSig('l');RetL(GL(1));End;                  { GetNearestColor }
+  156: Begin SetSig('www');RetW(W16BmpNew(T,GI(2),GI(3),False));End;
+  162: Begin SetSig('w');RetL(0);End;                      { GetBitmapDimension }
+  163: Begin SetSig('wwwp');RetL(0);End;                   { SetBitmapDimension }
+  350: Begin SetSig('wwwp');Ad_:=Lin(GPS(4),GPO(4));       { GetCharWidth }
+     For I:=GW(2) To GW(3) Do WrW(Ad_+(I-GW(2))*2,8);RetW(1);End;
+  351: Begin SetSig('wwwwppwp');D:=Dc1;N:=GW(7);           { ExtTextOut }
+     S:='';For I:=0 To Min2(N,255)-1 Do S:=S+Chr(RdB(Lin(GPS(6),GPO(6)+I)));
+     If TraceOn Then Begin Write(TraceF,'EXTTEXTOUT ',GI(2),',',GI(3),' opt=',GW(4),' n=',N,' dc=',D,' rect=');If (GPS(5)<>0) Or (GPO(5)<>0) Then Begin Ad_:=Lin(GPS(5),GPO(5));Write(TraceF,SmallInt(RdW(Ad_)),',',SmallInt(RdW(Ad_+2)),',',SmallInt(RdW(Ad_+4)),',',SmallInt(RdW(Ad_+6)));End;For I:=1 To Length(S) Do Write(TraceF,' ',HexStr(Ord(S[I]),2));WriteLn(TraceF);End;
+     If (D>0) And DcBegin(T,D) Then Begin
+      If ((GW(4) And 2)<>0) And ((GPS(5)<>0) Or (GPO(5)<>0)) Then Begin
+       Ad_:=Lin(GPS(5),GPO(5));
+       DcBar(T,D,SmallInt(RdW(Ad_)),SmallInt(RdW(Ad_+2)),SmallInt(RdW(Ad_+4))-1,SmallInt(RdW(Ad_+6))-1,W16Col(T^.Dc[D].BkCol));
+      End;
+      If TraceOn Then WriteLn(TraceF,'  ORG ',T^.Dc[D].OrgX,',',T^.Dc[D].OrgY,' WO=',T^.Dc[D].WOx,',',T^.Dc[D].WOy,' VO=',T^.Dc[D].VOx,',',T^.Dc[D].VOy,' hw=',T^.Dc[D].Hw,' kind=',T^.Dc[D].Kind,' paint=',Ord(T^.Dc[D].Paint));
+      DcText(T,D,GI(2),GI(3),S);DcEnd(T,D);
+     End;RetW(1);End;
  Else W16Trap(T,2,O);
  End;
 End;
 
 { ---------------- API : USER ---------------- }
-
-Procedure W16GetClient(T: PW16; Hw: Word; Var X1,Y1,X2,Y2: Integer);
-Var W: PWindow;
-Begin
- X1:=0;Y1:=0;X2:=0;Y2:=0;
- If (Hw>=1) And (Hw<=MAXW16W) And T^.Wn[Hw].Used And (T^.Wn[Hw].Parent<>0) Then Begin
-  X2:=T^.Wn[Hw].W-1;Y2:=T^.Wn[Hw].H-1;
-  If (T^.Wn[Hw].Style And $00800000)<>0 Then Begin Dec(X2,2);Dec(Y2,2);End;
-  If (T^.Wn[Hw].Style And $00200000)<>0 Then Dec(X2,SB);
-  If (T^.Wn[Hw].Style And $00100000)<>0 Then Dec(Y2,SB);
-  Exit;
- End;
- W:=W16HostOf(T,Hw);
- If W<>Nil Then Begin WinClient(W,X1,Y1,X2,Y2);X2:=X2-X1;Y2:=Y2-Y1;X1:=0;Y1:=0;End;
-End;
 
 Function W16TaskTick: LongInt;
 Begin
@@ -13571,7 +13764,7 @@ Procedure W16User(T: PW16; O: Integer);
 Var Msg_: TMsg16; Ps_,Po_: Word; Old_: Word; Ms_: PMenuArr; Nm_: PIntP; Pop_: Integer; Hw0_: Word; Par: Word;
     S,S2: String; I,N,K,X,Y,X2,Y2,D: Integer; Hw: Word; W: PWindow; X1,Y1,Rx2,Ry2: Integer; A: LongInt; L: LongInt;
     R: Integer; C: Integer; Rt: PDlgRt; H: Word; Ob: Integer; Nl: Boolean; Fmt: Word; Wr: Boolean; Lm: String; Ln: String;
-    Ys: Integer; P: Integer;
+    Ys: Integer; P: Integer; Ar5: Array[0..4] Of Word;
  Function SendTo(Hw0,Msg,Wp: Word; Lp: LongInt): LongInt;
  Var Rt2: PDlgRt;
  Begin
@@ -13608,7 +13801,7 @@ Begin
      If (CurDlg<>Nil) And (GW(1)>=$8000) Then CurDlg^.D.Focus:=GW(1)-$8000;End;
   23: Begin SetSig('');RetW(T^.Focus);End;
   28: Begin SetSig('wp');W:=W16HostOf(T,GW(1));                       { ClientToScreen }
-     If W<>Nil Then Begin WinClient(W,X1,Y1,Rx2,Ry2);
+     If (W<>Nil) And W16ClientOrg(T,GW(1),X1,Y1,Rx2,Ry2,X,Y) Then Begin
       WrW(Lin(GPS(2),GPO(2)),RdI(GPS(2),GPO(2))+X1);WrW(Lin(GPS(2),GPO(2)+2),RdI(GPS(2),GPO(2)+2)+Y1);End;
      RetW(1);End;
   31: Begin SetSig('w');W:=W16HostOf(T,GW(1));RetW(Ord((W<>Nil) And (W^.State=1)));End;
@@ -13657,8 +13850,11 @@ Begin
      Hw:=Rg[R_AX];
      If Hw<>0 Then Begin
       W16WndProc(T,Hw,WM_CREATE,0,LongInt(T^.CsSeg) Shl 16 Or T^.CsOfs);
-      W16GetClient(T,Hw,X1,Y1,X2,Y2);
-      W16WndProc(T,Hw,WM_SIZE,0,LongInt(X2+1) Or (LongInt(Y2+1) Shl 16));
+      If (GL(3) And $10000000)<>0 Then Begin
+       T^.Wn[Hw].Shown:=True;
+       W16GetClient(T,Hw,X1,Y1,X2,Y2);
+       W16WndProc(T,Hw,WM_SIZE,0,LongInt(X2+1) Or (LongInt(Y2+1) Shl 16));
+      End;
      End;
     End;
   42: Begin SetSig('ww');Hw:=GW(1);W:=W16HostOf(T,Hw);
@@ -13670,7 +13866,7 @@ Begin
       End;
       Dirty:=True;
      End;
-     If (Hw>=1) And (Hw<=MAXW16W) And T^.Wn[Hw].Used And (T^.Wn[Hw].Parent=0) And (GW(2)<>0) And Not T^.Wn[Hw].Shown Then Begin
+     If (Hw>=1) And (Hw<=MAXW16W) And T^.Wn[Hw].Used And (GW(2)<>0) And Not T^.Wn[Hw].Shown Then Begin
       T^.Wn[Hw].Shown:=True;
       W16GetClient(T,Hw,X1,Y1,X2,Y2);
       W16WndProc(T,Hw,WM_SIZE,0,LongInt(X2+1) Or (LongInt(Y2+1) Shl 16));
@@ -13680,26 +13876,37 @@ Begin
   51: Begin SetSig('w');RetW(0);End;
   52: Begin SetSig('');RetW(0);End;
   53: Begin SetSig('w');W16DestroyWin(T,GW(1));RetW(1);End;
-  56: Begin SetSig('wwwwww');Hw:=GW(1);W:=W16HostOf(T,Hw);
+  56: Begin SetSig('wwwwww');Hw:=GW(1);W:=W16HostOf(T,Hw);If TraceOn Then WriteLn(TraceF,'MOVEWIN hw=',Hw,' ',GI(2),',',GI(3),' ',GI(4),'x',GI(5));
      If (W<>Nil) And (T^.Wn[Hw].Host=W) Then Begin W^.X:=GI(2);W^.Y:=GI(3);W^.W:=Max2(80,GI(4));W^.H:=Max2(60,GI(5));Dirty:=True;End
-     Else If (Hw>=1) And (Hw<=MAXW16W) Then Begin T^.Wn[Hw].X:=GI(2);T^.Wn[Hw].Y:=GI(3);T^.Wn[Hw].W:=GI(4);T^.Wn[Hw].H:=GI(5);Dirty:=True;End;
+     Else If (Hw>=1) And (Hw<=MAXW16W) Then Begin
+      Nl:=(T^.Wn[Hw].W<>GI(4)) Or (T^.Wn[Hw].H<>GI(5));
+      Wr:=(T^.Wn[Hw].X<>GI(2)) Or (T^.Wn[Hw].Y<>GI(3));
+      T^.Wn[Hw].X:=GI(2);T^.Wn[Hw].Y:=GI(3);T^.Wn[Hw].W:=GI(4);T^.Wn[Hw].H:=GI(5);Dirty:=True;
+      If T^.Wn[Hw].Vis And (T^.Wn[Hw].PSeg<>0) And (T^.Wn[Hw].Kind=WK_OTHER) Then Begin
+       If Wr Then W16WndProc(T,Hw,WM_MOVE,0,LongInt(GI(2) And $FFFF) Or (LongInt(GI(3) And $FFFF) Shl 16));
+       If Nl Then Begin
+        W16GetClient(T,Hw,X1,Y1,X2,Y2);
+        W16WndProc(T,Hw,WM_SIZE,0,LongInt(X2+1) Or (LongInt(Y2+1) Shl 16));
+       End;
+      End;
+     End;
      RetW(1);End;
   57: Begin SetSig('p');RetW(W16Register(T,GPS(1),GPO(1)));End;
   60: Begin SetSig('');W:=ActiveWin;If (W<>Nil) And (W^.App=A_W16) And (W^.Data=T) Then RetW(W^.Param) Else RetW(0);End;
   61: Begin SetSig('wwwpp');Dirty:=True;RetW(1);End;
   62: Begin SetSig('wwww');Hw:=GW(1);W:=W16HostOf(T,Hw);                  { SetScrollPos }
      If (Hw>=1) And (Hw<=MAXW16W) And (T^.Wn[Hw].Parent<>0) Then Begin
-      If GW(2)=1 Then Begin RetW(T^.Wn[Hw].VPos);T^.Wn[Hw].VPos:=GI(3);End Else Begin RetW(T^.Wn[Hw].HPos);T^.Wn[Hw].HPos:=GI(3);End;
+      If (GW(2)=1) Or (T^.Wn[Hw].Kind=WK_SCROLL) Then Begin RetW(T^.Wn[Hw].VPos);T^.Wn[Hw].VPos:=GI(3);End Else Begin RetW(T^.Wn[Hw].HPos);T^.Wn[Hw].HPos:=GI(3);End;
       If GW(4)<>0 Then Dirty:=True;
      End Else If (W<>Nil) Then Begin
       If GW(2)=1 Then Begin RetW(T^.Wn[Hw].VPos);T^.Wn[Hw].VPos:=GI(3);W^.VPos:=Clamp(GI(3)-T^.Wn[Hw].VMin,0,Max2(0,W^.VTot-W^.VPage));End
       Else Begin RetW(T^.Wn[Hw].HPos);T^.Wn[Hw].HPos:=GI(3);W^.HPos:=Clamp(GI(3)-T^.Wn[Hw].HMin,0,Max2(0,W^.HTot-W^.HPage));End;
       If GW(4)<>0 Then Dirty:=True;
      End Else RetW(0);End;
-  63: Begin SetSig('ww');Hw:=GW(1);If (Hw>=1) And (Hw<=MAXW16W) Then Begin If GW(2)=1 Then RetW(T^.Wn[Hw].VPos) Else RetW(T^.Wn[Hw].HPos);End Else RetW(0);End;
+  63: Begin SetSig('ww');Hw:=GW(1);If (Hw>=1) And (Hw<=MAXW16W) Then Begin If (GW(2)=1) Or (T^.Wn[Hw].Kind=WK_SCROLL) Then RetW(T^.Wn[Hw].VPos) Else RetW(T^.Wn[Hw].HPos);End Else RetW(0);End;
   64: Begin SetSig('wwwww');Hw:=GW(1);W:=W16HostOf(T,Hw);               { SetScrollRange }
      If (Hw>=1) And (Hw<=MAXW16W) And (T^.Wn[Hw].Parent<>0) Then Begin
-      If GW(2)=1 Then Begin T^.Wn[Hw].VMin:=GI(3);T^.Wn[Hw].VMax:=GI(4);End Else Begin T^.Wn[Hw].HMin:=GI(3);T^.Wn[Hw].HMax:=GI(4);End;
+      If (GW(2)=1) Or (T^.Wn[Hw].Kind=WK_SCROLL) Then Begin T^.Wn[Hw].VMin:=GI(3);T^.Wn[Hw].VMax:=GI(4);End Else Begin T^.Wn[Hw].HMin:=GI(3);T^.Wn[Hw].HMax:=GI(4);End;
       Dirty:=True;
      End Else If W<>Nil Then Begin
       If GW(2)=1 Then Begin T^.Wn[Hw].VMin:=GI(3);T^.Wn[Hw].VMax:=GI(4);
@@ -13711,7 +13918,7 @@ Begin
      RetW(1);End;
   65: Begin SetSig('wwpp');Hw:=GW(1);
      If (Hw>=1) And (Hw<=MAXW16W) Then Begin
-      If GW(2)=1 Then Begin WrW(Lin(GPS(3),GPO(3)),T^.Wn[Hw].VMin);WrW(Lin(GPS(4),GPO(4)),T^.Wn[Hw].VMax);End
+      If (GW(2)=1) Or (T^.Wn[Hw].Kind=WK_SCROLL) Then Begin WrW(Lin(GPS(3),GPO(3)),T^.Wn[Hw].VMin);WrW(Lin(GPS(4),GPO(4)),T^.Wn[Hw].VMax);End
       Else Begin WrW(Lin(GPS(3),GPO(3)),T^.Wn[Hw].HMin);WrW(Lin(GPS(4),GPO(4)),T^.Wn[Hw].HMax);End;
      End;RetW(0);End;
   66,67: Begin SetSig('w');Hw:=GW(1);H:=W16DcNew(T,1,Hw);D:=DcIdx(T,H);
@@ -13973,7 +14180,7 @@ Begin
      If (GPS(2)=0) And (GPO(2)>=$7F00) Then Begin RetW(W16SysBitmap(T,GPO(2)));Exit;End;
      K:=W16FindRes(T,GPS(2),GPO(2),0,2);
      If K=0 Then RetW(0) Else RetW(W16LoadBitmapRes(T,K));End;
-  176: Begin SetSig('wwpw');If W16LoadStr(T,GW(2),S) Then Begin W16PutStr(GPS(3),GPO(3),S,GW(4));RetW(Min2(Length(S),GW(4)-1));End
+  176: Begin SetSig('wwpw');If TraceOn Then WriteLn(TraceF,'LOADSTRING id=',GW(2),' buf=',HexStr(GPS(3),4),':',HexStr(GPO(3),4),' max=',GW(4),' SS=',HexStr(Sg[SG_SS],4),' SP=',HexStr(Rg[R_SP],4));If W16LoadStr(T,GW(2),S) Then Begin W16PutStr(GPS(3),GPO(3),S,GW(4));RetW(Min2(Length(S),GW(4)-1));End
      Else Begin If GW(4)>0 Then WrB(Lin(GPS(3),GPO(3)),0);RetW(0);End;End;
   177: Begin SetSig('wp');K:=W16FindRes(T,GPS(2),GPO(2),0,9);If K=0 Then RetW(0) Else RetW(W16LoadRes(T,K));End;
   178: Begin SetSig('wwp');RetW(W16Accel(T,GW(1),GW(2),GPS(3),GPO(3)));End;
@@ -14000,6 +14207,91 @@ Begin
   205: Begin SetSig('wpw');RetW($FFFF);End;
   207: Begin SetSig('w');RetW(0);End;
   215: Begin SetSig('ww');RetW(0);End;
+  14: Begin SetSig('');RetL(55000);End;                    { GetTimerResolution }
+  24,25: Begin SetSig('wp');S:=GStr(2);                    { RemoveProp / GetProp }
+     If (GPS(2)=0) Then S:='#'+IntStr(GPO(2));
+     R:=0;
+     For I:=1 To 32 Do If (PropTab[I].Nm<>'') And (PropTab[I].Hw=GW(1)) And (PropTab[I].Nm=S) Then Begin
+      R:=PropTab[I].V;If O=24 Then PropTab[I].Nm:='';Break;End;
+     RetW(R);End;
+  26: Begin SetSig('wpw');S:=GStr(2);                      { SetProp }
+     If (GPS(2)=0) Then S:='#'+IntStr(GPO(2));
+     K:=0;
+     For I:=1 To 32 Do If (PropTab[I].Nm=S) And (PropTab[I].Hw=GW(1)) Then K:=I;
+     If K=0 Then For I:=1 To 32 Do If PropTab[I].Nm='' Then Begin K:=I;Break;End;
+     If K>0 Then Begin PropTab[K].Hw:=GW(1);PropTab[K].Nm:=Copy(S,1,30);PropTab[K].V:=GW(3);End;
+     RetW(1);End;
+  29: Begin SetSig('wp');                                  { ScreenToClient }
+     If W16ClientOrg(T,GW(1),X1,Y1,Rx2,Ry2,X,Y) Then Begin
+      WrW(Lin(GPS(2),GPO(2)),RdI(GPS(2),GPO(2))-X1);WrW(Lin(GPS(2),GPO(2)+2),RdI(GPS(2),GPO(2)+2)-Y1);End;
+     RetW(1);End;
+  43: Begin SetSig('w');W:=W16HostOf(T,GW(1));If W<>Nil Then Begin MinimizeWin(W);Dirty:=True;End;RetW(1);End;
+  44: Begin SetSig('w');W:=W16HostOf(T,GW(1));If W<>Nil Then Begin RestoreWin(W);Dirty:=True;End;RetW(1);End;
+  45: Begin SetSig('w');W:=W16HostOf(T,GW(1));If W<>Nil Then Begin BringToFront(W);Dirty:=True;End;RetW(1);End;
+  46: Begin SetSig('w');Hw:=GW(1);If (Hw>=1) And (Hw<=MAXW16W) Then RetW(T^.Wn[Hw].Parent) Else RetW(0);End;
+  48: Begin SetSig('ww');RetW(Ord(W16IsDesc(T,GW(2),GW(1))));End;
+  49: Begin SetSig('w');Hw:=GW(1);RetW(Ord((Hw>=1) And (Hw<=MAXW16W) And T^.Wn[Hw].Used And T^.Wn[Hw].Vis));End;
+  50: Begin SetSig('pp');S:=Upper(GStr(1));S2:=GStr(2);R:=0; { FindWindow }
+     For I:=1 To MAXW16W Do If T^.Wn[I].Used And (T^.Wn[I].Parent=0) Then
+      If ((GPS(1)=0) Or (T^.Cl[T^.Wn[I].Cls].Name=S)) And ((GPS(2)=0) Or (T^.Wn[I].Title=S2)) Then Begin R:=I;Break;End;
+     RetW(R);End;
+  54,55: Begin                                              { EnumWindows / EnumChildWindows }
+     If O=54 Then Begin SetSig('pl');Par:=0;Ps_:=GPS(1);Po_:=GPO(1);L:=GL(2);End
+     Else Begin SetSig('wpl');Par:=GW(1);Ps_:=GPS(2);Po_:=GPO(2);L:=GL(3);End;
+     R:=1;
+     For I:=1 To MAXW16W Do
+      If T^.Wn[I].Used And ((O=54) And (T^.Wn[I].Parent=0) Or (O=55) And W16IsDesc(T,I,Par)) Then Begin
+       Ar5[0]:=I;Ar5[1]:=(L Shr 16) And $FFFF;Ar5[2]:=L And $FFFF;
+       AT:=T;
+       If (W16CallFar(Ps_,Po_,Ar5,3) And $FFFF)=0 Then Begin R:=0;Break;End;
+       AT:=T;
+      End;
+     RetW(R);End;
+  58: Begin SetSig('wpw');Hw:=GW(1);                       { GetClassName }
+     If (Hw>=1) And (Hw<=MAXW16W) And T^.Wn[Hw].Used Then Begin
+      S:=T^.Cl[T^.Wn[Hw].Cls].Name;W16PutStr(GPS(2),GPO(2),S,GW(3));RetW(Min2(Length(S),GW(3)-1));End Else RetW(0);End;
+  59: Begin SetSig('w');W:=W16HostOf(T,GW(1));If W<>Nil Then Begin BringToFront(W);Dirty:=True;End;RetW(0);End;
+  70: Begin SetSig('ww');MX:=GI(1);MY:=GI(2);RetW(0);End;
+  73: Begin SetSig('p');A:=Lin(GPS(1),GPO(1));WrW(A,0);WrW(A+2,0);WrW(A+4,0);WrW(A+6,0);RetW(1);End;
+  80: Begin SetSig('ppp');A:=Lin(GPS(1),GPO(1));            { UnionRect }
+     X:=RdI(GPS(2),GPO(2));Y:=RdI(GPS(2),GPO(2)+2);X2:=RdI(GPS(2),GPO(2)+4);Y2:=RdI(GPS(2),GPO(2)+6);
+     X1:=RdI(GPS(3),GPO(3));Y1:=RdI(GPS(3),GPO(3)+2);Rx2:=RdI(GPS(3),GPO(3)+4);Ry2:=RdI(GPS(3),GPO(3)+6);
+     If (X2<=X) Or (Y2<=Y) Then Begin X:=X1;Y:=Y1;X2:=Rx2;Y2:=Ry2;End
+     Else If (Rx2>X1) And (Ry2>Y1) Then Begin X:=Min2(X,X1);Y:=Min2(Y,Y1);X2:=Max2(X2,Rx2);Y2:=Max2(Y2,Ry2);End;
+     WrW(A,X);WrW(A+2,Y);WrW(A+4,X2);WrW(A+6,Y2);RetW(Ord((X2>X) And (Y2>Y)));End;
+  84: Begin SetSig('wwww');RetW(1);End;                    { DrawIcon }
+  86: Begin SetSig('');RetL($00200020);End;                { IconSize }
+  151: Begin SetSig('');                                   { CreateMenu }
+     K:=0;For I:=1 To MAXW16MT Do If T^.MTpl[I]=Nil Then Begin K:=I;Break;End;
+     If K=0 Then RetW(0) Else Begin
+      New(T^.MTpl[K]);FillChar(T^.MTpl[K]^,SizeOf(TW16MenuTpl),0);
+      MnuAddPopup(@T^.MTpl[K]^.Menus,@T^.MTpl[K]^.NMenu,'');
+      RetW($7C00+K);End;End;
+  152: Begin SetSig('w');K:=GW(1)-$7C00;                   { DestroyMenu }
+     If (K>=1) And (K<=MAXW16MT) And (T^.MTpl[K]<>Nil) Then Begin Dispose(T^.MTpl[K]);T^.MTpl[K]:=Nil;End;RetW(1);End;
+  159: Begin SetSig('ww');H:=GW(1);                        { GetSubMenu }
+     If (H>=$7000) And (H<$7C00) Then RetW($7000+((H-$7000) Div 32)*32+GW(2)+1) Else RetW(H);End;
+  161: Begin SetSig('wwpww');                              { GetMenuString }
+     R:=0;
+     If MenuSetOf(T,GW(1),Ms_,Nm_,Pop_,Hw0_) Then Begin
+      If Pop_=0 Then Pop_:=1;
+      For I:=1 To Ms_^[Pop_].N Do If Ms_^[Pop_].It[I].Cmd=GI(2) Then Begin
+       S:=Ms_^[Pop_].It[I].Txt;While Pos('&',S)>0 Do Delete(S,Pos('&',S),1);W16PutStr(GPS(3),GPO(3),S,GW(4));R:=Min2(Length(S),GW(4)-1);Break;End;
+     End;
+     RetW(R);End;
+  168: Begin SetSig('w');RetW(1);End;                      { SetCaretBlinkTime }
+  169: Begin SetSig('');RetW(500);End;                     { GetCaretBlinkTime }
+  181: Begin SetSig('wpp');RetW(1);End;                    { SetSysColors }
+  191: Begin SetSig('wl');RetW(GW(1));End;                 { ChildWindowFromPoint }
+  192: Begin SetSig('');RetW(0);End;                        { InSendMessage }
+  204: Begin SetSig('wpw');RetW(0);End;                    { ReadComm }
+  206: Begin SetSig('ww');RetW(0);End;
+  208: Begin SetSig('ww');RetL(0);End;
+  209: Begin SetSig('ww');RetW(0);End;
+  210,211: Begin SetSig('w');RetW(0);End;
+  212: Begin SetSig('ww');RetW(0);End;
+  213: Begin SetSig('pp');RetW(0);End;
+  214: Begin SetSig('ww');RetL(0);End;
  Else W16Trap(T,3,O);
  End;
 End;
@@ -14034,7 +14326,7 @@ Begin
  If N>=4095 Then Begin W16Trap(T,0,0);CpuBlock:=True;Exit;End;
  Md:=N Div 1024+1;O:=N Mod 1024;
  SetSig('');Inc(TrApi);
- If TraceOn Then WriteLn(TraceF,'W16 mod=',Md,' ord=',O,' SP=',HexStr(Rg[R_SP],4),' ret=',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+2)),4),':',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP])),4));
+ If TraceOn Then WriteLn(TraceF,'W16 mod=',Md,' ord=',O,' SP=',HexStr(Rg[R_SP],4),' ret=',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+2)),4),':',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP])),4),' args=',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+4)),4),' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+6)),4),' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+8)),4),' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+10)),4));
  Case Md Of
   1: W16Kernel(T,O);
   2: W16Gdi(T,O);
@@ -14196,6 +14488,14 @@ Begin
    W16FillBk(T,T^.Wn[I].Cls,Cx,Cy,K,C);
    W16WndProc(T,I,WM_PAINT,0,0);
   End;
+ { barres de defilement (controles) }
+ For I:=1 To MAXW16W Do
+  If T^.Wn[I].Used And T^.Wn[I].Vis And (T^.Wn[I].Kind=WK_SCROLL) And W16IsDesc(T,I,Hw) And W16OuterRect(T,I,Q1,Q2,Q3,Q4) And
+     (Q3>Q1) And (Q4>Q2) Then Begin
+   SetClip(Max2(X1,Q1),Max2(Y1,Q2),Min2(X2,Q3),Min2(Y2,Q4));
+   If (T^.Wn[I].Style And 8)<>0 Then GBar(Q1,Q2,Q3,Q4,cLGr)
+   Else DrawScroll((T^.Wn[I].Style And 1)<>0,Q1,Q2,Q3,Q4,Max2(1,T^.Wn[I].VMax-T^.Wn[I].VMin+1),1,Clamp(T^.Wn[I].VPos-T^.Wn[I].VMin,0,Max2(0,T^.Wn[I].VMax-T^.Wn[I].VMin)));
+  End;
  T^.Painting:=False;
  VMLeave(V);
  CurW16:=Sv;
@@ -14224,7 +14524,7 @@ End;
 
 Procedure W16HostMouse(W: PWindow; Var E: TEvent);
 Var T: PW16; Hw,Tg: Word; X1,Y1,X2,Y2: Integer; Msg: Word; Lp: LongInt; I: Integer; Rt: PDlgRt; Cx,Cy: Integer;
-    Q1,Q2,Q3,Q4,Bd,Ox,Oy,Tt,Pt: Integer;
+    Q1,Q2,Q3,Q4,Bd,Ox,Oy,Tt,Pt: Integer; Vt: Boolean;
 Begin
  T:=W^.Data;
  If TraceOn Then WriteLn(TraceF,'HOSTMOUSE kind=',Ord(E.Kind),' x=',E.X,' y=',E.Y);
@@ -14243,7 +14543,7 @@ Begin
  End;
  Tg:=Hw;Cx:=E.X-X1;Cy:=E.Y-Y1;
  For I:=1 To MAXW16W Do
-  If T^.Wn[I].Used And T^.Wn[I].Vis And (T^.Wn[I].Parent<>0) And ((T^.Wn[I].Kind=WK_EDIT) Or (T^.Wn[I].Kind=WK_OTHER)) And
+  If T^.Wn[I].Used And T^.Wn[I].Vis And (T^.Wn[I].Parent<>0) And ((T^.Wn[I].Kind=WK_EDIT) Or (T^.Wn[I].Kind=WK_OTHER) Or (T^.Wn[I].Kind=WK_SCROLL)) And
      W16IsDesc(T,I,Hw) And W16OuterRect(T,I,Q1,Q2,Q3,Q4) And InBox(E.X,E.Y,Q1,Q2,Q3,Q4) Then Begin
    Bd:=IfThen_((T^.Wn[I].Style And $00800000)<>0,1,0);
    { barre de defilement verticale d'un enfant }
@@ -14260,6 +14560,25 @@ Begin
        Pt:=ScrollDrag(True,Q3-SB-Bd+1,Q2+Bd,Q3-Bd,Q4-Bd,Tt,1,E.Y,0);
        W16Post(T,I,WM_VSCROLL,4,T^.Wn[I].VMin+Pt);
       End;
+     End;
+     Dirty:=True;
+    End;
+    Exit;
+   End;
+   If T^.Wn[I].Kind=WK_SCROLL Then Begin
+    If E.Kind=EV_DOWN Then Begin
+     Vt:=(T^.Wn[I].Style And 1)<>0;
+     Tt:=Max2(1,T^.Wn[I].VMax-T^.Wn[I].VMin+1);
+     Pt:=ScrollPart(Vt,Q1,Q2,Q3,Q4,Tt,1,Clamp(T^.Wn[I].VPos-T^.Wn[I].VMin,0,Tt-1),E.X,E.Y);
+     Msg:=IfThen_(Vt,WM_VSCROLL,WM_HSCROLL);
+     Lp:=LongInt(I) Shl 16;
+     Case Pt Of
+      1: W16Post(T,T^.Wn[I].Parent,Msg,0,Lp);
+      2: W16Post(T,T^.Wn[I].Parent,Msg,1,Lp);
+      3: W16Post(T,T^.Wn[I].Parent,Msg,2,Lp);
+      4: W16Post(T,T^.Wn[I].Parent,Msg,3,Lp);
+      5,0: Begin Pt:=ScrollDrag(Vt,Q1,Q2,Q3,Q4,Tt,1,IfThen_(Vt,E.Y,E.X),0);
+       W16Post(T,T^.Wn[I].Parent,Msg,4,Lp Or (T^.Wn[I].VMin+Pt));End;
      End;
      Dirty:=True;
     End;
