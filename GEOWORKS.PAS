@@ -175,6 +175,11 @@ Var
  ModemInit : String[40];
  PrinterSel,PrinterPort: Integer;
  TextSize  : Integer;
+ WelcomeOn : Boolean;      { ecran d'accueil au demarrage }
+ GeosLevel : Integer;      { niveau par defaut (1..3, 0 = non fixe) }
+ LvlGiven  : Boolean;
+ TaskOn    : Boolean;      { changement de fenetre au clavier }
+ TaskKey   : Word;
  Clock24   : Boolean;
  DblCs     : LongInt;      { delai du double-clic (centiemes) }
  ClipIconId: Integer;      { icone copiee depuis le Scrapbook }
@@ -3624,13 +3629,14 @@ Begin
     End;
    EV_KEY: Begin
      W:=TopWin;
+     If TaskOn And (TaskKey<>K_F6) And (E.Key=TaskKey) Then Begin NextWindow;E.Key:=0;End;
      Case E.Key Of
       K_F10: If (W<>Nil) And (W^.NMenu>0) Then Begin
               Cmd:=RunMenus(W,1,False);
               If Cmd>0 Then WinCommand(W,Cmd);
              End;
       K_ALTF4: If W<>Nil Then CommonCmd(W,CM_CLOSE);
-      K_F6: NextWindow;
+      K_F6: If TaskOn And (TaskKey=K_F6) Then NextWindow Else If W<>Nil Then WinKey(W,E.Key);
      Else
       If W<>Nil Then WinKey(W,E.Key);
      End;
@@ -4112,7 +4118,8 @@ Begin
     If A<>0 Then LaunchApp(A,Path) Else LaunchApp(A_GEODE,Path);
    End;
   End Else LaunchApp(A_GEODE,Path);
- End Else If (E='EXE') Or (E='COM') Or (E='BAT') Then Begin
+ End Else If (E='WK1') Or (E='WKS') Or (E='WQ1') Then LaunchApp(A_WK1,Path)
+ Else If (E='EXE') Or (E='COM') Or (E='BAT') Then Begin
   If Confirm(T3('DOS program','Programme DOS','DOS-Programm'),
    T3('Run the DOS program|','Ex'#130'cuter le programme DOS|','DOS-Programm starten|')+ShortName(Path)+'?') Then
    RunDosCommand(Path);
@@ -4427,6 +4434,10 @@ Begin
    MgrAddEnt(Wd_,AppTitle(A_TEXTED),AppTitle(A_TEXTED),1,IC_NOTE,A_TEXTED,0);
    MgrAddEnt(Wd_,AppTitle(A_PERF),AppTitle(A_PERF),1,IC_PERF,A_PERF,0);
    MgrAddEnt(Wd_,AppTitle(A_BOUNCE),AppTitle(A_BOUNCE),1,IC_UNKNOWN,A_BOUNCE,0);
+   MgrAddEnt(Wd_,AppTitle(A_DUMP),AppTitle(A_DUMP),1,IC_COLORS,A_DUMP,0);
+   MgrAddEnt(Wd_,AppTitle(A_INSTALL),AppTitle(A_INSTALL),1,IC_GEOS,A_INSTALL,0);
+   MgrAddEnt(Wd_,AppTitle(A_WK1),AppTitle(A_WK1),1,IC_CALC,A_WK1,0);
+   MgrAddEnt(Wd_,AppTitle(A_GRAPH),AppTitle(A_GRAPH),1,IC_GEOS,A_GRAPH,0);
   End;
   MgrSortEnts(Wd_);
   Exit;
@@ -8682,6 +8693,10 @@ Begin
  WriteLn(F,'Printer=',PrinterSel);
  WriteLn(F,'PrinterPort=',PrinterPort);
  WriteLn(F,'TextSize=',TextSize);
+ WriteLn(F,'Welcome=',Ord(WelcomeOn));
+ WriteLn(F,'StartLevel=',GeosLevel);
+ WriteLn(F,'TaskSwitch=',Ord(TaskOn));
+ WriteLn(F,'TaskKey=',TaskKey);
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
@@ -8722,7 +8737,11 @@ Begin
    Else If K='MODEMINIT' Then ModemInit:=Copy(V,1,40)
    Else If K='PRINTER' Then PrinterSel:=StrVal(V,1)
    Else If K='PRINTERPORT' Then PrinterPort:=StrVal(V,1)
-   Else If K='TEXTSIZE' Then TextSize:=StrVal(V,2);
+   Else If K='TEXTSIZE' Then TextSize:=StrVal(V,2)
+   Else If K='WELCOME' Then WelcomeOn:=StrVal(V,1)<>0
+   Else If K='STARTLEVEL' Then GeosLevel:=StrVal(V,0)
+   Else If K='TASKSWITCH' Then TaskOn:=StrVal(V,1)<>0
+   Else If K='TASKKEY' Then TaskKey:=StrVal(V,K_F6);
   End;
  End;
  Close(F);
@@ -8905,6 +8924,62 @@ Begin
  PrefsSave;
 End;
 
+
+Procedure PrefGeos;
+Var R: Integer; Done: Boolean; S: String;
+Begin
+ Done:=False;
+ While Not Done Do Begin
+  If WelcomeOn Then S:=T3('Welcome screen: on','Ecran d''accueil : oui','Willkommen: ein') Else S:=T3('Welcome screen: off','Ecran d''accueil : non','Willkommen: aus');
+  S:=S+'   '+T3('Level: ','Niveau : ','Stufe: ');
+  If GeosLevel=0 Then S:=S+'-' Else S:=S+IntStr(GeosLevel);
+  R:=ChoiceBox('GEOS',S,T3('Show Welcome screen at startup|Skip Welcome screen|Default user level...|Free memory and system|OK',
+     'Afficher l''accueil au d'#130'marrage|Ignorer l''accueil|Niveau par d'#130'faut...|M'#130'moire libre et syst'#138'me|OK',
+     'Willkommen beim Start zeigen|Willkommen '#129'berspringen|Standardstufe...|Freier Speicher und System|OK'),5);
+  Case R Of
+   1: WelcomeOn:=True;
+   2: WelcomeOn:=False;
+   3: Begin
+       R:=ChoiceBox('GEOS',T3('User level at startup:','Niveau au d'#130'marrage :','Benutzerstufe beim Start:'),
+          T3('Ask each time|Beginner|Intermediate|Advanced','Demander '#133' chaque fois|D'#130'butant|Interm'#130'diaire|Avanc'#130,
+             'Jedes Mal fragen|Anf'#132'nger|Fortgeschritten|Experte'),GeosLevel+1);
+       If R>0 Then GeosLevel:=R-1;
+      End;
+   4: Info('GEOS','PC/GEOS clone '+VERSION_TEXT+'|'+
+          T3('Free memory: ','M'#130'moire libre : ','Freier Speicher: ')+
+          NumFmt(FreeMemory)+' '+T3('bytes','octets','Bytes')+'|'+
+          T3('World directory: ','R'#130'pertoire WORLD : ','WORLD-Verzeichnis: ')+WorldDir+'|'+
+          T3('Open windows: ','Fen'#136'tres ouvertes : ','Offene Fenster: ')+IntStr(NWins));
+  Else Done:=True;
+  End;
+ End;
+ PrefsSave;
+End;
+
+Procedure PrefTask;
+Var R: Integer; Done: Boolean; S: String;
+Begin
+ Done:=False;
+ While Not Done Do Begin
+  If TaskOn Then S:=T3('Switching: on, key F','Changement : oui, touche F','Wechsel: ein, Taste F')+IntStr(TaskKey-K_F1+1)
+  Else S:=T3('Switching: off','Changement : non','Wechsel: aus');
+  R:=ChoiceBox(T3('Task Switch','Multit'#131'che','Taskwechsel'),S,
+     T3('Enable window switching|Disable window switching|Switch key...|OK','Activer le changement de fen'#136'tre|D'#130'sactiver le changement de fen'#136'tre|Touche de changement...|OK',
+        'Fensterwechsel ein|Fensterwechsel aus|Wechseltaste...|OK'),4);
+  Case R Of
+   1: TaskOn:=True;
+   2: TaskOn:=False;
+   3: Begin
+       R:=ChoiceBox(T3('Task Switch','Multit'#131'che','Taskwechsel'),T3('Key that cycles windows:','Touche de changement de fen'#136'tre :','Taste zum Fensterwechsel:'),
+          'F6|F7|F8|F9',TaskKey-K_F6+1);
+       If R>0 Then TaskKey:=K_F6+R-1;
+      End;
+  Else Done:=True;
+  End;
+ End;
+ PrefsSave;
+End;
+
 Procedure PrefModule(Wd_: PWindow; I: Integer);
  Var Dt_: PPrefs;
 Var R,K: Integer; S: String; Y,M,D,W,H,Mi,Sc,C: Word;
@@ -8932,6 +9007,8 @@ Begin
   5: PrefPrinter;
   11: PrefKeyboard;
   12: PrefLights;
+  10: PrefGeos;
+  15: PrefTask;
   2: PrefText;
   7: Begin
       Info(T3('Computer','Ordinateur','Computer'),
@@ -12907,6 +12984,699 @@ Begin
 End;
 
 { ====================================================================== }
+{   SCREEN DUMPER : capture de l'ecran ou d'une fenetre (BMP ou PCX)       }
+{ ====================================================================== }
+
+Const
+ CM_SDCAP=1300; CM_SDFMT=1301; CM_SDDLY=1302; CM_SDAREA=1303; CM_SDNAME=1304;
+ DumpPal : Array[0..15,0..2] Of Byte = (
+  (0,0,0),(0,0,170),(0,170,0),(0,170,170),(170,0,0),(170,0,170),(170,85,0),(170,170,170),
+  (85,85,85),(85,85,255),(85,255,85),(85,255,255),(255,85,85),(255,85,255),(255,255,85),(255,255,255));
+
+Type
+ PDump = ^TDump;
+ TDump = Record
+  Fmt   : Integer;         { 0 BMP, 1 PCX }
+  Delay : Integer;         { secondes }
+  Area  : Integer;         { 0 ecran entier, 1 fenetre sous l'outil }
+  FName : String;
+  Msg   : String;
+  MsgErr: Boolean;
+  Down  : Integer;
+ End;
+
+Function DumpNew(AX,AY: Integer): PWindow; Forward;
+Procedure DumpDrawClient(Wd_: PWindow); Forward;
+Procedure DumpOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure DumpOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure DumpOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function DumpNextName(Fmt: Integer): String;
+Var I: Integer; S,E: String;
+Begin
+ If Fmt=0 Then E:='.BMP' Else E:='.PCX';
+ I:=0;
+ Repeat
+  S:=JoinPath(HomeDir,'SCREEN'+Pad2(I)+E);
+  Inc(I);
+ Until (Not FileExists(S)) Or (I>99);
+ DumpNextName:=S;
+End;
+
+{ Ecrit un BMP 16 couleurs (4 bits) ; Pix contient W*H indices de couleur }
+Function DumpWriteBmp(Const P: String; Pix: PByteArr; W,H: Integer): Boolean;
+Var F: File; Hd: Array[0..117] Of Byte; Row: Array[0..399] Of Byte; Y,X,RB,I: Integer; Sz: LongInt; Ok: Boolean;
+Begin
+ DumpWriteBmp:=False;
+ RB:=((W+1) Div 2+3) And (Not 3);
+ Sz:=118+LongInt(RB)*H;
+ FillChar(Hd,SizeOf(Hd),0);
+ Hd[0]:=Ord('B');Hd[1]:=Ord('M');
+ Hd[2]:=Sz And 255;Hd[3]:=(Sz Shr 8) And 255;Hd[4]:=(Sz Shr 16) And 255;Hd[5]:=(Sz Shr 24) And 255;
+ Hd[10]:=118;
+ Hd[14]:=40;
+ Hd[18]:=W And 255;Hd[19]:=W Shr 8;Hd[22]:=H And 255;Hd[23]:=H Shr 8;
+ Hd[26]:=1;Hd[28]:=4;
+ Hd[34]:=(LongInt(RB)*H) And 255;Hd[35]:=((LongInt(RB)*H) Shr 8) And 255;Hd[36]:=((LongInt(RB)*H) Shr 16) And 255;
+ Hd[46]:=16;
+ For I:=0 To 15 Do Begin
+  Hd[54+I*4]:=DumpPal[I,2];Hd[55+I*4]:=DumpPal[I,1];Hd[56+I*4]:=DumpPal[I,0];
+ End;
+ {$I-}
+ Assign(F,P);FileMode:=2;Rewrite(F,1);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}
+ BlockWrite(F,Hd,118);
+ Ok:=IOResult=0;
+ For Y:=H-1 DownTo 0 Do Begin
+  FillChar(Row,RB,0);
+  For X:=0 To W-1 Do
+   If Odd(X) Then Row[X Div 2]:=Row[X Div 2] Or (Pix^[Y*W+X] And 15)
+   Else Row[X Div 2]:=(Pix^[Y*W+X] And 15) Shl 4;
+  BlockWrite(F,Row,RB);
+  If IOResult<>0 Then Ok:=False;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Ok:=False;
+ DumpWriteBmp:=Ok;
+End;
+
+{ Ecrit un PCX 16 couleurs (4 plans, RLE) }
+Function DumpWritePcx(Const P: String; Pix: PByteArr; W,H: Integer): Boolean;
+Var F: File; Hd: Array[0..127] Of Byte; Y,X,Pl,I,BPL,N: Integer; Line: Array[0..99] Of Byte; Out: Array[0..799] Of Byte;
+    Cnt: Integer; Ok: Boolean; B,Prev: Byte; Have: Boolean;
+
+ Procedure Emit(V: Byte);
+ Begin
+  Out[N]:=V;Inc(N);
+ End;
+ Procedure Flush;
+ Begin
+  If Have Then Begin
+   If (Cnt>1) Or (Prev>=$C0) Then Begin Emit($C0+Cnt);Emit(Prev);End Else Emit(Prev);
+  End;
+ End;
+
+Begin
+ DumpWritePcx:=False;
+ BPL:=(W+7) Div 8;
+ If Odd(BPL) Then Inc(BPL);
+ FillChar(Hd,SizeOf(Hd),0);
+ Hd[0]:=10;Hd[1]:=5;Hd[2]:=1;Hd[3]:=1;
+ Hd[8]:=(W-1) And 255;Hd[9]:=(W-1) Shr 8;Hd[10]:=(H-1) And 255;Hd[11]:=(H-1) Shr 8;
+ Hd[12]:=96;Hd[14]:=96;
+ For I:=0 To 15 Do Begin Hd[16+I*3]:=DumpPal[I,0];Hd[17+I*3]:=DumpPal[I,1];Hd[18+I*3]:=DumpPal[I,2];End;
+ Hd[65]:=4;Hd[66]:=BPL And 255;Hd[67]:=BPL Shr 8;Hd[68]:=1;
+ {$I-}
+ Assign(F,P);FileMode:=2;Rewrite(F,1);
+ BlockWrite(F,Hd,128);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ Ok:=True;
+ For Y:=0 To H-1 Do Begin
+  N:=0;Have:=False;Cnt:=0;Prev:=0;
+  For Pl:=0 To 3 Do Begin
+   FillChar(Line,SizeOf(Line),0);
+   For X:=0 To W-1 Do
+    If (Pix^[Y*W+X] And (1 Shl Pl))<>0 Then Line[X Div 8]:=Line[X Div 8] Or ($80 Shr (X Mod 8));
+   For I:=0 To BPL-1 Do Begin
+    B:=Line[I];
+    If Have And (B=Prev) And (Cnt<63) Then Inc(Cnt)
+    Else Begin Flush;Prev:=B;Cnt:=1;Have:=True;End;
+   End;
+   Flush;Have:=False;Cnt:=0;
+  End;
+  {$I-}
+  BlockWrite(F,Out,N);
+  {$I+}
+  If IOResult<>0 Then Ok:=False;
+ End;
+ {$I-}
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Ok:=False;
+ DumpWritePcx:=Ok;
+End;
+
+Procedure DumpCapture(Wd_: PWindow);
+ Var Dt_: PDump;
+Var I,K,X0,Y0,X1,Y1,W,H,X,Y,Sx: Integer; Pix: PByteArr; P: String; Ok: Boolean; T: LongInt;
+Begin
+ Dt_:=Wd_^.Data;
+ { fenetre cible : celle qui est sous l'outil }
+ X0:=0;Y0:=0;X1:=SCR_W-1;Y1:=SCR_H-1;
+ If Dt_^.Area=1 Then Begin
+  K:=0;
+  For I:=1 To NWins Do If Wins[I]=Wd_ Then K:=I;
+  If K>1 Then Begin
+   X0:=Max2(0,Wins[K-1]^.WinX);Y0:=Max2(0,Wins[K-1]^.WinY);
+   X1:=Min2(SCR_W-1,Wins[K-1]^.WinX+Wins[K-1]^.WinW-1);Y1:=Min2(SCR_H-1,Wins[K-1]^.WinY+Wins[K-1]^.WinH-1);
+  End;
+ End;
+ W:=X1-X0+1;H:=Y1-Y0+1;
+ GetMem(Pix,W*H);
+ Sx:=Wd_^.WinX;
+ If Dt_^.Delay>0 Then Begin
+  T:=NowCs;
+  While (NowCs>=T) And (NowCs-T<Dt_^.Delay*100) Do Begin Delay(20);End;
+ End;
+ { masque l'outil le temps de la capture }
+ Wd_^.WinX:=SCR_W+100;
+ NeedFull:=True;FlushPaint;
+ HideMouse;ClipFull;
+ For Y:=0 To H-1 Do
+  For X:=0 To W-1 Do Pix^[Y*W+X]:=GetPixel(X0+X,Y0+Y);
+ Wd_^.WinX:=Sx;
+ NeedFull:=True;FlushPaint;
+ ShowMouse;
+ P:=Dt_^.FName;
+ If P='' Then P:=DumpNextName(Dt_^.Fmt);
+ If Dt_^.Fmt=0 Then Ok:=DumpWriteBmp(P,Pix,W,H) Else Ok:=DumpWritePcx(P,Pix,W,H);
+ FreeMem(Pix,W*H);
+ Dt_^.MsgErr:=Not Ok;
+ If Ok Then Dt_^.Msg:=T3('Saved: ','Enregistr'#130' : ','Gespeichert: ')+ShortName(P)+' ('+IntStr(W)+'x'+IntStr(H)+')'
+ Else Dt_^.Msg:=T3('Cannot write the file.','Impossible d'''#130'crire le fichier.','Datei nicht schreibbar.');
+ If SoundOn And Ok Then Begin Sound(1200);Delay(60);NoSound;End;
+End;
+
+Function DumpNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PDump;
+Begin
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_DUMP,AX,AY,380,236,'Screen Dumper');
+ Wd_^.IconId:=IC_COLORS;Wd_^.Resizable:=False;
+ Dt_^.Delay:=3;Dt_^.Down:=-1;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Capture~Capturer~Aufnehmen',CM_SDCAP,'Enter');
+ WinAddItem(Wd_,'File Name...~Nom du fichier...~Dateiname...',CM_SDNAME,'');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Area~Zone~Bereich',CM_SDAREA,'');
+ WinAddItem(Wd_,'Delay~D'#130'lai~Verz'#148'gerung',CM_SDDLY,'');
+ WinAddItem(Wd_,'Format~Format~Format',CM_SDFMT,'');
+ DumpNew:=Wd_;
+End;
+
+Procedure DumpRows(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
+Var CX1,CY1,CX2,CY2: Integer;
+Begin
+ WinClientRect(Wd_,CX1,CY1,CX2,CY2);
+ X1:=CX1+150;Y1:=CY1+14+I*30;X2:=CX2-14;Y2:=Y1+22;
+End;
+
+Procedure DumpDrawClient(Wd_: PWindow);
+ Var Dt_: PDump;
+Var X1,Y1,X2,Y2,I,A,B,C,D: Integer; S: String;
+Begin
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ GBar(X1,Y1,X2,Y2,cLGr);
+ For I:=0 To 3 Do Begin
+  DumpRows(Wd_,I,A,B,C,D);
+  Case I Of
+   0: Begin GText(X1+14,B+7,T3('Area:','Zone :','Bereich:'),cBlk);
+       If Dt_^.Area=0 Then S:=T3('Entire screen','Ecran entier','Ganzer Bildschirm') Else S:=T3('Window below','Fen'#136'tre dessous','Fenster darunter');End;
+   1: Begin GText(X1+14,B+7,T3('Delay:','D'#130'lai :','Verz'#148'gerung:'),cBlk);S:=IntStr(Dt_^.Delay)+' s';End;
+   2: Begin GText(X1+14,B+7,'Format:',cBlk);If Dt_^.Fmt=0 Then S:='BMP (16 colors)' Else S:='PCX (16 colors)';End;
+   3: Begin GText(X1+14,B+7,T3('File:','Fichier :','Datei:'),cBlk);
+       If Dt_^.FName='' Then S:=T3('SCREENnn (auto)','SCREENnn (auto)','SCREENnn (auto)') Else S:=ShortName(Dt_^.FName);End;
+  End;
+  Button(A,B,C,D,Copy(S,1,(C-A) Div 8-1),False,Dt_^.Down=I,True);
+ End;
+ DumpRows(Wd_,4,A,B,C,D);
+ Button(X1+14,B,X1+170,B+24,T3('Capture','Capturer','Aufnehmen'),True,Dt_^.Down=4,True);
+ If Dt_^.Msg<>'' Then Begin
+  If Dt_^.MsgErr Then I:=cRed Else I:=cGrn;
+  GText(X1+14,Y2-18,Copy(Dt_^.Msg,1,(X2-X1-28) Div 8),I);
+ End;
+End;
+
+Procedure DumpAction(Wd_: PWindow; I: Integer);
+ Var Dt_: PDump;
+Var S: String;
+Begin
+ Dt_:=Wd_^.Data;
+ Case I Of
+  0: Dt_^.Area:=1-Dt_^.Area;
+  1: Begin
+      Case Dt_^.Delay Of 0: Dt_^.Delay:=3; 3: Dt_^.Delay:=5; 5: Dt_^.Delay:=10; Else Dt_^.Delay:=0; End;
+     End;
+  2: Begin Dt_^.Fmt:=1-Dt_^.Fmt;If Dt_^.FName<>'' Then Dt_^.FName:='';End;
+  3: Begin
+      S:=Dt_^.FName;
+      If S='' Then S:=DumpNextName(Dt_^.Fmt);
+      If InputBox(T3('File Name','Nom du fichier','Dateiname'),T3('Save screen to:','Enregistrer l''image dans :','Bild speichern in:'),S,70) Then Dt_^.FName:=S;
+     End;
+  4: DumpCapture(Wd_);
+ End;
+End;
+
+Procedure DumpOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PDump;
+Var I,A,B,C,D,X1,Y1,X2,Y2: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ If E.Kind=EV_DOWN Then Begin
+  For I:=0 To 3 Do Begin
+   DumpRows(Wd_,I,A,B,C,D);
+   If InBox(E.X,E.Y,A,B,C,D) Then Dt_^.Down:=I;
+  End;
+  WinClientRect(Wd_,X1,Y1,X2,Y2);
+  DumpRows(Wd_,4,A,B,C,D);
+  If InBox(E.X,E.Y,X1+14,B,X1+170,B+24) Then Dt_^.Down:=4;
+  Invalidate(Wd_);
+ End Else If E.Kind=EV_UP Then Begin
+  If Dt_^.Down>=0 Then Begin
+   I:=Dt_^.Down;Dt_^.Down:=-1;
+   WinClientRect(Wd_,X1,Y1,X2,Y2);
+   If I<4 Then DumpRows(Wd_,I,A,B,C,D) Else Begin DumpRows(Wd_,4,A,B,C,D);C:=X1+170;A:=X1+14;D:=B+24;End;
+   If InBox(E.X,E.Y,A,B,C,D) Then DumpAction(Wd_,I);
+   Invalidate(Wd_);
+  End;
+ End;
+End;
+
+Procedure DumpOnKey(Wd_: PWindow; K: Word);
+Begin
+ If K=K_ENTER Then DumpAction(Wd_,4);
+End;
+
+Procedure DumpOnCommand(Wd_: PWindow; Cmd: Integer);
+Begin
+ Case Cmd Of
+  CM_SDCAP: DumpAction(Wd_,4);
+  CM_SDAREA: DumpAction(Wd_,0);
+  CM_SDDLY: DumpAction(Wd_,1);
+  CM_SDFMT: DumpAction(Wd_,2);
+  CM_SDNAME: DumpAction(Wd_,3);
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ End;
+ Invalidate(Wd_);
+End;
+
+{ ====================================================================== }
+{   VISIONNEUSE DE TABLEUR : Lotus 1-2-3 (.WKS, .WK1) et Quattro Pro      }
+{   (.WQ1) - valeurs et libelles des cellules, sans les formules.        }
+{ ====================================================================== }
+
+Const
+ MAXWC = 4000;
+ CM_WKOPEN=1400; CM_WKGOTO=1401; CM_WKCSV=1402; CM_WKINFO=1403;
+
+Type
+ TWCell = Record
+  Row,Col : Word;
+  Kind    : Byte;          { 1 nombre, 2 libelle, 3 formule }
+  Fmt     : Byte;
+  Val     : Real;
+  Txt     : String[60];
+ End;
+
+ PWk = ^TWk;
+ TWk = Record
+  N        : Integer;
+  Cell     : Array[1..MAXWC] Of TWCell;
+  ColW     : Array[0..255] Of Byte;
+  MaxR,MaxC: Integer;
+  CX,CY    : Integer;      { cellule courante }
+  LX,LY    : Integer;      { cellule en haut a gauche }
+  FName    : String;
+  Kindf    : String[8];    { WKS, WK1, WQ1 }
+  Msg      : String;
+ End;
+
+Function WkNew(AX,AY: Integer; Const AFile: String): PWindow; Forward;
+Procedure WkDrawClient(Wd_: PWindow); Forward;
+Procedure WkOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure WkOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure WkOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function WkColName(C: Integer): String;
+Begin
+ If C<26 Then WkColName:=Chr(65+C)
+ Else WkColName:=Chr(64+C Div 26)+Chr(65+C Mod 26);
+End;
+
+Function WkAddr(C,R: Integer): String;
+Begin
+ WkAddr:=WkColName(C)+IntStr(R+1);
+End;
+
+Function WkFind(Dt_: PWk; R,C: Integer): Integer;
+Var I: Integer;
+Begin
+ WkFind:=0;
+ For I:=1 To Dt_^.N Do
+  If (Dt_^.Cell[I].Row=R) And (Dt_^.Cell[I].Col=C) Then Begin WkFind:=I;Exit;End;
+End;
+
+Procedure WkPut(Dt_: PWk; R,C: Integer; K,Fm: Byte; V: Real; Const S: String);
+Var I: Integer;
+Begin
+ I:=WkFind(Dt_,R,C);
+ If I=0 Then Begin
+  If Dt_^.N>=MAXWC Then Exit;
+  Inc(Dt_^.N);I:=Dt_^.N;
+ End;
+ Dt_^.Cell[I].Row:=R;Dt_^.Cell[I].Col:=C;Dt_^.Cell[I].Kind:=K;Dt_^.Cell[I].Fmt:=Fm;
+ Dt_^.Cell[I].Val:=V;Dt_^.Cell[I].Txt:=Copy(S,1,60);
+ If R>Dt_^.MaxR Then Dt_^.MaxR:=R;
+ If C>Dt_^.MaxC Then Dt_^.MaxC:=C;
+End;
+
+{ Reel IEEE 754 sur 8 octets (little endian) }
+Function WkDouble(Var B; Off: Integer): Real;
+Var P: PByteArr; D: Double;
+Begin
+ P:=@B;
+ Move(P^[Off],D,8);
+ WkDouble:=D;
+End;
+
+{ Charge un fichier ; retourne '' ou un message d'erreur }
+Function WkLoad(Dt_: PWk; Const Path: String): String;
+Var F: File; Hd: Array[0..3] Of Byte; Buf: Array[0..1023] Of Byte; Op,Len,Ver,N: Word; Col,Row: Integer; Ch: Char;
+    Fm: Byte; S: String; I,Ofs,Q: Integer; Qp: Boolean; V: Real; Base: Integer;
+Begin
+ WkLoad:='';
+ Dt_^.N:=0;Dt_^.MaxR:=0;Dt_^.MaxC:=0;Dt_^.CX:=0;Dt_^.CY:=0;Dt_^.LX:=0;Dt_^.LY:=0;
+ FillChar(Dt_^.ColW,SizeOf(Dt_^.ColW),9);
+ {$I-}
+ Assign(F,Path);FileMode:=0;Reset(F,1);
+ {$I+}
+ If IOResult<>0 Then Begin WkLoad:=T3('Cannot open the file.','Impossible d''ouvrir le fichier.','Datei nicht ge'#148'ffnet.');Exit;End;
+ Qp:=False;Ver:=0;
+ {$I-}
+ BlockRead(F,Hd,4,N);
+ {$I+}
+ Op:=Hd[0]+256*Hd[1];
+ If (N<4) Or (Op<>0) Then Begin Close(F);WkLoad:=T3('Not a spreadsheet file.','Ce n''est pas un fichier de tableur.','Keine Tabellendatei.');Exit;End;
+ Len:=Hd[2]+256*Hd[3];
+ If Len>1024 Then Len:=1024;
+ {$I-}
+ BlockRead(F,Buf,Len,N);
+ {$I+}
+ Ver:=Buf[0]+256*Buf[1];
+ Case Ver Of
+  $0404: Begin Dt_^.Kindf:='WKS';Base:=0;End;
+  $0406: Begin Dt_^.Kindf:='WK1';Base:=1;End;
+ Else
+  If (Ver>=$5000) And (Ver<$6000) Then Begin Dt_^.Kindf:='WQ1';Base:=1;Qp:=True;End
+  Else Begin Close(F);WkLoad:=T3('Unsupported spreadsheet version.','Version de tableur non g'#130'r'#130'e.','Nicht unterst'#129'tzte Version.');Exit;End;
+ End;
+ {$I-}
+ While Not Eof(F) Do Begin
+  BlockRead(F,Hd,4,N);
+  If N<4 Then Break;
+  Op:=Hd[0]+256*Hd[1];Len:=Hd[2]+256*Hd[3];
+  If Len>1024 Then Begin
+   Seek(F,FilePos(F)+Len);
+  End Else Begin
+   If Len>0 Then BlockRead(F,Buf,Len,N);
+   If Op=1 Then Break;
+   If (Op=8) And (Len>=2) And Not Qp Then Dt_^.ColW[Buf[0]]:=Max2(3,Min2(40,Buf[1]));
+   If Base=0 Then I:=Op+1 Else I:=Op;
+   If (I>=$0D) And (I<=$10) Then Begin
+    { I normalise : 0D entier, 0E nombre, 0F libelle, 10 formule }
+    If Qp Then Begin
+     { Quattro Pro : colonne(1) page(1) ligne(2) attributs(2) }
+     Col:=Buf[0];Row:=Buf[2]+256*Buf[3];Fm:=Buf[4] And $FF;Ofs:=6;
+    End Else Begin
+     Fm:=Buf[0];Col:=Buf[1]+256*Buf[2];Row:=Buf[3]+256*Buf[4];Ofs:=5;
+    End;
+    Case I Of
+     $0D: If Len>=Ofs+2 Then WkPut(Dt_,Row,Col,1,Fm,SmallInt(Buf[Ofs]+256*Buf[Ofs+1]),'');
+     $0E: If Len>=Ofs+8 Then WkPut(Dt_,Row,Col,1,Fm,WkDouble(Buf,Ofs),'');
+     $0F: Begin
+           S:=CStr(Buf,Ofs,Min2(Len-Ofs,60));
+           If (S<>'') And (S[1] In ['''','"','^','\','|']) Then Begin
+            If S[1]='\' Then Begin
+             Q:=Dt_^.ColW[Min2(Col,255)];
+             Ch:=' ';If Length(S)>1 Then Ch:=S[2];
+             S:='';
+             For I:=1 To Q Do S:=S+Ch;
+            End
+            Else Delete(S,1,1);
+           End;
+           WkPut(Dt_,Row,Col,2,Fm,0,GeosToDos(S));
+          End;
+     $10: If Len>=Ofs+8 Then WkPut(Dt_,Row,Col,3,Fm,WkDouble(Buf,Ofs),'');
+    End;
+   End;
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ If Dt_^.N=0 Then WkLoad:=T3('The spreadsheet is empty.','Le tableur est vide.','Die Tabelle ist leer.');
+End;
+
+{ Formate une valeur selon l'octet de format Lotus }
+Function WkFmtNum(V: Real; Fm: Byte): String;
+Var Dec: Integer; S: String; Typ: Integer; Neg: Boolean;
+Begin
+ Typ:=(Fm Shr 4) And 7;Dec:=Fm And 15;
+ If Dec>9 Then Dec:=2;
+ Case Typ Of
+  0: Begin Str(V:0:Dec,S);End;
+  1: Begin Str(V:0:Dec+1,S);End;
+  2: Begin Str(V:0:Dec,S);S:=CurSym+S;End;
+  3: Begin Str(V*100:0:Dec,S);S:=S+'%';End;
+  4: Begin
+      Neg:=V<0;Str(Abs(V):0:Dec,S);
+      If Pos('.',S)>0 Then S:=NumFmt(Trunc(Abs(V)))+Copy(S,Pos('.',S),20) Else S:=NumFmt(Trunc(Abs(V)));
+      If Neg Then S:='-'+S;
+     End;
+ Else S:=FmtReal(V);
+ End;
+ If (Typ<>0) And (Typ<>1) And (Typ<>2) And (Typ<>3) And (Typ<>4) Then S:=FmtReal(V);
+ If Typ=7 Then S:=FmtReal(V);
+ If (Typ=0) And (Fm=$FF) Then S:=FmtReal(V);
+ WkFmtNum:=TrimStr(S);
+End;
+
+Function WkText(Dt_: PWk; I: Integer): String;
+Begin
+ Case Dt_^.Cell[I].Kind Of
+  1,3: WkText:=WkFmtNum(Dt_^.Cell[I].Val,Dt_^.Cell[I].Fmt);
+ Else WkText:=Dt_^.Cell[I].Txt;
+ End;
+End;
+
+Function WkNew(AX,AY: Integer; Const AFile: String): PWindow;
+ Var Wd_: PWindow; Dt_: PWk; E: String;
+Begin
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_WK1,AX,AY,560,340,T3('Spreadsheet Viewer','Visionneuse de tableur','Tabellenbetrachter'));
+ Wd_^.IconId:=IC_CALC;Wd_^.MinW:=300;Wd_^.MinH:=180;
+ FillChar(Dt_^.ColW,SizeOf(Dt_^.ColW),9);
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_WKOPEN,'Ctrl+O');
+ WinAddItem(Wd_,'Export as Text (CSV)...~Exporter en texte (CSV)...~Als Text exportieren (CSV)...',CM_WKCSV,'');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'View~Affichage~Ansicht');
+ WinAddItem(Wd_,'Go To Cell...~Aller '#133' la cellule...~Gehe zu Zelle...',CM_WKGOTO,'Ctrl+G');
+ WinAddItem(Wd_,'File Information~Informations~Dateiinfo',CM_WKINFO,'');
+ If AFile<>'' Then Begin
+  E:=WkLoad(Dt_,AFile);
+  If E<>'' Then Info(T3('Spreadsheet Viewer','Visionneuse de tableur','Tabellenbetrachter'),E)
+  Else Begin Dt_^.FName:=AFile;Wd_^.Title:=T3('Spreadsheet','Tableur','Tabelle')+' - '+ShortName(AFile);End;
+ End;
+ WkNew:=Wd_;
+End;
+
+Procedure WkGeom(Wd_: PWindow; Var X1,Y1,X2,Y2,VC,VR: Integer);
+ Var Dt_: PWk;
+Var I,X: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ VR:=(Y2-Y1-14-16) Div 14;
+ If VR<1 Then VR:=1;
+ VC:=0;X:=X1+34;
+ I:=Dt_^.LX;
+ While (X<X2) And (I<256) Do Begin Inc(VC);Inc(X,Dt_^.ColW[I]*8+4);Inc(I);End;
+End;
+
+Procedure WkDrawClient(Wd_: PWindow);
+ Var Dt_: PWk;
+Var X1,Y1,X2,Y2,VC,VR,I,J,K,X,Y,CW: Integer; S: String; Sel: Boolean; C: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ WkGeom(Wd_,X1,Y1,X2,Y2,VC,VR);
+ GBar(X1,Y1,X2,Y2,cWht);
+ { barre de formule }
+ GBar(X1,Y1,X2,Y1+13,cLGr);
+ K:=WkFind(Dt_,Dt_^.CY,Dt_^.CX);
+ S:=WkAddr(Dt_^.CX,Dt_^.CY)+'  ';
+ If K>0 Then Begin
+  S:=S+WkText(Dt_,K);
+  If Dt_^.Cell[K].Kind=3 Then S:=S+'  ('+T3('formula, cached value','formule, valeur m'#130'moris'#130'e','Formel, gespeicherter Wert')+')';
+ End;
+ GText(X1+6,Y1+3,Copy(S,1,(X2-X1-12) Div 8),cBlk);
+ GHLine(X1,X2,Y1+13,cDGr);
+ { en-tetes de colonnes }
+ GBar(X1,Y1+14,X2,Y1+27,cLGr);
+ X:=X1+34;
+ For I:=0 To VC-1 Do Begin
+  CW:=Dt_^.ColW[Dt_^.LX+I]*8+4;
+  If Dt_^.LX+I=Dt_^.CX Then GBar(X,Y1+14,X+CW-1,Y1+27,cDGr);
+  GTextCtr(X,X+CW-1,Y1+17,WkColName(Dt_^.LX+I),cBlk);
+  GVLine(X+CW-1,Y1+14,Y2,cLGr);
+  Inc(X,CW);
+ End;
+ { lignes }
+ For J:=0 To VR-1 Do Begin
+  Y:=Y1+28+J*14;
+  GBar(X1,Y,X1+33,Y+13,cLGr);
+  If Dt_^.LY+J=Dt_^.CY Then GBar(X1,Y,X1+33,Y+13,cDGr);
+  GText(X1+30-TextW(IntStr(Dt_^.LY+J+1)),Y+3,IntStr(Dt_^.LY+J+1),cBlk);
+  GHLine(X1,X2,Y+13,cLGr);
+  X:=X1+34;
+  For I:=0 To VC-1 Do Begin
+   CW:=Dt_^.ColW[Dt_^.LX+I]*8+4;
+   K:=WkFind(Dt_,Dt_^.LY+J,Dt_^.LX+I);
+   Sel:=(Dt_^.LX+I=Dt_^.CX) And (Dt_^.LY+J=Dt_^.CY);
+   If Sel Then Begin GBar(X,Y,X+CW-2,Y+12,cBlk);C:=cWht;End Else C:=cBlk;
+   If K>0 Then Begin
+    S:=WkText(Dt_,K);
+    S:=Copy(S,1,(CW-2) Div 8);
+    If Dt_^.Cell[K].Kind=2 Then GText(X+2,Y+3,S,C) Else GText(X+CW-4-TextW(S),Y+3,S,C);
+   End;
+   Inc(X,CW);
+  End;
+ End;
+ { cadre }
+ If Dt_^.Msg<>'' Then Begin GBar(X1,Y2-12,X2,Y2,cLGr);GText(X1+6,Y2-10,Copy(Dt_^.Msg,1,(X2-X1-12) Div 8),cDGr);End;
+End;
+
+Procedure WkReveal(Wd_: PWindow);
+ Var Dt_: PWk;
+Var X1,Y1,X2,Y2,VC,VR: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ WkGeom(Wd_,X1,Y1,X2,Y2,VC,VR);
+ If Dt_^.CX<0 Then Dt_^.CX:=0;
+ If Dt_^.CY<0 Then Dt_^.CY:=0;
+ If Dt_^.CX>255 Then Dt_^.CX:=255;
+ If Dt_^.CY>8191 Then Dt_^.CY:=8191;
+ If Dt_^.CX<Dt_^.LX Then Dt_^.LX:=Dt_^.CX;
+ If Dt_^.CX>=Dt_^.LX+Max2(1,VC-1) Then Dt_^.LX:=Dt_^.CX-Max2(1,VC-1)+1;
+ If Dt_^.CY<Dt_^.LY Then Dt_^.LY:=Dt_^.CY;
+ If Dt_^.CY>=Dt_^.LY+VR Then Dt_^.LY:=Dt_^.CY-VR+1;
+End;
+
+Procedure WkOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PWk;
+Var X1,Y1,X2,Y2,VC,VR,I,J,X,CW: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ If E.Kind<>EV_DOWN Then Exit;
+ WkGeom(Wd_,X1,Y1,X2,Y2,VC,VR);
+ If (E.X<X1+34) Or (E.Y<Y1+28) Then Exit;
+ J:=(E.Y-Y1-28) Div 14;
+ If J>=VR Then Exit;
+ X:=X1+34;
+ For I:=0 To VC-1 Do Begin
+  CW:=Dt_^.ColW[Dt_^.LX+I]*8+4;
+  If (E.X>=X) And (E.X<X+CW) Then Begin Dt_^.CX:=Dt_^.LX+I;Dt_^.CY:=Dt_^.LY+J;End;
+  Inc(X,CW);
+ End;
+ Invalidate(Wd_);
+End;
+
+Procedure WkGoto(Wd_: PWindow);
+ Var Dt_: PWk;
+Var S: String; I,C,R: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ S:='A1';
+ If Not InputBox(T3('Go To Cell','Aller '#133' la cellule','Gehe zu Zelle'),T3('Cell (for example B12):','Cellule (par exemple B12) :','Zelle (z. B. B12):'),S,10) Then Exit;
+ S:=Upper(S);
+ C:=0;I:=1;
+ While (I<=Length(S)) And (S[I] In ['A'..'Z']) Do Begin C:=C*26+Ord(S[I])-64;Inc(I);End;
+ R:=StrVal(Copy(S,I,10),1);
+ If (C>=1) And (R>=1) Then Begin Dt_^.CX:=C-1;Dt_^.CY:=R-1;WkReveal(Wd_);End;
+End;
+
+Procedure WkOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PWk;
+Var X1,Y1,X2,Y2,VC,VR: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ WkGeom(Wd_,X1,Y1,X2,Y2,VC,VR);
+ Case K Of
+  K_LEFT: Dec(Dt_^.CX);
+  K_RIGHT: Inc(Dt_^.CX);
+  K_UP: Dec(Dt_^.CY);
+  K_DOWN: Inc(Dt_^.CY);
+  K_PGUP: Dec(Dt_^.CY,VR);
+  K_PGDN: Inc(Dt_^.CY,VR);
+  K_HOME: Begin Dt_^.CX:=0;Dt_^.CY:=0;End;
+  K_END: Begin Dt_^.CX:=Dt_^.MaxC;Dt_^.CY:=Dt_^.MaxR;End;
+  7: Begin WkGoto(Wd_);End;
+  K_CTRLO: Begin WkOnCommand(Wd_,CM_WKOPEN);Exit;End;
+ End;
+ WkReveal(Wd_);
+ Invalidate(Wd_);
+End;
+
+Procedure WkExportCsv(Wd_: PWindow);
+ Var Dt_: PWk;
+Var P,S,T: String; F: Text; R,C,K: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ If Dt_^.N=0 Then Exit;
+ P:=JoinPath(CurDirStr,'EXPORT.CSV');
+ If Not FileDlg(T3('Export as Text','Exporter en texte','Als Text exportieren'),'*.CSV',P,True) Then Exit;
+ {$I-}
+ Assign(F,P);Rewrite(F);
+ {$I+}
+ If IOResult<>0 Then Begin Info(T3('Error','Erreur','Fehler'),T3('Cannot save file.','Impossible d''enregistrer.','Datei nicht speicherbar.'));Exit;End;
+ {$I-}
+ For R:=0 To Dt_^.MaxR Do Begin
+  S:='';
+  For C:=0 To Dt_^.MaxC Do Begin
+   K:=WkFind(Dt_,R,C);
+   If K>0 Then T:=WkText(Dt_,K) Else T:='';
+   If (Pos(';',T)>0) Or (Pos('"',T)>0) Then T:='"'+T+'"';
+   If C>0 Then S:=S+';';
+   S:=S+T;
+  End;
+  WriteLn(F,S);
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ Dt_^.Msg:=T3('Exported: ','Export'#130' : ','Exportiert: ')+ShortName(P);
+End;
+
+Procedure WkOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PWk;
+Var P,E: String;
+Begin
+ Dt_:=Wd_^.Data;
+ Case Cmd Of
+  CM_WKOPEN: Begin
+              P:=CurDirStr;
+              If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.WK1',P,False) Then Begin
+               E:=WkLoad(Dt_,P);
+               If E<>'' Then Info(T3('Spreadsheet Viewer','Visionneuse de tableur','Tabellenbetrachter'),E)
+               Else Begin Dt_^.FName:=P;Dt_^.Msg:='';Wd_^.Title:=T3('Spreadsheet','Tableur','Tabelle')+' - '+ShortName(P);End;
+              End;
+             End;
+  CM_WKGOTO: WkGoto(Wd_);
+  CM_WKCSV: WkExportCsv(Wd_);
+  CM_WKINFO: Info(T3('File Information','Informations','Dateiinfo'),ShortName(Dt_^.FName)+'|'+Dt_^.Kindf+'|'+
+              IntStr(Dt_^.N)+T3(' cells',' cellules',' Zellen')+'|'+WkAddr(0,0)+':'+WkAddr(Dt_^.MaxC,Dt_^.MaxR));
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ End;
+ Invalidate(Wd_);
+End;
+
+{ ====================================================================== }
 {       CHARGEUR DE GEODES PC/GEOS (.GEO) ET EMULATEUR x86 MINIMAL       }
 { (analyse d'en-tete d'apres GEODUMP ; execution : FPC uniquement)       }
 { ====================================================================== }
@@ -13904,6 +14674,8 @@ Begin
   A_GRAPH: GrDrawClient(W);
   A_INSTALL: InstDrawClient(W);
   A_TREE: TreeDrawClient(W);
+  A_DUMP: DumpDrawClient(W);
+  A_WK1: WkDrawClient(W);
   A_MANAGER: MgrDrawClient(W);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwDrawClient(W);
   A_CALC: CalcDrawClient(W);
@@ -13935,6 +14707,8 @@ Begin
   A_GRAPH: GrOnMouse(W,E);
   A_INSTALL: InstOnMouse(W,E);
   A_TREE: TreeOnMouse(W,E);
+  A_DUMP: DumpOnMouse(W,E);
+  A_WK1: WkOnMouse(W,E);
   A_MANAGER: MgrOnMouse(W,E);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnMouse(W,E);
   A_CALC: CalcOnMouse(W,E);
@@ -13957,6 +14731,8 @@ Begin
   A_GRAPH: GrOnKey(W,K);
   A_INSTALL: InstOnKey(W,K);
   A_TREE: TreeOnKey(W,K);
+  A_DUMP: DumpOnKey(W,K);
+  A_WK1: WkOnKey(W,K);
   A_MANAGER: MgrOnKey(W,K);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnKey(W,K);
   A_CALC: CalcOnKey(W,K);
@@ -13981,6 +14757,8 @@ Begin
   A_GRAPH: GrOnCommand(W,Cmd);
   A_INSTALL: InstOnCommand(W,Cmd);
   A_TREE: TreeOnCommand(W,Cmd);
+  A_DUMP: DumpOnCommand(W,Cmd);
+  A_WK1: WkOnCommand(W,Cmd);
   A_MANAGER: MgrOnCommand(W,Cmd);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnCommand(W,Cmd);
   A_CALC: CalcOnCommand(W,Cmd);
@@ -14059,6 +14837,8 @@ Begin
   A_GRAPH: Begin GrDone(W);Dispose(PGraph(W^.Data)) End;
   A_INSTALL: Begin InstDone(W);Dispose(PInst(W^.Data)) End;
   A_TREE: Dispose(PTree(W^.Data));
+  A_DUMP: Dispose(PDump(W^.Data));
+  A_WK1: Dispose(PWk(W^.Data));
   A_MANAGER: Begin MgrDone(W);Dispose(PManager(W^.Data)) End;
   A_NOTEPAD,A_TEXTED,A_WRITE: Begin EdwDone(W);Dispose(PEditWin(W^.Data)) End;
   A_CALC: Begin Dispose(PCalcWin(W^.Data)) End;
@@ -14130,6 +14910,8 @@ Begin
   A_GRAPH: W:=GrNew(X,Y);
   A_INSTALL: W:=InstNew(X,Y,Param);
   A_TREE: W:=TreeNew(X,Y,Param);
+  A_DUMP: W:=DumpNew(X,Y);
+  A_WK1: W:=WkNew(X,Y,Param);
  Else
   Info(AppTitle(AppId),T3('This application is not available yet.','Cette application n''est pas encore disponible.','Diese Anwendung ist noch nicht verf'#129'gbar.'));
  End;
@@ -14225,7 +15007,7 @@ BEGIN
    WorldDir:=Copy(Arg,4,200);
    If Not DirExists(WorldDir) Then WorldDir:='';
   End Else If Upper(Copy(Arg,1,3))='/B:' Then Begin
-   StartLvl:=Clamp(StrVal(Copy(Arg,4,3),2),1,3);
+   StartLvl:=Clamp(StrVal(Copy(Arg,4,3),2),1,3);LvlGiven:=True;
   End Else If Upper(Copy(Arg,1,3))='/R:' Then Begin
    Arg:=Upper(Copy(Arg,4,30));
    For R:=1 To NAPPS Do
@@ -14256,7 +15038,8 @@ BEGIN
  Level:=StartLvl-1;
  NWins:=0;NextId:=1;NewWinCount:=0;Capture:=Nil;
  DeskBack:=-1;DeskInk:=cBlk;DeskPaper:=cDGr;
- CalcDecPl:=-1;LeftHand:=False;LightsMin:=0;LightsOk:=False;LastActCs:=0;KeyDelay:=2;KeyRate:=3;ModemPort:=1;ModemBaud:=5;ModemTone:=True;ModemInit:='ATZ';PrinterSel:=1;PrinterPort:=1;TextSize:=2;
+ WelcomeOn:=True;GeosLevel:=0;TaskOn:=True;TaskKey:=K_F6;CalcDecPl:=-1;
+ LeftHand:=False;LightsMin:=0;LightsOk:=False;LastActCs:=0;KeyDelay:=2;KeyRate:=3;ModemPort:=1;ModemBaud:=5;ModemTone:=True;ModemInit:='ATZ';PrinterSel:=1;PrinterPort:=1;TextSize:=2;
  IntlDefaults;Clock24:=Lang<>0;DblCs:=40;ClipIconId:=-1;SoundOn:=True;Randomize;
  If Not MouseDriverFound Then Begin
   WriteLn('Pilote de souris non trouve.');
@@ -14268,6 +15051,8 @@ BEGIN
  LoadBackgrounds;
  SetDesktopBack(-1,cBlk,cDGr);
  PrefsLoad;
+ If Not WelcomeOn Then NoWelcome:=True;
+ If (GeosLevel>0) And Not LvlGiven Then Begin StartLvl:=GeosLevel;Level:=StartLvl-1;End;
  SetDesktopBack(DeskBack,DeskInk,DeskPaper);
  If (BgOpt>=1) And (BgOpt<=NBACK) Then Begin
   If BgOpt=7 Then SetDesktopBack(BgOpt-1,cBlk,cGrn) Else SetDesktopBack(BgOpt-1,cBlk,cLGr);
