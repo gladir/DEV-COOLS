@@ -228,6 +228,7 @@ Var
  Dirty       : Boolean;
  DblCs       : LongInt;
  Beeping     : Boolean;
+ BlinkHalf   : LongInt;
  BorderW     : Integer;     { largeur de bordure des fenetres }
  LeftHand    : Boolean;
  MouseSpeed  : Integer;
@@ -1053,7 +1054,8 @@ End;
 
 Procedure Beep;
 Begin
- { pas de son : les ports du haut-parleur ne sont pas portables }
+ If Not Beeping Then Exit;
+ Sound(880);Delay(35);NoSound;
 End;
 
 Procedure PollEvent(Var E: TEvent);
@@ -4543,7 +4545,7 @@ Begin
   { curseur }
   If Focus And (E^.Cur>=A) And (E^.Cur<=B) And (EdVLine(E,E^.Cur)=V) Then Begin
    X:=E^.X0+4+XO+(E^.Cur-A)*8;
-   If (NowCs Div 50) Mod 2=0 Then GVLine(X,Y,Y+LH-3,cBlk);
+   If (NowCs Div BlinkHalf) Mod 2=0 Then GVLine(X,Y,Y+LH-3,cBlk);
   End;
   Inc(Y,LH);
   Inc(V);
@@ -5197,8 +5199,8 @@ End;
 
 Procedure EdWinTimer(W: PWindow);
 Begin
- If (W=ActiveWin) And (NowCs Div 50<>LastBlink) Then Begin
-  LastBlink:=NowCs Div 50;
+ If (W=ActiveWin) And (NowCs Div BlinkHalf<>LastBlink) Then Begin
+  LastBlink:=NowCs Div BlinkHalf;
   Invalidate(W);
  End;
 End;
@@ -6031,52 +6033,107 @@ Begin
 End;
 
 
-Procedure IniSave;
-Var I: Integer;
+Const
+ VgaRGB : Array[0..15,0..2] Of Integer = (
+  (0,0,0),(0,0,170),(0,170,0),(0,170,170),(170,0,0),(170,0,170),(170,85,0),(170,170,170),
+  (85,85,85),(85,85,255),(85,255,85),(85,255,255),(255,85,85),(255,85,255),(255,255,85),(255,255,255));
+
+Function NearestVga(R,G,B: Integer): Integer;
+Var I,Best: Integer; D,BD: LongInt;
 Begin
- IniWrite(IniFile,'windows','border',IntStr(BorderW));
- IniWrite(IniFile,'windows','beep',IntStr(Ord(Beeping)));
- IniWrite(IniFile,'windows','swapbuttons',IntStr(Ord(LeftHand)));
- IniWrite(IniFile,'windows','doubleclick',IntStr(DblCs));
- IniWrite(IniFile,'windows','device',PrinterName+','+PrintPort);
- For I:=0 To NSCOL-1 Do IniWrite(IniFile,'colors','c'+IntStr(I),IntStr(ScrCol[I]));
- IniWrite(IniFile,'intl','country',CountryName);
- IniWrite(IniFile,'intl','dateformat',IntStr(DateFmt));
- IniWrite(IniFile,'intl','datesep',DateSep);
- IniWrite(IniFile,'intl','time24',IntStr(Ord(Clock24)));
- IniWrite(IniFile,'intl','currency',CurSym);
- IniWrite(IniFile,'intl','decimal',DecSep);
- IniWrite(IniFile,'intl','thousand',ThouSep);
- IniWrite(IniFile,'ports','comm',CommPort+','+IntStr(CommBaud)+','+CommParity+','+IntStr(CommBits)+','+IntStr(CommStop));
+ Best:=0;BD:=1000000;
+ For I:=0 To 15 Do Begin
+  D:=Sqr(R-VgaRGB[I,0])+Sqr(G-VgaRGB[I,1])+Sqr(B-VgaRGB[I,2]);
+  If D<BD Then Begin BD:=D;Best:=I;End;
+ End;
+ NearestVga:=Best;
+End;
+
+Var
+ BlinkMs : LongInt;       { CursorBlinkRate (ms) }
+ MouseAcc: Integer;       { 0 aucune, 1 moyenne, 2 haute }
+
+Const
+ IniColNames : Array[0..9] Of String[14] = ('Background','AppWorkspace','Window','WindowText',
+   'Menu','MenuText','ActiveTitle','InactiveTitle','TitleText','WindowFrame');
+
+Function YesNo(B: Boolean): String;
+Begin
+ If B Then YesNo:='yes' Else YesNo:='no';
+End;
+
+Function PrnDriver(Const Nm: String): String;
+Var I: Integer; R: String;
+Begin
+ R:='';
+ For I:=1 To Length(Nm) Do If (UpCase(Nm[I]) In ['A'..'Z','0'..'9']) And (Length(R)<8) Then R:=R+UpCase(Nm[I]);
+ PrnDriver:=R;
+End;
+
+Procedure IniSave;
+Var I: Integer; Sg: String;
+Begin
+ IniWrite(IniFile,'windows','DoubleClickSpeed',IntStr(DblCs*10));
+ IniWrite(IniFile,'windows','CursorBlinkRate',IntStr(BlinkMs));
+ IniWrite(IniFile,'windows','beep',YesNo(Beeping));
+ IniWrite(IniFile,'windows','Border Width',IntStr(BorderW));
+ IniWrite(IniFile,'windows','SwapMouseButtons',YesNo(LeftHand));
+ IniWrite(IniFile,'windows','MouseSpeed',IntStr(MouseAcc));
+ If NPrn>0 Then IniWrite(IniFile,'windows','device',PrinterName+','+PrnDriver(PrinterName)+','+PrintPort+':');
+ For I:=1 To NPrn Do IniWrite(IniFile,'devices',PrnInst[I],PrnDriver(PrnInst[I])+','+PrnPort[I]+':');
+ For I:=0 To 9 Do
+  IniWrite(IniFile,'colors',IniColNames[I],IntStr(VgaRGB[ScrCol[I],0])+' '+IntStr(VgaRGB[ScrCol[I],1])+' '+IntStr(VgaRGB[ScrCol[I],2]));
+ IniWrite(IniFile,'intl','sCountry',CountryName);
+ IniWrite(IniFile,'intl','iDate',IntStr(DateFmt));
+ IniWrite(IniFile,'intl','iTime',IntStr(Ord(Clock24)));
+ IniWrite(IniFile,'intl','sDate',DateSep);
+ IniWrite(IniFile,'intl','sTime',TimeSep);
+ IniWrite(IniFile,'intl','sCurrency',CurSym);
+ IniWrite(IniFile,'intl','sDecimal',DecSep);
+ IniWrite(IniFile,'intl','sThousand',ThouSep);
+ Sg:=CommPort+':';
+ IniWrite(IniFile,'ports',Sg,IntStr(CommBaud)+','+LowerStr(CommParity)+','+IntStr(CommBits)+','+IntStr(CommStop)+',p');
 End;
 
 Procedure IniLoad;
-Var F: Text; L,K,V: String; P: Integer;
+Var V: String; I,P,R,G,B: Integer;
 Begin
- {$I-}
- Assign(F,IniFile);Reset(F);
- If IOResult<>0 Then Exit;
- While Not Eof(F) Do Begin
-  ReadLn(F,L);
-  P:=Pos('=',L);
-  If P=0 Then Continue;
-  K:=LowerStr(Copy(L,1,P-1));V:=Copy(L,P+1,100);
-  If K='border' Then BorderW:=Clamp(StrVal(V,3),3,12)
-  Else If K='beep' Then Beeping:=V='1'
-  Else If K='swapbuttons' Then LeftHand:=V='1'
-  Else If K='doubleclick' Then DblCs:=Clamp(StrVal(V,45),15,100)
-  Else If (K[1]='c') And (Length(K)=2) And (K[2] In ['0'..'9']) Then ScrCol[Ord(K[2])-48]:=Clamp(StrVal(V,0),0,15)
-  Else If K='country' Then CountryName:=V
-  Else If K='dateformat' Then DateFmt:=Clamp(StrVal(V,0),0,2)
-  Else If K='datesep' Then DateSep:=Copy(V,1,1)
-  Else If K='time24' Then Clock24:=V='1'
-  Else If K='currency' Then CurSym:=Copy(V,1,4)
-  Else If K='decimal' Then DecSep:=Copy(V,1,1)
-  Else If K='thousand' Then ThouSep:=Copy(V,1,1);
+ If IniRead(IniFile,'windows','DoubleClickSpeed',V) Then DblCs:=Clamp(StrVal(V,450) Div 10,5,100);
+ If IniRead(IniFile,'windows','CursorBlinkRate',V) Then BlinkMs:=Clamp(StrVal(V,530),100,2000);
+ BlinkHalf:=Max2(5,BlinkMs Div 20);
+ If IniRead(IniFile,'windows','beep',V) Then Beeping:=Upper(V)<>'NO';
+ If IniRead(IniFile,'windows','Border Width',V) Then BorderW:=Clamp(StrVal(V,3),3,12);
+ If IniRead(IniFile,'windows','SwapMouseButtons',V) Then LeftHand:=Upper(V)='YES';
+ If IniRead(IniFile,'windows','MouseSpeed',V) Then MouseAcc:=Clamp(StrVal(V,1),0,2);
+ If IniRead(IniFile,'windows','device',V) Then Begin
+  P:=Pos(',',V);
+  If P>1 Then Begin
+   PrinterName:=Copy(V,1,P-1);
+   P:=0;For I:=Length(V) Downto 1 Do If V[I]=',' Then Begin P:=I;Break;End;
+   If P>0 Then Begin PrintPort:=Copy(V,P+1,10);If (PrintPort<>'') And (PrintPort[Length(PrintPort)]=':') Then Delete(PrintPort,Length(PrintPort),1);End;
+  End;
  End;
- Close(F);
- {$I+}
- If IOResult<>0 Then ;
+ For I:=0 To 9 Do
+  If IniRead(IniFile,'colors',IniColNames[I],V) Then Begin
+   R:=0;G:=0;B:=0;
+   P:=Pos(' ',V);If P>0 Then Begin R:=StrVal(Copy(V,1,P-1),0);Delete(V,1,P);V:=Trim(V);End;
+   P:=Pos(' ',V);If P>0 Then Begin G:=StrVal(Copy(V,1,P-1),0);Delete(V,1,P);V:=Trim(V);B:=StrVal(V,0);End;
+   ScrCol[I]:=NearestVga(R,G,B);
+  End;
+ If IniRead(IniFile,'intl','sCountry',V) Then CountryName:=V;
+ If IniRead(IniFile,'intl','iDate',V) Then DateFmt:=Clamp(StrVal(V,0),0,2);
+ If IniRead(IniFile,'intl','iTime',V) Then Clock24:=V='1';
+ If IniRead(IniFile,'intl','sDate',V) Then DateSep:=Copy(V,1,1);
+ If IniRead(IniFile,'intl','sTime',V) Then TimeSep:=Copy(V,1,1);
+ If IniRead(IniFile,'intl','sCurrency',V) Then CurSym:=Copy(V,1,4);
+ If IniRead(IniFile,'intl','sDecimal',V) Then DecSep:=Copy(V,1,1);
+ If IniRead(IniFile,'intl','sThousand',V) Then ThouSep:=Copy(V,1,1);
+ If IniRead(IniFile,'ports',CommPort+':',V) Then Begin
+  P:=Pos(',',V);If P>0 Then Begin CommBaud:=StrVal(Copy(V,1,P-1),CommBaud);Delete(V,1,P);End;
+  P:=Pos(',',V);If P>0 Then Begin If Copy(V,1,P-1)<>'' Then CommParity:=UpCase(V[1]);Delete(V,1,P);End;
+  P:=Pos(',',V);If P>0 Then Begin CommBits:=StrVal(Copy(V,1,P-1),CommBits);Delete(V,1,P);End;
+  P:=Pos(',',V);If P>0 Then CommStop:=StrVal(Copy(V,1,P-1),CommStop) Else CommStop:=StrVal(V,CommStop);
+ End;
  ApplyScreenColors;
 End;
 
@@ -6308,9 +6365,6 @@ End;
 { ---- Screen Colors ---- }
 
 Const
- VgaRGB : Array[0..15,0..2] Of Integer = (
-  (0,0,0),(0,0,170),(0,170,0),(0,170,170),(170,0,0),(170,0,170),(170,85,0),(170,170,170),
-  (85,85,85),(85,85,255),(85,255,85),(85,255,255),(255,85,85),(255,85,255),(255,255,85),(255,255,255));
  ScrNames : Array[0..NSCOL-1] Of String[60] = (
   'Screen Background~Fond de l''ecran~Bildschirmhintergrund',
   'Application Workspace~Espace de travail~Arbeitsbereich',
@@ -6327,17 +6381,6 @@ Var
  TmpCol : Array[0..NSCOL-1] Of Integer;
  ScrLst : PStrList;
  ScrSel : Integer;
-
-Function NearestVga(R,G,B: Integer): Integer;
-Var I,Best: Integer; D,BD: LongInt;
-Begin
- Best:=0;BD:=1000000;
- For I:=0 To 15 Do Begin
-  D:=Sqr(R-VgaRGB[I,0])+Sqr(G-VgaRGB[I,1])+Sqr(B-VgaRGB[I,2]);
-  If D<BD Then Begin BD:=D;Best:=I;End;
- End;
- NearestVga:=Best;
-End;
 
 Procedure HsvToRgb(H,S,V: Integer; Var R,G,B: Integer);   { H 0..255, S,V 0..255 }
 Var Hi,F,P,Q,T: Integer;
@@ -6458,22 +6501,188 @@ Begin
  Dirty:=True;
 End;
 
+Var
+ CpSec,CpTF,CpDF: Integer;    { section active, champ heure, champ date }
+ CpTest: Boolean; CpTestT: LongInt; CpDrag: Integer;
+
+Procedure CpArrowBox(X,Y: Integer; Up: Boolean);
+Begin
+ GBar(X,Y,X+15,Y+11,cWht);GRect(X,Y,X+15,Y+11,cBlk);
+ GArrow(X+8,Y+6,IfThen_(Up,1,2),cBlk);
+End;
+
+Procedure CpGetDate(Var Y,M,D: Integer);
+Var Yy,Mm,Dd,Dw: Word;
+Begin
+ GetDate(Yy,Mm,Dd,Dw);Y:=Yy;M:=Mm;D:=Dd;
+End;
+
+Procedure CpAdjTime(Delta: Integer);
+Var H,M,S,C: Word; Hh,Mi,Se: Integer;
+Begin
+ GetTime(H,M,S,C);Hh:=H;Mi:=M;Se:=S;
+ Case CpTF Of
+  0: Hh:=(Hh+Delta+24) Mod 24;
+  1: Mi:=(Mi+Delta+60) Mod 60;
+  2: Se:=(Se+Delta+60) Mod 60;
+ End;
+ {$I-}SetTime(Hh,Mi,Se,0);{$I+}
+ If IOResult<>0 Then ;
+End;
+
+Procedure CpAdjDate(Delta: Integer);
+Var Y,M,D: Integer; Dim: Integer;
+Begin
+ CpGetDate(Y,M,D);
+ Case DateFmt Of
+  0: Case CpDF Of 0: M:=M+Delta;1: D:=D+Delta;Else Y:=Y+Delta;End;
+  1: Case CpDF Of 0: D:=D+Delta;1: M:=M+Delta;Else Y:=Y+Delta;End;
+ Else Case CpDF Of 0: Y:=Y+Delta;1: M:=M+Delta;Else D:=D+Delta;End;
+ End;
+ If M<1 Then M:=12;If M>12 Then M:=1;
+ Dim:=31;
+ If (M=4) Or (M=6) Or (M=9) Or (M=11) Then Dim:=30 Else If M=2 Then Dim:=28+Ord(((Y Mod 4)=0) And ((Y Mod 100)<>0));
+ If D<1 Then D:=Dim;If D>Dim Then D:=1;
+ Y:=Clamp(Y,1980,2099);
+ {$I-}SetDate(Y,M,D);{$I+}
+ If IOResult<>0 Then ;
+End;
+
+Function CpBlinkPos: Integer;
+Begin
+ CpBlinkPos:=Clamp((1200-BlinkMs) Div 10,0,100);
+End;
+
 Procedure CpDraw(W: PWindow);
-Var X1,Y1,X2,Y2,I: Integer; Y: Integer;
+Var X1,Y1,X2,Y2,I: Integer; Hh,Mi,Se,Cc: Word; Y,M,D: Integer; Fl: Array[0..2] Of String; Ord_: Array[0..2] Of Integer;
+    Bx,By: Integer;
 Begin
  WinClient(W,X1,Y1,X2,Y2);
- Y:=Y1+10;
- GText(X1+10,Y,T3('Printer:','Imprimante :','Drucker:'),cBlk);
- GText(X1+110,Y,PrinterName+' '+T3('on','sur','an')+' '+PrintPort+':',cBlk);Inc(Y,16);
- GText(X1+10,Y,T3('Comm port:','Port s'#130'rie :','Schnittst.:'),cBlk);
- GText(X1+110,Y,CommPort+': '+IntStr(CommBaud)+','+CommParity+','+IntStr(CommBits)+','+IntStr(CommStop),cBlk);Inc(Y,16);
- GText(X1+10,Y,T3('Country:','Pays :','Land:'),cBlk);GText(X1+110,Y,CountryName,cBlk);Inc(Y,16);
- GText(X1+10,Y,T3('Border:','Bordure :','Rahmen:'),cBlk);GText(X1+110,Y,IntStr(BorderW),cBlk);Inc(Y,16);
- GText(X1+10,Y,T3('Warning beep:','Bip d''alerte :','Warnton:'),cBlk);
- GText(X1+110,Y,IfThenS(Beeping,T3('on','oui','ein'),T3('off','non','aus')),cBlk);Inc(Y,16);
- GText(X1+10,Y,T3('Fonts:','Polices :','Schriften:'),cBlk);GText(X1+110,Y,IntStr(NFont)+' '+T3('installed','install'#130'es','installiert'),cBlk);
- Inc(Y,22);
- For I:=0 To 15 Do Begin GBar(X1+10+I*18,Y,X1+10+I*18+16,Y+14,I);GRect(X1+10+I*18,Y,X1+10+I*18+16,Y+14,cBlk);End;
+ GText(X1+14,Y1+8,T3('Time','Heure','Zeit'),cBlk);
+ GetTime(Hh,Mi,Se,Cc);
+ Fl[0]:=Pad2(Hh);Fl[1]:=Pad2(Mi);Fl[2]:=Pad2(Se);
+ If Not Clock24 Then Begin
+  I:=Hh Mod 12;If I=0 Then I:=12;Fl[0]:=IntStr(I);If Length(Fl[0])<2 Then Fl[0]:=' '+Fl[0];
+ End;
+ For I:=0 To 2 Do Begin
+  Bx:=X1+14+I*24;By:=Y1+26;
+  If (CpSec=0) And (CpTF=I) Then Begin GBar(Bx-1,By-2,Bx+16,By+10,cBlk);GText(Bx,By,Fl[I],cWht);End
+  Else GText(Bx,By,Fl[I],cBlk);
+  If I<2 Then GText(Bx+16,By,TimeSep,cBlk);
+ End;
+ If Not Clock24 Then GText(X1+14+72,Y1+26,IfThenS(Hh>=12,'PM','AM'),cBlk);
+ CpArrowBox(X1+112,Y1+20,True);CpArrowBox(X1+112,Y1+34,False);
+ GText(X1+220,Y1+8,T3('Date','Date','Datum'),cBlk);
+ CpGetDate(Y,M,D);
+ Case DateFmt Of
+  0: Begin Fl[0]:=Pad2(M);Fl[1]:=Pad2(D);Fl[2]:=Copy(IntStr(Y),3,2);End;
+  1: Begin Fl[0]:=Pad2(D);Fl[1]:=Pad2(M);Fl[2]:=Copy(IntStr(Y),3,2);End;
+ Else Begin Fl[0]:=Copy(IntStr(Y),3,2);Fl[1]:=Pad2(M);Fl[2]:=Pad2(D);End;
+ End;
+ For I:=0 To 2 Do Begin
+  Bx:=X1+220+I*24;By:=Y1+26;
+  If (CpSec=1) And (CpDF=I) Then Begin GBar(Bx-1,By-2,Bx+16,By+10,cBlk);GText(Bx,By,Fl[I],cWht);End
+  Else GText(Bx,By,Fl[I],cBlk);
+  If I<2 Then GText(Bx+16,By,DateSep,cBlk);
+ End;
+ CpArrowBox(X1+316,Y1+20,True);CpArrowBox(X1+316,Y1+34,False);
+ { cadences }
+ GText(X1+14,Y1+66,T3('Cursor Blink','Clignotement','Cursor-Blinken'),cBlk);
+ GText(X1+14,Y1+78,T3('slow','lent','langsam'),cBlk);GText(X1+14+110,Y1+78,T3('fast','rapide','schnell'),cBlk);
+ DrawScroll(False,X1+14,Y1+90,X1+14+150,Y1+106,101,1,CpBlinkPos);
+ GRect(X1+174,Y1+84,X1+206,Y1+108,cBlk);
+ If (NowCs Div BlinkHalf) Mod 2=0 Then GVLine(X1+190,Y1+88,Y1+104,cBlk);
+ GText(X1+220,Y1+66,T3('Double Click','Double-clic','Doppelklick'),cBlk);
+ GText(X1+220,Y1+78,T3('slow','lent','langsam'),cBlk);GText(X1+220+100,Y1+78,T3('fast','rapide','schnell'),cBlk);
+ DrawScroll(False,X1+220,Y1+90,X1+220+140,Y1+106,86,1,100-DblCs);
+ If CpTest Then Begin GBar(X1+370,Y1+84,X1+412,Y1+108,cBlk);GText(X1+378,Y1+92,'TEST',cWht);End
+ Else Begin GRect(X1+370,Y1+84,X1+412,Y1+108,cBlk);GText(X1+378,Y1+92,'TEST',cBlk);End;
+ { section active : cadre pointille }
+ Case CpSec Of
+  0: Bx:=X1+8;1: Bx:=X1+214;2: Bx:=X1+8;Else Bx:=X1+214;
+ End;
+ By:=IfThen_(CpSec<2,Y1+4,Y1+62);
+ For I:=0 To 100 Do If (I And 1)=0 Then Begin GPix(Bx+I,By,cBlk);GPix(Bx+I,By+46,cBlk);End;
+End;
+
+Var CpLastTick: LongInt;
+
+Procedure CpTimerMain(W: PWindow);
+Var Tk: LongInt;
+Begin
+ If (CpTest) And (NowCs-CpTestT>80) Then Begin CpTest:=False;Dirty:=True;End;
+ Tk:=(NowCs Div BlinkHalf)*7+(NowCs Div 100);
+ If Tk<>CpLastTick Then Begin CpLastTick:=Tk;Dirty:=True;End;
+End;
+
+Procedure CpMouseMain(W: PWindow; Var E: TEvent);
+Var X1,Y1,X2,Y2,Pt,T: Integer;
+Begin
+ WinClient(W,X1,Y1,X2,Y2);
+ If E.Kind=EV_UP Then Begin CpDrag:=0;Exit;End;
+ If (E.Kind=EV_MOVE) And (CpDrag<>0) Then Begin
+  If CpDrag=1 Then Begin
+   T:=ScrollDrag(False,X1+14,Y1+90,X1+14+150,Y1+106,101,1,E.X,0);
+   BlinkMs:=Clamp(1200-T*10,200,1200);BlinkHalf:=Max2(5,BlinkMs Div 20);
+  End Else Begin
+   T:=ScrollDrag(False,X1+220,Y1+90,X1+220+140,Y1+106,86,1,E.X,0);
+   DblCs:=Clamp(100-T,15,100);
+  End;
+  Dirty:=True;Exit;
+ End;
+ If E.Kind<>EV_DOWN Then Exit;
+ { heure }
+ If InBox(E.X,E.Y,X1+10,Y1+22,X1+90,Y1+40) Then Begin CpSec:=0;CpTF:=Clamp((E.X-X1-10) Div 24,0,2);End
+ Else If InBox(E.X,E.Y,X1+112,Y1+20,X1+128,Y1+31) Then Begin CpSec:=0;CpAdjTime(1);End
+ Else If InBox(E.X,E.Y,X1+112,Y1+34,X1+128,Y1+45) Then Begin CpSec:=0;CpAdjTime(-1);End
+ { date }
+ Else If InBox(E.X,E.Y,X1+216,Y1+22,X1+300,Y1+40) Then Begin CpSec:=1;CpDF:=Clamp((E.X-X1-216) Div 24,0,2);End
+ Else If InBox(E.X,E.Y,X1+316,Y1+20,X1+332,Y1+31) Then Begin CpSec:=1;CpAdjDate(1);End
+ Else If InBox(E.X,E.Y,X1+316,Y1+34,X1+332,Y1+45) Then Begin CpSec:=1;CpAdjDate(-1);End
+ { clignotement }
+ Else If InBox(E.X,E.Y,X1+14,Y1+90,X1+164,Y1+106) Then Begin
+  CpSec:=2;
+  Pt:=ScrollPart(False,X1+14,Y1+90,X1+164,Y1+106,101,1,CpBlinkPos,E.X,E.Y);
+  Case Pt Of
+   1: T:=CpBlinkPos-5;2: T:=CpBlinkPos+5;3: T:=CpBlinkPos-20;4: T:=CpBlinkPos+20;Else T:=CpBlinkPos;
+  End;
+  If Pt=5 Then CpDrag:=1;
+  BlinkMs:=Clamp(1200-Clamp(T,0,100)*10,200,1200);BlinkHalf:=Max2(5,BlinkMs Div 20);
+  Capture:=W;
+ End
+ { double-clic }
+ Else If InBox(E.X,E.Y,X1+220,Y1+90,X1+360,Y1+106) Then Begin
+  CpSec:=3;
+  Pt:=ScrollPart(False,X1+220,Y1+90,X1+360,Y1+106,86,1,100-DblCs,E.X,E.Y);
+  T:=100-DblCs;
+  Case Pt Of
+   1: Dec(T,3);2: Inc(T,3);3: Dec(T,12);4: Inc(T,12);
+  End;
+  If Pt=5 Then CpDrag:=2;
+  DblCs:=Clamp(100-Clamp(T,0,85),15,100);
+  Capture:=W;
+ End
+ Else If InBox(E.X,E.Y,X1+370,Y1+84,X1+412,Y1+108) Then Begin
+  If E.Dbl Then Begin CpTest:=True;CpTestT:=NowCs;End;
+ End;
+ IniSave;
+ Dirty:=True;
+End;
+
+Procedure CpKeyMain(W: PWindow; K: Word);
+Begin
+ Case K Of
+  K_TAB: CpSec:=(CpSec+1) Mod 4;
+  K_UP: Case CpSec Of 0: CpAdjTime(1);1: CpAdjDate(1);End;
+  K_DOWN: Case CpSec Of 0: CpAdjTime(-1);1: CpAdjDate(-1);End;
+  K_LEFT: Case CpSec Of 0: CpTF:=(CpTF+2) Mod 3;1: CpDF:=(CpDF+2) Mod 3;
+    2: Begin BlinkMs:=Clamp(BlinkMs+50,200,1200);BlinkHalf:=Max2(5,BlinkMs Div 20);IniSave;End;
+    3: Begin DblCs:=Clamp(DblCs+3,15,100);IniSave;End;End;
+  K_RIGHT: Case CpSec Of 0: CpTF:=(CpTF+1) Mod 3;1: CpDF:=(CpDF+1) Mod 3;
+    2: Begin BlinkMs:=Clamp(BlinkMs-50,200,1200);BlinkHalf:=Max2(5,BlinkMs Div 20);IniSave;End;
+    3: Begin DblCs:=Clamp(DblCs-3,15,100);IniSave;End;End;
+ End;
+ Dirty:=True;
 End;
 
 Procedure CpMenu(W: PWindow; Cmd: Integer);
@@ -6502,10 +6711,11 @@ Begin
  MenuCheck(W,CM_P_BEEP,Beeping);
 End;
 
+
 Function CtrlCreate: PWindow;
 Var W: PWindow;
 Begin
- W:=NewWindow(A_CTRL,'Control Panel',-1,-1,420,200,True);
+ W:=NewWindow(A_CTRL,'Control Panel',-1,-1,440,196,False);
  If W=Nil Then Begin CtrlCreate:=Nil;Exit;End;
  WinAddMenu(W,'&Installation~&Installation~&Installation');
  WinAddItem(W,'Add New &Printer...~Ajouter une &imprimante...~&Drucker hinzuf'#129'gen...',CM_P_ADDPRN,'');
@@ -6907,7 +7117,7 @@ Begin
   If I>=TROWS Then Break;
   GText(X1+4,Y1+2+R*10,Copy(T^.Scr[I],1,(X2-X1-8) Div 8),cBlk);
  End;
- If (T^.CR>=W^.VPos) And (T^.CR<W^.VPos+Rows) And ((NowCs Div 50) Mod 2=0) Then
+ If (T^.CR>=W^.VPos) And (T^.CR<W^.VPos+Rows) And ((NowCs Div BlinkHalf) Mod 2=0) Then
   GBar(X1+4+T^.CC*8,Y1+10+(T^.CR-W^.VPos)*10,X1+11+T^.CC*8,Y1+11+(T^.CR-W^.VPos)*10,cBlk);
  If T^.Connected Then GText(X2-90,Y1+2,'[ON LINE]',cDGr)
  Else If T^.Dialing Then GText(X2-90,Y1+2,'[DIALING]',cDGr);
@@ -11256,7 +11466,7 @@ Begin
   End;
  End;
  CurX:=V^.Mem^[$450]-W^.HPos;CurY:=V^.Mem^[$451]-W^.VPos;
- If (CurX>=0) And (CurY>=0) And ((NowCs Div 50) Mod 2=0) And (V^.Mode<4) And (W=ActiveWin) Then
+ If (CurX>=0) And (CurY>=0) And ((NowCs Div BlinkHalf) Mod 2=0) And (V^.Mode<4) And (W=ActiveWin) Then
   GBar(X1+CurX*COLW,Y1+CurY*ROWH+ROWH-2,X1+CurX*COLW+COLW-1,Y1+CurY*ROWH+ROWH-1,cLGr);
 End;
 
@@ -11315,7 +11525,7 @@ Begin
  { detecte les changements de l'ecran }
  Sum:=0;
  For I:=0 To 3999 Do Sum:=Sum+V^.Mem^[TXT_BASE+I]*((I And 15)+1);
- Sum:=Sum+V^.Mem^[$450]*7+V^.Mem^[$451]*13+((NowCs Div 50) And 1)*5;
+ Sum:=Sum+V^.Mem^[$450]*7+V^.Mem^[$451]*13+((NowCs Div BlinkHalf) And 1)*5;
  If Sum<>V^.Ticks0 Then Begin V^.Ticks0:=Sum;Invalidate(W);End;
 End;
 
@@ -14565,7 +14775,7 @@ Begin
    If Pos('|',Msg)>0 Then InfoBox(Msg);
   End Else Begin
    If (T^.ViewHw<>0) And (W16ClipSig<>T^.ClipSig) Then Begin T^.ClipSig:=W16ClipSig;W16Post(T,T^.ViewHw,$308,0,0);End;
-   If T^.CaretOn And ((NowCs Div 50)<>T^.LastTick) Then Begin T^.LastTick:=NowCs Div 50;Dirty:=True;End;
+   If T^.CaretOn And ((NowCs Div BlinkHalf)<>T^.LastTick) Then Begin T^.LastTick:=NowCs Div BlinkHalf;Dirty:=True;End;
    Inc(I);
   End;
  End;
@@ -14718,7 +14928,7 @@ Begin
    SetClip(X1,Y1,X2,Y2);
   End;
  { curseur de texte }
- If T^.CaretOn And (T^.CaretHw=Hw) And ((NowCs Div 50) Mod 2=0) Then
+ If T^.CaretOn And (T^.CaretHw=Hw) And ((NowCs Div BlinkHalf) Mod 2=0) Then
   GBar(X1+T^.CaretX,Y1+T^.CaretY,X1+T^.CaretX+Max2(1,T^.CaretW)-1,Y1+T^.CaretY+Max2(1,T^.CaretH)-1,cBlk);
 End;
 
@@ -14935,6 +15145,7 @@ Begin
   A_NOTE,A_WRITE: EdWinMouse(W,E);
   A_CALC: CalcMouse(W,E);
   A_SPOOL: SpoolMouse(W,E);
+  A_CTRL: CpMouseMain(W,E);
   A_REV: RevMouse(W,E);
   A_PIF: PifMouse(W,E);
   A_CARD: CardMouse(W,E);
@@ -14952,6 +15163,7 @@ Begin
   A_NOTE,A_WRITE: EdWinKey(W,K);
   A_CALC: CalcKey(W,K);
   A_TERM: TermKey(W,K);
+  A_CTRL: CpKeyMain(W,K);
   A_CARD: CardKey(W,K);
   A_CALEN: CalKey(W,K);
   A_PAINT: PaintKey(W,K);
@@ -15006,6 +15218,7 @@ Begin
   A_NOTE,A_WRITE: EdWinTimer(W);
   A_CLOCK: ClockTimer(W);
   A_SPOOL: SpoolTimer(W);
+  A_CTRL: CpTimerMain(W);
   A_REV: RevTimer(W);
   A_TERM: TermTimer(W);
   A_CALEN: CalTimer(W);
@@ -15326,7 +15539,7 @@ BEGIN
  VolNames['A']:='';VolNames['B']:='';VolNames['C']:='';VolNames['D']:='';
  NWins:=0;NextId:=1;NewWinCount:=0;Capture:=Nil;QuitFlag:=False;
  DefaultScreenColors;
- NPrn:=1;PrnInst[1]:='Epson FX-80';PrnPort[1]:='LPT1';NFont:=3;
+ BlinkMs:=530;BlinkHalf:=26;MouseAcc:=1;Beeping:=True;NPrn:=1;PrnInst[1]:='Epson FX-80';PrnPort[1]:='LPT1';NFont:=3;
  FontInst[1]:='Courier 10';FontInst[2]:='Helv 10';FontInst[3]:='Tms Rmn 10';
  CommPort:='COM1';CommBaud:=1200;CommBits:=8;CommStop:=1;CommParity:='N';
  CountryName:=IfThenS(Lang=0,'United States',IfThenS(Lang=2,'Germany','France'));Beeping:=True;
