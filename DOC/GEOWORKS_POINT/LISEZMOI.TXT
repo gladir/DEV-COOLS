@@ -1,0 +1,17 @@
+GeoPoint (GEOWORKS.PAS)
+=======================
+
+Lancement : GEOWORKS /R:GEOPOINT   ou   GEOWORKS DEMO.PPT
+(menu du bureau : clic droit ou F11 > GeoPoint)
+
+Fichiers .PPT : format natif "PPNT" version 1, identique a celui de
+POWERPNT.PAS (depot OFFICE-0) : diapositives 1000x750 logiques, formes,
+texte a puces, themes, transitions, animations, images 16 couleurs.
+
+Fonctions : huit mises en page, six themes, formes (rectangle, ellipse, ligne,
+fleche, triangle, losange, pentagone, hexagone, etoile, coeur, bulle,
+parallelogramme, trapeze, croix), tableaux (colonnes separees par |),
+graphiques en barres (etiquette|valeur), clipart (icones GEOS), plan, trieuse,
+page de commentaires, annuler, couper/copier/coller, grille magnetique,
+diaporama plein ecran (F5) avec dix transitions et apparition des objets
+animes, exportation du plan en texte.

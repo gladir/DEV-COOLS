@@ -1,0 +1,118 @@
+RECONSTRUCTION DES API PC/GEOS 2.x POUR L'EMULATEUR DE GEOWORKS.PAS
+=====================================================================
+
+Probleme : un geode 2.x appelle le noyau et les bibliotheques par NUMERO
+(ordinal), pas par nom. Les PDF du SDK (cref.pdf, Asmref.pdf) donnent les
+noms et les prototypes mais pas ces numeros.
+
+Technique 1 (sans les sources du noyau) - inference par les binaires :
+  1. Les relogements de type 0x14 d'un geode donnent chaque appel (bibliotheque
+     et ordinal).
+  2. GRAPH.GEO est livre avec ses sources C : l'ordre des appels API dans
+     chaque fonction du source et dans le binaire est le meme. Le vote par
+     alignement (vote.py, align.py) donne MemAlloc=844, MemLock=848,
+     MemFree=845, FileRead=879, ObjMessage=1194...
+  3. Validation : le nombre d'octets empiles avant chaque appel (valid.py) doit
+     egaler la taille des arguments du prototype (cref.pdf). C'est le cas
+     pour presque tous les appels (MemFree 2, GrDrawLine 10,
+     UserStandardDialog 22...).
+
+Technique 2 (retenue) - sources ouvertes https://github.com/bluewaysw/pcgeos :
+  * Library/Kernel/geos.gp, Library/User/ui.gp, Library/AnsiC/ansic.gp,
+    Library/Math/Compiler/BorlandC/borlandc.gp, Library/Spool/spool.gp : l'ordinal
+    d'une routine est son rang dans la liste des directives "export" et
+    "publish". Il faut evaluer les blocs ifdef/else/endif (gp2.py).
+  * CInclude/*.h : prototypes exacts (_pascal : l'appele depile ; _cdecl :
+    l'appelant depile) -> signatures (cinc.py).
+  * Verification : les 40 ancrages trouves par la technique 1 retombent
+    exactement sur les noms des fichiers .gp.
+  Resultat : 100 % des routines importees par INSTFE.GEO (63) et GRAPH.GEO (42)
+  sont nommees ; les tables sont dans GEOWORKS.PAS (60a_names) et dans les
+  fichiers *.SLS de ce dossier (format de GEODUMP).
+
+Pour un appel dont la signature est inconnue, l'emulateur estime le nombre
+d'arguments d'apres les empilements qui precedent l'appel et ne s'arrete jamais.
+
+Les scripts sont en Python 3 (capstone pour valid.py/unknown.py) et lisent les
+fichiers du depot pcgeos clone dans /home/user/bluewaysw/pcgeos.
+
+SYSTEME D'OBJETS (CObjMessage / CObjCallSuper) - etat d'avancement
+-------------------------------------------------------------------
+Source : Library/Kernel/Object/objectClass.asm, Include/Internal/geodeStr.def
+et Include/object.def du depot pcgeos.
+
+Fait (60b_rt.pas : ObjDecode, ObjParamBytes) :
+  * Disposition de la pile (convention pascal, params empiles de gauche a droite) :
+      CObjMessage   : params..., flags, ohan, och, method, mpd
+      CObjCallSuper : params..., class(fptr), ohan, och, method, mpd
+    soit a partir de SS:SP+4 : +0 mpd, +2 method, +4 och, +6 ohan, +8 flags
+    (ou classe fptr), puis les parametres.
+  * MethodParameterDef (16 bits) : 15-14 type de retour, 13-10 info de retour,
+    9 = parametres en registres, 8-0 = registres (PARAM3 8-6, PARAM2 5-3,
+    PARAM1 2-0 ; 1 CL, 2 CH, 3 DL, 4 DH, 5 CX, 6 DX, 7 BP) ou memoire
+    (bit 8 = format C, octet bas = taille ; sinon bit 7 = structure en ss:bp
+    et bits 6-0 = taille).
+  * Le decodage donne la taille exacte des arguments (l'appele depile) : sans
+    lui la pile se desynchronisait apres chaque message ; il fournit aussi les
+    valeurs de cx, dx, bp transmises a la methode. Les messages sont
+    journalises (obj=handle:chunk msg=... mpd=... cx dx bp flags).
+  * Inventaire des blocs d'objets d'une geode (62_gwin.pas : RtObjects) : le
+    premier mot d'un chunk-objet est un ObjRelocationID (4 bits de source,
+    12 bits d'index ; source 3 = classe d'une bibliotheque importee, source 6 =
+    classe de la geode) suivi du numero d'entree, donc le nom de la classe se
+    lit directement dans la table des exportations de "ui" (GenTriggerClass =
+    entree 2...). Exemple INSTFE.GEO : GenInteraction 21, GenText 9, GenGlyph 17,
+    GenValue 4, GenTrigger 11, GenDynamicList 2, GenFileSelector 1.
+
+Fait ensuite (60b_rt, 60a_fpu, 60c_vm, 63_objtree) :
+  * Recherche de methode : RtMethodFind parcourt la table de messages de la
+    classe (ClassStruct : +0 super, +4 decalage maitre, +6 nombre de methodes,
+    +16 numeros de messages puis gestionnaires) et remonte les superclasses
+    de la geode ; RtInvoke execute le gestionnaire dans l'emulateur (AX =
+    message, CX/DX/BP, DS:SI = objet, ES = classe), sauvegarde/restaure les
+    registres, et ObjReturn applique MPD_RETURN_TYPE. CObjMessage et
+    CObjCallSuper remettent ainsi vraiment le message. Une classe parente de
+    bibliotheque (ui) n'a pas de code : la recherche s'arrete la.
+  * Blocs d'objets : le mot a +6 d'un objet donne le decalage de la partie
+    GenInstance (GenOff = chunk + 4 + mot). Champs : GI_link (optr, bit 0 =
+    lien vers le parent), GI_comp (premier enfant), GI_visMoniker, GI_kbd,
+    GI_attrs, GI_states. Un optr de fichier est [chunk][ObjRelocationID] ; ID
+    source 4 = bloc courant, 1 = ressource de la geode (index = ressource).
+    GenInteraction : GII_type, GII_visibility (1 menu, 4 dialogue) puis les
+    hints en donnees variables (mot $6000 + 9 + 4*rang ; rang = ordre de
+    declaration dans genC.def depuis HINT_DUMMY, ex. 31/32 expand, 45/46
+    orientation). GenTrigger : GTI_destination (optr) puis GTI_actionMsg.
+  * Arbre generique reconstruit (63_objtree.pas) : GenApplication ->
+    GenPrimary -> ... ; chaque classe Gen* est associee a un composant du clone
+    (formulaire de GeoBasic) : GenPrimary/GenInteraction -> fenetre/groupe,
+    GenTrigger -> bouton, GenText -> champ, GenGlyph -> libelle, GenValue ->
+    curseur, GenItem/GenBoolean -> case, GenDynamicList/GenFileSelector ->
+    liste, GenEditControl -> bouton de controle. Les GenInteraction de
+    visibilite menu deviennent des menus de la fenetre (leurs GenTrigger sont
+    les rubriques), ceux de visibilite dialogue sont ouverts depuis le menu
+    "Dialogs". Un clic sur un declencheur envoie son message a sa destination
+    (processus ou objet) : le gestionnaire de la geode est reellement execute.
+    INSTFE.GEO affiche ainsi sa vraie interface (Program name, Description,
+    Install, De-Install, boites Select directory, Information...).
+  * Coprocesseur 8087 (60a_fpu.pas) : Borland C compile le flottant en INT 34h..3Bh
+    (= ESC D8h..DFh + ModRM), INT 3Ch prefixe de segment, INT 3Dh FWAIT. Pile de 8
+    registres, fld/fst/fild/fist, arithmetique, comparaisons, fsqrt, fsin,
+    fcos, fpatan, frndint... Les fonctions de la bibliotheque borlandc (sin,
+    cos, tan, atan, sqrt, log, exp, pow, fmod, atan2, F_FTOL@...) recoivent
+    leur argument dans ST(0) et rendent le resultat dans ST(0).
+  * LMem, tableaux de chunks, fichiers VM et HugeArray (60c_vm.pas) : MemAllocLMem,
+    LMemAlloc/Free/ReAlloc/Deref/InsertAt/DeleteAt, ChunkArrayCreate/Append/
+    InsertAt/ElementToPtr/GetElement/Delete/GetCount (elements fixes ou de
+    taille variable), VMOpen/VMAlloc/VMLock/VMUnlock/VMFree/Get-SetMapBlock,
+    HugeArrayCreate/Append/Insert/Delete/Replace/Lock/GetCount (stockage dans un
+    bloc emule). GEOFPUTEST=1 lance des auto-tests (sqrt, 1/3.5, fild,
+    tableau de chunks, HugeArray) dont le resultat est dans GEOEMU.LOG.
+
+Limites actuelles :
+  * Une classe de "ui" n'a pas de code : les messages Gen* (MSG_GEN_*,
+    MSG_META_*) ne sont pas executes, seuls les gestionnaires de la geode le sont.
+  * Le contenu des GenText, les valeurs de GenValue, les listes dynamiques ne
+    sont pas lus (seulement le moniker) ; les hints de mise en page sont limites
+    a l'orientation.
+  * ElementArray, HugeArray de taille variable et VM persistants sur disque ne
+    sont pas emules.
