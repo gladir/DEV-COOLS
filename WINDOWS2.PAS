@@ -12375,7 +12375,7 @@ End;
 
 { icone 64x64 monochrome (masque AND puis XOR) vers un DC ecran }
 Procedure W16DrawIconRes(T: PW16; Seg_: Word; X,Y,Sz: Integer);
-Var I,J,Sx,Sy,Step: Integer; A,Xr: Byte; BaseA,BaseX: LongInt; Wd: Integer;
+Var I,J,Sx,Sy,Step,Bx,By,Nb,Nw: Integer; A,Xr: Byte; BaseA,BaseX: LongInt; Wd: Integer;
 Begin
  Wd:=RdW(Lin(Seg_,6));
  If (Wd<8) Or (Wd>64) Then Exit;
@@ -12383,11 +12383,16 @@ Begin
  Step:=Wd Div Sz;If Step<1 Then Step:=1;
  For J:=0 To Sz-1 Do
   For I:=0 To Sz-1 Do Begin
-   Sx:=I*Step;Sy:=J*Step;
-   A:=(RdB(Lin(Seg_,BaseA+Sy*(Wd Div 8)+(Sx Shr 3))) Shr (7-(Sx And 7))) And 1;
-   Xr:=(RdB(Lin(Seg_,BaseX+Sy*(Wd Div 8)+(Sx Shr 3))) Shr (7-(Sx And 7))) And 1;
-   If A=0 Then Begin If Xr=1 Then GPix(X+I,Y+J,cWht) Else GPix(X+I,Y+J,cBlk);End
-   Else If Xr=1 Then GPix(X+I,Y+J,cBlk);
+   Nb:=0;Nw:=0;
+   For By:=0 To Step-1 Do
+    For Bx:=0 To Step-1 Do Begin
+     Sx:=I*Step+Bx;Sy:=J*Step+By;
+     A:=(RdB(Lin(Seg_,BaseA+Sy*(Wd Div 8)+(Sx Shr 3))) Shr (7-(Sx And 7))) And 1;
+     Xr:=(RdB(Lin(Seg_,BaseX+Sy*(Wd Div 8)+(Sx Shr 3))) Shr (7-(Sx And 7))) And 1;
+     If A=0 Then Begin If Xr=1 Then Inc(Nw) Else Inc(Nb);End
+     Else If Xr=1 Then Inc(Nb);
+    End;
+   If Nb>0 Then GPix(X+I,Y+J,cBlk) Else If Nw>0 Then GPix(X+I,Y+J,cWht);
   End;
 End;
 
