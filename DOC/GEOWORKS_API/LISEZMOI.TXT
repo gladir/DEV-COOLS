@@ -1,0 +1,37 @@
+RECONSTRUCTION DES API PC/GEOS 2.x POUR L'EMULATEUR DE GEOWORKS.PAS
+=====================================================================
+
+Probleme : un geode 2.x appelle le noyau et les bibliotheques par NUMERO
+(ordinal), pas par nom. Les PDF du SDK (cref.pdf, Asmref.pdf) donnent les
+noms et les prototypes mais pas ces numeros.
+
+Technique 1 (sans les sources du noyau) - inference par les binaires :
+  1. Les relogements de type 0x14 d'un geode donnent chaque appel (bibliotheque
+     et ordinal).
+  2. GRAPH.GEO est livre avec ses sources C : l'ordre des appels API dans
+     chaque fonction du source et dans le binaire est le meme. Le vote par
+     alignement (vote.py, align.py) donne MemAlloc=844, MemLock=848,
+     MemFree=845, FileRead=879, ObjMessage=1194...
+  3. Validation : le nombre d'octets empiles avant chaque appel (valid.py) doit
+     egaler la taille des arguments du prototype (cref.pdf). C'est le cas
+     pour presque tous les appels (MemFree 2, GrDrawLine 10,
+     UserStandardDialog 22...).
+
+Technique 2 (retenue) - sources ouvertes https://github.com/bluewaysw/pcgeos :
+  * Library/Kernel/geos.gp, Library/User/ui.gp, Library/AnsiC/ansic.gp,
+    Library/Math/Compiler/BorlandC/borlandc.gp, Library/Spool/spool.gp : l'ordinal
+    d'une routine est son rang dans la liste des directives "export" et
+    "publish". Il faut evaluer les blocs ifdef/else/endif (gp2.py).
+  * CInclude/*.h : prototypes exacts (_pascal : l'appele depile ; _cdecl :
+    l'appelant depile) -> signatures (cinc.py).
+  * Verification : les 40 ancrages trouves par la technique 1 retombent
+    exactement sur les noms des fichiers .gp.
+  Resultat : 100 % des routines importees par INSTFE.GEO (63) et GRAPH.GEO (42)
+  sont nommees ; les tables sont dans GEOWORKS.PAS (60a_names) et dans les
+  fichiers *.SLS de ce dossier (format de GEODUMP).
+
+Pour un appel dont la signature est inconnue, l'emulateur estime le nombre
+d'arguments d'apres les empilements qui precedent l'appel et ne s'arrete jamais.
+
+Les scripts sont en Python 3 (capstone pour valid.py/unknown.py) et lisent les
+fichiers du depot pcgeos clone dans /home/user/bluewaysw/pcgeos.

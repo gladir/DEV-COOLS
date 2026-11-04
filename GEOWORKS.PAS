@@ -13686,7 +13686,7 @@ Const
  MAXGSEG = 64;
  MAXGEXP = 256;
  MAXGLIB = 32;
- MAXGLN  = 700;
+ MAXGLN  = 4000;
 
 Type
  TGSeg = Record Len,Fix,Flg: Word; Pos: LongInt; End;
@@ -14151,17 +14151,2878 @@ Begin
  SegR[1]:=Pop16;
 End;
 
-{ Appel noyau/bibliotheque intercepte : on journalise puis on retourne }
+{ Appel noyau/bibliotheque intercepte : emule par le noyau logiciel (60b_rt.pas) }
+Procedure RtCall(Lib: Integer; Ord_: Word); Forward;
+
 Procedure TrapCall(Lib: Integer; Ord_: Word);
-Var Nm: String;
 Begin
- If Lib<0 Then Nm:='geos' Else If Lib<MAXGLIB Then Nm:=PGeodeWin(ELog^.Data)^.G.Libs[Lib].Name Else Nm:='lib'+IntStr(Lib);
- ELogLine('  CALL '+Nm+'.'+IntStr(Ord_)+'  AX='+HexW(Reg[0])+' BX='+HexW(Reg[3])+' CX='+HexW(Reg[1])+' DX='+HexW(Reg[2]));
- Reg[0]:=0;
- EFl:=EFl And (Not FL_CF);
- RetFar;
+ RtCall(Lib,Ord_);
 End;
 
+{$ENDIF}
+{ Tables d'ordinaux PC/GEOS 2.x generees a partir des fichiers .gp et des en-tetes C du depot open source bluewaysw/pcgeos }
+{ format : Nom|signature|retour|convention ; signature : w mot, d double mot, . arguments variables, ? inconnue }
+
+Const
+ Tab_geos : Array[0..1812] Of String[46] = (
+  'MemAlloc|www|w|p',
+  'MemReAlloc|www|w|p',
+  'MemFree|w|v|p',
+  'MemDiscard|w|v|p',
+  'MemDiscard|w|v|p',
+  'MemLock|w|d|p',
+  'MemUnlock|w|v|p',
+  'MemLockFixedOrMovable|d|d|p',
+  'MemUnlockFixedOrMovable|d|v|p',
+  'HandleP|w|v|p',
+  'HandleV|w|v|p',
+  'MemPLock|w|d|p',
+  'MemUnlockV|w|v|p',
+  'MemThreadGrab|w|d|p',
+  'MemThreadRelease|w|v|p',
+  'MemLockShared|w|d|p',
+  'MemLockExcl|w|d|p',
+  'MemUnlockShared|w|v|p',
+  'MemUpgradeSharedLock|w|d|p',
+  'MemDowngradeExclLock|w|v|p',
+  'ECMemVerifyHeap||v|p',
+  'MemDerefDS|?|?|p',
+  'MemDerefES|?|?|p',
+  'MemThreadGrabNB|w|d|p',
+  'MemOwner|w|w|p',
+  'MemAllocSetOwner|wwww|w|p',
+  'MemSegmentToHandle|?|?|p',
+  'MemModifyFlags|www|v|p',
+  'HandleModifyOwner|ww|v|p',
+  'MemModifyOtherInfo|ww|v|p',
+  'MemGetInfo|ww|w|p',
+  'ECCheckBounds|d|v|p',
+  'MemInitRefCount|ww|v|p',
+  'MemIncRefCount|w|v|p',
+  'MemDecRefCount|w|v|p',
+  'MemAllocLMem|ww|w|p',
+  'MemExtendHeap|?|?|p',
+  'MemAddSwapDriver|?|?|p',
+  'MemGrabHeap|?|?|p',
+  'MemReleaseHeap|?|?|p',
+  'LMemInitHeap|wwwwww|v|p',
+  'LMemAlloc|ww|w|p',
+  'LMemFree|d|v|p',
+  'LMemReAlloc|dw|w|p',
+  'ECLMemExists|d|v|p',
+  'LMemInsertAt|dww|w|p',
+  'LMemDeleteAt|dww|v|p',
+  'LMemContract|w|v|p',
+  'ECLMemValidateHeap|w|v|p',
+  'ECLMemValidateHandle|d|v|p',
+  'ChunkArrayCreate|?|?|p',
+  'ChunkArrayElementToPtr|dwd|d|p',
+  'ChunkArrayAppend|dw|d|p',
+  'ChunkArrayGetCount|d|w|p',
+  'ChunkArrayEnum|?|w|p',
+  'ChunkArrayDelete|dd|v|p',
+  'ChunkArrayPtrToElement|dd|w|p',
+  'ChunkArrayZero|d|v|p',
+  'ChunkArrayInsertAt|ddw|d|p',
+  'ChunkArraySort|?|v|p',
+  'ArrayQuickSort|dwwwd|v|p',
+  'ChunkArrayElementResize|dww|v|p',
+  'ECCheckChunkArray|d|v|p',
+  'ElementArrayCreate|?|?|p',
+  'ChunkArrayGetElement|dwd|v|p',
+  'ElementArrayAddReference|dw|v|p',
+  'ElementArrayAddElement|?|w|p',
+  'ElementArrayRemoveReference|?|v|p',
+  'ElementArrayGetUsedCount|?|w|p',
+  'ElementArrayUsedIndexToToken|?|w|p',
+  'ElementArrayTokenToUsedIndex|?|w|p',
+  'ElementArrayElementChanged|?|w|p',
+  'ElementArrayDelete|dw|v|p',
+  'ChunkArrayEnumRange|?|w|p',
+  'ChunkArrayDeleteRange|dww|v|p',
+  'FileCreateDir|d|?|p',
+  'FileDeleteDir|d|w|p',
+  'FileSetCurrentPath|wd|w|p',
+  'FileOpen|dw|w|p',
+  'FileCreate|dww|w|p',
+  'FileClose|ww|w|p',
+  'FileCreateTempFile|dww|w|p',
+  'FileDelete|d|w|p',
+  'FileRename|dd|w|p',
+  'FileRead|wdww|w|p',
+  'FileWrite|wdww|w|p',
+  'FilePos|wdw|?|p',
+  'FileDuplicateHandle|w|w|p',
+  'FileLockRecord|wdd|w|p',
+  'FileUnlockRecord|wdd|w|p',
+  'FileEnum|ddd|w|p',
+  'FileEnumPtr|?|?|p',
+  'FileEnumLocateAttr|?|d|p',
+  'FileEnumWildcard|dw|w|p',
+  'FileGetAttributes|d|w|p',
+  'FileSetAttributes|dw|w|p',
+  'FileGetHandleExtAttributes|?|w|p',
+  'FileSetHandleExtAttributes|?|w|p',
+  'FileGetPathExtAttributes|?|w|p',
+  'FileSetPathExtAttributes|?|w|p',
+  'FileCopyExtAttributes|?|?|p',
+  'FileGetDateAndTime|w|d|p',
+  'FileSetDateAndTime|wd|w|p',
+  'FilePushDir||v|p',
+  'FilePopDir||v|p',
+  'FileGetCurrentPath|dw|w|p',
+  'FileGetCurrentPathIDs|w|w|p',
+  'FileSetStandardPath|?|?|p',
+  'FileTruncate|wdw|w|p',
+  'FileCommit|ww|w|p',
+  'SysLocateFileInDosPath|dd|w|c',
+  'FileCopy|ddww|w|p',
+  'FileMove|ddww|w|p',
+  'FileSize|w|d|p',
+  'FileGetDiskHandle|w|w|p',
+  'FileParseStandardPath|wd|?|p',
+  'FileConstructFullPath|dwwdw|w|p',
+  'ECCheckFileHandle|w|v|p',
+  'FileResolveStandardPath|dwdwd|w|p',
+  'FileConstructActualPath|dwwdw|w|p',
+  'FileComparePaths|dwdw|w|p',
+  'FileCreateLink|dwdw|w|p',
+  'FileGetLinkExtraData|ddw|w|p',
+  'FileReadLink|dd|w|p',
+  'FileSetLinkExtraData|ddw|w|p',
+  'FileStdPathCheckIfSubDir|?|?|p',
+  'FileInt21|?|?|p',
+  'FileForEach|?|?|p',
+  'FileForEachPath|?|?|p',
+  'FileGetDestinationDisk|?|?|p',
+  'FSDGenNameless|?|?|p',
+  'FSDAllocDisk|?|?|p',
+  'FSDAskForDisk|?|?|p',
+  'FSDRegister|?|?|p',
+  'FSDInitDrive|?|?|p',
+  'FSDLockInfoShared|?|?|p',
+  'FSDLockInfoExcl|?|?|p',
+  'FSDLockInfoExclToES|?|?|p',
+  'FSDUnlockInfoShared|?|?|p',
+  'FSDUnlockInfoExcl|?|?|p',
+  'FSDGetThreadPathDiskHandle|?|?|p',
+  'FSDInformOldFSDOfPathNukage|?|?|p',
+  'FSDCheckDestWritable|?|?|p',
+  'FSDDerefInfo|?|?|p',
+  'FSDRecordError|?|?|p',
+  'FSDAllocFileHandle|?|?|p',
+  'FSDDeleteDrive|?|?|p',
+  'FSDDowngradeExclInfoLock|?|?|p',
+  'FSDUpgradeSharedInfoLock|?|?|p',
+  'DiskFormat|?|w|p',
+  'DiskCheckWritable|w|w|p',
+  'DiskForEach|?|w|p',
+  'DiskGetDrive|w|w|p',
+  'DiskGetVolumeName|wd|v|p',
+  'DiskFind|dd|w|p',
+  'DiskRegisterDisk|w|w|p',
+  'DiskRegisterDiskSilently|w|w|p',
+  'DiskCopy|?|w|p',
+  'DiskCheckInUse|w|w|p',
+  'DiskCheckUnnamed|w|w|p',
+  'DiskGetVolumeFreeSpace|w|d|p',
+  'DiskGetVolumeInfo|wd|w|p',
+  'DiskSetVolumeName|wd|w|p',
+  'DiskLock|?|?|p',
+  'DiskLockExcl|?|?|p',
+  'DiskUnlock|?|?|p',
+  'DiskSave|wdd|w|p',
+  'DiskRestore|?|w|p',
+  'DiskAllocAndInit|?|?|p',
+  'DriveGetStatus|w|?|p',
+  'DriveGetExtStatus|w|?|p',
+  'DriveGetDefaultMedia|w|w|p',
+  'DriveTestMediaSupport|ww|w|p',
+  'DriveLockExcl|?|?|p',
+  'DriveUnlockExcl|?|?|p',
+  'DriveGetName|wdw|d|p',
+  'DriveLocateByNumber|?|?|p',
+  'DriveLocateByName|?|?|p',
+  'GeodeLoad|dwwwdd|w|p',
+  'GeodeForEach|?|?|p',
+  'GeodeFind|dwww|w|p',
+  'GeodeGetInfo|wwd|w|p',
+  'GeodeInfoDriver|w|d|p',
+  'GeodeGetDefaultDriver|w|w|p',
+  'GeodeUseLibrary|dwwd|w|p',
+  'GeodeUseDriver|dwwd|w|p',
+  'GeodeFreeLibrary|w|v|p',
+  'GeodeFreeDriver|w|v|p',
+  'GeodeDuplicateResource|w|w|p',
+  'GeodeGetProcessHandle||w|p',
+  'GeodeGetResourceHandle|?|?|p',
+  'GeodeGetGeodeResourceHandle|ww|w|p',
+  'GeodeGetAppObject|w|d|p',
+  'GeodeAllocQueue||w|p',
+  'GeodeFreeQueue|w|v|p',
+  'GeodeInfoQueue|w|w|p',
+  'GeodeGetUIData|w|w|p',
+  'GeodeSetUIData|ww|v|p',
+  'GeodeFlushQueue|wwdw|v|p',
+  'GeodeSetDefaultDriver|ww|v|p',
+  'GeodeGetDGroupDS|?|?|p',
+  'GeodeGetDGroupES|?|?|p',
+  'GeodeAddReference|w|v|p',
+  'GeodeRemoveReference|w|w|p',
+  'GeodeFindResource|wwwd|w|p',
+  'ProcCallModuleRoutine|?|?|p',
+  'ProcGetLibraryEntry|ww|d|p',
+  'ProcCallFixedOrMovable|?|?|p',
+  'ProcInfo|w|w|p',
+  'ObjProcBroadcastMessage|w|v|p',
+  'ObjMessage|?|?|p',
+  'ObjFreeMessage|w|v|p',
+  'ObjGetMessageInfo|wd|w|p',
+  'MessageDispatch|?|?|p',
+  'ObjDuplicateMessage|w|w|p',
+  'MessageProcess|?|?|p',
+  'QueueGetMessage|w|w|p',
+  'QueuePostMessage|www|v|p',
+  'ThreadBlockOnQueue|?|?|p',
+  'ThreadWakeUpQueue|?|?|p',
+  'ThreadDestroy|wdw|v|p',
+  'ThreadCreate|wwdww|w|p',
+  'ThreadGetInfo|ww|w|p',
+  'ThreadModify|www|?|p',
+  'ThreadAttachToQueue|wd|v|p',
+  'ThreadPrivAlloc|ww|w|p',
+  'ThreadPrivFree|ww|v|p',
+  'ThreadGrabThreadLock|w|v|p',
+  'ThreadReleaseThreadLock|w|v|p',
+  'ThreadHandleException|?|v|p',
+  'ThreadAllocSem|w|w|p',
+  'ThreadFreeSem|w|v|p',
+  'ThreadPSem|w|w|p',
+  'ThreadVSem|w|v|p',
+  'ThreadPTimedSem|ww|w|p',
+  'ThreadAllocThreadLock||w|p',
+  'ThreadFreeThreadLock|w|v|p',
+  'ThreadBorrowStackSpace|?|?|p',
+  'ThreadReturnStackSpace|?|?|p',
+  'TimerStart|wdwwwd|w|p',
+  'TimerStop|ww|w|p',
+  'TimerSleep|w|v|p',
+  'TimerBlockOnTimedQueue|?|?|p',
+  'TimerGetCount||d|p',
+  'TimerGetDateAndTime|d|v|p',
+  'TimerSetDateAndTime|wd|?|p',
+  'TimerStartCount|?|?|p',
+  'TimerEndCount|?|?|p',
+  'TimerStartSetOwner|?|?|p',
+  'GrChunkRegOp|?|?|p',
+  'GrPtrRegOp|?|?|p',
+  'GrMoveReg|dww|v|p',
+  'GrGetPtrRegBounds|dd|w|p',
+  'GrTestPointInReg|dwwd|w|p',
+  'GrTestRectInReg|dwwww|w|p',
+  'GrTestPointInPath|wwww|w|p',
+  'GrGetPathPoints|ww|w|p',
+  'GrGetPathRegion|ww|w|p',
+  'GrGetClipRegion|ww|w|p',
+  'GrRegionPathInit|?|?|p',
+  'GrRegionPathClean|?|?|p',
+  'GrRegionPathMovePen|?|?|p',
+  'GrRegionPathAddOnOffPoint|?|?|p',
+  'GrRegionPathAddLineAtCP|?|?|p',
+  'GrRegionPathAddBezierAtCP|?|?|p',
+  'GrRegionPathAddPolygon|?|?|p',
+  'GrRegionPathAddPolyline|?|?|p',
+  'GrCopyDrawMask|?|?|p',
+  'GrMapColorToGrey|?|?|p',
+  'GrGetDefFontID|d|w|p',
+  'GrFontMetrics|?|d|p',
+  'GrCharWidth|ww|?|p',
+  'GrTextWidth|wdw|w|p',
+  'GrGetBitmap|wwwwwd|w|p',
+  'GrSetWinClipRect|wwwwww|v|p',
+  'GrCopyGString|www|w|p',
+  'GrCallFontDriverID|?|?|p',
+  'GrSetClipRect|wwwwww|v|p',
+  'GrCreateState|w|w|p',
+  'GrDestroyState|w|v|p',
+  'GrGrabExclusive|ww|v|p',
+  'GrReleaseExclusive|wwd|v|p',
+  'GrTransformWWFixed|wddd|v|p',
+  'GrUntransformWWFixed|wddd|v|p',
+  'GrTransformDWFixed|wd|v|p',
+  'GrUntransformDWFixed|wd|v|p',
+  'GrTransformDWord|wddd|v|p',
+  'GrUntransformDWord|wddd|v|p',
+  'GrTransformByMatrix|?|?|p',
+  'GrTransformByMatrixDWord|?|?|p',
+  'GrUntransformByMatrix|?|?|p',
+  'GrUntransformByMatrixDWord|?|?|p',
+  'GrCharMetrics|?|d|p',
+  'GrTextWidthWBFixed|?|?|p',
+  'GrSetTextDrawOffset|ww|v|p',
+  'GrGetTextDrawOffset|w|w|p',
+  'GrMulWWFixedPtr|?|?|p',
+  'GrMulWWFixed|dd|?|p',
+  'GrMulDWFixedPtr|?|?|p',
+  'GrMulDWFixed|ddd|v|p',
+  'GrSDivWWFixed|dd|d|p',
+  'GrUDivWWFixed|dd|d|p',
+  'GrSqrWWFixed|?|?|p',
+  'GrSqrRootWWFixed|d|d|p',
+  'GrQuickSine|d|d|p',
+  'GrQuickCosine|d|d|p',
+  'GrQuickArcSine|dw|d|p',
+  'GrQuickTangent|d|d|p',
+  'GrPolarToCartesian|?|?|p',
+  'GrSDivDWFbyWWF|ddd|v|p',
+  'GrSetGStringPos|www|?|p',
+  'GrBitBlt|wwwwwwww|v|p',
+  'GrDrawRegion|wwwdww|v|p',
+  'GrDrawRegionAtCP|wdwwww|v|p',
+  'GrTransform|www|d|p',
+  'GrUntransform|www|d|p',
+  'GrDrawImage|wwwwd|v|p',
+  'GrDrawHugeImage|wwwwww|v|p',
+  'GrMapColorIndex|ww|d|p',
+  'GrMapColorRGB|wwwwd|d|p',
+  'GrGetPalette|ww|w|p',
+  'GrCreateBitmap|wwwwdd|w|p',
+  'GrDestroyBitmap|ww|?|p',
+  'GrSetPrivateData|wwwww|v|p',
+  'GrGetMixMode|w|w|p',
+  'GrGetLineColor|w|d|p',
+  'GrGetAreaColor|w|d|p',
+  'GrGetTextColor|w|d|p',
+  'GrGetLineMask|wd|?|p',
+  'GrGetAreaMask|wd|w|p',
+  'GrGetTextMask|wd|w|p',
+  'GrGetLineColorMap|w|w|p',
+  'GrGetAreaColorMap|w|w|p',
+  'GrGetTextColorMap|w|w|p',
+  'GrGetTextSpacePad|w|d|p',
+  'GrGetTextStyle|w|w|p',
+  'GrGetTextMode|w|w|p',
+  'GrGetLineWidth|w|d|p',
+  'GrGetLineEnd|w|w|p',
+  'GrGetLineJoin|w|w|p',
+  'GrGetMiterLimit|w|d|p',
+  'GrGetCurPos|w|d|p',
+  'GrGetInfo|wwd|v|p',
+  'GrTextObjCalc|?|?|p',
+  'GrDestroyGString|www|?|p',
+  'GrLoadGString|www|w|p',
+  'GrCreateGString|wwd|w|p',
+  'GrGetGStringElement|wwwdd|w|p',
+  'GrDrawGString|wwwwwd|w|p',
+  'GrDrawGStringAtCP|wwwd|w|p',
+  'GrTextPosition|?|?|p',
+  'GrGetTransform|wd|v|p',
+  'GrSetBitmapRes|www|v|p',
+  'GrGetBitmapRes|w|d|p',
+  'GrClearBitmap|w|v|p',
+  'GrGetFont|wd|w|p',
+  'GrGetLineStyle|w|w|p',
+  'GrEnumFonts|dwww|?|p',
+  'GrCheckFontAvail|?|?|p',
+  'GrFindNearestPointsize|wdwdd|w|p',
+  'GrTestPointInPolygon|wwdwww|w|p',
+  'GrGetBitmapSize|d|d|p',
+  'GrBrushPolyline|wdwww|v|p',
+  'GrSetBitmapMode|www|?|p',
+  'GrGetBitmapMode|w|w|p',
+  'GrCalcLuminance|?|?|p',
+  'GrSetFontWeight|ww|v|p',
+  'GrSetFontWidth|ww|v|p',
+  'GrSetSuperscriptAttr|?|v|p',
+  'GrSetSubscriptAttr|?|v|p',
+  'GrGetFontWeight|w|w|p',
+  'GrGetFontWidth|w|w|p',
+  'GrGetSuperscriptAttr|w|?|p',
+  'GrGetSubscriptAttr|w|?|p',
+  'GrCallFontDriver|?|?|p',
+  'GrDeleteGStringElement|ww|v|p',
+  'GrGetPathBounds|wwd|w|p',
+  'GrEndGString|w|w|p',
+  'GrComment|wdw|v|p',
+  'GrNullOp|w|v|p',
+  'GrEscape|wwdw|v|p',
+  'GrSaveState|w|v|p',
+  'GrRestoreState|w|v|p',
+  'GrNewPage|ww|v|p',
+  'GrApplyRotation|wd|v|p',
+  'GrApplyScale|wdd|v|p',
+  'GrApplyTranslation|wdd|v|p',
+  'GrSetTransform|wd|v|p',
+  'GrApplyTransform|wd|v|p',
+  'GrSetNullTransform|w|v|p',
+  'GrDrawLine|wwwww|v|p',
+  'GrDrawLineTo|www|v|p',
+  'GrDrawRect|wwwww|v|p',
+  'GrDrawRectTo|www|v|p',
+  'GrDrawHLine|wwww|v|p',
+  'GrDrawHLineTo|ww|v|p',
+  'GrDrawVLine|wwww|v|p',
+  'GrDrawVLineTo|ww|v|p',
+  'GrDrawRoundRect|wwwwww|v|p',
+  'GrDrawRoundRectTo|wwww|v|p',
+  'GrDrawPoint|www|v|p',
+  'GrDrawPointAtCP|w|v|p',
+  'GrDrawBitmap|?|v|p',
+  'GrDrawBitmapAtCP|?|v|p',
+  'GrFillBitmap|?|v|p',
+  'GrFillBitmapAtCP|?|v|p',
+  'GrDrawChar|wwww|v|p',
+  'GrDrawCharAtCP|ww|v|p',
+  'GrDrawText|wwwdw|v|p',
+  'GrDrawTextAtCP|wdw|v|p',
+  'GrDrawPolyline|wdw|v|p',
+  'GrDrawEllipse|wwwww|v|p',
+  'GrDrawArc|wwwwwwww|v|p',
+  'GrDrawSpline|wdw|v|p',
+  'GrFillRect|wwwww|v|p',
+  'GrFillRectTo|www|v|p',
+  'GrFillRoundRect|wwwwww|v|p',
+  'GrFillRoundRectTo|wwww|v|p',
+  'GrFillArc|wwwwwwww|v|p',
+  'GrFillPolygon|wwdw|v|p',
+  'GrFillEllipse|wwwww|v|p',
+  'GrSetMixMode|ww|v|p',
+  'GrRelMoveTo|wdd|v|p',
+  'GrMoveTo|www|v|p',
+  'GrSetLineColor|wwwww|v|p',
+  'GrSetLineMask|?|?|p',
+  'GrSetLineColorMap|ww|v|p',
+  'GrSetLineWidth|wd|v|p',
+  'GrSetLineJoin|ww|v|p',
+  'GrSetLineEnd|ww|v|p',
+  'GrSetLineAttr|wd|v|p',
+  'GrSetMiterLimit|wd|v|p',
+  'GrSetLineStyle|wwwdw|v|p',
+  'GrSetAreaColor|wwwww|v|p',
+  'GrSetAreaMask|?|?|p',
+  'GrSetAreaColorMap|ww|v|p',
+  'GrSetAreaAttr|wd|v|p',
+  'GrSetTextColor|wwwww|v|p',
+  'GrSetTextMask|?|?|p',
+  'GrSetTextColorMap|ww|v|p',
+  'GrSetTextStyle|www|v|p',
+  'GrSetTextMode|www|v|p',
+  'GrSetTextSpacePad|wd|v|p',
+  'GrSetTextAttr|wd|v|p',
+  'GrSetFont|wwd|v|p',
+  'GrGetFontName|wd|w|p',
+  'GrSetGStringBounds|wwwww|v|p',
+  'GrDrawTextField|?|?|p',
+  'GrCreatePalette|w|w|p',
+  'GrDestroyPalette|w|v|p',
+  'GrSetPaletteEntry|wwwww|v|p',
+  'GrSetPalette|wdww|v|p',
+  'GrDrawPolygon|wdw|v|p',
+  'GrSetTrackKern|ww|v|p',
+  'GrGetTrackKern|w|w|p',
+  'GrInitDefaultTransform|w|v|p',
+  'GrSetDefaultTransform|w|v|p',
+  'GrApplyTranslationDWord|wdd|v|p',
+  'GrDrawArc3Point|wd|v|p',
+  'GrDrawArc3PointTo|wd|v|p',
+  'GrDrawRelArc3PointTo|wd|v|p',
+  'GrFillArc3Point|wd|v|p',
+  'GrFillArc3PointTo|wd|v|p',
+  'GrGetTextBounds|wdwwwd|w|p',
+  'GrSetAreaPattern|?|v|p',
+  'GrSetTextPattern|?|v|p',
+  'GrGetAreaPattern|wdd|?|p',
+  'GrGetTextPattern|wdd|?|p',
+  'GrBeginPath|ww|v|p',
+  'GrEndPath|w|v|p',
+  'GrCloseSubPath|w|v|p',
+  'GrSetClipPath|www|v|p',
+  'GrSetWinClipPath|www|v|p',
+  'GrFillPath|ww|v|p',
+  'GrDrawPath|w|v|p',
+  'GrSetStrokePath|w|v|p',
+  'GrGetWinHandle|w|w|p',
+  'GrDrawHugeBitmap|wwwww|v|p',
+  'GrDrawHugeBitmapAtCP|www|v|p',
+  'GrDrawSplineTo|wdw|v|p',
+  'GrDrawCurve|wd|v|p',
+  'GrDrawCurveTo|wd|v|p',
+  'GrSaveTransform|w|v|p',
+  'GrRestoreTransform|w|v|p',
+  'GrDrawRelLineTo|wdd|v|p',
+  'GrDrawRelCurveTo|?|?|p',
+  'GrLabel|ww|v|p',
+  'GrGetGStringBounds|wwwd|w|p',
+  'GrTestRectInMask|wwwww|w|p',
+  'GrGetWinBounds|wd|w|p',
+  'GrGetMaskBounds|wd|w|p',
+  'GrInvalRect|wwwww|v|p',
+  'GrInvalRectDWord|wd|v|p',
+  'GrGetWinBoundsDWord|wd|v|p',
+  'GrGetMaskBoundsDWord|wd|w|p',
+  'GrEditGString|ww|w|p',
+  'GrBeginUpdate|w|v|p',
+  'GrEndUpdate|w|v|p',
+  'GrCompactBitmap|www|w|p',
+  'GrEditBitmap|wwd|w|p',
+  'GrGetExclusive|w|w|p',
+  'GrGetGStringHandle|w|w|p',
+  'GrGetPath|ww|w|p',
+  'GrGetPoint|www|d|p',
+  'GrParseGString|wwwd|v|p',
+  'GrUncompactBitmap|www|w|p',
+  'FontDrDeleteLRUChar|?|?|p',
+  'FontDrFindFontInfo|?|?|p',
+  'FontDrFindOutlineData|?|?|p',
+  'FontDrAddFont|?|?|p',
+  'FontDrDeleteFont|?|?|p',
+  'FontDrLockFont|?|?|p',
+  'FontDrUnlockFont|?|?|p',
+  'VMOpen|dwww|w|p',
+  'VMLock|wwd|d|p',
+  'VMUnlock|w|v|p',
+  'VMAlloc|www|w|p',
+  'VMFind|www|w|p',
+  'VMFree|ww|v|p',
+  'VMDirty|w|v|p',
+  'VMGetMapBlock|w|w|p',
+  'VMSetMapBlock|ww|v|p',
+  'VMUpdate|w|w|p',
+  'VMClose|ww|w|p',
+  'VMModifyUserID|www|v|p',
+  'VMGetAttributes|w|w|p',
+  'VMSetAttributes|www|w|p',
+  'VMGrabExclusive|?|?|p',
+  'VMReleaseExclusive|w|v|p',
+  'VMInfo|wwd|w|p',
+  'VMSetReloc|?|v|p',
+  'VMAttach|www|w|p',
+  'VMDetach|www|w|p',
+  'VMMemBlockToVMBlock|wd|w|p',
+  'VMSave|w|w|p',
+  'VMSaveAs|wdwww|w|p',
+  'VMRevert|w|v|p',
+  'VMVMBlockToMemBlock|ww|w|p',
+  'VMGetDirtyState|w|w|p',
+  'VMCopyVMChain|wdw|d|p',
+  'VMFreeVMChain|wd|v|p',
+  'VMCompareVMChains|wdwd|w|p',
+  'VMCopyVMBlock|www|w|p',
+  'VMCheckForModifications|w|w|p',
+  'VMPreserveBlocksHandle|ww|v|p',
+  'VMSetExecThread|ww|v|p',
+  'VMAllocLMem|www|w|p',
+  'FatalError|?|?|p',
+  'SysNotify|wdd|?|p',
+  'SysShutdown|w.|w|c',
+  'SysStatistics|d|v|p',
+  'SysGetECLevel|d|w|p',
+  'SysSetECLevel|ww|v|p',
+  'SysEnterInterrupt|?|?|p',
+  'SysEnterCritical|?|?|p',
+  'SysExitInterrupt|?|?|p',
+  'SysCatchInterrupt|?|?|p',
+  'SysResetInterrupt|?|?|p',
+  'SysCatchDeviceInterrupt|?|?|p',
+  'SysResetDeviceInterrupt|?|?|p',
+  'SysGetConfig||d|p',
+  'UtilHex32ToAscii|ddw|w|p',
+  'UtilAsciiToHex32|dd|w|p',
+  'SysRegisterScreen|ww|v|p',
+  'SysSetExitFlags|ww|?|p',
+  'SysCountInterrupt|?|?|p',
+  'SysGetInfo|w|d|p',
+  'SysGetDosEnvironment|ddw|w|p',
+  'SysLockBIOS||v|p',
+  'SysUnlockBIOS||v|p',
+  'SysAddIdleIntercept|?|?|p',
+  'SysRemoveIdleIntercept|?|?|p',
+  'WarningNotice|?|?|p',
+  'CWarningNotice|w|v|p',
+  'LocalSetDateTimeFormat|?|v|p',
+  'LocalGetDateTimeFormat|?|v|p',
+  'LocalFormatDateTime|?|w|p',
+  'LocalParseDateTime|?|w|p',
+  'LocalUpcaseChar|?|?|p',
+  'LocalDowncaseChar|?|?|p',
+  'LocalUpcaseString|dw|v|p',
+  'LocalDowncaseString|dw|v|p',
+  'LocalCmpStrings|ddw|w|p',
+  'LocalCmpStringsNoCase|ddw|w|p',
+  'LocalIsUpper|?|?|p',
+  'LocalIsLower|?|?|p',
+  'LocalIsAlpha|?|?|p',
+  'LocalIsPunctuation|?|?|p',
+  'LocalIsSpace|?|?|p',
+  'LocalIsSymbol|w|w|p',
+  'LocalIsDateChar|w|w|p',
+  'LocalIsTimeChar|w|w|p',
+  'LocalIsNumChar|w|w|p',
+  'LocalDosToGeos|dddwdwdd|?|p',
+  'LocalGeosToDos|dddwdwdd|w|p',
+  'LocalGetQuotes|d|v|p',
+  'LocalSetQuotes|d|v|p',
+  'LocalIsDosChar|w|w|p',
+  'LocalCustomFormatDateTime|ddd|w|p',
+  'LocalGetNumericFormat|d|v|p',
+  'LocalSetNumericFormat|d|v|p',
+  'LocalGetCurrencyFormat|dd|v|p',
+  'LocalSetCurrencyFormat|dd|v|p',
+  'LocalCmpStringsDosToGeos|ddwww|?|p',
+  'LocalCodePageToGeos|?|w|p',
+  'LocalGeosToCodePage|?|w|p',
+  'LocalCodePageToGeosChar|?|w|p',
+  'LocalGeosToCodePageChar|?|w|p',
+  'LocalDosToGeosChar|?|?|p',
+  'LocalGeosToDosChar|?|w|p',
+  'LocalGetCodePage||?|p',
+  'LocalGetMeasurementType||w|p',
+  'LocalSetMeasurementType|w|v|p',
+  'LocalLexicalValue|w|w|p',
+  'LocalLexicalValueNoCase|w|w|p',
+  'LocalCmpChars|?|?|p',
+  'LocalCmpCharsNoCase|?|?|p',
+  'LocalStringSize|d|w|p',
+  'LocalStringLength|d|w|p',
+  'LocalDistanceToAscii|ddwww|?|p',
+  'LocalDistanceFromAscii|dww|d|p',
+  'LocalFixedToAscii|ddw|v|p',
+  'LocalAsciiToFixed|dd|d|p',
+  'LocalIsControl|?|?|p',
+  'LocalIsDigit|?|?|p',
+  'LocalIsHexDigit|?|?|p',
+  'LocalIsAlphaNumeric|?|?|p',
+  'LocalIsPrintable|?|?|p',
+  'LocalIsGraphic|?|?|p',
+  'LocalSetCodePage|?|w|p',
+  'LocalCmpStringsNoSpace|ddw|w|p',
+  'LocalCmpStringsNoSpaceCase|ddw|w|p',
+  'LocalCustomParseDateTime|ddd|w|p',
+  'WinOpen|wddwwwwwwwdwwww|w|p',
+  'WinClose|w|v|p',
+  'WinChangePriority|www|v|p',
+  'WinScroll|wddd|v|p',
+  'WinAckUpdate|w|v|p',
+  'WinInvalReg|wdwwww|v|p',
+  'WinValClipLine|?|?|p',
+  'WinLocatePoint|?|?|p',
+  'WinGenLineMask|?|?|p',
+  'WinInvalTree|?|?|p',
+  'WinMaskOutSaveUnder|?|?|p',
+  'WinApplyRotation|wdw|?|p',
+  'WinApplyScale|wddw|v|p',
+  'WinTransform|www|d|p',
+  'WinUntransform|www|d|p',
+  'WinTransformDWord|wddd|v|p',
+  'WinUntransformDWord|wddd|v|p',
+  'WinSetTransform|wdw|v|p',
+  'WinApplyTransform|wdw|v|p',
+  'WinSetNullTransform|ww|v|p',
+  'WinGetInfo|wwd|v|p',
+  'WinSetInfo|wwd|v|p',
+  'WinGrabChange|wd|w|p',
+  'WinReleaseChange|wd|v|p',
+  'WinChangeAck|wwwd|w|p',
+  'WinMove|wwww|?|p',
+  'WinResize|wdwwwww|v|p',
+  'WinDecRefCount|w|v|p',
+  'WinGetWinScreenBounds|wd|v|p',
+  'WinApplyTranslation|wddw|v|p',
+  'WinApplyTranslationDWord|wddw|v|p',
+  'WinSetPtrImage|?|v|p',
+  'WinEnsureChangeNotification||v|p',
+  'WinGetTransform|wd|v|p',
+  'WinForEach|?|?|p',
+  'WinSuspendUpdate|w|v|p',
+  'WinUnSuspendUpdate|w|v|p',
+  'WinGeodeSetPtrImage|wd|v|p',
+  'WinGeodeGetInputObj|w|d|p',
+  'WinGeodeSetInputObj|wd|v|p',
+  'WinGeodeGetParentObj|w|d|p',
+  'WinGeodeSetParentObj|wd|v|p',
+  'WinGeodeSetActiveWin|ww|v|p',
+  'WinSysSetActiveGeode|?|?|p',
+  'WinGeodeGetFlags|?|?|p',
+  'WinGeodeSetFlags|?|?|p',
+  'ObjCallInstanceNoLock|?|?|p',
+  'ObjCallInstanceNoLockES|?|?|p',
+  'ObjCallClassNoLock|?|?|p',
+  'ObjCallSuperNoLock|?|?|p',
+  'ObjInstantiate|wd|d|p',
+  'ObjLockObjBlock|w|d|p',
+  'ObjDuplicateResource|www|w|p',
+  'ObjFreeDuplicate|w|v|p',
+  'ObjDoRelocation|wwdd|w|p',
+  'ObjResizeMaster|dww|v|p',
+  'ObjInitializeMaster|dd|v|p',
+  'ObjInitializePart|dw|v|p',
+  'ObjGetFlags|d|w|p',
+  'ObjSetFlags|dww|v|p',
+  'ObjMarkDirty|d|v|p',
+  'ObjDoUnRelocation|wwdd|w|p',
+  'ObjAssocVMFile|?|?|p',
+  'ObjSaveExtraStateBlock|?|?|p',
+  'ObjDisassocVMFile|?|?|p',
+  'ObjCloseVMFile|?|?|p',
+  'ObjLinkCallParent|?|?|p',
+  'ObjLinkFindParent|dww|?|p',
+  'ObjLinkCallNextSibling|?|?|p',
+  'ObjCompFindChild|?|?|p',
+  'ObjCompAddChild|ddwwww|v|p',
+  'ObjCompRemoveChild|ddwwww|v|p',
+  'ObjCompMoveChild|ddwwww|v|p',
+  'ObjCompProcessChildren|?|w|p',
+  'ObjInitDetach|?|?|p',
+  'ObjIncDetach|d|v|p',
+  'ObjEnableDetach|d|v|p',
+  'MetaClass|?|?|p',
+  'ProcessClass|?|?|p',
+  'ObjIncInUseCount|w|v|p',
+  'ObjDecInUseCount|w|v|p',
+  'ObjSwapLock|?|?|p',
+  'ObjSwapUnlock|?|?|p',
+  'ObjSwapLockParent|?|?|p',
+  'ObjTestIfObjBlockRunByCurThread|w|w|p',
+  'ObjSaveBlock|w|v|p',
+  'ObjMapSavedToState|w|w|p',
+  'ObjMapStateToSaved|ww|w|p',
+  'ObjIsObjectInClass|dd|w|p',
+  'ObjFreeChunk|d|v|p',
+  'MessageSetDestination|wd|d|p',
+  'ObjFreeObjBlock|w|v|p',
+  'ObjBlockSetOutput|wd|v|p',
+  'ObjBlockGetOutput|w|d|p',
+  'ObjDecInteractibleCount|w|v|p',
+  'ObjGotoInstanceTailRecurse|?|?|p',
+  'ObjGotoSuperTailRecurse|?|?|p',
+  'ObjIncInteractibleCount|w|v|p',
+  'ObjIsClassADescendant|dd|w|p',
+  'ObjRelocOrUnRelocSuper|ddw|w|p',
+  'ECCheckMemHandle|w|v|p',
+  'ECCheckMemHandleNS|w|v|p',
+  'ECCheckThreadHandle|w|v|p',
+  'ECCheckProcessHandle|w|v|p',
+  'ECCheckResourceHandle|w|v|p',
+  'ECCheckGeodeHandle|w|v|p',
+  'ECCheckDriverHandle|w|v|p',
+  'ECCheckLibraryHandle|w|v|p',
+  'ECCheckGStateHandle|w|v|p',
+  'ECCheckWindowHandle|w|v|p',
+  'ECCheckQueueHandle|w|v|p',
+  'ECCheckClass|d|v|p',
+  'ECCheckLMemHandle|w|v|p',
+  'ECCheckLMemHandleNS|w|v|p',
+  'ECCheckLMemChunk|d|v|p',
+  'ECCheckObject|d|v|p',
+  'ECCheckLMemObject|d|v|p',
+  'ECCheckOD|d|v|p',
+  'ECCheckLMemOD|d|v|p',
+  'ECCheckSegment|?|?|p',
+  'ECCheckSegments|?|?|p',
+  'ECCheckStack||v|p',
+  'InitFileWriteData|dddw|?|p',
+  'InitFileWriteString|ddd|v|p',
+  'InitFileWriteBoolean|ddw|v|p',
+  'InitFileReadData|?|?|p',
+  'InitFileReadString|?|?|p',
+  'InitFileReadInteger|ddd|w|p',
+  'InitFileReadBoolean|ddd|w|p',
+  'InitFileWriteInteger|ddw|v|p',
+  'InitFileGetTimeLastModified||d|p',
+  'InitFileSave||w|p',
+  'InitFileRevert||w|p',
+  'InitFileCommit||v|p',
+  'InitFileDeleteEntry|dd|v|p',
+  'InitFileDeleteCategory|d|v|p',
+  'InitFileReadStringSection|?|?|p',
+  'InitFileWriteStringSection|ddd|v|p',
+  'InitFileDeleteStringSection|ddw|v|p',
+  'InitFileEnumStringSection|?|w|p',
+  '',
+  'ImAddMonitor|?|?|p',
+  'ImRemoveMonitor|?|?|p',
+  'ImInfoInputProcess|?|?|p',
+  'ImGrabInput|?|?|p',
+  'ImReleaseInput|?|?|p',
+  'ImSetDoubleClick|?|?|p',
+  'ImInfoDoubleClick|?|?|p',
+  'ImForcePtrMethod|?|?|p',
+  'ImSetPtrWin|?|?|p',
+  'ImPtrJump|?|?|p',
+  'ImStartMoveResize|?|?|p',
+  'ImStopMoveResize|?|?|p',
+  'ImConstrainMouse|?|?|p',
+  'ImUnconstrainMouse|?|?|p',
+  'ImBumpMouse|?|?|p',
+  'ImGetMousePos|?|?|p',
+  'ImGetPtrWin|?|?|p',
+  'ImGetButtonState|?|?|p',
+  'ImSetPtrImage|?|?|p',
+  'ImInkReply|?|?|p',
+  'ImStartPenMode|?|?|p',
+  'ImEndPenMode|?|?|p',
+  'DBLock|?|?|p',
+  'DBUnlock|d|v|p',
+  'DBDirty|d|v|p',
+  'DBAlloc|?|?|p',
+  'DBReAlloc|?|?|p',
+  'DBFree|?|?|p',
+  'DBGroupAlloc|w|w|p',
+  'DBGroupFree|ww|v|p',
+  'DBSetMap|?|?|p',
+  'DBGetMap|w|d|p',
+  'DBLockMap|?|?|p',
+  'DBInsertAt|?|?|p',
+  'DBDeleteAt|?|?|p',
+  'DBCopyDBItem|?|?|p',
+  'GCNListAdd|dww|w|p',
+  'GCNListRemove|dww|w|p',
+  'GCNListSend|wwwww|w|p',
+  'GCNListAddToList|dd|w|p',
+  'GCNListRemoveFromList|dd|w|p',
+  'GCNListFindItemInList|dd|w|p',
+  'GCNListSendToList|dwww|v|p',
+  'GCNListCreateList|w|w|p',
+  'GCNListAddToBlock|dwwww|w|p',
+  'GCNListRemoveFromBlock|dwwww|w|p',
+  'GCNListSendToBlock|wwwwwww|w|p',
+  'GCNListCreateBlock|w|w|p',
+  'GCNListFindListInBlock|wwwww|w|p',
+  'GCNListDestroyBlock|ww|v|p',
+  'GCNListDestroyList|d|v|p',
+  'GCNListRecordAndSend|?|?|p',
+  'GCNListRelocateBlock|www|v|p',
+  'GCNListRelocateList|dw|v|p',
+  'GCNListUnRelocateBlock|www|w|p',
+  'GCNListUnRelocateList|dw|v|p',
+  'LogWriteInitEntry|?|?|p',
+  'LogWriteEntry|?|?|p',
+  'DosExec|dwddww|?|c',
+  'DosExecLocateLoader|?|?|p',
+  'DosExecSuspend|?|?|p',
+  'DosExecUnsuspend|?|?|p',
+  'ThreadGetError||?|p',
+  'MemAllocSetOwner|wwww|w|p',
+  'MemReAlloc|www|w|p',
+  'MemGetInfo|ww|w|p',
+  'MemModifyFlags|www|v|p',
+  'HandleModifyOwner|ww|v|p',
+  'MemModifyOtherInfo|ww|v|p',
+  'MemPtrToHandle|d|w|p',
+  'MemAlloc|www|w|p',
+  'MemFree|w|v|p',
+  'MemDeref|w|d|p',
+  'MemPLock|w|d|p',
+  'MemLock|w|d|p',
+  'MemUnlock|w|v|p',
+  'MemOwner|w|w|p',
+  'MemUnlockV|w|v|p',
+  'MemThreadGrab|w|d|p',
+  'MemThreadGrabNB|w|d|p',
+  'MemThreadRelease|w|v|p',
+  'HandleP|w|v|p',
+  'HandleV|w|v|p',
+  'MemInitRefCount|ww|v|p',
+  'MemIncRefCount|w|v|p',
+  'MemDecRefCount|w|v|p',
+  'MemAllocLMem|ww|w|p',
+  'MemLockFixedOrMovable|d|d|p',
+  'MemUnlockFixedOrMovable|d|v|p',
+  'MemLockShared|w|d|p',
+  'MemUnlockShared|w|v|p',
+  'MemLockExcl|w|d|p',
+  'MemUpgradeSharedLock|w|d|p',
+  'MemDowngradeExclLock|w|v|p',
+  'FileCreateDir|d|?|p',
+  'FileDeleteDir|d|w|p',
+  'FileGetCurrentPath|dw|w|p',
+  'FileSetCurrentPath|wd|w|p',
+  'FileOpen|dw|w|p',
+  'FileCreate|dww|w|p',
+  'FileClose|ww|w|p',
+  'FileCommit|ww|w|p',
+  'FileCreateTempFile|dww|w|p',
+  'FileDelete|d|w|p',
+  'FileRename|dd|w|p',
+  'FileRead|wdww|w|p',
+  'FileWrite|wdww|w|p',
+  'FilePos|wdw|?|p',
+  'FileTruncate|wdw|w|p',
+  'FileSize|w|d|p',
+  'FileGetDateAndTime|w|d|p',
+  'FileSetDateAndTime|wd|w|p',
+  'FileDuplicateHandle|w|w|p',
+  'FileLockRecord|wdd|w|p',
+  'FileUnlockRecord|wdd|w|p',
+  'FileGetDiskHandle|w|w|p',
+  'FileGetAttributes|d|w|p',
+  'FileSetAttributes|dw|w|p',
+  'FileSetStandardPath|?|?|p',
+  'FileCopy|ddww|w|p',
+  'FileMove|ddww|w|p',
+  'FileConstructFullPath|dwwdw|w|p',
+  'FileParseStandardPath|wd|?|p',
+  'FileGetPathExtAttributes|?|w|p',
+  'FileSetPathExtAttributes|?|w|p',
+  'FileGetHandleExtAttributes|?|w|p',
+  'FileSetHandleExtAttributes|?|w|p',
+  'FileEnumLocateAttr|?|d|p',
+  'FileEnumWildcard|dw|w|p',
+  'FileResolveStandardPath|dwdwd|w|p',
+  'FileConstructActualPath|dwwdw|w|p',
+  'FileComparePaths|dwdw|w|p',
+  'FileCreateLink|dwdw|w|p',
+  'FileGetLinkExtraData|ddw|w|p',
+  'FileReadLink|dd|w|p',
+  'FileSetLinkExtraData|ddw|w|p',
+  'UPGRADE_FILEENUM|?|?|p',
+  'GeodeLoadDGroup|w|v|p',
+  'ProcCallFixedOrMovable_cdecl||d|c',
+  'ProcCallFixedOrMovable_pascal||d|p',
+  'GeodeDuplicateResource|w|w|p',
+  'GeodeGetOptrNS|d|d|p',
+  'ThreadGetDGroupDS|?|?|p',
+  'ProcGetLibraryEntry|ww|d|p',
+  'GeodeGetProcessHandle||w|p',
+  'GeodeLoad|dwwwdd|w|p',
+  'GeodeFind|dwww|w|p',
+  'GeodeGetInfo|wwd|w|p',
+  'GeodeGetAppObject|w|d|p',
+  'GeodeGetUIData|w|w|p',
+  'GeodeSetUIData|ww|v|p',
+  'ProcInfo|w|w|p',
+  'GeodeAllocQueue||w|p',
+  'GeodeFreeQueue|w|v|p',
+  'GeodeInfoQueue|w|w|p',
+  'GeodeFlushQueue|wwdw|v|p',
+  'GeodeFindResource|wwwd|w|p',
+  'GeodeAddReference|w|v|p',
+  'GeodeRemoveReference|w|w|p',
+  'GEODEUSEDRIVER_OLD|?|?|p',
+  'GeodeFreeDriver|w|v|p',
+  'GeodeInfoDriver|w|d|p',
+  'GeodeGetDefaultDriver|w|w|p',
+  'GeodeSetDefaultDriver|ww|v|p',
+  'GEODEUSELIBRARY_OLD|?|?|p',
+  'GeodeFreeLibrary|w|v|p',
+  'ThreadAllocSem|w|w|p',
+  'ThreadFreeSem|w|v|p',
+  'ThreadPSem|w|w|p',
+  'ThreadVSem|w|v|p',
+  'ThreadPTimedSem|ww|w|p',
+  'ThreadAllocThreadLock||w|p',
+  'ThreadFreeThreadLock|w|v|p',
+  'ThreadGrabThreadLock|w|v|p',
+  'ThreadReleaseThreadLock|w|v|p',
+  'ThreadDestroy|wdw|v|p',
+  'THREADCREATE_OLD|?|?|p',
+  'ThreadGetInfo|ww|w|p',
+  'ThreadModify|www|?|p',
+  'ThreadAttachToQueue|wd|v|p',
+  'ThreadPrivAlloc|ww|w|p',
+  'ThreadPrivFree|ww|v|p',
+  'ThreadHandleException|?|v|p',
+  'TimerStart|wdwwwd|w|p',
+  'TimerStop|ww|w|p',
+  'TimerSleep|w|v|p',
+  'TimerGetCount||d|p',
+  'TimerGetDateAndTime|d|v|p',
+  'TimerSetDateAndTime|wd|?|p',
+  'DosExec|dwddww|?|c',
+  'SysLocateFileInDosPath|dd|w|c',
+  'SysGetDosEnvironment|ddw|w|p',
+  'SysNotify|wdd|?|p',
+  'SysRegisterScreen|ww|v|p',
+  'SysShutdown|w.|w|c',
+  'SysSetExitFlags|ww|?|p',
+  'SysGetECLevel|d|w|p',
+  'SysSetECLevel|ww|v|p',
+  'UtilHex32ToAscii|ddw|w|p',
+  'UtilAsciiToHex32|dd|w|p',
+  'SysGetPenMode||w|p',
+  'SysLockBIOS||v|p',
+  'SysUnlockBIOS||v|p',
+  'SysStatistics|d|v|p',
+  'SysGetInfo|w|d|p',
+  'DriveGetStatus|w|?|p',
+  'DriveGetDefaultMedia|w|w|p',
+  'DriveTestMediaSupport|ww|w|p',
+  'DriveGetExtStatus|w|?|p',
+  'DriveGetName|wdw|d|p',
+  'DiskGetVolumeInfo|wd|w|p',
+  'DiskSetVolumeName|wd|w|p',
+  'DiskGetVolumeFreeSpace|w|d|p',
+  'DiskCopy|?|w|p',
+  'DiskFormat|?|w|p',
+  'DiskRegisterDisk|w|w|p',
+  'DiskRegisterDiskSilently|w|w|p',
+  'DiskForEach|?|w|p',
+  'DiskGetDrive|w|w|p',
+  'DiskGetVolumeName|wd|v|p',
+  'DiskFind|dd|w|p',
+  'DiskCheckWritable|w|w|p',
+  'DiskCheckInUse|w|w|p',
+  'DiskCheckUnnamed|w|w|p',
+  'DiskSave|wdd|w|p',
+  'DiskRestore|?|w|p',
+  'InitFileWriteData|dddw|?|p',
+  'InitFileWriteString|ddd|v|p',
+  'InitFileWriteInteger|ddw|v|p',
+  'InitFileWriteBoolean|ddw|v|p',
+  'InitFileReadDataBuffer|dddwd|w|p',
+  'InitFileReadDataBlock|dddd|w|p',
+  'InitFileReadStringBuffer|dddwd|w|p',
+  'InitFileReadStringBlock|dddwd|w|p',
+  'InitFileReadStringSectionBuffer|ddwdwd|w|p',
+  'InitFileReadStringSectionBlock|ddwdwd|w|p',
+  'InitFileReadInteger|ddd|w|p',
+  'InitFileReadBoolean|ddd|w|p',
+  'InitFileGetTimeLastModified||d|p',
+  'InitFileSave||w|p',
+  'InitFileRevert||w|p',
+  'InitFileDeleteEntry|dd|v|p',
+  'InitFileDeleteCategory|d|v|p',
+  'InitFileWriteStringSection|ddd|v|p',
+  'InitFileDeleteStringSection|ddw|v|p',
+  'InitFileEnumStringSection|?|w|p',
+  '',
+  'LocalGetDateTimeFormat|?|v|p',
+  'LocalFormatDateTime|?|w|p',
+  'LocalParseDateTime|?|w|p',
+  'toupper|w|w|p',
+  'tolower|w|w|p',
+  'LocalUpcaseString|dw|v|p',
+  'LocalDowncaseString|dw|v|p',
+  'LocalCmpStrings|ddw|w|p',
+  'LocalCmpStringsNoCase|ddw|w|p',
+  'isupper|w|w|p',
+  'islower|w|w|p',
+  'isalpha|w|w|p',
+  'ispunct|w|w|p',
+  'isspace|w|w|p',
+  'LocalIsSymbol|w|w|p',
+  'LocalIsDateChar|w|w|p',
+  'LocalIsTimeChar|w|w|p',
+  'LocalIsNumChar|w|w|p',
+  'LocalIsDosChar|w|w|p',
+  'LocalDosToGeosChar|?|?|p',
+  'LocalGeosToDosChar|?|w|p',
+  'LocalGetCodePage||?|p',
+  'LocalDosToGeos|dddwdwdd|?|p',
+  'LocalGeosToDos|dddwdwdd|w|p',
+  'LocalGetQuotes|d|v|p',
+  'LocalCustomFormatDateTime|ddd|w|p',
+  'LocalGetNumericFormat|d|v|p',
+  'LocalGetCurrencyFormat|dd|v|p',
+  'LocalCmpStringsDosToGeos|ddwww|?|p',
+  'LocalCodePageToGeos|?|w|p',
+  'LocalGeosToCodePage|?|w|p',
+  'LocalCodePageToGeosChar|?|w|p',
+  'LocalGeosToCodePageChar|?|w|p',
+  'LocalLexicalValue|w|w|p',
+  'LocalLexicalValueNoCase|w|w|p',
+  'LocalSetDateTimeFormat|?|v|p',
+  'LocalSetQuotes|d|v|p',
+  'LocalSetNumericFormat|d|v|p',
+  'LocalSetCurrencyFormat|dd|v|p',
+  'LocalSetMeasurementType|w|v|p',
+  'LocalStringSize|d|w|p',
+  'LocalStringLength|d|w|p',
+  'LocalDistanceToAscii|ddwww|?|p',
+  'LocalDistanceFromAscii|dww|d|p',
+  'LocalFixedToAscii|ddw|v|p',
+  'LocalAsciiToFixed|dd|d|p',
+  'iscntrl|w|w|p',
+  'isdigit|w|w|p',
+  'isxdigit|w|w|p',
+  'isalnum|w|?|p',
+  'isprint|w|w|p',
+  'isgraph|w|w|p',
+  'LocalCmpStringsNoSpace|ddw|w|p',
+  'LocalCmpStringsNoSpaceCase|ddw|w|p',
+  'LocalCustomParseDateTime|ddd|w|p',
+  'LocalGetLanguage||w|p',
+  'LMemInitHeap|wwwwww|v|p',
+  'LMemReAlloc|dw|w|p',
+  'LMemInsertAt|dww|w|p',
+  'LMemDeleteAt|dww|v|p',
+  'LMemContract|w|v|p',
+  'LMemGetChunkSize|d|w|p',
+  'LMemAlloc|ww|w|p',
+  'LMemFree|d|v|p',
+  'LMemDeref|d|d|p',
+  'VMLock|wwd|d|p',
+  'VMUnlock|w|v|p',
+  'VMDirty|w|v|p',
+  'VMAlloc|www|w|p',
+  'VMFind|www|w|p',
+  'VMFree|ww|v|p',
+  'VMModifyUserID|www|v|p',
+  'VMInfo|wwd|w|p',
+  'VMGetDirtyState|w|w|p',
+  'VMGetMapBlock|w|w|p',
+  'VMSetMapBlock|ww|v|p',
+  'VMOpen|dwww|w|p',
+  'VMUpdate|w|w|p',
+  'UPGRADE_VMCLOSE|?|?|p',
+  'VMGetAttributes|w|w|p',
+  'VMSetAttributes|www|w|p',
+  'VMGrabExclusive|?|?|p',
+  'VMReleaseExclusive|w|v|p',
+  'VMSetReloc|?|v|p',
+  'VMAttach|www|w|p',
+  'VMDetach|www|w|p',
+  'VMMemBlockToVMBlock|wd|w|p',
+  'VMVMBlockToMemBlock|ww|w|p',
+  'VMSave|w|w|p',
+  'VMSaveAs|wdwww|w|p',
+  'VMRevert|w|v|p',
+  'VMCOPYVMCHAIN_OLD|?|?|p',
+  'VMFREEVMCHAIN_OLD|?|?|p',
+  'VMCOMPAREVMCHAINS_OLD|?|?|p',
+  'VMCopyVMBlock|www|w|p',
+  'VMCheckForModifications|w|w|p',
+  'VMPreserveBlocksHandle|ww|v|p',
+  'VMSetExecThread|ww|v|p',
+  'VMAllocLMem|www|w|p',
+  'DBLockUngrouped|wd|d|p',
+  'DBUnlock|d|v|p',
+  'DBDirty|d|v|p',
+  'DBGetMap|w|d|p',
+  'DBLockGetRefUngrouped|wdd|d|p',
+  'DBRawAlloc|www|d|p',
+  'DBReAllocUngrouped|wdw|v|p',
+  'DBFreeUngrouped|wd|v|p',
+  'DBGroupAlloc|w|w|p',
+  'DBGroupFree|ww|v|p',
+  'DBInsertAtUngrouped|wdww|v|p',
+  'DBDeleteAtUngrouped|wdww|v|p',
+  'DBSetMapUngrouped|wd|v|p',
+  'DBRawCopyDBItem|wdww|d|p',
+  'CFatalError|w|?|p',
+  'ECCheckMemHandle|w|v|p',
+  'ECCheckMemHandleNS|w|v|p',
+  'ECCheckThreadHandle|w|v|p',
+  'ECCheckProcessHandle|w|v|p',
+  'ECCheckResourceHandle|w|v|p',
+  'ECCheckGeodeHandle|w|v|p',
+  'ECCheckDriverHandle|w|v|p',
+  'ECCheckLibraryHandle|w|v|p',
+  'ECCheckGStateHandle|w|v|p',
+  'ECCheckWindowHandle|w|v|p',
+  'ECCheckQueueHandle|w|v|p',
+  'ECCheckLMemHandle|w|v|p',
+  'ECCheckLMemHandleNS|w|v|p',
+  'ECLMemValidateHeap|w|v|p',
+  'ECLMemValidateHandle|d|v|p',
+  'ECCheckLMemChunk|d|v|p',
+  'ECLMemExists|d|v|p',
+  'ECCheckClass|d|v|p',
+  'ECCheckObject|d|v|p',
+  'ECCheckLMemObject|d|v|p',
+  'ECCheckOD|d|v|p',
+  'ECCheckLMemOD|d|v|p',
+  'ECCheckFileHandle|w|v|p',
+  'ECVMCheckVMFile|w|v|p',
+  'ECVMCheckVMFile|w|v|p',
+  'ECVMCheckVMBlockHandle|ww|v|p',
+  'ECVMCheckVMBlockHandle|ww|v|p',
+  'ECVMCheckMemHandle|w|v|p',
+  'ECVMCheckMemHandle|w|v|p',
+  'ECCheckBounds|d|v|p',
+  'ObjLockObjBlock|w|d|p',
+  'ObjDuplicateResource|www|w|p',
+  'ObjFreeDuplicate|w|v|p',
+  'ObjFreeChunk|d|v|p',
+  'ObjGetFlags|d|w|p',
+  'ObjSetFlags|dww|v|p',
+  'ObjMarkDirty|d|v|p',
+  'ObjIsObjectInClass|dd|w|p',
+  'ObjIncInUseCount|w|v|p',
+  'ObjDecInUseCount|w|v|p',
+  'ObjDoRelocation|wwdd|w|p',
+  'ObjDoUnRelocation|wwdd|w|p',
+  'ObjResizeMaster|dww|v|p',
+  'ObjInitializeMaster|dd|v|p',
+  'ObjInitializePart|dw|v|p',
+  'ObjTestIfObjBlockRunByCurThread|w|w|p',
+  'ObjSaveBlock|w|v|p',
+  'ObjMapSavedToState|w|w|p',
+  'ObjMapStateToSaved|ww|w|p',
+  'ObjInitDetach|?|?|p',
+  'ObjIncDetach|d|v|p',
+  'ObjEnableDetach|d|v|p',
+  'ObjLinkFindParent|dww|?|p',
+  'ObjCompFindChildByOptr|ddwww|?|p',
+  'ObjCompFindChildByNumber|dwwww|d|p',
+  'ObjCompAddChild|ddwwww|v|p',
+  'ObjCompRemoveChild|ddwwww|v|p',
+  'ObjCompMoveChild|ddwwww|v|p',
+  'ObjCompProcessChildren|?|w|p',
+  'CObjMessage||?|p',
+  'CObjCallSuper||d|p',
+  'ObjFreeMessage|w|v|p',
+  'ObjDuplicateMessage|w|w|p',
+  'ObjGetMessageInfo|wd|w|p',
+  'CMessageDispatch|www|d|p',
+  'CObjSendToChildren|dwwww|v|p',
+  'ObjDeref|dw|d|p',
+  'ObjDeref1|d|d|p',
+  'ObjDeref2|d|d|p',
+  'GeodeGetCodeProcessHandle||w|p',
+  'ObjInstantiate|wd|d|p',
+  'ObjProcBroadcastMessage|w|v|p',
+  'MessageSetDestination|wd|d|p',
+  'ObjFreeObjBlock|w|v|p',
+  'ObjBlockSetOutput|wd|v|p',
+  'ObjBlockGetOutput|w|d|p',
+  'ObjDecInteractibleCount|w|v|p',
+  'ObjIncInteractibleCount|w|v|p',
+  'ObjIsClassADescendant|dd|w|p',
+  'ObjRelocateEntryPoint|d|d|p',
+  'ObjRelocOrUnRelocSuper|ddw|w|p',
+  'ObjUnRelocateEntryPoint|dd|v|p',
+  'QueueGetMessage|w|w|p',
+  'QueuePostMessage|www|v|p',
+  'CHUNKARRAYCREATEAT_OLD|?|?|p',
+  'ChunkArrayElementToPtr|dwd|d|p',
+  'ChunkArrayPtrToElement|dd|w|p',
+  'ChunkArrayAppend|dw|d|p',
+  'CHUNKARRAYINSERTAT_OLD|?|?|p',
+  'ChunkArrayDelete|dd|v|p',
+  'ChunkArrayGetCount|d|w|p',
+  'ChunkArrayEnum|?|w|p',
+  'ChunkArrayZero|d|v|p',
+  'ChunkArraySort|?|v|p',
+  'ArrayQuickSort|dwwwd|v|p',
+  'ChunkArrayElementResize|dww|v|p',
+  'ECCheckChunkArray|d|v|p',
+  'ELEMENTARRAYCREATEAT_OLD|?|?|p',
+  'ChunkArrayGetElement|dwd|v|p',
+  'ElementArrayAddReference|dw|v|p',
+  'ElementArrayAddElement|?|w|p',
+  'ElementArrayRemoveReference|?|v|p',
+  'ElementArrayGetUsedCount|?|w|p',
+  'ElementArrayUsedIndexToToken|?|w|p',
+  'ElementArrayTokenToUsedIndex|?|w|p',
+  'ElementArrayElementChanged|?|w|p',
+  'ElementArrayDelete|dw|v|p',
+  'ChunkArrayEnumRange|?|w|p',
+  'ChunkArrayDeleteRange|dww|v|p',
+  'GrDrawText|wwwdw|v|p',
+  'GrDrawTextAtCP|wdw|v|p',
+  'GrFillRect|wwwww|v|p',
+  'UPGRADE_GRFILLRECTTO|?|?|p',
+  'UPGRADE_GRDRAWRECTTO|?|?|p',
+  'GrEnumFonts|dwww|?|p',
+  'GrCheckFontAvailID|www|w|p',
+  'GrCheckFontAvailName|wwd|w|p',
+  'GRFINTNEARESTPOINTSIZE|?|?|p',
+  'GrGetDefFontID|d|w|p',
+  'GrGetBitmap|wwwwwd|w|p',
+  'GrCreateBitmap|wwwwdd|w|p',
+  'GrDestroyBitmap|ww|?|p',
+  'GrSetBitmapRes|www|v|p',
+  'GrGetBitmapRes|w|d|p',
+  'GrClearBitmap|w|v|p',
+  'GrGetBitmapSize|d|d|p',
+  'GrBrushPolyline|wdwww|v|p',
+  'GrMoveReg|dww|v|p',
+  'GrGetPtrRegBounds|dd|w|p',
+  'GrTestPointInReg|dwwd|w|p',
+  'GrTestRectInReg|dwwww|w|p',
+  'GrSqrRootWWFixed|d|d|p',
+  'GrQuickSine|d|d|p',
+  'GrQuickCosine|d|d|p',
+  'GrQuickArcSine|dw|d|p',
+  'GrQuickTangent|d|d|p',
+  'GrGrabExclusive|ww|v|p',
+  'GrReleaseExclusive|wwd|v|p',
+  'GrTransformWWFixed|wddd|v|p',
+  'GrTransformDWFixed|wd|v|p',
+  'GrUntransformWWFixed|wddd|v|p',
+  'GrUntransformDWFixed|wd|v|p',
+  'GrBitBlt|wwwwwwww|v|p',
+  'GrTransform|www|d|p',
+  'GrTransformDWord|wddd|v|p',
+  'GrUntransform|www|d|p',
+  'GrUntransformDWord|wddd|v|p',
+  'GrMapColorIndex|ww|d|p',
+  'GrMapColorRGB|wwwwd|d|p',
+  'GrGetPalette|ww|w|p',
+  'GrSetPrivateData|wwwww|v|p',
+  'GrGetMixMode|w|w|p',
+  'GrGetLineColor|w|d|p',
+  'GrGetAreaColor|w|d|p',
+  'GrGetTextColor|w|d|p',
+  'GrGetLineMask|wd|?|p',
+  'GrGetAreaMask|wd|w|p',
+  'GrGetTextMask|wd|w|p',
+  'GrGetLineColorMap|w|w|p',
+  'GrGetAreaColorMap|w|w|p',
+  'GrGetTextColorMap|w|w|p',
+  'GrGetTextSpacePad|w|d|p',
+  'GrGetTextStyle|w|w|p',
+  'GrGetTextMode|w|w|p',
+  'GrGetLineWidth|w|d|p',
+  'GrGetLineEnd|w|w|p',
+  'GrGetLineJoin|w|w|p',
+  'GrGetLineStyle|w|w|p',
+  'GrGetMiterLimit|w|d|p',
+  'GrGetCurPos|w|d|p',
+  'GrGetInfo|wwd|v|p',
+  'GrGetTransform|wd|v|p',
+  'GrGetFont|wd|w|p',
+  'GrTestPointInPolygon|wwdwww|w|p',
+  'GrEndGString|w|w|p',
+  'GrComment|wdw|v|p',
+  'GrNullOp|w|v|p',
+  'GrEscape|wwdw|v|p',
+  'GrNewPage|ww|v|p',
+  'GrApplyRotation|wd|v|p',
+  'GrApplyScale|wdd|v|p',
+  'GrApplyTranslation|wdd|v|p',
+  'GrApplyTranslationDWord|wdd|v|p',
+  'GrSetTransform|wd|v|p',
+  'GrApplyTransform|wd|v|p',
+  'GrSetNullTransform|w|v|p',
+  'GrDrawRoundRect|wwwwww|v|p',
+  'GrDrawRoundRectTo|wwww|v|p',
+  'GrDrawPoint|www|v|p',
+  'GrDrawPointAtCP|w|v|p',
+  'GrDrawChar|wwww|v|p',
+  'GrDrawCharAtCP|ww|v|p',
+  'GrDrawPolyline|wdw|v|p',
+  'GrDrawEllipse|wwwww|v|p',
+  'GRDRAWARC_OLD|?|?|p',
+  'GrDrawSpline|wdw|v|p',
+  'GrDrawPolygon|wdw|v|p',
+  'GrFillRoundRect|wwwwww|v|p',
+  'GrFillRoundRectTo|wwww|v|p',
+  'GRFILLARC_OLD|?|?|p',
+  'GrFillPolygon|wwdw|v|p',
+  'GrFillEllipse|wwwww|v|p',
+  'GrSetLineAttr|wd|v|p',
+  'GrSetAreaAttr|wd|v|p',
+  'GrSetGStringBounds|wwwww|v|p',
+  'GrCreatePalette|w|w|p',
+  'GrDestroyPalette|w|v|p',
+  'GrSetPaletteEntry|wwwww|v|p',
+  'GrSetPalette|wdww|v|p',
+  'GrSetTrackKern|ww|v|p',
+  'GrInitDefaultTransform|w|v|p',
+  'GrSetDefaultTransform|w|v|p',
+  'GrCharMetrics|?|d|p',
+  'GrFontMetrics|?|d|p',
+  'GrCharWidth|ww|?|p',
+  'GrTextWidth|wdw|w|p',
+  'GrTextWidthWWFixed|wdw|d|p',
+  'GrDrawRegion|wwwdww|v|p',
+  'GrDrawRegionAtCP|wdwwww|v|p',
+  'GrMulWWFixed|dd|?|p',
+  'GrMulDWFixed|ddd|v|p',
+  'GrSDivWWFixed|dd|d|p',
+  'GrUDivWWFixed|dd|d|p',
+  'GrSDivDWFbyWWF|ddd|v|p',
+  'GrCreateState|w|w|p',
+  'GrDestroyState|w|v|p',
+  'GrSaveState|w|v|p',
+  'GrRestoreState|w|v|p',
+  'GrDrawLine|wwwww|v|p',
+  'GrDrawLineTo|www|v|p',
+  'GrDrawHLine|wwww|v|p',
+  'GrDrawHLineTo|ww|v|p',
+  'GrDrawVLine|wwww|v|p',
+  'GrDrawVLineTo|ww|v|p',
+  'GrDrawBitmap|?|v|p',
+  'GrDrawBitmapAtCP|?|v|p',
+  'GrFillBitmap|?|v|p',
+  'GrFillBitmapAtCP|?|v|p',
+  'GrSetMixMode|ww|v|p',
+  'GrRelMoveTo|wdd|v|p',
+  'GrMoveTo|www|v|p',
+  'GrSetLineColor|wwwww|v|p',
+  'GrSetLineMaskSys|ww|v|p',
+  'GrSetLineMaskCustom|wd|v|p',
+  'GrSetLineColorMap|ww|v|p',
+  'GrSetLineWidth|wd|v|p',
+  'GrSetLineJoin|ww|v|p',
+  'GrSetLineEnd|ww|v|p',
+  'GrSetMiterLimit|wd|v|p',
+  'GrSetLineStyle|wwwdw|v|p',
+  'GrSetAreaColor|wwwww|v|p',
+  'GrSetAreaMaskSys|ww|v|p',
+  'GrSetAreaMaskCustom|wd|v|p',
+  'GrSetAreaColorMap|ww|v|p',
+  'GrSetTextColor|wwwww|v|p',
+  'GrSetTextMaskSys|ww|v|p',
+  'GrSetTextMaskCustom|wd|v|p',
+  'GrSetTextColorMap|ww|v|p',
+  'GrSetTextStyle|www|v|p',
+  'GrSetTextMode|www|v|p',
+  'GrSetTextSpacePad|wd|v|p',
+  'GrSetTextAttr|wd|v|p',
+  'GrSetFont|wwd|v|p',
+  'GrSetClipRect|wwwwww|v|p',
+  'GrSetWinClipRect|wwwwww|v|p',
+  'GrDrawRect|wwwww|v|p',
+  'GrBeginPath|ww|v|p',
+  'GrEndPath|w|v|p',
+  'GrCloseSubPath|w|v|p',
+  'GrSetClipPath|www|v|p',
+  'GrSetWinClipPath|www|v|p',
+  'GrFillPath|ww|v|p',
+  'GrDrawPath|w|v|p',
+  'GrSetStrokePath|w|v|p',
+  'GrGetPathBounds|wwd|w|p',
+  'GrTestPointInPath|wwww|w|p',
+  'GrGetPathPoints|ww|w|p',
+  'GrGetPathRegion|ww|w|p',
+  'GrGetClipRegion|ww|w|p',
+  'GrGetMaskBoundsDWord|wd|w|p',
+  'GrGetWinHandle|w|w|p',
+  'GrDrawArc3Point|wd|v|p',
+  'GrDrawArc3PointTo|wd|v|p',
+  'GrDrawRelArc3PointTo|wd|v|p',
+  'GrFillArc3Point|wd|v|p',
+  'GrFillArc3PointTo|wd|v|p',
+  'GrDrawRelLineTo|wdd|v|p',
+  'GrDrawHugeBitmap|wwwww|v|p',
+  'GrDrawHugeBitmapAtCP|www|v|p',
+  'GrDrawSplineTo|wdw|v|p',
+  'GrDrawCurve|wd|v|p',
+  'GrDrawCurveTo|wd|v|p',
+  'GrSetBitmapMode|www|?|p',
+  'GrGetBitmapMode|w|w|p',
+  'GrGetTrackKern|w|w|p',
+  'GrGetFontName|wd|w|p',
+  'GrSetFontWeight|ww|v|p',
+  'GrSetFontWidth|ww|v|p',
+  'GrSetSuperscriptAttr|?|v|p',
+  'GrSetSubscriptAttr|?|v|p',
+  'GrGetFontWeight|w|w|p',
+  'GrGetFontWidth|w|w|p',
+  'GrGetSuperscriptAttr|w|?|p',
+  'GrGetSubscriptAttr|w|?|p',
+  'GrSetAreaPattern|?|v|p',
+  'GrSetCustomAreaPattern|?|v|p',
+  'GrSetTextPattern|?|v|p',
+  'GrSetCustomTextPattern|?|v|p',
+  'GrGetAreaPattern|wdd|?|p',
+  'GrGetTextPattern|wdd|?|p',
+  'GrInvalRectDWord|wd|v|p',
+  'GrGetWinBounds|wd|w|p',
+  'GrGetWinBoundsDWord|wd|v|p',
+  'GrGetMaskBounds|wd|w|p',
+  'GrBeginUpdate|w|v|p',
+  'GrEndUpdate|w|v|p',
+  'GrInvalRect|wwwww|v|p',
+  'GrGetTextBounds|wdwwwd|w|p',
+  'GrGetGStringBounds|wwwd|w|p',
+  'GrLabel|ww|v|p',
+  'GrCompactBitmap|www|w|p',
+  'GrDrawHugeImage|wwwwww|v|p',
+  'GrDrawImage|wwwwd|v|p',
+  'GrEditBitmap|wwd|w|p',
+  'GrGetExclusive|w|w|p',
+  'GrGetGStringHandle|w|w|p',
+  'GrGetPath|ww|w|p',
+  'GrGetPoint|www|d|p',
+  'GrParseGString|wwwd|v|p',
+  'GrTestRectInMask|wwwww|w|p',
+  'GrUncompactBitmap|www|w|p',
+  'GrDrawGString|wwwwwd|w|p',
+  'GrDrawGStringAtCP|wwwd|w|p',
+  'GrSetGStringPos|www|?|p',
+  'GrCopyGString|www|w|p',
+  'GrDestroyGString|www|?|p',
+  'GrLoadGString|www|w|p',
+  'GrCreateGString|wwd|w|p',
+  'GrGetGStringElement|wwwdd|w|p',
+  'GrEditGString|ww|w|p',
+  'GRDELETEGSTRINGELEMENT_OLD|?|?|p',
+  'WinOpen|wddwwwwwwwdwwww|w|p',
+  'WinClose|w|v|p',
+  'WinMove|wwww|?|p',
+  'WinResize|wdwwwww|v|p',
+  'WinDecRefCount|w|v|p',
+  'WinChangePriority|www|v|p',
+  'WinScroll|wddd|v|p',
+  'WinSuspendUpdate|w|v|p',
+  'WinUnSuspendUpdate|w|v|p',
+  'WinGetInfo|wwd|v|p',
+  'WinSetInfo|wwd|v|p',
+  'WinApplyRotation|wdw|?|p',
+  'WinApplyScale|wddw|v|p',
+  'WinApplyTranslation|wddw|v|p',
+  'WinApplyTranslationDWord|wddw|v|p',
+  'WinTransform|www|d|p',
+  'WinTransformDWord|wddd|v|p',
+  'WinUntransform|www|d|p',
+  'WinUntransformDWord|wddd|v|p',
+  'WinSetTransform|wdw|v|p',
+  'WinApplyTransform|wdw|v|p',
+  'WinSetNullTransform|ww|v|p',
+  'WinGetTransform|wd|v|p',
+  'WinGetWinScreenBounds|wd|v|p',
+  'WinAckUpdate|w|v|p',
+  'WinInvalReg|wdwwww|v|p',
+  'WinSetPtrImage|?|v|p',
+  'WinGeodeSetPtrImage|wd|v|p',
+  'WinGeodeGetInputObj|w|d|p',
+  'WinGeodeSetInputObj|wd|v|p',
+  'WinGeodeGetParentObj|w|d|p',
+  'WinGeodeSetParentObj|wd|v|p',
+  'WinGeodeSetActiveWin|ww|v|p',
+  'GCNListAdd|dww|w|p',
+  'GCNListRemove|dww|w|p',
+  'GCNListSend|wwwww|w|p',
+  'GCNListAddToBlock|dwwww|w|p',
+  'GCNListRemoveFromBlock|dwwww|w|p',
+  'GCNListSendToBlock|wwwwwww|w|p',
+  'GCNListCreateBlock|w|w|p',
+  'GCNListAddToList|dd|w|p',
+  'GCNListRemoveFromList|dd|w|p',
+  'GCNListFindItemInList|dd|w|p',
+  'GCNListSendToList|dwww|v|p',
+  'GCNListCreateList|w|w|p',
+  'GCNListFindListInBlock|wwwww|w|p',
+  'GCNListDestroyBlock|ww|v|p',
+  'GCNListDestroyList|d|v|p',
+  'GCNListRelocateBlock|www|v|p',
+  'GCNListRelocateList|dw|v|p',
+  'GCNListUnRelocateBlock|www|w|p',
+  'GCNListUnRelocateList|dw|v|p',
+  'GeodePrivAlloc|ww|w|p',
+  'GeodePrivFree|ww|v|p',
+  'GeodePrivRead|wwwd|v|p',
+  'GeodePrivWrite|wwwd|w|p',
+  'GeodePrivAlloc|ww|w|p',
+  'GeodePrivFree|ww|v|p',
+  'GEODEPRIVREAD_OLD|?|?|p',
+  'GEODEPRIVWRITE_OLD|?|?|p',
+  'NameArrayCreate|?|?|p',
+  'NAMEARRAYCREATEAT_OLD|?|?|p',
+  'NameArrayAdd|ddwwd|w|p',
+  'NameArrayAdd|ddwwd|w|p',
+  'NameArrayFind|ddwd|w|p',
+  'NameArrayFind|ddwd|w|p',
+  'NameArrayChangeName|dwdw|v|p',
+  'NameArrayChangeName|dwdw|v|p',
+  'ObjVarAddData|dww|d|p',
+  'ObjVarDeleteData|dw|w|p',
+  'ObjVarDeleteDataAt|dw|v|p',
+  'ObjVarScanData|dwdd|v|p',
+  'ObjVarFindData|dw|d|p',
+  'ObjVarDerefData|dw|d|p',
+  'ObjVarDeleteDataRange|dwww|v|p',
+  'ObjVarCopyDataRange|ddww|v|p',
+  'ObjVarAddData|dww|d|p',
+  'ObjVarDeleteData|dw|w|p',
+  'ObjVarDeleteDataAt|dw|v|p',
+  'ObjVarScanData|dwdd|v|p',
+  'ObjVarFindData|dw|d|p',
+  'ObjVarDerefData|dw|d|p',
+  'ObjVarDeleteDataRange|dwww|v|p',
+  'ObjVarCopyDataRange|ddww|v|p',
+  'HugeArrayCreate|www|w|p',
+  'HugeArrayDestroy|ww|v|p',
+  'HugeArrayLock|wwddd|d|p',
+  'HugeArrayUnlock|d|v|p',
+  'HugeArrayAppend|wwwd|d|p',
+  'HugeArrayInsert|wwwdd|v|p',
+  'HugeArrayReplace|wwwdd|v|p',
+  'HugeArrayDelete|wwwd|v|p',
+  'HugeArrayGetCount|ww|d|p',
+  'HugeArrayDirty|d|v|p',
+  'HugeArrayNext|dd|w|p',
+  'HugeArrayPrev|ddd|w|p',
+  'HugeArrayExpand|dwd|w|p',
+  'HugeArrayContract|dw|w|p',
+  'HugeArrayEnum|?|w|p',
+  'HUGEARRAYCREATE_OLD|?|?|p',
+  'HugeArrayDestroy|ww|v|p',
+  'HUGEARRAYLOCK_OLD|?|?|p',
+  'HugeArrayUnlock|d|v|p',
+  'HugeArrayAppend|wwwd|d|p',
+  'HugeArrayInsert|wwwdd|v|p',
+  'HugeArrayReplace|wwwdd|v|p',
+  'HugeArrayDelete|wwwd|v|p',
+  'HUGEARRAYGETCOUNT_OLD|?|?|p',
+  'HugeArrayDirty|d|v|p',
+  'HUGEARRAYNEXT_OLD|?|?|p',
+  'HugeArrayPrev|ddd|w|p',
+  'HugeArrayExpand|dwd|w|p',
+  'HugeArrayContract|dw|w|p',
+  'ECCheckHugeArray|ww|v|p',
+  'ECCheckHugeArray|ww|v|p',
+  'HugeArrayResize|wwdw|v|p',
+  'HugeArrayResize|wwdw|v|p',
+  'HugeArrayLockDir|wwd|v|p',
+  'HugeArrayLockDir|wwd|v|p',
+  'HugeArrayUnlockDir|d|v|p',
+  'HugeArrayUnlockDir|d|v|p',
+  'HugeArrayEnum|?|w|p',
+  'FileCopyPathExtAttributes|dwdw|w|p',
+  'FileCopyPathExtAttributes|dwdw|w|p',
+  'LocalFormatFileDateTime|?|w|p',
+  'LocalFormatFileDateTime|?|w|p',
+  'FSDLockDriveExcl|?|?|p',
+  'FSDUnlockDriveExcl|?|?|p',
+  'FSDCheckOpenCloseNotifyEnabled|?|?|p',
+  'FileEnableOpenCloseNotification||v|p',
+  'FileDisableOpenCloseNotification||v|p',
+  'FileBatchChangeNotifications||v|p',
+  'FileFlushChangeNotifications||v|p',
+  'FSDGenerateNotify|?|?|p',
+  'FileGetCurrentPathIDs|w|w|p',
+  'GrFillHugeBitmapAtCP|www|v|p',
+  'GrFillHugeBitmap|wwwww|v|p',
+  'GrFillHugeBitmapAtCP|www|v|p',
+  'GrFillHugeBitmap|wwwww|v|p',
+  'WinRealizePalette|w|v|p',
+  'GrSaveTransform|w|v|p',
+  'GrRestoreTransform|w|v|p',
+  'GrGetGStringBoundsDWord|wwwd|v|p',
+  'GrGetGStringBoundsDWord|wwwd|v|p',
+  'WinRealizePalette|w|v|p',
+  'LocalCalcDaysInMonth|ww|w|p',
+  'LocalCalcDaysInMonth|ww|w|p',
+  'GrGetCurPosWWFixed|wd|v|p',
+  'GrGetCurPosWWFixed|wd|v|p',
+  'GrGetPathBoundsDWord|wwd|w|p',
+  'GrGetPathBoundsDWord|wwd|w|p',
+  'LocalIsCodePageSupported|?|w|p',
+  'LocalIsCodePageSupported|?|w|p',
+  'HugeArrayCompressBlocks|ww|v|p',
+  'HugeArrayCompressBlocks|ww|v|p',
+  'FixupHugeArrayChain|?|?|p',
+  'ImSetPtrFlags|?|?|p',
+  'GrGetHugeBitmapSize|ww|d|p',
+  'GrGetHugeBitmapSize|ww|d|p',
+  'FontDrEnsureFontFileOpen|?|?|p',
+  'ECCheckEventHandle|w|v|p',
+  'ECCheckEventHandle|w|v|p',
+  'GrSetVMFile|ww|v|p',
+  'GrTestPath|ww|w|p',
+  'ImGetPtrFlags|?|?|p',
+  'GrSetUpdateGState|?|?|p',
+  'InitFilePushPrimaryFile|?|?|p',
+  'InitFilePopPrimaryFile|?|?|p',
+  'FilePushTopLevelPath|?|?|p',
+  'FilePopTopLevelPath|?|?|p',
+  'FileAddStandardPathDirectory|?|?|p',
+  'FileDeleteStandardPathDirectory|?|?|p',
+  'LocalInit|?|?|p',
+  'FSDUnregister|?|?|p',
+  'GrSetTextDrawOffset|ww|v|p',
+  'GrGetTextDrawOffset|w|w|p',
+  'ChunkArrayInsertAt|ddw|d|p',
+  'GeodePrivRead|wwwd|v|p',
+  'GeodePrivWrite|wwwd|w|p',
+  'GeodeUseDriver|dwwd|w|p',
+  'FileOpenAndRead|wdd|w|p',
+  'FileOpenAndRead|wdd|w|p',
+  'InitFileGrab|www|w|p',
+  'InitFileGrab|www|w|p',
+  'InitFileRelease||v|p',
+  'FontDrLockInfoBlock|?|?|p',
+  'FontDrUnlockInfoBlock|?|?|p',
+  'FileCopyLocal|ddww|w|p',
+  'ThreadCreate|wwdww|w|p',
+  'FileEnum|ddd|w|p',
+  'VMClose|ww|w|p',
+  'GrFillRectTo|www|v|p',
+  'GrDrawRectTo|www|v|p',
+  'MemGetSwapDriverInfo|?|?|p',
+  'MemMigrateSwapData|?|?|p',
+  'GeodeUseLibrary|dwwd|w|p',
+  'GrDrawArc|wwwwwwww|v|p',
+  'GrFillArc|wwwwwwww|v|p',
+  'DosExecInsertMovableVector|?|?|p',
+  'DosExecRestoreMovableVector|?|?|p',
+  'ChunkArrayCreateAt|dwww|w|p',
+  'ElementArrayCreateAt|dwww|w|p',
+  'NameArrayCreateAt|dwww|w|p',
+  'GrGetCharInfo|ww|w|p',
+  'GrGetCharInfo|ww|w|p',
+  'SysCopyToStackDSSI|?|?|p',
+  'SysCopyToStackDSBX|?|?|p',
+  'SysCopyToStackDSDX|?|?|p',
+  'SysCopyToStackBXSI|?|?|p',
+  'SysCopyToStackESDI|?|?|p',
+  'SysRemoveFromStack|?|?|p',
+  'SysCopyToBlock|?|?|p',
+  'ECAssertValidFarPointerXIP|?|?|p',
+  'FontDrAddFonts|?|?|p',
+  'FontDrDeleteFonts|?|?|p',
+  'FontDrFindFileName|?|?|p',
+  'FontDrGetFontIDFromFile|?|?|p',
+  'HugeArrayCreate|www|w|p',
+  'HugeArrayGetCount|ww|d|p',
+  'HugeArrayLock|wwddd|d|p',
+  'GrDeleteGStringElement|ww|v|p',
+  'SysGetInkWidthAndHeight||w|p',
+  'SysSetInkWidthAndHeight|w|v|p',
+  'SysSetInkWidthAndHeight|w|v|p',
+  'SysEnableAPO||v|p',
+  'SysDisableAPO||v|p',
+  'VMGetHeaderInfo|wd|v|p',
+  'SysSendNotification|wwwwww|v|p',
+  'SysHookNotification|?|w|p',
+  'SysUnhookNotification|?|v|p',
+  'SysIgnoreNotification|w|w|p',
+  'SysSendNotification|wwwwww|v|p',
+  'SysHookNotification|?|w|p',
+  'SysUnhookNotification|?|v|p',
+  'SysIgnoreNotification|w|w|p',
+  'TimerGetFileDateTime||?|p',
+  'ThreadCreateVirtual|?|?|p',
+  'VMCOPYVMCHAIN_ALMOST_FIXED|?|?|p',
+  'VMFreeVMChain|wd|v|p',
+  'VMCompareVMChains|wdwd|w|p',
+  'GeodeInstallPatch|?|?|p',
+  'GrMoveToWWFixed|wdd|v|p',
+  'GrMoveToWWFixed|wdd|v|p',
+  'VMGetDirtySize|?|?|p',
+  'VMGetUsedSize|?|?|p',
+  'VMGetHeaderInfo|wd|v|p',
+  'HugeArrayNext|dd|w|p',
+  'GrSetVMFile|ww|v|p',
+  'VMCopyVMChain|wdw|d|p',
+  'GrTestPath|ww|w|p',
+  'GeodeRequestSpace|ww|w|p',
+  'GeodeRequestSpace|ww|w|p',
+  'GeodeReturnSpace|w|v|p',
+  'GeodeReturnSpace|w|v|p',
+  'ObjGetMessageData|wd|w|p',
+  'ObjGetMessageData|wd|w|p',
+  'VMDiscardDirtyBlocks|w|w|p',
+  'VMDiscardDirtyBlocks|w|w|p',
+  'FileGetHandleAllExtAttributes|wd|w|p',
+  'FileGetHandleAllExtAttributes|wd|w|p',
+  'MemDerefStackDS|?|?|p',
+  'MemDerefStackES|?|?|p',
+  'FileMoveLocal|ddww|w|p',
+  'ThreadSetError|w|v|p',
+  'ThreadSetError|w|v|p',
+  'ProfileWriteLogEntry|?|?|p',
+  'ProfileInit|?|?|p',
+  'ProfileExit|?|?|p',
+  'ProfileReset|?|?|p',
+  'ProfileWriteGenericEntry|?|?|p',
+  'ProfileWriteMessageEntry|?|?|p',
+  'DBInfo|?|?|p',
+  'VMInfoVMChain|wdddd|w|p',
+  'VMInfoVMChain|wdddd|w|p',
+  'DBInfoUngrouped|wdd|w|p',
+  'VMSetDirtyLimit|ww|v|p',
+  'VMSetDirtyLimit|ww|v|p',
+  'GeodeSetGeneralPatchPath||w|p',
+  'GeodeSetLanguagePatchPath||w|p',
+  'IsMultiLanguageModeOn||w|p',
+  'InitFileBackupLanguage|?|?|p',
+  'InitFileSwitchLanguages|?|?|p',
+  'GeodeSnatchResource|www|w|p',
+  'GeodeSetGeneralPatchPath||w|p',
+  'GeodeSetLanguagePatchPath||w|p',
+  'IsMultiLanguageModeOn||w|p',
+  'GeodeSnatchResource|www|w|p',
+  'GeodeSetLanguageStandardPath|?|?|p',
+  'GEODESETLANGUAGESTANDARDPATH|?|?|p',
+  'FileCopyLocal|ddww|w|p',
+  'FileMoveLocal|ddww|w|p',
+  'FileSetRootPath|w|v|p',
+  'FileSetRootPath|w|v|p',
+  'LocalSetCodePage|?|w|p',
+  'GeodeGetGeodeResourceHandle|ww|w|p',
+  'InitFileMakeCanonicKeyCategory|dd|v|p',
+  'InitFileMakeCanonicKeyCategory|dd|v|p',
+  'ObjInstantiateForThread|wd|d|p',
+  'ObjInstantiateForThread|wd|d|p',
+  'SysGetUtilWindowInfo|ddd|w|p',
+  'SysMapUtilWindow|ddw|w|p',
+  'SysUnmapUtilWindow||w|p',
+  'SysGetUtilWindowInfo|ddd|w|p',
+  'SysMapUtilWindow|ddw|w|p',
+  'ImSetMouseBuffer|?|?|p',
+  'LZGCompress|ddww|w|p',
+  'LZGCompress|ddww|w|p',
+  'LZGUncompress|dd|w|p',
+  'LZGUncompress|dd|w|p',
+  'LZGGetUncompressedSize|d|w|p',
+  'LZGGetUncompressedSize|d|w|p',
+  'LZGAllocCompressStack|w|w|p',
+  'LZGAllocCompressStack|w|w|p',
+  'LZGFreeCompressStack|w|v|p',
+  'LZGFreeCompressStack|w|v|p',
+  'LocalSetTimezone|ww|v|p',
+  'LocalGetTimezone|d|w|p',
+  'LocalGetTimezone|d|w|p',
+  'LocalSetTimezone|ww|v|p',
+  'LocalCompareDateTimes|dd|w|p',
+  'LocalCompareDateTimes|dd|w|p',
+  'LocalNormalizeDateTime|ddw|v|p',
+  'LocalNormalizeDateTime|ddw|v|p',
+  'LocalCalcDayOfWeek|www|w|p',
+  'LocalCalcDayOfWeek|www|w|p',
+  'FileCreateDirWithNativeShortName|d|w|p',
+  'FileCreateDirWithNativeShortName|d|w|p',
+  'VMEnforceHandleLimits|www|v|p',
+  'VMEnforceHandleLimits|www|v|p',
+  'FileSetCurrentPathRaw|wd|w|p',
+  'FileSetCurrentPathRaw|wd|w|p',
+  'GeodeUseDriverPermName|dwwd|w|p',
+  'GeodeUseLibraryPermName|dwwd|w|p',
+  'GeodeUseDriverPermName|dwwd|w|p',
+  'GeodeUseLibraryPermName|dwwd|w|p',
+  'GrCreateBitmapRaw|wwww|w|p',
+  'GrCreateBitmapRaw|wwww|w|p'
+ );
+
+ Tab_ui : Array[0..428] Of String[46] = (
+  'GenProcessClass|?|?|p',
+  'FlowClass|?|?|p',
+  'GenTriggerClass|?|?|p',
+  'GenDisplayClass|?|?|p',
+  'GenApplicationClass|?|?|p',
+  'GenFieldClass|?|?|p',
+  'GenScreenClass|?|?|p',
+  'GenSystemClass|?|?|p',
+  'GenViewClass|?|?|p',
+  'GenContentClass|?|?|p',
+  'GenInteractionClass|?|?|p',
+  'GenGlyphClass|?|?|p',
+  'GenTextClass|?|?|p',
+  'GenDisplayGroupClass|?|?|p',
+  'GenPrimaryClass|?|?|p',
+  'GenGadgetClass|?|?|p',
+  '',
+  'GenDocumentGroupClass|?|?|p',
+  'GenDocumentClass|?|?|p',
+  'GenFileSelectorClass|?|?|p',
+  'GenBooleanGroupClass|?|?|p',
+  'GenItemGroupClass|?|?|p',
+  'GenDynamicListClass|?|?|p',
+  'GenItemClass|?|?|p',
+  'GenBooleanClass|?|?|p',
+  'GenControlClass|?|?|p',
+  'GenValueClass|?|?|p',
+  'GenEditControlClass|?|?|p',
+  'GenToolControlClass|?|?|p',
+  'GenViewControlClass|?|?|p',
+  'GenPageControlClass|?|?|p',
+  'GenDisplayControlClass|?|?|p',
+  '',
+  '',
+  '',
+  'GenPenInputControlClass|?|?|p',
+  '',
+  '',
+  '',
+  '',
+  'VisSpecNotifyEnabled|?|?|p',
+  'VisSpecNotifyNotEnabled|?|?|p',
+  '',
+  'FlowTranslatePassiveButton|?|?|p',
+  'FlowGetUIButtonFlags|?|?|p',
+  'FlowForceGrab|?|?|p',
+  'FlowRequestGrab|?|?|p',
+  'FlowReleaseGrab|?|?|p',
+  'ClipboardStartQuickTransfer|?|w|p',
+  'ClipboardEndQuickTransfer|w|v|p',
+  'FlowCheckKbdShortcut|dwwww|w|p',
+  'FlowAlterHierarchicalGrab|dwwwdw|w|p',
+  'FlowUpdateHierarchicalGrab|dwwww|w|p',
+  '',
+  'FlowGetTargetAtTargetLevel|?|?|p',
+  'ClipboardAbortQuickTransfer||v|p',
+  '',
+  'FlowDispatchSendOnOrDestroyClassedEvent|ddwwwdw|w|p',
+  'GenClass|?|?|p',
+  'GenDocumentControlClass|?|?|p',
+  'GenFindMoniker|?|?|p',
+  'GenDrawMoniker|?|?|p',
+  'GenGetMonikerSize|?|?|p',
+  'UserCallSystem|?|?|p',
+  'GenCallParent|?|?|p',
+  'GenCallApplication|?|?|p',
+  'UserSendToApplicationViaProcess|?|?|p',
+  'GenFindParent|?|?|p',
+  'GenSwapLockParent|?|?|p',
+  'GenSendToChildren|?|?|p',
+  'GenCallNextSibling|?|?|p',
+  'GenInsertChild|wwddw|v|p',
+  'GenCopyChunk|wwww|w|p',
+  'GenAddChildUpwardLinkOnly|?|?|p',
+  'GenSetUpwardLink|wwd|v|p',
+  'GenRemoveDownwardLink|www|v|p',
+  'GenProcessGenAttrsBeforeAction|ww|v|p',
+  'GenControlOutputActionRegs|?|?|p',
+  'GenControlOutputActionStack|?|?|p',
+  'GenSpecShrink|ww|v|p',
+  'GenFindObjectInTree|dd|d|p',
+  'GenCheckIfFullyUsable|?|?|p',
+  'GenCheckIfFullyEnabled|?|?|p',
+  'GenCheckIfSpecGrown|?|?|p',
+  'GenCheckKbdAccelerator|?|?|p',
+  'GenInstantiateIgnoreDirty|?|?|p',
+  'GenProcessGenAttrsAfterAction|ww|v|p',
+  'GenProcessAction|?|?|p',
+  'GenRelocMonikerList|?|?|p',
+  'UserGetInitFileCategory|d|v|p',
+  'UserGetInitFileCategory|d|v|p',
+  'GenGotoParentTailRecurse|?|?|p',
+  '',
+  '',
+  'GenPathSetObjectPath|?|?|p',
+  'GenPathGetObjectPath|?|?|p',
+  'GenPathSetCurrentPathFromObjectPath|?|?|p',
+  'GenPathUnrelocObjectPath|?|?|p',
+  'GenPathFetchDiskHandleAndDerefPath|?|?|p',
+  'GenPathConstructFullObjectPath|?|?|p',
+  'GenViewSetSimpleBounds|?|?|p',
+  'GenSetupTrackingArgs|?|?|p',
+  'GenReturnTrackingArgs|?|?|p',
+  'GenViewSendToLinksIfNeeded|?|?|p',
+  'GenBooleanSendMsg|?|?|p',
+  'GenItemSendMsg|?|?|p',
+  'GenControlSendToOutputRegs|?|?|p',
+  'GenControlSendToOutputStack|?|?|p',
+  'TokenDefineToken|dwdw|w|p',
+  'TokenGetTokenInfo|dwd|w|p',
+  'TokenLookupMoniker|dwwwd|w|p',
+  'TokenLoadMoniker|?|?|p',
+  'TokenRemoveToken|dw|w|p',
+  'TokenGetTokenStats|dw|v|p',
+  'TokenLoadToken|?|?|p',
+  'TokenLockTokenMoniker|?|d|p',
+  'TokenUnlockTokenMoniker|d|v|p',
+  'TokenListTokens|www|d|p',
+  'UserAllocObjBlock|w|w|p',
+  'UserCallFlow|?|?|p',
+  'UserCopyChunkOut|?|?|p',
+  'UserDoDialog|d|w|p',
+  'UserLoadApplication|?|w|p',
+  'ClipboardRegisterItem|dw|w|p',
+  'ClipboardQueryItem|wd|v|p',
+  'ClipboardRequestItemFormat|ddd|v|p',
+  'ClipboardDoneWithItem|d|v|p',
+  'ClipboardUnregisterItem|d|v|p',
+  'ClipboardGetNormalItemInfo||d|p',
+  'ClipboardGetQuickItemInfo||d|p',
+  'ClipboardGetUndoItemInfo||d|p',
+  'ClipboardGetClipboardFile||w|p',
+  'ClipboardAddToNotificationList|d|v|p',
+  'ClipboardRemoveFromNotificationList|d|w|p',
+  'UserHaveProcessCopyChunkIn|?|?|p',
+  'UserHaveProcessCopyChunkOut|?|?|p',
+  'UserHaveProcessCopyChunkOver|?|?|p',
+  'UserScreenRegister|?|?|p',
+  'UserAddAutoExec|d|?|p',
+  'UserRemoveAutoExec|d|v|p',
+  'UserCheckAcceleratorChar|?|?|p',
+  'UserCallApplication|?|?|p',
+  'UserCheckInsertableCtrlChar|?|?|p',
+  'UserCreateItem|?|?|p',
+  'UserAddItemToGroup|?|?|p',
+  'UserStandardSound|w.|?|c',
+  'UserSetDefaultMonikerFont|?|?|p',
+  'UserGetDisplayType|?|?|p',
+  'UserLoadExtendedDriver|?|?|p',
+  'UserGetOverstrikeMode|?|?|p',
+  'UserSetOverstrikeMode|?|?|p',
+  'UserMessageIM|?|?|p',
+  'ClipboardGetQuickTransferStatus||w|p',
+  'ClipboardSetQuickTransferFeedback|?|v|p',
+  'ClipboardGetItemInfo|d|d|p',
+  'ClipboardClearQuickTransferNotification|d|v|p',
+  'ClipboardHandleEndMoveCopy|www|d|p',
+  'ClipboardTestItemFormat|dd|w|p',
+  'ClipboardEnumItemFormats|dwd|w|p',
+  'ClipboardFreeItem|?|?|p',
+  'UserGetSpecUIProtocolRequirement|?|?|p',
+  'UserGetHWRLibraryHandle||w|p',
+  'UserCreateInkDestinationInfo|dwwd|w|p',
+  'UserGetDefaultLaunchLevel||?|p',
+  'UserGetInterfaceOptions||?|p',
+  'GenValueSendMsg|?|?|p',
+  'VisEmptyClass|?|?|p',
+  'VisClass|?|?|p',
+  'VisCompClass|?|?|p',
+  'VisContentClass|?|?|p',
+  'VisInitialize|?|?|p',
+  'VisCompInitialize|?|?|p',
+  'VisGetSize|?|?|p',
+  'VisGetBounds|?|?|p',
+  'VisGetCenter|?|?|p',
+  'VisCallParent|?|?|p',
+  'VisFindParent|?|?|p',
+  'VisSwapLockParent|?|?|p',
+  'VisSendToChildren|?|?|p',
+  'VisCallChildUnderPoint|?|?|p',
+  'VisCallFirstChild|?|?|p',
+  'VisRecalcSizeAndInvalIfNeeded|?|?|p',
+  'VisSendPositionAndInvalIfNeeded|?|?|p',
+  'VisTestPointInBounds|?|?|p',
+  'VisQueryWindow|?|?|p',
+  'VisQueryParentWin|?|?|p',
+  'VisGetParentGeometry|?|?|p',
+  'VisMarkInvalid|?|?|p',
+  'VisSetSize|?|?|p',
+  'VisSetPosition|?|?|p',
+  'VisFindMoniker|?|?|p',
+  'VisGetMonikerSize|?|?|p',
+  'VisGetMonikerPos|?|?|p',
+  'VisDrawMoniker|?|?|p',
+  'VisInsertChild|?|?|p',
+  'VisConvertSpecVisSize|?|?|p',
+  'VisConvertCoordsToRatio|?|?|p',
+  'VisConvertRatioToCoords|?|?|p',
+  'VisGetVisParent|?|?|p',
+  'VisAddChildRelativeToGen|?|?|p',
+  'VisGetSpecificVisObject|?|?|p',
+  'VisMarkFullyInvalid|?|?|p',
+  'VisCheckIfSpecBuilt|?|?|p',
+  'VisCheckIfVisGrown|?|?|p',
+  'VisGrabMouse|?|?|p',
+  'VisForceGrabMouse|?|?|p',
+  'VisGrabLargeMouse|?|?|p',
+  'VisForceGrabLargeMouse|?|?|p',
+  'VisReleaseMouse|?|?|p',
+  'VisAddButtonPrePassive|?|?|p',
+  'VisRemoveButtonPrePassive|?|?|p',
+  'VisAddButtonPostPassive|?|?|p',
+  'VisRemoveButtonPostPassive|?|?|p',
+  'VisTakeGadgetExclAndGrab|?|?|p',
+  'VisGrabKbd|?|?|p',
+  'VisForceGrabKbd|?|?|p',
+  'VisReleaseKbd|?|?|p',
+  'VisGetParentCenter|?|?|p',
+  'VisSendCenter|?|?|p',
+  'VisCallNextSibling|?|?|p',
+  'VisNavigateCommon|?|?|p',
+  'VisCheckOptFlags|?|?|p',
+  'VisRemove|?|?|p',
+  'VisIfFlagSetCallVisChildren|?|?|p',
+  'VisIfFlagSetCallGenChildren|?|?|p',
+  'VisMarkInvalidOnParent|?|?|p',
+  'VisSpecBuild|?|?|p',
+  'VisCompGetCenter|?|?|p',
+  'VisCompRecalcSize|?|?|p',
+  'VisCheckMnemonic|?|?|p',
+  'VisSpecBuildSetEnabledState|?|?|p',
+  'VisSendSpecBuild|?|?|p',
+  'VisSendSpecBuildBranch|?|?|p',
+  'VisCompPosition|?|?|p',
+  'VisSetNotRealized|?|?|p',
+  'VisApplySizeHints|?|?|p',
+  'VisSetupSizeArgs|?|?|p',
+  'VisApplySizeArgsToWidth|?|?|p',
+  'VisApplySizeArgsToHeight|?|?|p',
+  'VisApplyInitialSizeArgs|?|?|p',
+  'VisGetBoundsInsideMargins|?|?|p',
+  'VisCompMakePressesInk|?|?|p',
+  'VisCompMakePressesNotInk|?|?|p',
+  'VisCallChildrenInBounds|?|?|p',
+  'VisObjectHandlesInkReply||v|p',
+  'VisCompDraw|?|?|p',
+  'VisCallCommon|?|?|p',
+  'VisGotoParentTailRecurse|?|?|p',
+  'MetaGrabFocusExclLow|?|?|p',
+  'MetaReleaseFocusExclLow|?|?|p',
+  'MetaGrabTargetExclLow|?|?|p',
+  'MetaReleaseTargetExclLow|?|?|p',
+  'MetaGrabModelExclLow|?|?|p',
+  'MetaReleaseModelExclLow|?|?|p',
+  'MetaReleaseFTExclLow|?|?|p',
+  'ECCheckUILMemOD|?|?|p',
+  'ECCheckODCXDX|?|?|p',
+  'ECCheckLMemODCXDX|?|?|p',
+  'ECCheckUILMemODCXDX|?|?|p',
+  'ECEnsureInGenTree|?|?|p',
+  'ECVisStartNavigation|?|?|p',
+  'ECVisEndNavigation|?|?|p',
+  'ECCheckVisFlags|?|?|p',
+  'ECCheckVisCoords|?|?|p',
+  'GenEnsureNotUsable|?|?|p',
+  'VisCheckVisAssumption|?|?|p',
+  'CheckForDamagedES|?|?|p',
+  'GenCheckGenAssumption|?|?|p',
+  'ClipboardRegisterItem|dw|w|p',
+  'ClipboardUnregisterItem|d|v|p',
+  'ClipboardQueryItem|wd|v|p',
+  'ClipboardTestItemFormat|dd|w|p',
+  'ClipboardEnumItemFormats|dwd|w|p',
+  'ClipboardGetItemInfo|d|d|p',
+  'ClipboardRequestItemFormat|ddd|v|p',
+  'ClipboardDoneWithItem|d|v|p',
+  'ClipboardGetNormalItemInfo||d|p',
+  'ClipboardGetQuickItemInfo||d|p',
+  'ClipboardGetUndoItemInfo||d|p',
+  'ClipboardGetClipboardFile||w|p',
+  'ClipboardAddToNotificationList|d|v|p',
+  'ClipboardRemoveFromNotificationList|d|w|p',
+  'ClipboardStartQuickTransfer|?|w|p',
+  'ClipboardGetQuickTransferStatus||w|p',
+  'ClipboardSetQuickTransferFeedback|?|v|p',
+  'ClipboardEndQuickTransfer|w|v|p',
+  'ClipboardAbortQuickTransfer||v|p',
+  'ClipboardClearQuickTransferNotification|d|v|p',
+  'ClipboardHandleEndMoveCopy|www|d|p',
+  'UserDoDialog|d|w|p',
+  'GenCopyChunk|wwww|w|p',
+  'GenInsertChild|wwddw|v|p',
+  'GenSetUpwardLink|wwd|v|p',
+  'GenRemoveDownwardLink|www|v|p',
+  'GenSpecShrink|ww|v|p',
+  'GenProcessGenAttrsBeforeAction|ww|v|p',
+  'GenProcessGenAttrsAfterAction|ww|v|p',
+  'GenFindObjectInTree|dd|d|p',
+  'FlowAlterHierarchicalGrab|dwwwdw|w|p',
+  'FlowUpdateHierarchicalGrab|dwwww|w|p',
+  '',
+  'FlowDispatchSendOnOrDestroyClassedEvent|ddwwwdw|w|p',
+  'TokenDefineToken|dwdw|w|p',
+  'TokenGetTokenInfo|dwd|w|p',
+  'TokenLookupMoniker|dwwwd|w|p',
+  'TokenLoadMonikerBlock|dwwwdd|w|p',
+  'TokenLoadMonikerChunk|dwwwwdd|w|p',
+  'TokenLoadMonikerBuffer|dwwwdwd|w|p',
+  'TokenRemoveToken|dw|w|p',
+  'TokenGetTokenStats|dw|v|p',
+  'TokenLoadTokenBlock|dwdd|w|p',
+  'TokenLoadTokenChunk|dwwdd|w|p',
+  'TokenLoadTokenBuffer|dwd|w|p',
+  'TokenLockTokenMoniker|?|d|p',
+  'TokenUnlockTokenMoniker|d|v|p',
+  'TokenListTokens|www|d|p',
+  '_UserStandardSound_Old|?|?|p',
+  'UserAddAutoExec|d|?|p',
+  'UserRemoveAutoExec|d|v|p',
+  'UserStandardDialog|dddddw|w|p',
+  'UserStandardDialogOptr|dddddw|w|p',
+  'GenToolGroupClass|?|?|p',
+  'GenProcessUndoGetFile||w|p',
+  'GenProcessUndoCheckIfIgnoring||w|p',
+  '',
+  'UserCreateDialog|d|d|p',
+  'UserDestroyDialog|d|v|p',
+  'UserCreateDialog|d|d|p',
+  'UserDestroyDialog|d|v|p',
+  'IACPRegisterServer|ddww|v|p',
+  'IACPUnregisterServer|dd|v|p',
+  'IACPConnect|dwwdd|w|p',
+  'IACPSendMessage|?|w|p',
+  'IACPSendMessageToServer|?|w|p',
+  'IACPShutdown|wd|v|p',
+  'IACPShutdownAll|d|v|p',
+  'IACPProcessMessage|?|v|p',
+  'IACPLostConnection|dw|v|p',
+  'IACPShutdownConnection|?|?|p',
+  'IACPCreateDefaultLaunchBlock|w|w|p',
+  'IACPGetServerNumber|wd|w|p',
+  'IACPRegisterServer|ddww|v|p',
+  'IACPUnregisterServer|dd|v|p',
+  'IACPConnect|dwwdd|w|p',
+  'IACPSendMessage|?|w|p',
+  'IACPSendMessageToServer|?|w|p',
+  'IACPShutdown|wd|v|p',
+  'IACPShutdownAll|d|v|p',
+  'IACPProcessMessage|?|v|p',
+  'IACPLostConnection|dw|v|p',
+  '',
+  'IACPCreateDefaultLaunchBlock|w|w|p',
+  'IACPGetServerNumber|wd|w|p',
+  'UserRegisterForTextContext|d|v|p',
+  'UserUnregisterForTextContext|d|v|p',
+  'UserRegisterForTextContext|d|v|p',
+  'UserUnregisterForTextContext|d|v|p',
+  'UserCheckIfContextUpdateDesired||w|p',
+  'UserGetDefaultMonikerFont|?|?|p',
+  'UserGetDefaultUILevel||?|p',
+  'HelpControlClass|?|?|p',
+  'HelpTextClass|?|?|p',
+  'HelpSendHelpNotification|wdd|w|p',
+  'HelpSendFocusNotification|?|?|p',
+  'VisObjectHandlesInkReply||v|p',
+  'ExpressMenuControlClass|?|?|p',
+  'UserDiskRestore|dd|w|p',
+  'UserDiskRestore|dd|w|p',
+  'UserGetLaunchModel||?|p',
+  'UserGetKbdAcceleratorMode|?|?|p',
+  'VisCallParentEnsureStack|?|?|p',
+  'UIApplicationClass|?|?|p',
+  'UserGetLaunchOptions||?|p',
+  'ClipboardRemoteSend||w|p',
+  'ClipboardRemoteReceive||w|p',
+  'ClipboardRemoteSend||w|p',
+  'ClipboardRemoteReceive||w|p',
+  'UserCreateInkDestinationInfo|dwwd|w|p',
+  '',
+  'GenCallParentEnsureStack|?|?|p',
+  'EMCInteractionClass|?|?|p',
+  'UserLoadApplication|?|w|p',
+  'FlowCheckKbdShortcut|dwwww|w|p',
+  'HelpSendHelpNotification|wdd|w|p',
+  'EMCPanelInteractionClass|?|?|p',
+  'IACPRegisterDocument|dwd|v|p',
+  'IACPUnregisterDocument|dwd|v|p',
+  'IACPFinishConnect|wd|v|p',
+  'IACPRegisterDocument|dwd|v|p',
+  'IACPUnregisterDocument|dwd|v|p',
+  'IACPFinishConnect|wd|v|p',
+  'IACPGetDocumentID|ddd|d|p',
+  'UserAllocObjBlock|w|w|p',
+  'TokenOpenLocalTokenDB||?|p',
+  'TokenCloseLocalTokenDB||v|p',
+  'ClipboardOpenClipboardFile||w|p',
+  'ClipboardCloseClipboardFile||v|p',
+  '',
+  'UserEncryptPassword|dd|w|p',
+  'UserEncryptPassword|dd|w|p',
+  'GENAPPCLOSEKEYBOARD|?|?|p',
+  'UserGetFloatingKbdEnabledStatus|?|?|p',
+  'IACPLocateServer|d|w|p',
+  'IACPBindToken|dd|v|p',
+  'IACPUnbindToken|d|v|p',
+  'IACPLocateServer|d|w|p',
+  'IACPBindToken|dd|v|p',
+  'IACPUnbindToken|d|v|p',
+  'EMObjectManagerClass|?|?|p',
+  'EMTriggerClass|?|?|p',
+  'ClipboardFreeItemsNotInUse|?|?|p',
+  'GenViewSendToLinksIfNeededDirection|?|?|p',
+  'IACPConnectToDocumentServer|ddwwd|w|p',
+  'IACPConnectToDocumentServer|ddwwd|w|p',
+  'IACPSendMessageAndWait|?|w|p',
+  'IACPSendMessageAndWait|?|w|p',
+  'IACPGetDocumentID|ddd|d|p',
+  'UserStandardSound|w.|?|c',
+  'UserStopStandardSound|ww|w|p',
+  'UserStopStandardSound|ww|w|p',
+  'EMCTriggerClass|?|?|p',
+  'UserStoreDocFileName|?|?|p',
+  'UserGetRecentDocFileName|ddd|?|p',
+  'UserGetRecentDocFileName|ddd|?|p',
+  'UserCreateIconTextMoniker|ddwww|?|p',
+  'UserCreateIconTextMoniker|ddwww|?|p',
+  'UserConfirmFieldChange|w.|w|c',
+  'UserConfirmFieldChange|w.|w|c',
+  'UserGetSystemShutdownStatus||?|p'
+ );
+
+ Tab_ansic : Array[0..98] Of String[46] = (
+  'sprintf|dd.|w|c',
+  'vsprintf|?|w|p',
+  'strlen|d|w|p',
+  'strchr|dw|d|p',
+  'strrchr|dw|d|p',
+  'strpos|dw|w|p',
+  'strrpos|dw|w|p',
+  'strcpy|dd|d|p',
+  'strncpy|ddw|d|p',
+  'strcmp|dd|w|p',
+  'strncmp|ddw|w|p',
+  'strcat|dd|d|p',
+  'strncat_old|?|?|p',
+  'strspn|dd|w|p',
+  'strcspn|dd|w|p',
+  'strpbrk|dd|d|p',
+  'STRRPBRK|?|?|p',
+  'strstr|dd|d|p',
+  'strrev|d|v|p',
+  'atoi|d|w|p',
+  'itoa|wd|v|p',
+  'MEMCCPY_OLD|?|?|p',
+  'MEMCPY_OLD|?|?|p',
+  'MEMSET_OLD|?|?|p',
+  'MEMCHR_OLD|?|?|p',
+  'MEMCMP_OLD|?|?|p',
+  '_Malloc|www|d|p',
+  '_Free|dw|?|p',
+  '_ReAlloc|dww|d|p',
+  'fseek|ddw|w|p',
+  'fopen|dd|d|p',
+  'fclose|d|w|p',
+  'ftell|d|d|p',
+  'fwrite|dwwd|w|p',
+  'fread|dwwd|w|p',
+  'FGETC_OLD|?|?|p',
+  'fflush|d|w|p',
+  'rename|dd|w|p',
+  'fdopen|wd|d|p',
+  'fdclose|d|w|p',
+  'qsort|?|v|p',
+  'bsearch|?|d|p',
+  'memchr|dww|d|p',
+  'memcmp|ddw|w|p',
+  'memcpy|ddw|d|p',
+  'memmove|ddw|d|p',
+  'memset|dww|d|p',
+  'memccpy|ddww|d|p',
+  'strncat|ddw|d|p',
+  'feof|d|w|p',
+  'fgets|dwd|d|p',
+  'fgetc|d|w|p',
+  'sscanf|dd.|w|c',
+  'fscanf|dd.|w|c',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '',
+  '__U4M|?|?|p',
+  '__U4D|?|?|p',
+  '__I4M|?|?|p',
+  '__I4D|?|?|p',
+  '__CHP|?|?|p'
+ );
+
+ Tab_borlandc : Array[0..23] Of String[46] = (
+  'sin|?|?|p',
+  'cos|?|?|p',
+  'tan|?|?|p',
+  'cosh|?|?|p',
+  'sinh|?|?|p',
+  'tanh|?|?|p',
+  'atan|?|?|p',
+  'acos|?|?|p',
+  'asin|?|?|p',
+  'atanh|?|?|p',
+  'asinh|?|?|p',
+  'acosh|?|?|p',
+  'log|?|?|p',
+  'LN|?|?|p',
+  'sqrt|?|?|p',
+  'F_FTOL@|?|?|p',
+  'pow|?|?|p',
+  'floor|?|?|p',
+  'fabs|?|?|p',
+  'exp|?|?|p',
+  'frand||?|p',
+  'fmod|?|?|p',
+  'atan2|?|?|p',
+  'log10|?|?|p'
+ );
+
+ Tab_spool : Array[0..58] Of String[46] = (
+  'PrintControlClass|?|?|p',
+  'SpoolSummonsClass|?|?|p',
+  'SpoolChangeClass|?|?|p',
+  'SpoolApplicationClass|?|?|p',
+  'PageSizeControlClass|?|?|p',
+  'SpoolGetNumPaperSizes|dw|v|p',
+  'SpoolGetPaperString|dww|w|p',
+  'SpoolGetPaperSize|dww|v|p',
+  'SpoolConvertPaperSize|www|w|p',
+  'SpoolGetPaperSizeOrder|ddd|v|p',
+  'SpoolSetPaperSizeOrder|dww|v|p',
+  'SpoolCreatePaperSize|?|w|p',
+  'SpoolDeletePaperSize|ww|w|p',
+  'SpoolGetNumPrinters|ww|w|p',
+  'SpoolGetPrinterString|dw|w|p',
+  'SpoolGetPrinterInfo|?|?|p',
+  'SpoolCreatePrinter|dw|w|p',
+  'SpoolDeletePrinter|w|v|p',
+  'SpoolGetDefaultPrinter||w|p',
+  'SpoolSetDefaultPrinter|w|v|p',
+  'SpoolCreateSpoolFile|d|w|p',
+  'SpoolSetDocSize|wd|v|p',
+  'SpoolAddJob|?|?|p',
+  'SpoolDelJob|w|?|p',
+  'SpoolInfo|wd|?|p',
+  'SpoolHurryJob|w|?|p',
+  'SpoolDelayJob|w|?|p',
+  'SpoolModifyPriority|ww|?|p',
+  'SpoolVerifyPrinterPort|d|?|p',
+  'SpoolMapToPrinterFont|?|?|p',
+  'SpoolUpdateTranslationTable|?|?|p',
+  'SpoolSetDocSize|wd|v|p',
+  'SpoolGetDefaultPageSizeInfo|d|v|p',
+  'SpoolSetDefaultPageSizeInfo|d|v|p',
+  'SpoolGetDefaultPageSizeInfo|d|v|p',
+  'SpoolSetDefaultPageSizeInfo|d|v|p',
+  'SpoolGetNumPaperSizes|dw|v|p',
+  'SpoolGetPaperString|dww|w|p',
+  'SpoolGetPaperSize|dww|v|p',
+  'SpoolConvertPaperSize|www|w|p',
+  'SpoolGetPaperSizeOrder|ddd|v|p',
+  'SpoolSetPaperSizeOrder|dww|v|p',
+  'SpoolCreatePaperSize|?|w|p',
+  'SpoolDeletePaperSize|ww|w|p',
+  'SpoolGetNumPrinters|ww|w|p',
+  'SpoolGetPrinterString|dw|w|p',
+  'SpoolCreatePrinter|dw|w|p',
+  'SpoolDeletePrinter|w|v|p',
+  'SpoolSetDefaultPrinter|w|v|p',
+  'SpoolCreateSpoolFile|d|w|p',
+  'SpoolDelJob|w|?|p',
+  'SpoolInfo|wd|?|p',
+  'SpoolHurryJob|w|?|p',
+  'SpoolDelayJob|w|?|p',
+  'SpoolModifyPriority|ww|?|p',
+  'SpoolVerifyPrinterPort|d|?|p',
+  'SizeVerifyDialogClass|?|?|p',
+  'SpoolEMOMClass|?|?|p',
+  'SpoolPrinterNameToMedium|?|?|p'
+ );
+
+
+{ ====================================================================== }
+{   NOYAU PC/GEOS 2.x LOGICIEL : appels de bibliotheque emules par        }
+{   ordinal. Les ordinaux et les prototypes proviennent des fichiers .gp  }
+{   et des en-tetes C du depot open source bluewaysw/pcgeos (60a_names).  }
+{   Un appel sans semantique connue n'arrete JAMAIS l'emulation : il est  }
+{   journalise et rend 0.                                                  }
+{ ====================================================================== }
+{$IFDEF FPC}
+Type
+ TRtHan = Record Seg,Par: Word; Used: Boolean; End;
+ TRtSeen = Record Lb: Byte; Ord_: Word; Cnt: Integer; End;
+ TRtUser = Record Lb: Byte; Ord_: Word; Nm: String[24]; End;
+
+Var
+ RtHan     : Array[1..400] Of TRtHan;
+ RtHeapTop : Word;
+ RtPush    : Integer;
+ RtCallPush: Integer;
+ RtLogged  : Integer;
+ RtCalls,RtUnkCalls : LongInt;
+ RtSeen    : Array[1..200] Of TRtSeen;
+ RtNSeen   : Integer;
+ RtUser    : Array[1..160] Of TRtUser;
+ RtNUser   : Integer;
+ RtFiles   : Array[1..12] Of File;
+ RtFUsed   : Array[1..12] Of Boolean;
+
+Function RtLibId(Const N0: String): Integer;
+Var N: String;
+Begin
+ N:=TrimStr(N0);
+ If N='geos' Then RtLibId:=0 Else If N='ui' Then RtLibId:=1 Else If N='ansic' Then RtLibId:=2
+ Else If N='borlandc' Then RtLibId:=3 Else If N='spool' Then RtLibId:=4 Else RtLibId:=9;
+End;
+
+Function RtLibName(Lb: Integer): String;
+Begin
+ If Lb<0 Then RtLibName:='geos'
+ Else If (ELog<>Nil) And (Lb<MAXGLIB) Then RtLibName:=TrimStr(PGeodeWin(ELog^.Data)^.G.Libs[Lb].Name)
+ Else RtLibName:='lib'+IntStr(Lb);
+End;
+
+{ Entree de table : 'Nom|signature|retour|convention' ou '' si inconnue }
+Function RtEntry(LibId: Integer; O: Word): String;
+Var S: String;
+Begin
+ S:='';
+ Case LibId Of
+  0: If O<=High(Tab_geos) Then S:=Tab_geos[O];
+  1: If O<=High(Tab_ui) Then S:=Tab_ui[O];
+  2: If O<=High(Tab_ansic) Then S:=Tab_ansic[O];
+  3: If O<=High(Tab_borlandc) Then S:=Tab_borlandc[O];
+  4: If O<=High(Tab_spool) Then S:=Tab_spool[O];
+ End;
+ RtEntry:=S;
+End;
+
+Function RtField(Const S: String; N: Integer): String;
+Var I,K: Integer; R: String;
+Begin
+ R:='';K:=0;
+ For I:=1 To Length(S) Do Begin
+  If S[I]='|' Then Inc(K)
+  Else If K=N Then R:=R+S[I];
+ End;
+ RtField:=R;
+End;
+
+{ Fichier de symboles utilisateur : "bibliotheque ordinal nom" (complete ou remplace la table) }
+Procedure RtLoadSls(Const P: String);
+Var F: Text; S,A,B,C: String; Q: Integer; V,Cd: Integer;
+Begin
+ {$I-}
+ Assign(F,P);Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}
+ While Not Eof(F) Do Begin
+  ReadLn(F,S);
+  If (S<>'') And (S[1]<>';') Then Begin
+   Q:=Pos(' ',S);
+   If Q>0 Then Begin
+    A:=Copy(S,1,Q-1);S:=TrimStr(Copy(S,Q+1,200));
+    Q:=Pos(' ',S);
+    If Q>0 Then Begin
+     B:=Copy(S,1,Q-1);C:=TrimStr(Copy(S,Q+1,40));
+     Val(B,V,Cd);
+     If (Cd=0) And (RtNUser<160) Then Begin
+      Inc(RtNUser);RtUser[RtNUser].Lb:=RtLibId(A);RtUser[RtNUser].Ord_:=V;RtUser[RtNUser].Nm:=Copy(C,1,24);
+     End;
+    End;
+   End;
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+{ Handles de memoire emules }
+Function RtAlloc(Size: Word): Word;
+Var I: Integer; Par: LongInt;
+Begin
+ RtAlloc:=0;
+ Par:=(LongInt(Size)+15) Shr 4+1;
+ If RtHeapTop+Par>$EF00 Then Exit;
+ For I:=1 To High(RtHan) Do
+  If Not RtHan[I].Used Then Begin
+   RtHan[I].Used:=True;RtHan[I].Seg:=RtHeapTop;RtHan[I].Par:=Par;
+   FillChar(EMem^[Lin(RtHeapTop,0)],Par*16,0);
+   RtHeapTop:=RtHeapTop+Par;
+   RtAlloc:=$0400+I;
+   Exit;
+  End;
+End;
+
+Function RtSeg(H: Word): Word;
+Var I: Integer;
+Begin
+ RtSeg:=0;
+ If (H>=$0200) And (H<$0400) Then Begin
+  If (H-$0200<MAXGSEG) Then RtSeg:=SegPara[H-$0200];
+ End Else If (H>$0400) And (H<=$0400+High(RtHan)) Then Begin
+  I:=H-$0400;
+  If RtHan[I].Used Then RtSeg:=RtHan[I].Seg;
+ End;
+End;
+
+Procedure RtNote(Lb: Integer; O: Word);
+Var I: Integer;
+Begin
+ For I:=1 To RtNSeen Do
+  If (RtSeen[I].Lb=Lb) And (RtSeen[I].Ord_=O) Then Begin Inc(RtSeen[I].Cnt);Exit;End;
+ If RtNSeen<200 Then Begin
+  Inc(RtNSeen);RtSeen[RtNSeen].Lb:=Lb;RtSeen[RtNSeen].Ord_:=O;RtSeen[RtNSeen].Cnt:=1;
+ End;
+End;
+
+{ Suivi des empilements pour estimer les arguments d'un appel de signature inconnue }
+Procedure RtTrack(Op: Byte);
+Begin
+ Case Op Of
+  $50..$57,$68,$6A,$06,$0E,$16,$1E: Inc(RtPush);
+  $58..$5F,$07,$17,$1F: If RtPush>0 Then Dec(RtPush);
+  $FF: If ((M8(SegR[1],EIP) Shr 3) And 7)=6 Then Inc(RtPush);
+  $E8,$9A: Begin RtCallPush:=RtPush;RtPush:=0;End;
+  $C3,$CB,$C9,$C2,$CA: RtPush:=0;
+ End;
+End;
+
+Function RtCStr(S,O: Word; Max: Integer): String;
+Var R: String; I: Integer; C: Byte;
+Begin
+ R:='';
+ For I:=0 To Max-1 Do Begin
+  C:=M8(S,Word(O+I));
+  If C=0 Then Break;
+  If (C<32) And (C<>10) Then C:=32;
+  R:=R+Chr(C);
+ End;
+ RtCStr:=R;
+End;
+
+Procedure RtPutStr(S,O: Word; Const T: String);
+Var I: Integer;
+Begin
+ For I:=1 To Length(T) Do W8(S,Word(O+I-1),Ord(T[I]));
+ W8(S,Word(O+Length(T)),0);
+End;
+
+Function RtFreeFile: Integer;
+Var I: Integer;
+Begin
+ RtFreeFile:=0;
+ For I:=1 To High(RtFiles) Do If Not RtFUsed[I] Then Begin RtFreeFile:=I;Exit;End;
+End;
+
+Procedure RtCall(Lib: Integer; Ord_: Word);
+Var I,Tot,N: Integer; Nm,Up,Lb,Sg,Rs,Cv,S,Args,E,T: String; Top: Word; Known,Logit,Cd: Boolean;
+    LibId: Integer; V: Word; L: LongInt; Fnd: Boolean; Nw: Word;
+
+ Function ArgOfs(Idx: Integer): Word;
+ Var J,C: Integer;
+ Begin
+  C:=0;
+  If Cv='c' Then Begin
+   For J:=1 To Idx Do If Sg[J]='d' Then Inc(C,4) Else Inc(C,2);
+   ArgOfs:=Word(Top+C);
+  End Else Begin
+   For J:=1 To Idx+1 Do If Sg[J]='d' Then Inc(C,4) Else Inc(C,2);
+   ArgOfs:=Word(Top+Tot-C);
+  End;
+ End;
+ Function ArgW(Idx: Integer): Word;
+ Begin
+  ArgW:=M16(SegR[2],ArgOfs(Idx));
+ End;
+ Function ArgSeg(Idx: Integer): Word;
+ Begin
+  ArgSeg:=M16(SegR[2],Word(ArgOfs(Idx)+2));
+ End;
+
+ { mise en forme minimale de printf : %d %u %x %s %c avec largeur et '-' }
+ Function Fmt(FS,FO: Word; AO: Word): String;
+ Var F,R,P,Wd: String; K,Wn: Integer; Left: Boolean; Ch: Char; V16: Word; SS,SO: Word;
+ Begin
+  F:=RtCStr(FS,FO,100);R:='';K:=1;
+  While K<=Length(F) Do Begin
+   If F[K]<>'%' Then Begin R:=R+F[K];Inc(K);End
+   Else Begin
+    Inc(K);Left:=False;Wd:='';
+    If (K<=Length(F)) And (F[K]='-') Then Begin Left:=True;Inc(K);End;
+    While (K<=Length(F)) And (F[K] In ['0'..'9']) Do Begin Wd:=Wd+F[K];Inc(K);End;
+    If (K<=Length(F)) And (F[K] In ['l','h']) Then Inc(K);
+    If K>Length(F) Then Break;
+    Ch:=F[K];Inc(K);
+    Wn:=StrVal(Wd,0);P:='';
+    Case Ch Of
+     'd','i': Begin V16:=M16(SegR[2],AO);Inc(AO,2);P:=IntStr(SmallInt(V16));End;
+     'u': Begin V16:=M16(SegR[2],AO);Inc(AO,2);P:=IntStr(V16);End;
+     'x','X': Begin V16:=M16(SegR[2],AO);Inc(AO,2);P:=HexW(V16);While (Length(P)>1) And (P[1]='0') Do Delete(P,1,1);End;
+     'c': Begin V16:=M16(SegR[2],AO);Inc(AO,2);P:=Chr(V16 And 255);End;
+     's': Begin SO:=M16(SegR[2],AO);SS:=M16(SegR[2],Word(AO+2));Inc(AO,4);P:=RtCStr(SS,SO,100);End;
+     '%': P:='%';
+    End;
+    While Length(P)<Wn Do If Left Then P:=P+' ' Else P:=' '+P;
+    R:=R+P;
+   End;
+  End;
+  Fmt:=R;
+ End;
+
+Begin
+ Inc(RtCalls);
+ Lb:=RtLibName(Lib);
+ LibId:=RtLibId(Lb);
+ E:=RtEntry(LibId,Ord_);
+ Known:=E<>'';
+ Nm:=Lb+'#'+IntStr(Ord_);Sg:='?';Rs:='?';Cv:='p';
+ For I:=1 To RtNUser Do If (RtUser[I].Lb=LibId) And (RtUser[I].Ord_=Ord_) Then Begin Nm:=RtUser[I].Nm;Known:=True;End;
+ If E<>'' Then Begin
+  Nm:=RtField(E,0);Sg:=RtField(E,1);Rs:=RtField(E,2);Cv:=RtField(E,3);
+  If Cv='' Then Cv:='p';
+ End;
+ Up:=Upper(Nm);
+ If (Length(Up)>0) And (Up[1]='_') Then Delete(Up,1,1);
+ Top:=Word(Reg[4]+4);
+ If (Sg<>'?') And (Pos('.',Sg)=0) Then Begin
+  Tot:=0;
+  For I:=1 To Length(Sg) Do If Sg[I]='d' Then Inc(Tot,4) Else Inc(Tot,2);
+ End Else Begin
+  Tot:=Min2(RtCallPush,20)*2;
+  If Pos('.',Sg)>0 Then Begin Cv:='c';Delete(Sg,Pos('.',Sg),1);Tot:=0;For I:=1 To Length(Sg) Do If Sg[I]='d' Then Inc(Tot,4) Else Inc(Tot,2);End
+  Else Begin Sg:='';For I:=1 To Tot Div 2 Do Sg:=Sg+'w';End;
+ End;
+ If Cv='c' Then Begin
+  { cdecl : l'appelant nettoie, on ne retire rien }
+  N:=Tot;Tot:=Tot;
+ End;
+ Args:='';
+ For I:=0 To Min2(Length(Sg),6)-1 Do Begin
+  If Sg[I+1]='d' Then Args:=Args+HexW(ArgSeg(I))+':'+HexW(ArgW(I)) Else Args:=Args+HexW(ArgW(I));
+  If I<Min2(Length(Sg),6)-1 Then Args:=Args+',';
+ End;
+ Reg[0]:=0;Reg[2]:=0;
+ Fnd:=True;
+ { ---- semantique ---- }
+ If Up='MEMALLOC' Then Reg[0]:=RtAlloc(ArgW(0))
+ Else If Up='MEMFREE' Then Begin I:=ArgW(0)-$0400;If (I>=1) And (I<=High(RtHan)) Then RtHan[I].Used:=False;End
+ Else If Up='MEMLOCK' Then Reg[2]:=RtSeg(ArgW(0))
+ Else If (Up='MEMUNLOCK') Or (Up='MEMDISCARD') Then
+ Else If Up='MEMREALLOC' Then Begin
+  Nw:=RtAlloc(ArgW(1));
+  If (Nw<>0) And (RtSeg(ArgW(0))<>0) Then Begin
+   For I:=0 To Min2(ArgW(1),RtHan[ArgW(0)-$0400].Par*16)-1 Do EMem^[Lin(RtSeg(Nw),I)]:=EMem^[Lin(RtSeg(ArgW(0)),I)];
+   I:=ArgW(0)-$0400;If (I>=1) And (I<=High(RtHan)) Then RtHan[I].Used:=False;
+  End;
+  Reg[0]:=Nw;
+ End
+ Else If Up='MALLOC' Then Begin I:=RtAlloc(ArgW(0));If I<>0 Then Reg[2]:=RtSeg(I);End
+ Else If Up='FREE' Then
+ Else If Up='STRLEN' Then Begin
+  V:=0;While (V<60000) And (M8(ArgSeg(0),Word(ArgW(0)+V))<>0) Do Inc(V);
+  Reg[0]:=V;
+ End
+ Else If Up='STRCPY' Then Begin
+  V:=0;
+  While (V<60000) Do Begin
+   W8(ArgSeg(0),Word(ArgW(0)+V),M8(ArgSeg(1),Word(ArgW(1)+V)));
+   If M8(ArgSeg(1),Word(ArgW(1)+V))=0 Then Break;
+   Inc(V);
+  End;
+  Reg[0]:=ArgW(0);Reg[2]:=ArgSeg(0);
+ End
+ Else If Up='STRCAT' Then Begin
+  V:=0;While (V<60000) And (M8(ArgSeg(0),Word(ArgW(0)+V))<>0) Do Inc(V);
+  N:=0;
+  While (N<60000) Do Begin
+   W8(ArgSeg(0),Word(ArgW(0)+V+N),M8(ArgSeg(1),Word(ArgW(1)+N)));
+   If M8(ArgSeg(1),Word(ArgW(1)+N))=0 Then Break;
+   Inc(N);
+  End;
+  Reg[0]:=ArgW(0);Reg[2]:=ArgSeg(0);
+ End
+ Else If Up='STRCMP' Then Begin
+  V:=0;
+  While (V<60000) And (M8(ArgSeg(0),Word(ArgW(0)+V))=M8(ArgSeg(1),Word(ArgW(1)+V))) And (M8(ArgSeg(0),Word(ArgW(0)+V))<>0) Do Inc(V);
+  Reg[0]:=Word(Integer(M8(ArgSeg(0),Word(ArgW(0)+V)))-Integer(M8(ArgSeg(1),Word(ArgW(1)+V))));
+ End
+ Else If Up='STRCHR' Then Begin
+  V:=0;
+  While (V<60000) And (M8(ArgSeg(0),Word(ArgW(0)+V))<>0) And (M8(ArgSeg(0),Word(ArgW(0)+V))<>(ArgW(1) And 255)) Do Inc(V);
+  If M8(ArgSeg(0),Word(ArgW(0)+V))=(ArgW(1) And 255) Then Begin Reg[0]:=Word(ArgW(0)+V);Reg[2]:=ArgSeg(0);End;
+ End
+ Else If Up='ATOI' Then Reg[0]:=Word(StrVal(TrimStr(RtCStr(ArgSeg(0),ArgW(0),12)),0))
+ Else If Up='SPRINTF' Then Begin
+  S:=Fmt(ArgSeg(1),ArgW(1),Word(Top+8));
+  RtPutStr(ArgSeg(0),ArgW(0),S);Reg[0]:=Length(S);
+  Args:=Args+'  "'+Copy(S,1,24)+'"';
+ End
+ Else If (Up='FILEPUSHDIR') Or (Up='FILEPOPDIR') Or (Up='FILESETSTANDARDPATH') Then
+ Else If Up='FILESETCURRENTPATH' Then Begin
+  S:=RtCStr(ArgSeg(1),ArgW(1),120);
+  {$I-}
+  If S<>'' Then ChDir(S);
+  {$I+}
+  If IOResult<>0 Then Begin Reg[0]:=1;End;
+ End
+ Else If Up='FILEOPEN' Then Begin
+  S:=RtCStr(ArgSeg(0),ArgW(0),120);N:=RtFreeFile;
+  If N=0 Then Reg[0]:=0
+  Else Begin
+   {$I-}
+   Assign(RtFiles[N],S);FileMode:=2;Reset(RtFiles[N],1);
+   {$I+}
+   If IOResult=0 Then Begin RtFUsed[N]:=True;Reg[0]:=$0800+N;End Else Reg[0]:=0;
+  End;
+  Args:=Args+'  "'+Copy(S,1,24)+'"';
+ End
+ Else If Up='FILECREATE' Then Begin
+  S:=RtCStr(ArgSeg(1),ArgW(1),120);N:=RtFreeFile;
+  If N=0 Then Reg[0]:=0
+  Else Begin
+   {$I-}
+   Assign(RtFiles[N],S);Rewrite(RtFiles[N],1);
+   {$I+}
+   If IOResult=0 Then Begin RtFUsed[N]:=True;Reg[0]:=$0800+N;End Else Reg[0]:=0;
+  End;
+  Args:=Args+'  "'+Copy(S,1,24)+'"';
+ End
+ Else If Up='FILECLOSE' Then Begin
+  N:=ArgW(0)-$0800;
+  If (N>=1) And (N<=High(RtFiles)) And RtFUsed[N] Then Begin {$I-}Close(RtFiles[N]);{$I+}If IOResult<>0 Then Begin End;RtFUsed[N]:=False;End;
+ End
+ Else If (Up='FILEREAD') Or (Up='FILEWRITE') Then Begin
+  N:=ArgW(0)-$0800;
+  If (N>=1) And (N<=High(RtFiles)) And RtFUsed[N] Then Begin
+   V:=0;
+   {$I-}
+   If Up='FILEREAD' Then BlockRead(RtFiles[N],EMem^[Lin(ArgSeg(1),ArgW(1))],ArgW(2),V)
+   Else BlockWrite(RtFiles[N],EMem^[Lin(ArgSeg(1),ArgW(1))],ArgW(2),V);
+   {$I+}
+   If IOResult<>0 Then V:=0;
+   Reg[0]:=V;
+  End Else Reg[0]:=0;
+ End
+ Else If Up='FILEPOS' Then Begin
+  N:=ArgW(0)-$0800;
+  If (N>=1) And (N<=High(RtFiles)) And RtFUsed[N] Then Begin
+   L:=ArgW(1)+65536*LongInt(ArgSeg(1));
+   {$I-}
+   Case ArgW(2) Of
+    0: Seek(RtFiles[N],L);
+    1: Seek(RtFiles[N],FilePos(RtFiles[N])+L);
+   Else Seek(RtFiles[N],FileSize(RtFiles[N])+L);
+   End;
+   L:=FilePos(RtFiles[N]);
+   {$I+}
+   If IOResult<>0 Then L:=0;
+   Reg[0]:=Word(L And $FFFF);Reg[2]:=Word(L Shr 16);
+  End;
+ End
+ Else If Up='FILEDELETE' Then Begin
+  S:=RtCStr(ArgSeg(0),ArgW(0),120);
+  {$I-}
+  Assign(RtFiles[1],S);Erase(RtFiles[1]);
+  {$I+}
+  If IOResult<>0 Then Reg[0]:=2;
+ End
+ Else If Up='FILECREATEDIR' Then Begin
+  S:=RtCStr(ArgSeg(0),ArgW(0),120);
+  {$I-}
+  MkDir(S);
+  {$I+}
+  If IOResult<>0 Then Reg[0]:=1;
+  Args:=Args+'  "'+Copy(S,1,24)+'"';
+ End
+ Else If Up='USERSTANDARDDIALOG' Then Begin
+  S:=RtCStr(ArgSeg(4),ArgW(4),160);
+  ELogLine('  [DIALOG] '+S);
+  Args:=Args+'  "'+Copy(S,1,24)+'"';
+ End
+ Else If Up='GRCREATESTATE' Then Reg[0]:=$4001
+ Else Fnd:=Known And (Copy(Up,1,2)='GR');
+ { ---- journal ---- }
+ Logit:=(RtLogged<18) Or (Not Known);
+ If Not Known Then Begin Inc(RtUnkCalls);Logit:=RtLogged<40;End
+ Else If Not Fnd Then Logit:=RtLogged<30;
+ If Logit Then Begin
+  Inc(RtLogged);
+  If Not Known Then ELogLine('  CALL ?? '+Nm+'('+Args+')')
+  Else If Fnd Then ELogLine('  CALL '+Nm+'('+Args+')')
+  Else ELogLine('  CALL '+Nm+'('+Args+')  [non emule]');
+ End;
+ EFl:=EFl And (Not FL_CF);
+ RetFar;
+ If Cv<>'c' Then Reg[4]:=Word(Reg[4]+Tot);
+ RtPush:=0;
+End;
 {$ENDIF}
 
 {$IFDEF FPC}
@@ -14228,6 +17089,16 @@ Begin
  EHalt:=True;EReason:=S;
 End;
 
+Var RtSkips: Integer;
+
+{ Opcode non gere : on le journalise et on continue (jamais d'arret net) }
+Procedure RtSkip(Op: Byte);
+Begin
+ Inc(RtSkips);
+ If RtSkips<=6 Then ELogLine('  ?? opcode '+HexB(Op)+' ignore @'+HexW(SegR[1])+':'+HexW(Word(EIP-1)));
+ If RtSkips>60 Then Halt_('opcodes inconnus en rafale');
+End;
+
 Procedure ExecOne;
 Var Op: Byte; Wd,Pref: Boolean; V,V2,D: LongInt; Imm: Word; Cnt: Integer; R,I: Integer; Tmp: Word;
     OldF: Word;
@@ -14255,11 +17126,12 @@ Begin
   End;
  End;
  Inc(ICount);
+ RtTrack(Op);
  If Op<$40 Then Begin
   If (Op And 7)>=6 Then Begin
    If (Op=$06) Or (Op=$0E) Or (Op=$16) Or (Op=$1E) Then Push16(SegR[(Op Shr 3) And 3])
    Else If (Op=$07) Or (Op=$17) Or (Op=$1F) Then SegR[(Op Shr 3) And 3]:=Pop16
-   Else Halt_('opcode '+HexB(Op));
+   Else RtSkip(Op);
    Exit;
   End;
   R:=(Op Shr 3) And 7;
@@ -14440,7 +17312,7 @@ Begin
      Else Halt_('FF /7');
      End;
     End;
- Else Halt_('opcode '+HexB(Op)+' @'+HexW(SegR[1])+':'+HexW(Word(EIP-1)));
+ Else RtSkip(Op);
  End;
 End;
 {$ENDIF}
@@ -14478,6 +17350,108 @@ Begin
  GwClearLines(Wd_);
 End;
 
+
+{ Enregistre le journal dans GEOEMU.LOG (repertoire courant) }
+Procedure GwSaveLog(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
+Var F: Text; I: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'GEOEMU.LOG'));Rewrite(F);
+ For I:=1 To Dt_^.NL Do WriteLn(F,Dt_^.Ln[I]^);
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+{ Rapport statique : ordinaux importes par le geode, identifies ou non }
+Procedure RtCoverage(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
+Var I,J,L,Known,Tot: Integer; T: TRtSeen; S,E,Nm: String;
+Begin
+ Dt_:=Wd_^.Data;
+ For I:=2 To RtNSeen Do Begin
+  T:=RtSeen[I];J:=I-1;
+  While (J>=1) And ((RtSeen[J].Lb>T.Lb) Or ((RtSeen[J].Lb=T.Lb) And (RtSeen[J].Ord_>T.Ord_))) Do Begin RtSeen[J+1]:=RtSeen[J];Dec(J);End;
+  RtSeen[J+1]:=T;
+ End;
+ Known:=0;Tot:=RtNSeen;
+ For I:=1 To RtNSeen Do Begin
+  L:=RtSeen[I].Lb;
+  If L<Dt_^.G.NL Then E:=RtEntry(RtLibId(Dt_^.G.Libs[L].Name),RtSeen[I].Ord_) Else E:='';
+  If E<>'' Then Inc(Known);
+ End;
+ GwAdd(Wd_,T3('Imported routines: ','Routines import'#130'es : ','Importierte Routinen: ')+IntStr(Tot)+
+   T3(' distinct, named: ',' distinctes, nomm'#130'es : ',' verschiedene, benannt: ')+IntStr(Known)+
+   ' ('+IntStr(Known*100 Div Max2(1,Tot))+' %)');
+ S:='';
+ For I:=1 To RtNSeen Do Begin
+  L:=RtSeen[I].Lb;
+  If L<Dt_^.G.NL Then E:=RtEntry(RtLibId(Dt_^.G.Libs[L].Name),RtSeen[I].Ord_) Else E:='';
+  If E<>'' Then Nm:=RtField(E,0) Else Nm:='??'+IntStr(RtSeen[I].Ord_);
+  If L<Dt_^.G.NL Then Nm:=TrimStr(Dt_^.G.Libs[L].Name)+'.'+Nm;
+  If Length(S)+Length(Nm)>62 Then Begin GwAdd(Wd_,'  '+S);S:='';End;
+  S:=S+Nm+'('+IntStr(RtSeen[I].Cnt)+') ';
+ End;
+ If S<>'' Then GwAdd(Wd_,'  '+S);
+End;
+
+{ Execute un point d'entree synthetique et journalise ce qui se passe }
+Procedure RtRunOne(Wd_: PWindow; Const Lbl: String; SegE,OfsE: Word; Budget: LongInt);
+ Var Dt_: PGeodeWin;
+Var I: Integer; C0,U0: LongInt; Stp: LongInt; DbgN: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ ELog:=Wd_;
+ If GetEnv('GEODEBUG')<>'' Then DbgN:=StrVal(GetEnv('GEODEBUG'),60) Else DbgN:=0;
+ FillChar(Reg,SizeOf(Reg),0);
+ SegR[0]:=SegPara[Min2(1,Dt_^.G.NS-1)];SegR[3]:=SegR[0];SegR[2]:=$9000;SegR[1]:=SegE;
+ Reg[4]:=$FFF0;Reg[5]:=0;EIP:=OfsE;EFl:=$0202;
+ For I:=1 To 12 Do Push16(0);
+ Push16(TRAP_EXIT);Push16(0);
+ EHalt:=False;EReason:='';ICount:=0;RtPush:=0;RtLogged:=0;RtSkips:=0;
+ C0:=RtCalls;U0:=RtUnkCalls;
+ GwAdd(Wd_,'> '+Lbl+'  '+HexW(SegE)+':'+HexW(OfsE));
+ Stp:=0;
+ While (Not EHalt) And (Stp<Budget) Do Begin
+  If (Stp<DbgN) Then ELogLine('    '+HexW(SegR[1])+':'+HexW(EIP)+' '+HexB(M8(SegR[1],EIP))+HexB(M8(SegR[1],Word(EIP+1)))+HexB(M8(SegR[1],Word(EIP+2)))+' sp='+HexW(Reg[4]));
+  ExecOne;Inc(Stp);
+ End;
+ If Not EHalt Then EReason:=T3('instruction budget','limite d''instructions','Befehlslimit');
+ GwAdd(Wd_,'  = '+EReason+'  ('+NumFmt(ICount)+' '+T3('instr.','instr.','Bef.')+', '+IntStr(RtCalls-C0)+' '+T3('API calls','appels API','API-Aufrufe')+
+      ', '+IntStr(RtUnkCalls-U0)+' '+T3('unknown','inconnus','unbekannt')+')');
+End;
+
+{ Pour une application dont le code n'est atteint que par le systeme d'objets :
+  on execute chaque methode de la classe de processus et chaque exportation. }
+Procedure RtExercise(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
+Var I,N: Integer; CS_,CO,MSeg: Word; Msg,Ho,Hs: Word;
+Begin
+ Dt_:=Wd_^.Data;
+ GwAdd(Wd_,T3('--- object-system methods of the process class (exercised one by one) ---','--- m'#130'thodes de la classe de processus (ex'#130'cut'#130'es une par une) ---','--- Methoden der Prozessklasse (einzeln ausgef'#129'hrt) ---'));
+ If (Dt_^.G.Attr And $8000)<>0 Then Begin
+  If Dt_^.G.ProcRes<Dt_^.G.NS Then Begin
+   CS_:=SegPara[Dt_^.G.ProcRes];CO:=Dt_^.G.ProcOfs;
+   N:=M16(CS_,Word(CO+6));
+   GwAdd(Wd_,T3('Class struct at ','Classe en ','Klasse bei ')+HexW(CS_)+':'+HexW(CO)+T3(', methods: ',', m'#130'thodes : ',', Methoden: ')+IntStr(N));
+   If (N>0) And (N<60) Then
+    For I:=0 To N-1 Do Begin
+     Msg:=M16(CS_,Word(CO+16+I*2));
+     Ho:=M16(CS_,Word(CO+16+N*2+I*4));Hs:=M16(CS_,Word(CO+16+N*2+I*4+2));
+     RtRunOne(Wd_,'MSG '+HexW(Msg),Hs,Ho,40000);
+    End;
+  End;
+ End;
+ If Dt_^.G.AType<>1 Then
+ For I:=0 To Dt_^.G.NE-1 Do
+  If Dt_^.G.Exp[I].Res<Dt_^.G.NS Then
+   RtRunOne(Wd_,T3('export ','export ','Export ')+IntStr(I),SegPara[Dt_^.G.Exp[I].Res],Dt_^.G.Exp[I].Ofs,40000);
+ GwAdd(Wd_,T3('Total API calls: ','Appels API : ','API-Aufrufe: ')+IntStr(RtCalls)+T3(', unknown: ',', inconnus : ',', unbekannt: ')+IntStr(RtUnkCalls));
+ GwSaveLog(Wd_);
+End;
+
 {$IFDEF FPC}
 Procedure GwEmulate(Wd_: PWindow);
  Var Dt_: PGeodeWin;
@@ -14491,6 +17465,8 @@ Begin
  GwAdd(Wd_,'---------------- '+T3('PC/GEOS EMULATION','EMULATION PC/GEOS','PC/GEOS-EMULATION')+' ----------------');
  If EMem=Nil Then GetMem(EMem,SizeOf(TEMem));
  FillChar(EMem^,SizeOf(TEMem),0);
+ RtNUser:=0;RtNSeen:=0;RtHeapTop:=$A000;FillChar(RtHan,SizeOf(RtHan),0);RtCalls:=0;RtUnkCalls:=0;
+ RtLoadSls(JoinPath(BaseDir,'GEOS2.SLS'));RtLoadSls(JoinPath(HomeDir,'GEOS2.SLS'));
  FillChar(Cnts,SizeOf(Cnts),0);
  Nx:=$0200;
  For I:=0 To Dt_^.G.NS-1 Do Begin
@@ -14535,10 +17511,15 @@ Begin
     $11: Begin Inc(Cnts[1]);End;
     $12: Begin W16(SegPara[I],Ofs,TRAP_LIB+Lb);Inc(Cnts[2]);End;
     $13: Begin W16(SegPara[I],Ofs,$0100+Lb);Inc(Cnts[3]);End;
-    $14: Begin W16(SegPara[I],Word(Ofs+2),TRAP_LIB+Lb);Inc(Cnts[4]);End;
+    $14: Begin RtNote(Lb,Cur);W16(SegPara[I],Word(Ofs+2),TRAP_LIB+Lb);Inc(Cnts[4]);End;
     $22: Begin If Cur<Dt_^.G.NS Then W16(SegPara[I],Ofs,SegPara[Cur]);Inc(Cnts[5]);End;
     $23: Begin W16(SegPara[I],Ofs,$0200+Cur);Inc(Cnts[6]);End;
-    $24: Begin If Cur<Dt_^.G.NS Then W16(SegPara[I],Ofs,SegPara[Cur]);Inc(Cnts[7]);End;
+    $24: Begin
+          { pointeur dans le programme : fichier = numero de ressource puis offset ; memoire = offset puis segment }
+          Tmp:=M16(SegPara[I],Word(Ofs+2));
+          If Cur<Dt_^.G.NS Then Begin W16(SegPara[I],Ofs,Tmp);W16(SegPara[I],Word(Ofs+2),SegPara[Cur]);End;
+          Inc(Cnts[7]);
+         End;
    Else Inc(Cnts[8]);
    End;
   End;
@@ -14549,13 +17530,20 @@ Begin
      '   '+T3('relocations: kernel ','relogements : noyau ','Relokationen: Kernel ')+IntStr(Cnts[0])+
      ', lib '+IntStr(Cnts[1]+Cnts[2]+Cnts[4])+', seg '+IntStr(Cnts[5]+Cnts[7])+', '+T3('other ','autres ','andere ')+IntStr(Cnts[3]+Cnts[6]+Cnts[8]));
  For I:=0 To Min2(Dt_^.G.NS-1,5) Do GwAdd(Wd_,'  res '+IntStr(I)+' @ '+HexW(SegPara[I])+':0000  ('+IntStr(Dt_^.G.Seg[I].Len)+')');
+ { application : son code n'est atteint que par le systeme d'objets }
+ If Dt_^.G.AType=1 Then Begin
+  RtCoverage(Wd_);RtExercise(Wd_);
+  Dt_^.Top:=Max2(1,Dt_^.NL-14);
+  Exit;
+ End;
  { point d'entree }
  Ok:=False;EntR:=0;EntO:=0;
  If (Dt_^.G.Attr And $4000)<>0 Then Begin EntR:=Dt_^.G.EntRes;EntO:=Dt_^.G.EntOfs;Ok:=True;GwAdd(Wd_,T3('Entry: library entry point','Entr'#130'e : point d''entr'#130'e de biblioth'#138'que','Einsprung: Bibliothekseintritt'));End
  Else If Dt_^.G.NE>0 Then Begin EntR:=Dt_^.G.Exp[0].Res;EntO:=Dt_^.G.Exp[0].Ofs;Ok:=True;GwAdd(Wd_,T3('Entry: exported routine 0','Entr'#130'e : routine export'#130'e 0','Einsprung: exportierte Routine 0'));End;
+ RtCoverage(Wd_);
  If (Not Ok) Or (EntR>=Dt_^.G.NS) Then Begin
-  GwAdd(Wd_,T3('This geode has no directly executable entry point (its code is','Ce geode n''a pas de point d''entr'#130'e ex'#130'cutable directement (son code est','Dieses Geode hat keinen direkt ausf'#129'hrbaren Einsprung (Code wird'));
-  GwAdd(Wd_,T3('reached through the object system of the GEOS kernel).','atteint via le syst'#138'me d''objets du noyau GEOS).',''#129'ber das Objektsystem des GEOS-Kernels erreicht).'));
+  RtExercise(Wd_);
+  Dt_^.Top:=Max2(1,Dt_^.NL-14);
   Exit;
  End;
  FillChar(Reg,SizeOf(Reg),0);
