@@ -6351,11 +6351,11 @@ Begin
  { logo }
  WelcomeLogo(146+WDX,273+WDY,489+WDX,358+WDY);
  { copyright }
- Nm:='Version 1.2 Copyright (c) GeoWorks 1991, 1990. All Rights Reserved.';
- If Lang=1 Then Nm:='Version 1.2 Copyright (c) GeoWorks '+
-     '1991, 1990. Tous droits r'#130'serv'#130's.';
- If Lang=2 Then Nm:='Version 1.2 Copyright (c) GeoWorks '+
-     '1991, 1990. Alle Rechte vorbehalten.';
+ Nm:='Clone de version 1.2 de GeoWorks 1991, 1990.';
+ If Lang=1 Then Nm:='Version 1.2 GeoWorks '+
+     '1991, 1990.';
+ If Lang=2 Then Nm:='Version 1.2 GeoWorks '+
+     '1991, 1990.';
  GTextB((SCR_W-TextW(Nm)) Div 2,413+WDY,Nm,cBlk);
  Nm:=T3('Serial #','N'#167' de s'#130'rie #',
      'Seriennr. #')+'2101-0011-0207-0026';
