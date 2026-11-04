@@ -7243,13 +7243,13 @@ Const
  { et emplacements de trappe d'import, mêmes constantes utilisees par      }
  { Win16_LoadNE/Win16_ResolveImportSlot (voir plus loin dans ce fichier). }
  WIN16_MAX_SEGS       = 64;
- WIN16_MAX_TRAP_SLOTS = 128;
+ WIN16_MAX_TRAP_SLOTS = 512;  { CALENDAR.EXE (Win 2.03) importe 139 fonctions : 128 etait trop peu }
  WIN16_TRAP_SLOT_SIZE = 5;  { CD F8 (INT prive) + index de slot (2 octets) + CB
    (RETF) }
  { Chantier Windows 16 bits, Stage 6 : fenetre reellement visible -        }
  { classes/fenetres/file de messages, un seul programme charge a la fois  }
  { (meme limitation deja assumee que Win16_ImportModIdx[] etc.). }
- WIN16_MAX_WNDCLASSES = 8;
+ WIN16_MAX_WNDCLASSES = 16;
  WIN16_MAX_WINDOWS    = 8;
  { Barre de titre reelle (2026-09-12, demande explicite) - hissee en        }
  { constante GLOBALE (pas locale a Win16_DrawWindowFrame) car CreateWindow/ }
@@ -9290,6 +9290,7 @@ Var
  { pour les chantiers precedents, meme si Win16 reutilise LA MEME memoire  }
  { emulee TEmuCPU.Memory - seul le POINTEUR d allocation est distinct). }
  Win16_NextFreeSeg    : Word;
+ Win16_PspSeg         : Word;  { PSP (256 octets) renvoye par InitTask        }
  Win16_TrapSeg        : Word;   { segment reserve pour les thunks d import }
  Win16_SegCount       : Integer;
  Win16_SegBase        : Array[1..WIN16_MAX_SEGS] Of Word;  { NE seg # (1-based)
@@ -9322,6 +9323,7 @@ Var
  { ($191/$192, 2026-09-14) - MEME repertoire partage que Win16_LocalBlock* }
  { ci-dessus (voir GlobalAlloc/$15), index identique. }
  Win16_LocalBlockPageLock: Array[0..63] Of Byte;
+ Win16_LocalBlockFree: Array[0..63] Of Boolean;  { bloc libere, reutilisable }
  { Callback de notification du tas local (LocalNotify/$14, 2026-09-14,     }
  { demande explicite) - stocke mais jamais reellement appele (aucune        }
  { condition de bas de tas/compactage ne le declenche dans ce               }
@@ -107590,6 +107592,25 @@ Begin
  { Chantier Stage 6 : classes/fenetres/file de messages remises a zero a   }
  { chaque chargement (meme discipline que Win16_ImportSlotCount ci-dessus)}
  Win16_WndClassCount := 0;
+ { Classes PREDEFINIES de Windows (CreateWindow("Edit", ...) etc.) :      }
+ { enregistrees d'office, sans procedure de fenetre invitee (ProcSeg=0,    }
+ { Win16_CallWndProc ne l'appelle pas). Sans elles CreateWindow echouait   }
+ { (CALENDAR.EXE de Windows 2.03 cree un controle "Edit" et s'arretait). }
+ For I := 0 To 5 Do Begin
+  Case I Of
+   0: Win16_WndClassName[I] := 'EDIT';
+   1: Win16_WndClassName[I] := 'BUTTON';
+   2: Win16_WndClassName[I] := 'STATIC';
+   3: Win16_WndClassName[I] := 'LISTBOX';
+   4: Win16_WndClassName[I] := 'SCROLLBAR';
+   5: Win16_WndClassName[I] := 'COMBOBOX';
+  End;
+  Win16_WndClassProcSeg[I] := 0;
+  Win16_WndClassProcOfs[I] := 0;
+  Win16_WndClassBg[I] := 0;
+  Win16_WndClassMenu[I] := 0;
+ End;
+ Win16_WndClassCount := 6;
  Win16_WindowCount := 0;
  Win16_NextHWnd := 1;
  Win16_MsgQueueHead := 0;
@@ -107695,11 +107716,34 @@ Begin
  Win16_BrushHandleNext := 0;
  Win16_LastPenColor := 0;
  Win16_NextFreeSeg := $1000;
+ { Win16 : memoire programme/tas a ZERO (le filler $F6 des DOS reels n'a   }
+ { pas cours ici - les programmes Windows 2.x/3.x comptent sur des handles }
+ { et variables vierges, ex. CALENDAR.EXE lisait des handles bidon $F6F6). }
+ FillChar(C.Memory^[$10000], $90000, 0);
  { Reserve un bloc pour les thunks d'import AVANT tout segment programme,  }
  { pour qu'aucun segment reel ne puisse jamais y empieter. }
  Win16_TrapSeg := Win16_NextFreeSeg;
  Win16_NextFreeSeg := Win16_NextFreeSeg +
   Word(((WIN16_MAX_TRAP_SLOTS * WIN16_TRAP_SLOT_SIZE) + 15) Shr 4);
+ { PSP + bloc d'environnement (vrai PSP DOS : le demarrage C Microsoft     }
+ { des programmes Windows 2.x/3.x, ex. CALENDAR.EXE, relit ES:[2Ch] (seg.  }
+ { de l'environnement) renvoye par InitTask et le balaie a la recherche    }
+ { du double NUL final - sans PSP valide il tournait sans fin. }
+ Win16_PspSeg := Win16_NextFreeSeg;
+ Win16_NextFreeSeg := Word(Win16_NextFreeSeg + $10 + $10);
+ For I := 0 To 255 Do Emu_WriteByte(C, Win16_PspSeg, Word(I), 0);
+ Emu_WriteByte(C, Win16_PspSeg, 0, $CD);          { INT 20h }
+ Emu_WriteByte(C, Win16_PspSeg, 1, $20);
+ Emu_WriteWord(C, Win16_PspSeg, 2, $A000);        { sommet de memoire }
+ Emu_WriteWord(C, Win16_PspSeg, $2C, Word(Win16_PspSeg + $10));
+ Emu_WriteByte(C, Win16_PspSeg, $80, 0);          { queue de commande vide }
+ Emu_WriteByte(C, Win16_PspSeg, $81, 13);
+ { environnement : (aucune variable) NUL NUL, nb de chaines = 1, chemin }
+ Emu_WriteByte(C, Word(Win16_PspSeg + $10), 0, 0);
+ Emu_WriteByte(C, Word(Win16_PspSeg + $10), 1, 0);
+ Emu_WriteWord(C, Word(Win16_PspSeg + $10), 2, 1);
+ For I := 1 To Length(Path) Do
+  If I <= 200 Then Emu_WriteByte(C, Word(Win16_PspSeg + $10), Word(3 + I), Ord(Path[I]));
 
  {$I-}
  Assign(F, Path);
@@ -107952,6 +107996,12 @@ Begin
  { donnees+BSS statiques du segment autodata, grandit vers le haut         }
  { jusqu'a AutoDataLimit (deja reserve dans l'allocateur bump ci-dessus). }
  If Hdr.ne_autodata >= 1 Then Begin
+  { Le tas local part a ZERO (le remplissage $F6 d'Emu_InitComputer faisait   }
+  { lire des handles bidon $F6F6 aux programmes qui comptent sur une zone    }
+  { vierge, ex. CALENDAR.EXE). }
+  If AutoDataLimit > AutoDataMinAlloc Then
+   For LongTmp := AutoDataMinAlloc To AutoDataLimit - 1 Do
+    Emu_WriteByte(C, Win16_StackSeg, Word(LongTmp), 0);
   Win16_HeapNext := AutoDataMinAlloc;
   Win16_HeapLimit := AutoDataLimit;
   Win16_HeapStart := AutoDataMinAlloc;
@@ -107962,6 +108012,7 @@ Begin
  End;
  Win16_LocalBlockCount := 0;
  FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
+ FillChar(Win16_LocalBlockFree, SizeOf(Win16_LocalBlockFree), 0);
  Win16_LocalNotifySeg := 0;
  Win16_LocalNotifyOfs := 0;
  { SOUND.DRV GetThresholdEvent/$14 - un VRAI mot en memoire emulee         }
@@ -109496,9 +109547,21 @@ End;
 { pile avec un nombre d octets a depiler invente. }
 Procedure Win16_Halt(Var P: TEmulatorPanel; Const ModName: String; Ordinal:
   Word);
+Var
+ HaltLog: Text;
 Begin
  P.CPU.Fault := sfEndProgram;
  Win16_LastError := 'Appel non supporte : ' + ModName + '.' + IntToStr(Ordinal);
+ { Trace dans WIN16DBG.LOG : sans elle l'arret etait silencieux (panneau   }
+ { vide) et l'ordinal manquant introuvable sans debogueur. }
+ Assign(HaltLog, 'WIN16DBG.LOG');
+ {$I-}
+ If FileExists('WIN16DBG.LOG') Then Append(HaltLog) Else Rewrite(HaltLog);
+ {$I+}
+ If IOResult = 0 Then Begin
+  WriteLn(HaltLog, Win16_LastError);
+  Close(HaltLog);
+ End;
 End;
 
 { Chantier Windows 16 bits, Stage 6 (2026-08-29) : lit une chaine ANSI     }
@@ -110767,7 +110830,14 @@ Function Win16_CallWndProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
  HWnd, Msg, WParam, LParamLo, LParamHi: Word): LongInt;
 Var
  WPDumpI: Integer;
+ SavedDS: Word;
 Begin
+ { Fenetre d'une classe predefinie (Edit, Button...) : pas de code invite   }
+ { a appeler, resultat 0 (traitement par defaut).                           }
+ If ProcSeg = 0 Then Begin
+  Win16_CallWndProc := 0;
+  Exit;
+ End;
  { Bogue reel trouve+corrige (2026-08-30) : convention Pascal/WINAPI reelle  }
  { confirmee via desassemblage direct de CLOCK.EXE (WNDPROC_TRACE.LOG) -    }
  { le parametre le plus a GAUCHE (HWnd) est empile en PREMIER (le plus      }
@@ -110779,6 +110849,13 @@ Begin
  { son propre message (WM_PAINT) a la mauvaise position (LParamLo au lieu   }
  { de Msg) et retombait toujours sur DefWindowProc(0,0,0,0) au lieu de       }
  { dessiner. }
+ { Convention d'appel d'une procedure de fenetre Windows (verifiee en      }
+ { desassemblant CALENDAR.EXE) : a l'entree AX = DS = segment de donnees   }
+ { de l'application (le prologue "mov ax,ds ... mov ds,ax" des exports     }
+ { s'appuie dessus) ; sans cela DS=0 et le programme lit n'importe quoi.    }
+ SavedDS := P.CPU.Segs.DS;
+ P.CPU.Segs.DS := Win16_StackSeg;
+ P.CPU.Regs.AX := Win16_StackSeg;
  Emu_PushWord(P.CPU, HWnd);
  Emu_PushWord(P.CPU, Msg);
  Emu_PushWord(P.CPU, WParam);
@@ -110815,6 +110892,7 @@ Begin
   Close(Win16_WndProcTraceFile);
  End;
  Win16_CallWndProc := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
+ P.CPU.Segs.DS := SavedDS;
 End;
 
 
@@ -112117,6 +112195,51 @@ Begin
  {$I+} If IOResult <> 0 Then ;
 End;
 
+{ Tas local/global : reutilisation et liberation (LocalFree/GlobalFree ne    }
+{ rendaient jamais la memoire : CALENDAR.EXE allouait/liberait sans cesse    }
+{ puis recevait NULL tas epuise et plantait). Premier bloc libre assez      }
+{ grand reutilise (remis a zero) ; liberation d'un bloc : marque libre, et  }
+{ le tas se rembobine tant que le dernier bloc est libre. }
+Function Win16_HeapReuse(Var C: TEmuCPU; Bytes: Word): Word;
+Var I: Integer; J: LongInt; Res: Word;
+Begin
+ Res := 0;
+ For I := 0 To Win16_LocalBlockCount - 1 Do
+  If Win16_LocalBlockFree[I] And (Win16_LocalBlockSize[I] >= Bytes) And
+     (Res = 0) Then Begin
+   Win16_LocalBlockFree[I] := False;
+   For J := 0 To Bytes - 1 Do
+    Emu_WriteByte(C, Win16_StackSeg, Word(Win16_LocalBlockOfs[I] + J), 0);
+   Res := Win16_LocalBlockOfs[I];
+  End;
+ Win16_HeapReuse := Res;
+End;
+
+Procedure Win16_HeapRelease(H: Word);
+Var I, K: Integer; Again: Boolean;
+Begin
+ For I := 0 To Win16_LocalBlockCount - 1 Do
+  If Win16_LocalBlockOfs[I] = H Then Win16_LocalBlockFree[I] := True;
+ Repeat
+  Again := False;
+  K := -1;
+  For I := 0 To Win16_LocalBlockCount - 1 Do
+   If Win16_LocalBlockFree[I] And
+      (LongInt(Win16_LocalBlockOfs[I]) + Win16_LocalBlockSize[I] =
+       LongInt(Win16_HeapNext)) Then K := I;
+  If K >= 0 Then Begin
+   Win16_HeapNext := Win16_LocalBlockOfs[K];
+   Win16_LocalBlockOfs[K] := Win16_LocalBlockOfs[Win16_LocalBlockCount - 1];
+   Win16_LocalBlockSize[K] := Win16_LocalBlockSize[Win16_LocalBlockCount - 1];
+   Win16_LocalBlockFree[K] := Win16_LocalBlockFree[Win16_LocalBlockCount - 1];
+   Win16_LocalBlockPageLock[K] :=
+     Win16_LocalBlockPageLock[Win16_LocalBlockCount - 1];
+   Dec(Win16_LocalBlockCount);
+   Again := True;
+  End;
+ Until Not Again;
+End;
+
 Procedure Win16_DispatchCall(Var P: TEmulatorPanel; Slot: Integer);
 Var
  ModIdx, Ordinal: Word;
@@ -112124,6 +112247,16 @@ Var
  RetIP, RetCS: Word;
  ArgWords: Word;
  LocalWBytes: Word;
+ { KERNEL.77-80/87 (AnsiNext/AnsiPrev/AnsiUpper/AnsiLower/lstrcmp, ordinaux    }
+ { Windows 2.x) et USER.51 }
+ ANSeg1, ANOfs1, ANSeg2, ANOfs2: Word;
+ ANI: Integer;
+ ANStr1, ANStr2: String;
+ ANCh: Byte;
+ { WM_CREATE envoye par CreateWindow }
+ CRRes: LongInt;
+ CRBase: Word;
+ HeapRes: Word;
  LSResId, LSBufOfs, LSBufSeg, LSBufLen: Word;
  LSRetVal, LSCopyLen, LSStringNum, LSPos, LSI: Integer;
  LSResFileOfs, LSResLen: LongInt;
@@ -112765,6 +112898,7 @@ Begin
      Win16_HeapLimit := LIWEnd;
      Win16_LocalBlockCount := 0;
  FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
+ FillChar(Win16_LocalBlockFree, SizeOf(Win16_LocalBlockFree), 0);
      P.CPU.Regs.AX := 1;
     End Else
      P.CPU.Regs.AX := 0;
@@ -112790,7 +112924,10 @@ Begin
     { bloc existant ; silencieusement non-suivi si le repertoire est plein   }
     { (limite documentee, n'affecte pas l'allocation elle-meme). }
     LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) >
+    HeapRes := Win16_HeapReuse(P.CPU, LocalWBytes);
+    If HeapRes <> 0 Then
+     P.CPU.Regs.AX := HeapRes
+    Else If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) >
       LongInt(Win16_HeapLimit) Then
      P.CPU.Regs.AX := 0   { echec honnete : tas local epuise }
     Else Begin
@@ -112850,6 +112987,8 @@ Begin
     { rapporte donc toujours un succes SANS rien liberer reellement (aucun }
     { programme normal ne peut distinguer ce cas d'un vrai free tant qu'il }
     { ne re-epuise pas completement le tas, deja documente comme limite). }
+    { MIS A JOUR : le bloc est desormais VRAIMENT libere (Win16_HeapRelease). }
+    Win16_HeapRelease(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
    End;
@@ -112978,7 +113117,10 @@ Begin
     { explicite : necessaire pour que GlobalReAlloc/$16 et GlobalSize/$20     }
     { connaissent la VRAIE taille d'un bloc Global existant). }
     LocalWBytes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
-    If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) >
+    HeapRes := Win16_HeapReuse(P.CPU, LocalWBytes);
+    If HeapRes <> 0 Then
+     P.CPU.Regs.AX := HeapRes
+    Else If (LongInt(Win16_HeapNext) + LongInt(LocalWBytes)) >
       LongInt(Win16_HeapLimit) Then
      P.CPU.Regs.AX := 0
     Else Begin
@@ -113026,6 +113168,8 @@ Begin
     { GlobalFree(hMem):word - ordinal VERIFIE. Meme simplification que      }
     { LocalFree (ordinal 7) : le tas est un bump allocator qui ne recupere  }
     { JAMAIS la memoire - rapporte toujours un succes. }
+    { MIS A JOUR : le bloc est desormais VRAIMENT libere. }
+    Win16_HeapRelease(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
    End;
@@ -113145,6 +113289,7 @@ Begin
     { discipline que hInstance ignore par FindResource/$60). }
     Win16_LocalBlockCount := 0;
  FillChar(Win16_LocalBlockPageLock, SizeOf(Win16_LocalBlockPageLock), 0);
+ FillChar(Win16_LocalBlockFree, SizeOf(Win16_LocalBlockFree), 0);
     P.CPU.Regs.AX := 0;
     ArgWords := 1;
    End;
@@ -114017,6 +114162,58 @@ Begin
    { (krnl386.exe16.spec) ET dans la source secondaire WineVDM (meme          }
    { resultat pour les deux) - DELIBEREMENT NON IMPLANTES (meme discipline   }
    { que FatalExit/$1, CallProcInstance/$53). }
+   77: Begin
+    { AnsiNext(lpCurrentChar):LPSTR - ordinal Windows 2.x constate en       }
+    { desassemblant CALENDAR.EXE (parcours d'un nom de fichier, 1 pointeur  }
+    { far en entree, pointeur retourne DX:AX). Avance d'UN caractere, sauf   }
+    { sur le NUL final (inchange).                                           }
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If Emu_ReadByte(P.CPU, ANSeg1, ANOfs1) <> 0 Then ANOfs1 := Word(ANOfs1 + 1);
+    P.CPU.Regs.AX := ANOfs1;
+    P.CPU.Regs.DX := ANSeg1;
+    ArgWords := 2;
+   End;
+   78: Begin
+    { AnsiPrev(lpStart, lpCurrentChar):LPSTR - 2 pointeurs far, retourne     }
+    { le caractere precedent (ou lpStart si deja au debut).                  }
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ANSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANOfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If ANOfs2 > ANOfs1 Then ANOfs2 := Word(ANOfs2 - 1) Else ANOfs2 := ANOfs1;
+    P.CPU.Regs.AX := ANOfs2;
+    P.CPU.Regs.DX := ANSeg2;
+    ArgWords := 4;
+   End;
+   79, 80: Begin
+    { AnsiUpper/AnsiLower(lpString) : met la chaine en place en majuscules/  }
+    { minuscules (ASCII) et retourne le meme pointeur DX:AX ; si la partie    }
+    { segment est 0, l'argument est un CARACTERE (mot bas), retourne converti.}
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    If ANSeg1 = 0 Then Begin
+     ANCh := Byte(ANOfs1);
+     If (Ordinal = 79) And (ANCh >= 97) And (ANCh <= 122) Then Dec(ANCh, 32);
+     If (Ordinal = 80) And (ANCh >= 65) And (ANCh <= 90) Then Inc(ANCh, 32);
+     P.CPU.Regs.AX := ANCh;
+     P.CPU.Regs.DX := 0;
+    End Else Begin
+     ANI := 0;
+     ANCh := Emu_ReadByte(P.CPU, ANSeg1, ANOfs1);
+     While (ANCh <> 0) And (ANI < 255) Do Begin
+      If (Ordinal = 79) And (ANCh >= 97) And (ANCh <= 122) Then
+       Emu_WriteByte(P.CPU, ANSeg1, Word(ANOfs1 + ANI), ANCh - 32);
+      If (Ordinal = 80) And (ANCh >= 65) And (ANCh <= 90) Then
+       Emu_WriteByte(P.CPU, ANSeg1, Word(ANOfs1 + ANI), ANCh + 32);
+      Inc(ANI);
+      ANCh := Emu_ReadByte(P.CPU, ANSeg1, Word(ANOfs1 + ANI));
+     End;
+     P.CPU.Regs.AX := ANOfs1;
+     P.CPU.Regs.DX := ANSeg1;
+    End;
+    ArgWords := 2;
+   End;
    81: Begin
     { _lclose(hFile):word - ordinal VERIFIE via le VRAI source Wine        }
     { (krnl386.exe16.spec : "pascal -ret16 _lclose(word) _lclose16", 1      }
@@ -114194,6 +114391,21 @@ Begin
     End;
     ArgWords := 4;
    End;
+   87: Begin
+    { lstrcmp(lpString1, lpString2):int - ordinal Windows 2.x (constate dans }
+    { CALENDAR.EXE : 2 pointeurs far, resultat teste a 0). Comparaison des   }
+    { octets, < 0 / 0 / > 0.                                                 }
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ANSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANOfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ANStr1 := Win16_ReadGuestString(P.CPU, ANSeg1, ANOfs1);
+    ANStr2 := Win16_ReadGuestString(P.CPU, ANSeg2, ANOfs2);
+    If ANStr1 < ANStr2 Then P.CPU.Regs.AX := Word(-1)
+    Else If ANStr1 > ANStr2 Then P.CPU.Regs.AX := 1
+    Else P.CPU.Regs.AX := 0;
+    ArgWords := 4;
+   End;
    88: Begin
     { lstrcpy(lpString1,lpString2):LPSTR - ordinal VERIFIE via le VRAI     }
     { source Wine (krnl386.exe16.spec : "pascal lstrcpy(segptr str)          }
@@ -114271,7 +114483,9 @@ Begin
     P.CPU.Regs.CX := 0;
     P.CPU.Regs.DX := 1;                  { nCmdShow = SW_SHOWNORMAL        }
     P.CPU.Regs.BP := P.CPU.Regs.SP;
-    P.CPU.Segs.ES := P.CPU.Segs.DS;
+    { ES:BX = PSP:$80 (queue de commande vide, longueur 0). }
+    P.CPU.Segs.ES := Win16_PspSeg;
+    P.CPU.Regs.BX := $80;
     ArgWords := 0;
    End;
    92: Begin
@@ -117879,8 +118093,48 @@ Begin
        Win16_ScrollMaxV[CWIdx] := 0;
      Win16_WindowMenu[CWIdx] := CWHMenu;
      Inc(Win16_WindowCount);
-     Win16_DrawWindowFrame(P, CWIdx);
-     P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
+     { WM_CREATE : envoye SYNCHRONE par CreateWindow, AVANT le retour (un    }
+     { vrai Windows le fait toujours - CALENDAR.EXE initialise ses reglages  }
+     { par defaut la, et divisait par zero sans). lParam = LPCREATESTRUCT,   }
+     { ecrite dans la page PSP (octets $A0..$C1, hors queue de commande).    }
+     { Retour -1 = echec de creation. Classes predefinies (ProcSeg=0) : ignore.}
+     CRBase := $A0;
+     Emu_WriteWord(P.CPU, Win16_PspSeg, CRBase, Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 2), Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 4), Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 6), Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 8), Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 10), CWH);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 12), CWW);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 14), CWY);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 16), CWX);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 18), Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 22)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 20), Emu_ReadWord(P.CPU,
+       P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 24)));
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 22), CWTitleOfs);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 24), CWTitleSeg);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 26), CWClassOfs);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 28), CWClassSeg);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 30), 0);
+     Emu_WriteWord(P.CPU, Win16_PspSeg, Word(CRBase + 32), 0);
+     CRRes := 0;
+     If Win16_WndClassProcSeg[CWClassIdx] <> 0 Then
+      CRRes := Win16_CallWndProc(P, Win16_WndClassProcSeg[CWClassIdx],
+       Win16_WndClassProcOfs[CWClassIdx], Win16_WindowHWnd[CWIdx], 1, 0,
+       CRBase, Win16_PspSeg);
+     If CRRes = -1 Then Begin
+      Dec(Win16_WindowCount);
+      P.CPU.Regs.AX := 0;
+     End Else Begin
+      Win16_DrawWindowFrame(P, CWIdx);
+      P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
+     End;
     End;
     ArgWords := 15;
    End;
@@ -118145,6 +118399,14 @@ Begin
    { Win16 suivants - laisse donc deliberement tomber sur
      le                        }
    { gestionnaire generique "Else" ci-dessous. }
+   51: Begin
+    { USER.51 (ordinal Windows 2.x, constate dans CALENDAR.EXE : 1 mot =     }
+    { caractere, resultat booleen) : traite comme IsCharAlpha (lettre ASCII). }
+    ANCh := Byte(Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4)));
+    If ((ANCh >= 65) And (ANCh <= 90)) Or ((ANCh >= 97) And (ANCh <= 122))
+      Then P.CPU.Regs.AX := 1 Else P.CPU.Regs.AX := 0;
+    ArgWords := 1;
+   End;
    52: Begin
     { AnyPopup():bool - ordinal/signature VERIFIES via le VRAI source     }
     { Wine (user.exe16.spec : "pascal -ret16 AnyPopup() AnyPopup16", 0        }
@@ -257903,6 +258165,7 @@ Begin NesActive := False;
   End;
   Loaded := Win16_LoadNE(P.CPU, BinaryPath);
   If Not Loaded Then Begin
+   Win16_DebugLogLine('Echec de chargement NE : ' + Win16_LastError);
    P.CurFg := 12;
    EmuVScr_WriteStr(P, 'Erreur : ' + Win16_LastError);
    EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
