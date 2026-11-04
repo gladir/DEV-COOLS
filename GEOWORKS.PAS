@@ -16151,6 +16151,7 @@ Type
   MX,MY    : Integer;
   Dbg      : Boolean;
   StmtP    : Integer;
+  NoScr    : Boolean;           { fenetre sans ecran 320x200 }
   Jmp      : LongInt;
   StepOne  : Boolean;
   Voice    : Array[0..3] Of Integer;
@@ -18144,17 +18145,19 @@ End;
 { ====================================================================== }
 
 Const
- FMAX = 48;
+ FMAX = 96;
  FK_PRIMARY=1; FK_INTER=2; FK_TRIG=3; FK_VALUE=4; FK_TEXT=5; FK_IGROUP=6;
  FK_ITEM=7;
  FK_BGROUP=8; FK_BOOL=9; FK_DGROUP=10; FK_DCTRL=11; FK_DISPLAY=12;
- FKName : Array[1..12] Of String[18] = ('GenPrimary','GenInteraction',
+ FK_GLYPH=13; FK_LIST=14;
+ FKName : Array[1..14] Of String[18] = ('GenPrimary','GenInteraction',
      'GenTrigger','GenValue','GenText',
    'GenItemGroup','GenItem','GenBooleanGroup','GenBoolean','GenDisplayGroup',
-       'GenDisplayControl','GenDisplay');
- FKPref : Array[1..12] Of String[10] = ('Primary','Interaction','Trigger',
-     'Value','Text','ItemGroup','Item',
-   'BooleanGroup','Boolean','DisplayGroup','DisplayCtl','Display');
+       'GenDisplayControl','GenDisplay','GenGlyph','GenDynamicList');
+FKPref : Array[1..14] Of String[10] = ('Primary','Interaction','Trigger',
+    'Value','Text','ItemGroup','Item',
+   'BooleanGroup','Boolean','DisplayGroup','DisplayCtl','Display','Glyph',
+       'List');
 
 Type
  TFObj = Record
@@ -18171,6 +18174,8 @@ Type
   Txt    : String[60];
   Checked,Enabled,Usable : Boolean;
   X,Y,W,H : Integer;           { calcules par FmLayout }
+  SrcRes  : Integer;           { objet GEOS d'origine (arbre) }
+  SrcCh   : Word;
  End;
 
  PForm = ^TForm;
@@ -18238,7 +18243,7 @@ End;
 
 { Taille intrinseque et placement recursif }
 Procedure FmLayout(F: PForm; I: Integer; X,Y: Integer; Var W,H: Integer);
-Var C,CW,CH,CX,CY,MaxW,MaxH,Cnt: Integer; K: Integer; TW: Integer;
+Var C,CW,CH,CX,CY,MaxW,MaxH,Cnt: Integer; K: Integer; TW: Integer; Pad: Integer;
 Begin
  F^.O[I].X:=X;F^.O[I].Y:=Y;
  K:=F^.O[I].Kind;
@@ -18249,9 +18254,13 @@ Begin
   FK_TEXT: Begin W:=TW+8+Max2(100,F^.O[I].Max*0+150);H:=22;End;
   FK_ITEM,FK_BOOL: Begin W:=TW+24;H:=16;End;
   FK_DCTRL: Begin W:=Max2(120,TW+22);H:=22;End;
+  FK_GLYPH: Begin W:=TW+4;H:=14;End;
+  FK_LIST: Begin W:=Max2(160,TW+8);H:=82;End;
  Else Begin
   { conteneur }
-  CX:=X+8;CY:=Y+8;
+  Pad:=8;
+  If (F^.O[I].Feat And $8000)<>0 Then Pad:=2;
+  CX:=X+Pad;CY:=Y+Pad;
   If (K<>FK_PRIMARY) And (F^.O[I].Title<>'') Then Inc(CY,10);
   MaxW:=0;MaxH:=0;Cnt:=0;
   For C:=1 To F^.N Do
@@ -18260,11 +18269,11 @@ Begin
     F^.O[C].W:=CW;F^.O[C].H:=CH;
     Inc(Cnt);
     If F^.O[I].Orient=0 Then Begin Inc(CY,CH+4);If CW>MaxW Then MaxW:=CW;
-    MaxH:=CY-(Y+8);End
-    Else Begin Inc(CX,CW+6);If CH>MaxH Then MaxH:=CH;MaxW:=CX-(X+8);End;
+    MaxH:=CY-(Y+Pad);End
+    Else Begin Inc(CX,CW+6);If CH>MaxH Then MaxH:=CH;MaxW:=CX-(X+Pad);End;
    End;
   If Cnt=0 Then Begin MaxW:=120;MaxH:=24;End;
-  W:=MaxW+16;H:=MaxH+16;
+  W:=MaxW+2*Pad;H:=MaxH+2*Pad;
   If (K<>FK_PRIMARY) And (F^.O[I].Title<>'') Then Begin Inc(H,10);
   If W<TW+24 Then W:=TW+24;End;
   Case F^.O[I].WHint Of 1: If W<120 Then W:=120; 2: If W<200 Then W:=200;
@@ -18327,8 +18336,13 @@ Begin
     GText(X1+16,Y1+4,F^.O[I].Title,cBlk);
    End;
   FK_DCTRL: Begin Button(X1,Y1,X2,Y2,F^.O[I].Title,False,False,True);End;
+  FK_GLYPH: GText(X1,Y1+3,F^.O[I].Title,cBlk);
+  FK_LIST: Begin
+    If F^.O[I].Title<>'' Then GText(X1,Y1,F^.O[I].Title,cBlk);
+    Sunken(X1,Y1+(Ord(F^.O[I].Title<>'')*10),X2,Y2,cWht);
+   End;
  Else Begin
-  If F^.O[I].Kind<>FK_PRIMARY Then Begin
+  If (F^.O[I].Kind<>FK_PRIMARY) And ((F^.O[I].Feat And $8000)=0) Then Begin
    GRect(X1,Y1+5,X2,Y2,cDGr);
    If F^.O[I].Title<>'' Then Begin GBar(X1+6,Y1,X1+10+TextW(F^.O[I].Title),Y1+9,
        cLGr);GText(X1+8,Y1+1,F^.O[I].Title,cBlk);End;
@@ -18481,6 +18495,7 @@ Type
   Dragging: Integer;
   CvX,CvY : Integer;
   Stepping,StepOnce: Boolean;
+  Tree     : Boolean;
  End;
 
 Function BrNew(AX,AY: Integer; Bas: PBas; Form: PForm; Const Title: String):
@@ -18526,7 +18541,8 @@ Function BrNew(AX,AY: Integer; Bas: PBas; Form: PForm; Const Title: String):
 Begin
  New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
  Dt_^.Bas:=Bas;Dt_^.Form:=Form;Dt_^.Alive:=Form<>Nil;
- WinInit(Wd_,A_BASRUN,AX,AY,350,200+6+66,Title);
+ If Bas^.NoScr Then WinInit(Wd_,A_BASRUN,AX,AY,350,70,Title)
+ Else WinInit(Wd_,A_BASRUN,AX,AY,350,200+6+66,Title);
  Wd_^.IconId:=IC_NOTE;Wd_^.MinW:=300;Wd_^.MinH:=200;
  WinAddMenu(Wd_,'Program~Programme~Programm');
  WinAddItem(Wd_,'Restart~Red'#130'marrer~Neu starten',CM_BRRESTART,'');
@@ -18541,7 +18557,7 @@ Begin
  CB:=Bas;
  If Form<>Nil Then Begin
   FmLayout(Form,1,8,8,W,H);Dt_^.FormH:=H+16;
-  Wd_^.WinW:=Max2(350,W+30);Wd_^.WinH:=Wd_^.WinH+Dt_^.FormH;
+  Wd_^.WinW:=Min2(630,Max2(350,W+30));Wd_^.WinH:=Min2(450,Wd_^.WinH+Dt_^.FormH);
  End;
  BrBegin(Dt_);
  BrNew:=Wd_;
@@ -18662,10 +18678,12 @@ Begin
  CX:=X1+Max2(4,((X2-X1)-320) Div 2);
  CY:=CY+4;
  Dt_^.CvX:=CX;Dt_^.CvY:=CY;
- SetClip(Max2(CX1,CX),Max2(CY1,CY),Min2(CX2,CX+319),Min2(CY2,CY+199));
- BrPaintScreen(CX,CY);
- ClipFull;
- GRect(CX-1,CY-1,CX+320,CY+200,cBlk);
+ If Not CB^.NoScr Then Begin
+  SetClip(Max2(CX1,CX),Max2(CY1,CY),Min2(CX2,CX+319),Min2(CY2,CY+199));
+  BrPaintScreen(CX,CY);
+  ClipFull;
+  GRect(CX-1,CY-1,CX+320,CY+200,cBlk);
+ End;
  If Dt_^.Stepping And (CB^.Err='') Then Begin
   GBar(X1+4,Y2-14,X2-4,Y2-3,cYel);
   GText(X1+8,Y2-12,Copy(IntStr(CB^.Ln)+': '+TrimStr(CB^.Src[Max2(1,Min2(CB^.NL,
@@ -18769,6 +18787,9 @@ Begin
    End;
 End;
 
+Procedure OtClick(Wd_: PWindow; I: Integer); Forward;
+Function OtCommand(Wd_: PWindow; Cmd: Integer): Boolean; Forward;
+
 Procedure BrOnMouse(Wd_: PWindow; Var E: TEvent);
  Var Dt_: PBRun; F: PForm; X1,Y1,X2,Y2,I,P: Integer;
 Begin
@@ -18797,7 +18818,8 @@ Begin
  If I=0 Then Exit;
  If Not (F^.O[I].Enabled And F^.O[I].Usable) Then Exit;
  Case F^.O[I].Kind Of
-  FK_TRIG,FK_DCTRL: BrPost(Dt_,F^.O[I].Name+'_Click');
+  FK_TRIG,FK_DCTRL: If Dt_^.Tree Then OtClick(Wd_,I) Else BrPost(Dt_,
+      F^.O[I].Name+'_Click');
   FK_BOOL: Begin F^.O[I].Checked:=Not F^.O[I].Checked;
   BrPost(Dt_,F^.O[I].Name+'_Click');End;
   FK_ITEM: Begin
@@ -18916,7 +18938,10 @@ Begin
     Dt_^.Alive:=Dt_^.Form<>Nil;Dt_^.NQ:=0;
     BrBegin(Dt_);
    End;
- Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ Else Begin
+  If Not OtCommand(Wd_,Cmd) Then CommonCmd(Wd_,Cmd);
+  Exit;
+ End;
  End;
  Invalidate(Wd_);
 End;
@@ -21168,6 +21193,8 @@ End;
 Type
  TEMem = Array[0..1048575] Of Byte;
  PEMem = ^TEMem;
+ TERegs = Array[0..7] Of Word;
+ TESegs = Array[0..3] Of Word;
 
 Const
  FL_CF=1; FL_PF=4; FL_AF=16; FL_ZF=64; FL_SF=128; FL_IF=512; FL_DF=1024;
@@ -21178,8 +21205,8 @@ Const
 
 Var
  EMem   : PEMem;
- Reg    : Array[0..7] Of Word;
- SegR   : Array[0..3] Of Word;     { ES CS SS DS }
+ Reg    : TERegs;
+ SegR   : TESegs;                  { ES CS SS DS }
  EIP    : Word;
  EFl    : Word;
  SegOv  : Integer;
@@ -21425,6 +21452,400 @@ Begin
 End;
 
 {$ENDIF}
+
+{ ====================================================================== }
+{   COPROCESSEUR 8087 EMULE                                              }
+{   Borland C (geodes 2.x) compile le calcul flottant en INT 34h..3Bh    }
+{   (= ESC D8h..DFh) suivi de l'octet ModRM ; INT 3Ch = prefixe de       }
+{   segment, INT 3Dh = FWAIT. Les fonctions mathematiques de la          }
+{   bibliotheque "borlandc" (sin, cos, atan, sqrt, F_FTOL@...) recoivent }
+{   leur argument dans ST(0) et rendent leur resultat dans ST(0).        }
+{ ====================================================================== }
+{$IFDEF FPC}
+Const
+ Power2_63 = 9223372036854775808.0;
+
+Var
+ FSt   : Array[0..7] Of Extended;
+ FTop  : Integer;
+ FCW   : Word;
+ FCC : Word; { bits de condition C0 (100h) C2 (400h) C3 (4000h) }
+ FOps  : LongInt;
+
+Function FpuReg(I: Integer): Extended;
+Begin
+ FpuReg:=FSt[(FTop+I) And 7];
+End;
+
+Procedure FpuSetReg(I: Integer; V: Extended);
+Begin
+ FSt[(FTop+I) And 7]:=V;
+End;
+
+Procedure FpuPush(V: Extended);
+Begin
+ FTop:=(FTop+7) And 7;
+ FSt[FTop]:=V;
+End;
+
+Procedure FpuPop;
+Begin
+ FTop:=(FTop+1) And 7;
+End;
+
+Function FpuSW: Word;
+Begin
+ FpuSW:=FCC Or Word(FTop Shl 11);
+End;
+
+Procedure FpuInit;
+Begin
+ FTop:=0;FCW:=$037F;FCC:=0;
+ FillChar(FSt,SizeOf(FSt),0);
+End;
+
+Function ArcTan2(Y,X: Extended): Extended;
+Begin
+ If X>0 Then ArcTan2:=ArcTan(Y/X)
+ Else If X<0 Then Begin
+  If Y>=0 Then ArcTan2:=ArcTan(Y/X)+Pi Else ArcTan2:=ArcTan(Y/X)-Pi;
+ End Else Begin
+  If Y>0 Then ArcTan2:=Pi/2 Else If Y<0 Then ArcTan2:=-Pi/2 Else ArcTan2:=0;
+ End;
+End;
+
+Function FpuTan(X: Extended): Extended;
+Begin
+ FpuTan:=Sin(X)/Cos(X);
+End;
+
+Function FpuPow(X,Y: Extended): Extended;
+Begin
+ If Y=0 Then FpuPow:=1
+ Else If X=0 Then FpuPow:=0
+ Else If X>0 Then FpuPow:=Exp(Y*Ln(X))
+ Else If Frac(Y)=0 Then Begin
+  If Odd(Trunc(Y)) Then FpuPow:=-Exp(Y*Ln(-X)) Else FpuPow:=Exp(Y*Ln(-X));
+ End Else FpuPow:=0;
+End;
+
+Function FpuRound(V: Extended): Comp;
+Var R: Extended; T: Comp;
+Begin
+ Case (FCW Shr 10) And 3 Of
+  1: Begin T:=Int(V);If (V<0) And (V<>T) Then T:=T-1;FpuRound:=T;End;
+  2: Begin T:=Int(V);If (V>0) And (V<>T) Then T:=T+1;FpuRound:=T;End;
+  3: FpuRound:=Int(V);
+ Else Begin
+   R:=Int(V);
+   If Abs(V-R)>0.5 Then Begin If V>0 Then R:=R+1 Else R:=R-1;End
+   Else If Abs(V-R)=0.5 Then Begin
+    If Frac(R/2)<>0 Then Begin If V>0 Then R:=R+1 Else R:=R-1;End;
+   End;
+   FpuRound:=R;
+  End;
+ End;
+End;
+
+Function FpuRead80(S,O: Word): Extended;
+Var Lo,Hi: Extended; E: Word; Sg: Boolean; X: Extended; I: Integer;
+Begin
+ Lo:=M16(S,O)+65536.0*M16(S,Word(O+2));
+ Hi:=M16(S,Word(O+4))+65536.0*M16(S,Word(O+6));
+ E:=M16(S,Word(O+8));
+ Sg:=(E And $8000)<>0;E:=E And $7FFF;
+ If (E=0) And (Lo=0) And (Hi=0) Then Begin FpuRead80:=0;Exit;End;
+ X:=Hi*4294967296.0+Lo;
+ I:=Integer(E)-16383-63;
+ While I>0 Do Begin X:=X*2;Dec(I);End;
+ While I<0 Do Begin X:=X/2;Inc(I);End;
+ If Sg Then X:=-X;
+ FpuRead80:=X;
+End;
+
+Procedure FpuWrite80(S,O: Word; V: Extended);
+Var E: Integer; M: Extended; Sg: Boolean; Hi,Lo: Extended; H32,L32: LongInt;
+Begin
+ Sg:=V<0;If Sg Then V:=-V;
+ If V=0 Then Begin
+  W16(S,O,0);W16(S,Word(O+2),0);W16(S,Word(O+4),0);W16(S,Word(O+6),0);
+  W16(S,Word(O+8),0);
+  Exit;
+ End;
+ E:=0;M:=V;
+ While M>=2 Do Begin M:=M/2;Inc(E);End;
+ While M<1 Do Begin M:=M*2;Dec(E);End;
+ M:=M*Power2_63;
+ Hi:=Int(M/4294967296.0);Lo:=M-Hi*4294967296.0;
+ H32:=Trunc(Hi);
+ W16(S,Word(O+4),Word(H32 And $FFFF));
+ W16(S,Word(O+6),Word((H32 Shr 16) And $FFFF));
+ L32:=Trunc(Lo);
+ W16(S,O,Word(L32 And $FFFF));W16(S,Word(O+2),Word((L32 Shr 16) And $FFFF));
+ W16(S,Word(O+8),Word(E+16383) Or Word(Ord(Sg)*$8000));
+End;
+
+Function FpuReadD(S,O: Word): Extended;
+Var D: Double;
+Begin
+ Move(EMem^[Lin(S,O)],D,8);
+ FpuReadD:=D;
+End;
+
+Procedure FpuWriteD(S,O: Word; V: Extended);
+Var D: Double;
+Begin
+ D:=V;
+ Move(D,EMem^[Lin(S,O)],8);
+End;
+
+Function FpuReadS(S,O: Word): Extended;
+Var D: Single;
+Begin
+ Move(EMem^[Lin(S,O)],D,4);
+ FpuReadS:=D;
+End;
+
+Procedure FpuWriteS(S,O: Word; V: Extended);
+Var D: Single;
+Begin
+ D:=V;
+ Move(D,EMem^[Lin(S,O)],4);
+End;
+
+Function FpuReadI(S,O: Word; Sz: Integer): Extended;
+Var A: SmallInt; B: LongInt; C: Int64;
+Begin
+ Case Sz Of
+  2: Begin Move(EMem^[Lin(S,O)],A,2);FpuReadI:=A;End;
+  4: Begin Move(EMem^[Lin(S,O)],B,4);FpuReadI:=B;End;
+ Else Begin Move(EMem^[Lin(S,O)],C,8);FpuReadI:=C;End;
+ End;
+End;
+
+Procedure FpuWriteI(S,O: Word; V: Extended; Sz: Integer);
+Var A: SmallInt; B: LongInt; C: Int64; R: Comp;
+Begin
+ R:=FpuRound(V);
+ Case Sz Of
+  2: Begin A:=Trunc(R);Move(A,EMem^[Lin(S,O)],2);End;
+  4: Begin B:=Trunc(R);Move(B,EMem^[Lin(S,O)],4);End;
+ Else Begin C:=Trunc(R);Move(C,EMem^[Lin(S,O)],8);End;
+ End;
+End;
+
+Function FpuArith(Op: Integer; A,B: Extended): Extended;
+Begin
+ Case Op Of
+  0: FpuArith:=A+B;
+  1: FpuArith:=A*B;
+  4: FpuArith:=A-B;
+  5: FpuArith:=B-A;
+  6: Begin If B=0 Then FpuArith:=0 Else FpuArith:=A/B;End;
+  7: Begin If A=0 Then FpuArith:=0 Else FpuArith:=B/A;End;
+ Else FpuArith:=A;
+ End;
+End;
+
+Procedure FpuCompare(A,B: Extended);
+Begin
+ FCC:=0;
+ If A>B Then Begin End
+ Else If A<B Then FCC:=$0100
+ Else FCC:=$4000;
+End;
+
+{ une instruction ESC (Esc = 0..7 pour D8..DF) ; l'octet ModRM est lu ici }
+Procedure FpuOp(Esc: Integer);
+Var R,I: Integer; V,W: Extended; Mem: Boolean; Sg,Of_: Word; Code: Byte;
+Begin
+ ModRM;
+ Inc(FOps);
+ R:=MReg;I:=MRm;Mem:=Not EIsReg;
+ Sg:=EAs;Of_:=EAo;
+ Code:=MM;
+ Case Esc Of
+  0: Begin  { D8 : ST(0) op m32 / ST(i) }
+      If Mem Then V:=FpuReadS(Sg,Of_) Else V:=FpuReg(I);
+      If (R=2) Or (R=3) Then Begin FpuCompare(FpuReg(0),V);If R=3 Then FpuPop;
+      End
+      Else FpuSetReg(0,FpuArith(R,FpuReg(0),V));
+     End;
+  1: If Mem Then Begin
+      Case R Of
+       0: FpuPush(FpuReadS(Sg,Of_));
+       2: FpuWriteS(Sg,Of_,FpuReg(0));
+       3: Begin FpuWriteS(Sg,Of_,FpuReg(0));FpuPop;End;
+       5: FCW:=M16(Sg,Of_);
+       7: W16(Sg,Of_,FCW);
+      End;
+     End Else Begin
+      Case R Of
+       0: FpuPush(FpuReg(I));
+       1: Begin V:=FpuReg(0);FpuSetReg(0,FpuReg(I));FpuSetReg(I,V);End;
+       4: Case I Of
+           0: FpuSetReg(0,-FpuReg(0));
+           1: FpuSetReg(0,Abs(FpuReg(0)));
+           4: Begin FCC:=0;If FpuReg(0)=0 Then FCC:=$4000 Else If FpuReg(0)<0
+               Then FCC:=$0100;End;
+           5: FCC:=0;
+          End;
+       5: Case I Of
+           0: FpuPush(1);
+           1: FpuPush(3.3219280948873623479);
+           2: FpuPush(1.4426950408889634074);
+           3: FpuPush(Pi);
+           4: FpuPush(0.30102999566398119521);
+           5: FpuPush(0.69314718055994530942);
+           6: FpuPush(0);
+          End;
+       6: Case I Of
+           0: FpuSetReg(0,Exp(FpuReg(0)*0.69314718055994530942)-1);
+           1: Begin FpuSetReg(1,FpuReg(1)*Ln(FpuReg(0))/0.69314718055994530942);
+           FpuPop;End;
+           2: Begin FpuSetReg(0,FpuTan(FpuReg(0)));FpuPush(1);End;
+           3: Begin FpuSetReg(1,ArcTan2(FpuReg(1),FpuReg(0)));FpuPop;End;
+           5: If FpuReg(1)<>0 Then
+               FpuSetReg(0,FpuReg(0)-Int(FpuReg(0)/FpuReg(1))*FpuReg(1));
+           6: FTop:=(FTop+7) And 7;
+           7: FTop:=(FTop+1) And 7;
+          End;
+       7: Case I Of
+           0: If FpuReg(1)<>0 Then
+               FpuSetReg(0,FpuReg(0)-Int(FpuReg(0)/FpuReg(1))*FpuReg(1));
+           2: If FpuReg(0)>=0 Then FpuSetReg(0,Sqrt(FpuReg(0)));
+           3: Begin V:=FpuReg(0);FpuSetReg(0,Sin(V));FpuPush(Cos(V));End;
+           4: FpuSetReg(0,FpuRound(FpuReg(0)));
+           5: FpuSetReg(0,FpuReg(0)*FpuPow(2,Int(FpuReg(1))));
+           6: FpuSetReg(0,Sin(FpuReg(0)));
+           7: FpuSetReg(0,Cos(FpuReg(0)));
+          End;
+      End;
+     End;
+  2: Begin  { DA : ST(0) op m32int }
+      If Mem Then Begin
+       V:=FpuReadI(Sg,Of_,4);
+       If (R=2) Or (R=3) Then Begin FpuCompare(FpuReg(0),V);If R=3 Then FpuPop;
+       End
+       Else FpuSetReg(0,FpuArith(R,FpuReg(0),V));
+      End Else If (Code=$E9) Then Begin FpuCompare(FpuReg(0),FpuReg(1));FpuPop;
+      FpuPop;End;
+     End;
+  3: If Mem Then Begin
+      Case R Of
+       0: FpuPush(FpuReadI(Sg,Of_,4));
+       2: FpuWriteI(Sg,Of_,FpuReg(0),4);
+       3: Begin FpuWriteI(Sg,Of_,FpuReg(0),4);FpuPop;End;
+       5: FpuPush(FpuRead80(Sg,Of_));
+       7: Begin FpuWrite80(Sg,Of_,FpuReg(0));FpuPop;End;
+      End;
+     End Else Begin
+      If Code=$E3 Then FpuInit;
+     End;
+  4: Begin  { DC : ST(0) op m64 ; ST(i) op ST(0) }
+      If Mem Then Begin
+       V:=FpuReadD(Sg,Of_);
+       If (R=2) Or (R=3) Then Begin FpuCompare(FpuReg(0),V);If R=3 Then FpuPop;
+       End
+       Else FpuSetReg(0,FpuArith(R,FpuReg(0),V));
+      End Else Begin
+       Case R Of
+        0: FpuSetReg(I,FpuReg(I)+FpuReg(0));
+        1: FpuSetReg(I,FpuReg(I)*FpuReg(0));
+        4: FpuSetReg(I,FpuReg(0)-FpuReg(I));
+        5: FpuSetReg(I,FpuReg(I)-FpuReg(0));
+        6: If FpuReg(I)<>0 Then FpuSetReg(I,FpuReg(0)/FpuReg(I));
+        7: If FpuReg(0)<>0 Then FpuSetReg(I,FpuReg(I)/FpuReg(0));
+       End;
+      End;
+     End;
+  5: If Mem Then Begin
+      Case R Of
+       0: FpuPush(FpuReadD(Sg,Of_));
+       2: FpuWriteD(Sg,Of_,FpuReg(0));
+       3: Begin FpuWriteD(Sg,Of_,FpuReg(0));FpuPop;End;
+       7: W16(Sg,Of_,FpuSW);
+      End;
+     End Else Begin
+      Case R Of
+       2: FpuSetReg(I,FpuReg(0));
+       3: Begin FpuSetReg(I,FpuReg(0));FpuPop;End;
+       4: FpuCompare(FpuReg(0),FpuReg(I));
+       5: Begin FpuCompare(FpuReg(0),FpuReg(I));FpuPop;End;
+      End;
+     End;
+  6: Begin  { DE : ST(i) op ST(0) puis depile ; m16int }
+      If Mem Then Begin
+       V:=FpuReadI(Sg,Of_,2);
+       If (R=2) Or (R=3) Then Begin FpuCompare(FpuReg(0),V);If R=3 Then FpuPop;
+       End
+       Else FpuSetReg(0,FpuArith(R,FpuReg(0),V));
+      End Else Begin
+       Case R Of
+        0: FpuSetReg(I,FpuReg(I)+FpuReg(0));
+        1: FpuSetReg(I,FpuReg(I)*FpuReg(0));
+        3: Begin FpuCompare(FpuReg(0),FpuReg(1));FpuPop;End;
+        4: FpuSetReg(I,FpuReg(0)-FpuReg(I));
+        5: FpuSetReg(I,FpuReg(I)-FpuReg(0));
+        6: If FpuReg(I)<>0 Then FpuSetReg(I,FpuReg(0)/FpuReg(I));
+        7: If FpuReg(0)<>0 Then FpuSetReg(I,FpuReg(I)/FpuReg(0));
+       End;
+       If R<>3 Then FpuPop;
+       If R=3 Then FpuPop;
+      End;
+     End;
+  7: If Mem Then Begin
+      Case R Of
+       0: FpuPush(FpuReadI(Sg,Of_,2));
+       2: FpuWriteI(Sg,Of_,FpuReg(0),2);
+       3: Begin FpuWriteI(Sg,Of_,FpuReg(0),2);FpuPop;End;
+       5: FpuPush(FpuReadI(Sg,Of_,8));
+       7: Begin FpuWriteI(Sg,Of_,FpuReg(0),8);FpuPop;End;
+      End;
+     End Else If Code=$E0 Then Reg[0]:=FpuSW;
+ End;
+End;
+
+{ fonctions de la bibliotheque borlandc : argument dans ST(0), resultat ST(0) }
+Function FpuLib(Const Up: String; Var Dx,Ax: Word): Boolean;
+Var X,Y: Extended; L: LongInt;
+Begin
+ FpuLib:=True;
+ X:=FpuReg(0);
+ If Up='SIN' Then FpuSetReg(0,Sin(X))
+ Else If Up='COS' Then FpuSetReg(0,Cos(X))
+ Else If Up='TAN' Then FpuSetReg(0,FpuTan(X))
+ Else If Up='ATAN' Then FpuSetReg(0,ArcTan(X))
+ Else If Up='ACOS' Then Begin
+  If X=1 Then FpuSetReg(0,0) Else If X=-1 Then FpuSetReg(0,Pi)
+  Else FpuSetReg(0,ArcTan(Sqrt(1-X*X)/X)+Ord(X<0)*Pi);
+ End
+ Else If Up='ASIN' Then Begin
+  If Abs(X)=1 Then FpuSetReg(0,X*Pi/2) Else FpuSetReg(0,ArcTan(X/Sqrt(1-X*X)));
+ End
+ Else If Up='COSH' Then FpuSetReg(0,(Exp(X)+Exp(-X))/2)
+ Else If Up='SINH' Then FpuSetReg(0,(Exp(X)-Exp(-X))/2)
+ Else If Up='TANH' Then FpuSetReg(0,(Exp(X)-Exp(-X))/(Exp(X)+Exp(-X)))
+ Else If (Up='LOG') Or (Up='LN') Then Begin If X>0 Then FpuSetReg(0,Ln(X));End
+ Else If Up='LOG10' Then Begin If X>0 Then FpuSetReg(0,Ln(X)/Ln(10));End
+ Else If Up='SQRT' Then Begin If X>=0 Then FpuSetReg(0,Sqrt(X));End
+ Else If Up='EXP' Then FpuSetReg(0,Exp(X))
+ Else If Up='FABS' Then FpuSetReg(0,Abs(X))
+ Else If Up='FLOOR' Then Begin
+  Y:=Int(X);If (X<0) And (X<>Y) Then Y:=Y-1;FpuSetReg(0,Y);
+ End
+ Else If Up='POW' Then Begin FpuSetReg(1,FpuPow(FpuReg(1),X));FpuPop;End
+ Else If Up='ATAN2' Then Begin FpuSetReg(1,ArcTan2(FpuReg(1),X));FpuPop;End
+ Else If Up='FMOD' Then Begin
+  If X<>0 Then FpuSetReg(1,FpuReg(1)-Int(FpuReg(1)/X)*X);FpuPop;
+ End
+ Else If Up='F_FTOL@' Then Begin
+  L:=Trunc(X);Ax:=Word(L And $FFFF);Dx:=Word((L Shr 16) And $FFFF);FpuPop;
+ End
+ Else If Up='FRAND' Then FpuPush(Random)
+ Else FpuLib:=False;
+End;
+{$ENDIF}
 { Tables d'ordinaux PC/GEOS 2.x generees a partir des fichiers .gp et des
   en-tetes C du depot open source bluewaysw/pcgeos }
 { format : Nom|signature|retour|convention ; signature : w mot, d double mot, .
@@ -21482,7 +21903,7 @@ Const
   'LMemContract|w|v|p',
   'ECLMemValidateHeap|w|v|p',
   'ECLMemValidateHandle|d|v|p',
-  'ChunkArrayCreate|?|?|p',
+  'ChunkArrayCreate|dwww|w|p',
   'ChunkArrayElementToPtr|dwd|d|p',
   'ChunkArrayAppend|dw|d|p',
   'ChunkArrayGetCount|d|w|p',
@@ -24150,11 +24571,151 @@ Begin
  End;
 End;
 
+{ ------------------------------------------------------------------------
+  Recherche de methode et remise d'un message a un gestionnaire de la geode.
+  ClassStruct : +0 super (offset, segment) ; +4 decalage maitre ; +6 nombre de
+  methodes ; +8 taille d'instance ; +16 numeros de messages (mots) puis les
+  gestionnaires (pointeurs lointains). Une classe parente de bibliotheque
+  (segment >= TRAP_LIB) n'a pas de code emulable : la recherche s'arrete.
+  ------------------------------------------------------------------------ }
+Const
+ OBJ_MAXDEPTH = 6;
+
+Var
+ RtDepth    : Integer;
+ RtDelivered: LongInt;
+
+Procedure ExecOne; Forward;
+Function RtApiExt(Const Up: String; Top: Word; Const Sg: String;
+                  Tot: Integer; Var RAx,RDx: Word): Boolean; Forward;
+
+Function RtMethodFind(CS,CO,Msg: Word; Var HS,HO: Word): Boolean;
+Var K,I,N: Integer; Sg,Ofs: Word;
+Begin
+ RtMethodFind:=False;
+ For K:=1 To 12 Do Begin
+  N:=M16(CS,Word(CO+6));
+  If N<200 Then
+   For I:=0 To N-1 Do
+    If M16(CS,Word(CO+16+2*I))=Msg Then Begin
+     HO:=M16(CS,Word(CO+16+N*2+I*4));HS:=M16(CS,Word(CO+16+N*2+I*4+2));
+     RtMethodFind:=True;Exit;
+    End;
+  Ofs:=M16(CS,CO);Sg:=M16(CS,Word(CO+2));
+  If (Sg=0) Or (Sg>=TRAP_KERNEL) Then Exit;
+  CS:=Sg;CO:=Ofs;
+ End;
+End;
+
+{ execute un gestionnaire dans l'emulateur et rend les registres de sortie }
+Function RtInvoke(HS,HO,Ax,Cx,Dx,Bp,Ds,Si,Es,Di,Bx: Word;
+                  Var RA,RC,RD,RB: Word; Var Carry: Boolean): Boolean;
+Var SvR: TERegs; SvS: TESegs; SvI,SvF: Word;
+    SvH: Boolean; SvE: String; SvP,SvC: Integer; Stp: LongInt; I: Integer;
+Begin
+ RtInvoke:=False;
+ If RtDepth>=OBJ_MAXDEPTH Then Exit;
+ Inc(RtDepth);
+ SvR:=Reg;SvS:=SegR;SvI:=EIP;SvF:=EFl;SvH:=EHalt;SvE:=EReason;
+ SvP:=RtPush;SvC:=RtCallPush;
+ If SegR[2]=0 Then Begin
+  SegR[2]:=$9000;Reg[4]:=$FFF0;
+  For I:=1 To 12 Do Push16(0);
+ End Else Reg[4]:=Word(Reg[4]-64);
+ Reg[0]:=Ax;Reg[1]:=Cx;Reg[2]:=Dx;Reg[3]:=Bx;Reg[5]:=Bp;Reg[6]:=Si;Reg[7]:=Di;
+ SegR[0]:=Es;SegR[3]:=Ds;
+ Push16(TRAP_EXIT);Push16(0);
+ SegR[1]:=HS;EIP:=HO;EFl:=$0202;
+ EHalt:=False;RtPush:=0;
+ Stp:=0;
+ While (Not EHalt) And (Stp<60000) Do Begin ExecOne;Inc(Stp);End;
+ RtInvoke:=EHalt And (SegR[1]=TRAP_EXIT);
+ RA:=Reg[0];RC:=Reg[1];RD:=Reg[2];RB:=Reg[5];Carry:=(EFl And FL_CF)<>0;
+ Reg:=SvR;SegR:=SvS;EIP:=SvI;EFl:=SvF;EHalt:=SvH;EReason:=SvE;
+ RtPush:=SvP;RtCallPush:=SvC;
+ Dec(RtDepth);
+End;
+
+{ valeur de retour selon MPD_RETURN_TYPE / MPD_RETURN_INFO (CMessageReturn) }
+Procedure ObjReturn(Mpd,Ax,Cx,Dx,Bp: Word; Carry: Boolean; Var RA,RD: Word);
+Var T,Inf: Integer; Rg: Array[0..3] Of Word; V: Word;
+Begin
+ Rg[0]:=Ax;Rg[1]:=Cx;Rg[2]:=Dx;Rg[3]:=Bp;
+ T:=(Mpd Shr 14) And 3;Inf:=(Mpd Shr 10) And 15;
+ RA:=0;RD:=0;
+ Case T Of
+  1: Begin
+      Case Inf Of
+       0: V:=Ax And $FF;
+       1: V:=(Ax Shr 8) And $FF;
+       2: V:=Cx And $FF;
+       3: V:=(Cx Shr 8) And $FF;
+       4: V:=Dx And $FF;
+       5: V:=(Dx Shr 8) And $FF;
+       6: V:=Bp And $FF;
+       7: V:=(Bp Shr 8) And $FF;
+       8: V:=Ax;
+       9: V:=Cx;
+       10: V:=Dx;
+      Else V:=Bp;
+      End;
+      RA:=V;
+     End;
+  2: Begin RD:=Rg[(Inf Shr 2) And 3];RA:=Rg[Inf And 3];End;
+ Else If Carry Then RA:=1;
+ End;
+End;
+
+{ remet un message a un objet (Res,H) de la geode ou au processus ;
+  rend 1 si un gestionnaire a ete execute, 0 sinon (classe de bibliotheque) }
+Function RtSendObj(Res: Integer; H: Word; IsProc,Super: Boolean;
+                   ClsS,ClsO,Msg,Cx,Dx,Bp: Word; Var RA,RC,RD,RB: Word;
+                   Var Carry: Boolean): Integer;
+Var G: ^TGeode; Sg,HT,Off,Rid,Ent,CS,CO,HS,HO,DsS,Bx,Si: Word; Src: Integer;
+    Ok: Boolean;
+Begin
+ RtSendObj:=0;
+ If ELog=Nil Then Exit;
+ G:=@PGeodeWin(ELog^.Data)^.G;
+ DsS:=SegPara[Min2(1,G^.NS-1)];Bx:=0;Si:=0;
+ If IsProc Then Begin
+  If G^.ProcRes>=G^.NS Then Exit;
+  CS:=SegPara[G^.ProcRes];CO:=G^.ProcOfs;
+ End Else Begin
+  If (Res<1) Or (Res>=G^.NS) Then Exit;
+  Sg:=SegPara[Res];
+  If M16(Sg,6)<>2 Then Exit;
+  HT:=M16(Sg,2);
+  If (H<HT) Or Odd(H) Or (H>=HT+2*M16(Sg,10)) Then Exit;
+  Off:=M16(Sg,H);
+  If (Off=0) Or (Off=$FFFF) Then Exit;
+  Rid:=M16(Sg,Off);Ent:=M16(Sg,Word(Off+2));Src:=Rid Shr 12;
+  If (Src<>6) Or (Ent>=G^.NE) Or (G^.Exp[Ent].Res>=G^.NS) Then Exit;
+  CS:=SegPara[G^.Exp[Ent].Res];CO:=G^.Exp[Ent].Ofs;
+  DsS:=Sg;Bx:=Off;Si:=H;
+ End;
+ If Super Then Begin
+  CS:=ClsS;CO:=ClsO;
+  { passe a la classe parente }
+  HS:=M16(CS,Word(CO+2));HO:=M16(CS,CO);
+  If (HS=0) Or (HS>=TRAP_KERNEL) Then Exit;
+  CS:=HS;CO:=HO;
+ End;
+ If Not RtMethodFind(CS,CO,Msg,HS,HO) Then Exit;
+ Ok:=RtInvoke(HS,HO,Msg,Cx,Dx,Bp,DsS,Si,CS,CO,Bx,RA,RC,RD,RB,Carry);
+ If Ok Then Begin
+  RtSendObj:=1;Inc(RtDelivered);
+  ELogLine('    -> '+HexW(HS)+':'+HexW(HO)+' ax='+HexW(RA)+' cx='+HexW(RC)+
+           ' dx='+HexW(RD)+' bp='+HexW(RB));
+ End Else RtSendObj:=2;
+End;
+
 Procedure RtCall(Lib: Integer; Ord_: Word);
 Var I,Tot,N: Integer; Nm,Up,Lb,Sg,Rs,Cv,S,Args,E,T: String; Top: Word;
 Known,Logit,Cd: Boolean;
     LibId: Integer; V: Word; L: LongInt; Fnd: Boolean; Nw: Word; IsObj: Boolean;
     OM: TObjMsg;
+    Rc_,Rd_,Rb_: Word;
 
  Function ArgOfs(Idx: Integer): Word;
  Var J,C: Integer;
@@ -24228,7 +24789,10 @@ Begin
  If (Length(Up)>0) And (Up[1]='_') Then Delete(Up,1,1);
  Top:=Word(Reg[4]+4);
  IsObj:=(Up='COBJMESSAGE') Or (Up='COBJCALLSUPER');
- If IsObj Then Begin
+ If LibId=3 Then Begin Tot:=0;Cv:='p';Sg:='';End
+ Else If (Up='MEMDEREFDS') Or (Up='MEMDEREFES') Then Begin Tot:=0;Cv:='p';
+ Sg:='';End
+ Else If IsObj Then Begin
   ObjDecode(Up='COBJCALLSUPER',Top,OM);
   Tot:=OM.Total;Cv:='p';Sg:='';
  End Else If (Sg<>'?') And (Pos('.',Sg)=0) Then Begin
@@ -24408,7 +24972,17 @@ Begin
   Args:=Args+'  "'+Copy(S,1,24)+'"';
  End
  Else If Up='GRCREATESTATE' Then Reg[0]:=$4001
- Else If IsObj Then Begin End
+ Else If (LibId=3) And FpuLib(Up,Reg[2],Reg[0]) Then Begin End
+ Else If RtApiExt(Up,Top,Sg,Tot,Reg[0],Reg[2]) Then Begin End
+ Else If IsObj Then Begin
+  If (OM.Ohan>=$0200) And (OM.Ohan<$0400) Then Begin
+   N:=RtSendObj(OM.Ohan-$0200,OM.Och,False,OM.Super,OM.ClsSeg,OM.ClsOfs,
+                OM.Method,OM.Cx,OM.Dx,OM.Bp,Nw,Rc_,Rd_,Rb_,Cd);
+   If N=1 Then
+    If ((OM.Flags And $8000)<>0) Or OM.Super Then
+     ObjReturn(OM.Mpd,Nw,Rc_,Rd_,Rb_,Cd,Reg[0],Reg[2]);
+  End;
+ End
  Else Fnd:=Known And (Copy(Up,1,2)='GR');
  { ---- journal ---- }
  Logit:=(RtLogged<18) Or (Not Known);
@@ -24425,6 +24999,497 @@ Begin
  RetFar;
  If Cv<>'c' Then Reg[4]:=Word(Reg[4]+Tot);
  RtPush:=0;
+End;
+{$ENDIF}
+
+{ ====================================================================== }
+{   MEMOIRE LMEM, TABLEAUX DE CHUNKS, FICHIERS VM ET HUGEARRAY           }
+{   Emulation logicielle des routines de bibliotheque geos : les blocs   }
+{   sont des blocs emules (RtAlloc) ; les blocs de ressources de la      }
+{   geode (poignees $0200+n) gardent leur disposition de fichier.        }
+{   En-tete LMem (mots) : 0 poignee, 2 decalage de la table des chunks,  }
+{   6 type, 8 taille utilisee, 10 nombre de poignees de chunk.           }
+{   Chunk : mot de taille a (decalage-2), donnees a partir du decalage.  }
+{   Tableau de chunks : mots 0 nombre, 2 taille d'element (0 = variable, }
+{   chaque element est precede de sa taille), 6 debut des elements.      }
+{   HugeArray / bloc VM : un bloc emule unique : dword nombre, mot taille}
+{   d'element, mot espace d'en-tete, puis les elements.                  }
+{ ====================================================================== }
+{$IFDEF FPC}
+Const
+ VM_MAXBLK = 96;
+ VM_FILE   = $0A01;
+
+Var
+ VmBlk     : Array[1..VM_MAXBLK] Of Word;     { poignee de bloc emule ou 0 }
+ VmMap     : Word;
+ VmKind    : Array[1..VM_MAXBLK] Of Byte;     { 1 donnees, 2 lmem, 3 huge }
+
+Function BlkCap(H: Word): LongInt;
+Var I: Integer;
+Begin
+ BlkCap:=0;
+ If (H>$0400) And (H<=$0400+High(RtHan)) Then Begin
+  I:=H-$0400;
+  If RtHan[I].Used Then BlkCap:=LongInt(RtHan[I].Par-1)*16;
+ End Else If (H>=$0200) And (H<$0400) And (ELog<>Nil) Then
+  If H-$0200<PGeodeWin(ELog^.Data)^.G.NS Then
+   BlkCap:=PGeodeWin(ELog^.Data)^.G.Seg[H-$0200].Len;
+End;
+
+{ agrandit un bloc emule (le segment peut changer) }
+Function BlkGrow(H: Word; NewSize: LongInt): Boolean;
+Var I,J: Integer; N: Word; Cap: LongInt; T: TRtHan; Old: Word;
+Begin
+ BlkGrow:=False;
+ Cap:=BlkCap(H);
+ If NewSize<=Cap Then Begin BlkGrow:=True;Exit;End;
+ If (H<=$0400) Or (H>$0400+High(RtHan)) Then Exit;
+ I:=H-$0400;
+ If NewSize<Cap*2 Then NewSize:=Cap*2;
+ If NewSize>60000 Then NewSize:=60000;
+ If NewSize<=Cap Then Exit;
+ N:=RtAlloc(Word(NewSize));
+ If N=0 Then Exit;
+ J:=N-$0400;
+ Old:=RtHan[I].Seg;
+ Move(EMem^[Lin(Old,0)],EMem^[Lin(RtHan[J].Seg,0)],Cap);
+ T:=RtHan[I];RtHan[I]:=RtHan[J];RtHan[J]:=T;
+ RtHan[J].Used:=False;
+ BlkGrow:=True;
+End;
+
+{ ---------------------- LMem ---------------------- }
+
+Function LmNew(Typ,HdrSz: Word): Word;
+Var H,Sg,HT: Word; I: Integer;
+Begin
+ LmNew:=0;
+ H:=RtAlloc(4096);
+ If H=0 Then Exit;
+ Sg:=RtSeg(H);
+ HT:=HdrSz;If HT<14 Then HT:=14;
+ W16(Sg,0,H);W16(Sg,2,HT);W16(Sg,6,Typ);
+ W16(Sg,10,32);W16(Sg,8,Word(HT+64));
+ LmNew:=H;
+End;
+
+Function LmChunkOfs(H,Ch: Word): Word;
+Var Sg,HT,N,O: Word;
+Begin
+ LmChunkOfs:=0;
+ Sg:=RtSeg(H);
+ If Sg=0 Then Exit;
+ HT:=M16(Sg,2);N:=M16(Sg,10);
+ If (Ch<HT) Or (Ch>=HT+2*N) Or Odd(Ch) Then Exit;
+ O:=M16(Sg,Ch);
+ If (O=0) Or (O=$FFFF) Or (O<4) Then Exit;
+ LmChunkOfs:=O;
+End;
+
+Function LmSize(H,Ch: Word): Word;
+Var O: Word;
+Begin
+ O:=LmChunkOfs(H,Ch);
+ If O=0 Then LmSize:=0 Else LmSize:=M16(RtSeg(H),Word(O-2));
+End;
+
+Function LmAlloc(H,Size: Word): Word;
+Var Sg,HT,N,K,Off,Need: Word; I: Integer;
+Begin
+ LmAlloc:=0;
+ Sg:=RtSeg(H);
+ If Sg=0 Then Exit;
+ HT:=M16(Sg,2);N:=M16(Sg,10);
+ K:=0;
+ While (K<N) And (M16(Sg,Word(HT+2*K))<>0) And (M16(Sg,
+     Word(HT+2*K))<>$FFFF) Do Inc(K);
+ If K>=N Then Exit;
+ Off:=Word(M16(Sg,8)+2);
+ Need:=Word(Off+((Size+1) And $FFFE));
+ If Need<Off Then Exit;
+ If Not BlkGrow(H,LongInt(Need)+8) Then Exit;
+ Sg:=RtSeg(H);
+ For I:=0 To Size-1 Do W8(Sg,Word(Off+I),0);
+ W16(Sg,Word(Off-2),Size);
+ W16(Sg,Word(HT+2*K),Off);
+ W16(Sg,8,Need);
+ LmAlloc:=Word(HT+2*K);
+End;
+
+Procedure LmFree(H,Ch: Word);
+Var Sg,HT,N: Word;
+Begin
+ Sg:=RtSeg(H);
+ If Sg=0 Then Exit;
+ HT:=M16(Sg,2);N:=M16(Sg,10);
+ If (Ch>=HT) And (Ch<HT+2*N) And Not Odd(Ch) Then W16(Sg,Ch,0);
+End;
+
+{ change la taille d'un chunk ; le contenu est conserve }
+Function LmResize(H,Ch,NewSz: Word): Boolean;
+Var Sg,Off,Old,NOff,Need,I: Word;
+Begin
+ LmResize:=False;
+ Off:=LmChunkOfs(H,Ch);
+ If Off=0 Then Exit;
+ Sg:=RtSeg(H);
+ Old:=M16(Sg,Word(Off-2));
+ If NewSz<=Old Then Begin
+  W16(Sg,Word(Off-2),NewSz);LmResize:=True;Exit;
+ End;
+ If Word(Off+((Old+1) And $FFFE))=M16(Sg,8) Then Begin
+  Need:=Word(Off+((NewSz+1) And $FFFE));
+  If Not BlkGrow(H,LongInt(Need)+8) Then Exit;
+  Sg:=RtSeg(H);
+  For I:=Old To NewSz-1 Do W8(Sg,Word(Off+I),0);
+  W16(Sg,Word(Off-2),NewSz);W16(Sg,8,Need);
+  LmResize:=True;Exit;
+ End;
+ NOff:=Word(M16(Sg,8)+2);
+ Need:=Word(NOff+((NewSz+1) And $FFFE));
+ If Not BlkGrow(H,LongInt(Need)+8) Then Exit;
+ Sg:=RtSeg(H);
+ For I:=0 To NewSz-1 Do
+  If I<Old Then W8(Sg,Word(NOff+I),M8(Sg,Word(Off+I))) Else W8(Sg,Word(NOff+I),
+      0);
+ W16(Sg,Word(NOff-2),NewSz);
+ W16(Sg,Ch,NOff);W16(Sg,8,Need);
+ LmResize:=True;
+End;
+
+{ ---------------------- tableaux de chunks ---------------------- }
+
+Function CaStart(H,Ch: Word): Word;
+Begin
+ CaStart:=M16(RtSeg(H),Word(LmChunkOfs(H,Ch)+6));
+End;
+
+{ decalage (dans le chunk) de l'element N ; en variable : balaye les tailles }
+Function CaElemOfs(H,Ch,N: Word; Var Sz: Word): Word;
+Var Sg,Off,Es,K,P: Word;
+Begin
+ Sg:=RtSeg(H);Off:=LmChunkOfs(H,Ch);
+ Es:=M16(Sg,Word(Off+2));P:=M16(Sg,Word(Off+6));
+ If Es<>0 Then Begin Sz:=Es;CaElemOfs:=Word(P+N*Es);Exit;End;
+ For K:=1 To N Do P:=Word(P+2+M16(Sg,Word(Off+P)));
+ Sz:=M16(Sg,Word(Off+P));
+ CaElemOfs:=Word(P+2);
+End;
+
+Function CaCreate(H,Ch,Es,HdrSz: Word): Word;
+Var Sg,Off: Word;
+Begin
+ CaCreate:=0;
+ If Ch=0 Then Ch:=LmAlloc(H,Word(8+HdrSz))
+ Else If Not LmResize(H,Ch,Word(8+HdrSz)) Then Exit;
+ If Ch=0 Then Exit;
+ Sg:=RtSeg(H);Off:=LmChunkOfs(H,Ch);
+ W16(Sg,Off,0);W16(Sg,Word(Off+2),Es);W16(Sg,Word(Off+4),0);
+ W16(Sg,Word(Off+6),Word(8+HdrSz));
+ CaCreate:=Ch;
+End;
+
+{ ajoute (ou insere en At, decalage dans le chunk ; 0 = fin) un element ;
+  retourne le decalage de l'element dans le chunk, 0 si echec }
+Function CaAdd(H,Ch,ElSz,At: Word): Word;
+Var Sg,Off,Es,Cnt,Used,Pos,Sz,K: Word; Tail: Integer; Add: Word;
+Begin
+ CaAdd:=0;
+ Off:=LmChunkOfs(H,Ch);
+ If Off=0 Then Exit;
+ Sg:=RtSeg(H);
+ Es:=M16(Sg,Word(Off+2));Cnt:=M16(Sg,Off);
+ If Es<>0 Then Begin ElSz:=Es;Add:=Es;End Else Add:=Word(ElSz+2);
+ Used:=LmSize(H,Ch);
+ If At=0 Then Pos:=Used Else Pos:=At;
+ If Pos>Used Then Pos:=Used;
+ If Not LmResize(H,Ch,Word(Used+Add)) Then Exit;
+ Sg:=RtSeg(H);Off:=LmChunkOfs(H,Ch);
+ { decalage de la queue }
+ Tail:=Used-Pos;
+ If Tail>0 Then
+  Move(EMem^[Lin(Sg,Word(Off+Pos))],EMem^[Lin(Sg,Word(Off+Pos+Add))],Tail);
+ For K:=0 To Add-1 Do W8(Sg,Word(Off+Pos+K),0);
+ If Es=0 Then W16(Sg,Word(Off+Pos),ElSz);
+ W16(Sg,Off,Word(Cnt+1));
+ If Es=0 Then CaAdd:=Word(Pos+2) Else CaAdd:=Pos;
+End;
+
+Procedure CaDelEl(H,Ch,ElOfs: Word);
+Var Sg,Off,Es,Used,Sz,Tail: Word; Start: Word;
+Begin
+ Off:=LmChunkOfs(H,Ch);
+ If Off=0 Then Exit;
+ Sg:=RtSeg(H);
+ Es:=M16(Sg,Word(Off+2));Used:=LmSize(H,Ch);
+ If Es<>0 Then Begin Sz:=Es;Start:=ElOfs;End
+ Else Begin Sz:=Word(M16(Sg,Word(Off+ElOfs-2))+2);Start:=Word(ElOfs-2);End;
+ If Word(Start+Sz)>Used Then Exit;
+ Tail:=Used-Start-Sz;
+ If Tail>0 Then
+  Move(EMem^[Lin(Sg,Word(Off+Start+Sz))],EMem^[Lin(Sg,Word(Off+Start))],Tail);
+ LmResize(H,Ch,Word(Used-Sz));
+ Sg:=RtSeg(H);Off:=LmChunkOfs(H,Ch);
+ W16(Sg,Off,Word(M16(Sg,Off)-1));
+End;
+
+{ ---------------------- fichiers VM, HugeArray ---------------------- }
+
+Function VmNewBlock(Size: Word; Kind: Byte): Word;
+Var I: Integer; H: Word;
+Begin
+ VmNewBlock:=0;
+ H:=RtAlloc(Size);
+ If H=0 Then Exit;
+ For I:=1 To VM_MAXBLK Do
+  If VmBlk[I]=0 Then Begin VmBlk[I]:=H;VmKind[I]:=Kind;VmNewBlock:=$0100+I*2;
+  Exit;End;
+End;
+
+Function VmHandleOf(B: Word): Word;
+Begin
+ VmHandleOf:=0;
+ If (B>=$0102) And (B<=$0100+VM_MAXBLK*2) And Not Odd(B) Then
+  VmHandleOf:=VmBlk[(B-$0100) Div 2];
+End;
+
+Function HaCount(H: Word): LongInt;
+Var Sg: Word;
+Begin
+ Sg:=RtSeg(H);
+ HaCount:=M16(Sg,0)+65536*LongInt(M16(Sg,2));
+End;
+
+Procedure HaSetCount(H: Word; N: LongInt);
+Var Sg: Word;
+Begin
+ Sg:=RtSeg(H);W16(Sg,0,Word(N And $FFFF));W16(Sg,2,Word(N Shr 16));
+End;
+
+{ routines de bibliotheque supplementaires ; True si traitee }
+Function RtApiExt(Const Up: String; Top: Word; Const Sg: String;
+                  Tot: Integer; Var RAx,RDx: Word): Boolean;
+ Function AOfs(Idx: Integer): Word;
+ Var J,C: Integer;
+ Begin
+  C:=0;
+  For J:=1 To Idx+1 Do If Sg[J]='d' Then Inc(C,4) Else Inc(C,2);
+  AOfs:=Word(Top+Tot-C);
+ End;
+ Function AW(Idx: Integer): Word;
+ Begin
+  AW:=M16(SegR[2],AOfs(Idx));
+ End;
+ Function AS_(Idx: Integer): Word;
+ Begin
+  AS_:=M16(SegR[2],Word(AOfs(Idx)+2));
+ End;
+Var H,Ch,Sz,E,K,Sgm,Es,Hs,Cnt: Word; L: LongInt; B: Word; Ok: Boolean;
+Begin
+ RtApiExt:=True;
+ RAx:=0;RDx:=0;
+ { ---- LMem ---- }
+ If Up='MEMALLOCLMEM' Then RAx:=LmNew(AW(0),AW(1))
+ Else If Up='LMEMALLOC' Then RAx:=LmAlloc(AW(0),AW(1))
+ Else If Up='LMEMFREE' Then LmFree(AS_(0),AW(0))
+ Else If Up='LMEMDEREF' Then Begin
+  H:=AS_(0);Ch:=AW(0);E:=LmChunkOfs(H,Ch);
+  If E<>0 Then Begin RAx:=E;RDx:=RtSeg(H);End;
+ End
+ Else If Up='LMEMREALLOC' Then Begin
+  If LmResize(AS_(0),AW(0),AW(1)) Then RAx:=AW(0);
+ End
+ Else If Up='LMEMGETCHUNKSIZE' Then RAx:=LmSize(AS_(0),AW(0))
+ Else If Up='LMEMINSERTAT' Then Begin
+  H:=AS_(0);Ch:=AW(0);Sz:=LmSize(H,Ch);K:=AW(1);Cnt:=AW(2);
+  If LmResize(H,Ch,Word(Sz+Cnt)) Then Begin
+   Sgm:=RtSeg(H);E:=LmChunkOfs(H,Ch);
+   If K<Sz Then Move(EMem^[Lin(Sgm,Word(E+K))],EMem^[Lin(Sgm,Word(E+K+Cnt))],
+       Sz-K);
+   For Hs:=0 To Cnt-1 Do W8(Sgm,Word(E+K+Hs),0);
+   RAx:=Ch;
+  End;
+ End
+ Else If Up='LMEMDELETEAT' Then Begin
+  H:=AS_(0);Ch:=AW(0);Sz:=LmSize(H,Ch);K:=AW(1);Cnt:=AW(2);
+  If (Sz>=K+Cnt) And (LmChunkOfs(H,Ch)<>0) Then Begin
+   Sgm:=RtSeg(H);E:=LmChunkOfs(H,Ch);
+   If Sz>K+Cnt Then Move(EMem^[Lin(Sgm,Word(E+K+Cnt))],EMem^[Lin(Sgm,
+       Word(E+K))],Sz-K-Cnt);
+   LmResize(H,Ch,Word(Sz-Cnt));
+  End;
+ End
+ { ---- registres : MemDerefDS / MemDerefES ---- }
+ Else If (Up='MEMDEREFDS') Or (Up='MEMDEREFES') Then Begin
+  Sgm:=RtSeg(Reg[3]);
+  If Up='MEMDEREFDS' Then SegR[3]:=Sgm Else SegR[0]:=Sgm;
+ End
+ Else If Up='MEMDEREF' Then Begin RDx:=RtSeg(AW(0));End
+ { ---- tableaux de chunks ---- }
+ Else If (Up='CHUNKARRAYCREATE') Or (Up='CHUNKARRAYCREATEAT') Then
+  RAx:=CaCreate(AS_(0),AW(0),AW(1),AW(2))
+ Else If Up='CHUNKARRAYELEMENTTOPTR' Then Begin
+  H:=AS_(0);Ch:=AW(0);Sz:=0;
+  If LmChunkOfs(H,Ch)<>0 Then Begin
+   K:=AW(1);
+   If K<M16(RtSeg(H),LmChunkOfs(H,Ch)) Then Begin
+    E:=CaElemOfs(H,Ch,K,Sz);
+    RAx:=Word(LmChunkOfs(H,Ch)+E);RDx:=RtSeg(H);
+    If (AW(2)<>0) Or (AS_(2)<>0) Then W16(AS_(2),AW(2),Sz);
+   End;
+  End;
+ End
+ Else If Up='CHUNKARRAYAPPEND' Then Begin
+  H:=AS_(0);Ch:=AW(0);
+  E:=CaAdd(H,Ch,AW(1),0);
+  If E<>0 Then Begin RAx:=Word(LmChunkOfs(H,Ch)+E);RDx:=RtSeg(H);End;
+ End
+ Else If Up='CHUNKARRAYINSERTAT' Then Begin
+  H:=AS_(0);Ch:=AW(0);
+  { le pointeur d'insertion est un decalage dans le segment du bloc }
+  K:=0;
+  If AS_(1)=RtSeg(H) Then K:=Word(AW(1)-LmChunkOfs(H,Ch));
+  E:=CaAdd(H,Ch,AW(2),K);
+  If E<>0 Then Begin RAx:=Word(LmChunkOfs(H,Ch)+E);RDx:=RtSeg(H);End;
+ End
+ Else If Up='CHUNKARRAYGETCOUNT' Then Begin
+  E:=LmChunkOfs(AS_(0),AW(0));
+  If E<>0 Then RAx:=M16(RtSeg(AS_(0)),E);
+ End
+ Else If Up='CHUNKARRAYGETELEMENT' Then Begin
+  H:=AS_(0);Ch:=AW(0);Sz:=0;
+  If (LmChunkOfs(H,Ch)<>0) And (AW(1)<M16(RtSeg(H),LmChunkOfs(H,Ch))) Then Begin
+   E:=CaElemOfs(H,Ch,AW(1),Sz);
+   Sgm:=RtSeg(H);
+   For K:=0 To Sz-1 Do
+    W8(AS_(2),Word(AW(2)+K),M8(Sgm,Word(LmChunkOfs(H,Ch)+E+K)));
+  End;
+ End
+ Else If Up='CHUNKARRAYDELETE' Then Begin
+  H:=AS_(0);Ch:=AW(0);
+  If AS_(1)=RtSeg(H) Then CaDelEl(H,Ch,Word(AW(1)-LmChunkOfs(H,Ch)));
+ End
+ Else If Up='CHUNKARRAYPTRTOELEMENT' Then Begin
+  H:=AS_(0);Ch:=AW(0);Es:=M16(RtSeg(H),Word(LmChunkOfs(H,Ch)+2));
+  If (Es<>0) And (AS_(1)=RtSeg(H)) Then
+   RAx:=Word((AW(1)-LmChunkOfs(H,Ch)-CaStart(H,Ch)) Div Es);
+ End
+ { ---- fichiers VM ---- }
+ Else If Up='VMOPEN' Then RAx:=VM_FILE
+ Else If (Up='VMCLOSE') Or (Up='VMUPDATE') Or (Up='VMSAVE') Then RAx:=0
+ Else If Up='VMALLOC' Then RAx:=VmNewBlock(AW(1),1)
+ Else If Up='VMALLOCLMEM' Then Begin
+  B:=VmNewBlock(16,2);
+  If B<>0 Then Begin
+   H:=LmNew(AW(1),AW(2));
+   If H<>0 Then Begin
+    RtHan[(VmBlk[(B-$0100) Div 2])-$0400].Used:=False;
+    VmBlk[(B-$0100) Div 2]:=H;
+   End;
+  End;
+  RAx:=B;
+ End
+ Else If Up='VMLOCK' Then Begin
+  H:=VmHandleOf(AW(0));
+  If H<>0 Then Begin
+   RAx:=0;RDx:=RtSeg(H);
+   If (AW(1)<>0) Or (AS_(1)<>0) Then W16(AS_(1),AW(1),H);
+  End;
+ End
+ Else If (Up='VMUNLOCK') Or (Up='VMDIRTY') Then
+ Else If Up='VMFREE' Then Begin
+  B:=AW(0);
+  If VmHandleOf(B)<>0 Then VmBlk[(B-$0100) Div 2]:=0;
+ End
+ Else If Up='VMGETMAPBLOCK' Then RAx:=VmMap
+ Else If Up='VMSETMAPBLOCK' Then VmMap:=AW(0)
+ Else If (Up='VMGETATTRIBUTES') Or (Up='VMSETATTRIBUTES') Then RAx:=0
+ Else If Up='VMMODIFYUSERID' Then
+ { ---- HugeArray : un bloc emule unique ---- }
+ Else If Up='HUGEARRAYCREATE' Then Begin
+  B:=VmNewBlock(2048,3);
+  If B<>0 Then Begin
+   H:=VmHandleOf(B);Sgm:=RtSeg(H);
+   W16(Sgm,4,AW(1));W16(Sgm,6,AW(2));
+   RAx:=B;
+  End;
+ End
+ Else If Up='HUGEARRAYDESTROY' Then Begin
+  If VmHandleOf(AW(1))<>0 Then VmBlk[(AW(1)-$0100) Div 2]:=0;
+ End
+ Else If Up='HUGEARRAYGETCOUNT' Then Begin
+  H:=VmHandleOf(AW(1));
+  If H<>0 Then Begin L:=HaCount(H);RAx:=Word(L And $FFFF);RDx:=Word(L Shr 16);
+  End;
+ End
+ Else If Up='HUGEARRAYLOCK' Then Begin
+  H:=VmHandleOf(AW(1));
+  If H<>0 Then Begin
+   Sgm:=RtSeg(H);Es:=M16(Sgm,4);If Es=0 Then Es:=1;
+   L:=AW(2)+65536*LongInt(AS_(2));
+   If L<HaCount(H) Then Begin
+    E:=Word(8+M16(Sgm,6)+L*Es);
+    If (AW(3)<>0) Or (AS_(3)<>0) Then Begin
+     W16(AS_(3),AW(3),E);W16(AS_(3),Word(AW(3)+2),Sgm);
+    End;
+    If (AW(4)<>0) Or (AS_(4)<>0) Then W16(AS_(4),AW(4),Es);
+    RAx:=Word(HaCount(H)-L);RDx:=Word(L);
+   End;
+  End;
+ End
+ Else If (Up='HUGEARRAYUNLOCK') Or (Up='HUGEARRAYDIRTY') Then
+ Else If Up='HUGEARRAYAPPEND' Then Begin
+  H:=VmHandleOf(AW(1));Cnt:=AW(2);
+  If H<>0 Then Begin
+   Sgm:=RtSeg(H);Es:=M16(Sgm,4);If Es=0 Then Es:=1;
+   L:=HaCount(H);
+   If BlkGrow(H,8+M16(Sgm,6)+(L+Cnt)*Es+16) Then Begin
+    Sgm:=RtSeg(H);
+    If (AW(3)<>0) Or (AS_(3)<>0) Then
+     For K:=0 To Cnt*Es-1 Do
+      W8(Sgm,Word(8+M16(Sgm,6)+L*Es+K),M8(AS_(3),Word(AW(3)+K)));
+    HaSetCount(H,L+Cnt);
+    RAx:=Word(L And $FFFF);RDx:=Word(L Shr 16);
+   End;
+  End;
+ End
+ Else If (Up='HUGEARRAYREPLACE') Then Begin
+  H:=VmHandleOf(AW(1));Cnt:=AW(2);
+  If H<>0 Then Begin
+   Sgm:=RtSeg(H);Es:=M16(Sgm,4);If Es=0 Then Es:=1;
+   L:=AW(3)+65536*LongInt(AS_(3));
+   If L+Cnt<=HaCount(H) Then
+    For K:=0 To Cnt*Es-1 Do
+     W8(Sgm,Word(8+M16(Sgm,6)+L*Es+K),M8(AS_(4),Word(AW(4)+K)));
+  End;
+ End
+ Else If (Up='HUGEARRAYDELETE') Or (Up='HUGEARRAYINSERT') Then Begin
+  H:=VmHandleOf(AW(1));Cnt:=AW(2);
+  If H<>0 Then Begin
+   Sgm:=RtSeg(H);Es:=M16(Sgm,4);If Es=0 Then Es:=1;
+   If Up='HUGEARRAYDELETE' Then Begin
+    L:=AW(3)+65536*LongInt(AS_(3));
+    If L+Cnt<=HaCount(H) Then Begin
+     Move(EMem^[Lin(Sgm,Word(8+M16(Sgm,6)+(L+Cnt)*Es))],
+          EMem^[Lin(Sgm,Word(8+M16(Sgm,6)+L*Es))],(HaCount(H)-L-Cnt)*Es);
+     HaSetCount(H,HaCount(H)-Cnt);
+    End;
+   End Else Begin
+    L:=AW(3)+65536*LongInt(AS_(3));
+    If (L<=HaCount(H)) And BlkGrow(H,8+M16(Sgm,
+        6)+(HaCount(H)+Cnt)*Es+16) Then Begin
+     Sgm:=RtSeg(H);
+     Move(EMem^[Lin(Sgm,Word(8+M16(Sgm,6)+L*Es))],
+          EMem^[Lin(Sgm,Word(8+M16(Sgm,6)+(L+Cnt)*Es))],(HaCount(H)-L)*Es);
+     For K:=0 To Cnt*Es-1 Do
+      W8(Sgm,Word(8+M16(Sgm,6)+L*Es+K),M8(AS_(4),Word(AW(4)+K)));
+     HaSetCount(H,HaCount(H)+Cnt);
+    End;
+   End;
+  End;
+ End
+ Else RtApiExt:=False;
 End;
 {$ENDIF}
 
@@ -24651,7 +25716,16 @@ Begin
   $CA: Begin Imm:=F16;RetFar;Reg[4]:=Reg[4]+Imm;End;
   $CB: RetFar;
   $CC: Halt_('INT3');
-  $CD: Halt_('INT '+HexB(F8));
+  $CD: Begin
+     V:=F8;
+     If (V>=$34) And (V<=$3B) Then FpuOp(V-$34)
+     Else If V=$3C Then Begin
+      { prefixe de segment pour l'instruction flottante suivante }
+      V:=F8;SegOv:=(V Shr 3) And 3;
+      V:=F8;V:=F8;
+      If (V>=$34) And (V<=$3B) Then FpuOp(V-$34);
+     End Else If V<>$3D Then Halt_('INT '+HexB(V));
+    End;
   $CF: Begin EIP:=Pop16;SegR[1]:=Pop16;EFl:=Pop16;End;
   $D7: SetR8(0,M8(SegR[3],Word(Reg[3]+(Reg[0] And 255))));
   $E0..$E2: Begin
@@ -24660,7 +25734,7 @@ Begin
          Or ((Op=$E0) And ((EFl And FL_ZF)=0))) Then EIP:=Word(EIP+D);
     End;
   $E3: Begin D:=SignB(F8);If Reg[1]=0 Then EIP:=Word(EIP+D);End;
-  $D8..$DF: Begin ModRM;End;
+  $D8..$DF: FpuOp(Op-$D8);
   $E4..$E7: F8;
   $E8: Begin D:=SignW(F16);Push16(EIP);EIP:=Word(EIP+D);End;
   $E9: Begin D:=SignW(F16);EIP:=Word(EIP+D);End;
@@ -24855,6 +25929,86 @@ Begin
  If S<>'' Then GwAdd(Wd_,'  '+S);
 End;
 
+Procedure OtShow(Wd_: PWindow); Forward;
+
+{ Auto-test du coprocesseur (GEOFPUTEST=1) : sqrt(2), atan(1)*4, 7/2 -> entier }
+Procedure FpuSelfTest(Wd_: PWindow);
+Const Code: Array[0..43] Of Byte = (
+ $CD,$35,$E8, $CD,$35,$E8, $CD,$3A,$C1, $CD,$35,$FA, $CD,$39,$1E,$00,$01,
+ $CD,$35,$E8, $CD,$35,$FB,
+ $CD,$35,$E8, $CD,$38,$36,$10,$01, $CD,$39,$1E,$20,$01,
+ $CD,$37,$06,$30,$01, $CB, $90, $90);
+Var I: Integer; D: Double; L: LongInt; S: Word;
+Begin
+ S:=$9100;
+ For I:=0 To High(Code) Do W8(S,I,Code[I]);
+ { 3.5 en $0110 (double) : ecrit directement }
+ D:=3.5;Move(D,EMem^[Lin(S,$110)],8);
+ L:=1234567;Move(L,EMem^[Lin(S,$130)],4);
+ FillChar(Reg,SizeOf(Reg),0);
+ SegR[0]:=S;SegR[1]:=S;SegR[2]:=$9000;SegR[3]:=S;
+ Reg[4]:=$FFF0;EIP:=0;EFl:=$0202;
+ Push16(TRAP_EXIT);Push16(0);
+ EHalt:=False;ICount:=0;FpuInit;
+ I:=0;
+ While (Not EHalt) And (I<200) Do Begin ExecOne;Inc(I);End;
+ Move(EMem^[Lin(S,$100)],D,8);
+ GwAdd(Wd_,'FPU test: sqrt(2) = '+FmtReal(D)+'  ('+EReason+')');
+ Move(EMem^[Lin(S,$120)],D,8);
+ GwAdd(Wd_,'FPU test: 1/3.5 = '+FmtReal(D));
+ GwAdd(Wd_,'FPU test: ST(0) fild(1234567) -> '+FmtReal(FpuReg(0)));
+End;
+
+{ Auto-test des routines LMem / tableaux de chunks / HugeArray (GEOFPUTEST) }
+Procedure ApiSelfTest(Wd_: PWindow);
+Var Ax,Dx: Word; Hd,Ch,Hv,Hb: Word; Ok: Boolean; Sg: Word; I: Integer;
+
+ { appelle une routine pascal : Args = mots dans l'ordre de declaration
+   (un dword = mot bas puis mot haut) ; Sig = signature }
+ Procedure Call(Const Up,Sig: String; Const Args: Array Of Word);
+ Var K,Tot,Wi,C: Integer; Top: Word;
+ Begin
+  Tot:=0;
+  For K:=1 To Length(Sig) Do If Sig[K]='d' Then Inc(Tot,4) Else Inc(Tot,2);
+  Reg[4]:=$FF00;SegR[2]:=$9000;
+  Top:=Word(Reg[4]);
+  Wi:=0;C:=0;
+  For K:=1 To Length(Sig) Do Begin
+   If Sig[K]='d' Then Inc(C,4) Else Inc(C,2);
+   W16($9000,Word(Top+Tot-C),Args[Wi]);Inc(Wi);
+   If Sig[K]='d' Then Begin W16($9000,Word(Top+Tot-C+2),Args[Wi]);Inc(Wi);End;
+  End;
+  Ax:=0;Dx:=0;
+  RtApiExt(Up,Top,Sig,Tot,Ax,Dx);
+ End;
+
+Begin
+ Hd:=0;
+ { dword = (bas, haut) : l'optr est (chunk, handle) }
+ Call('MEMALLOCLMEM','ww',[0,0]);Hd:=Ax;
+ Call('CHUNKARRAYCREATE','dwww',[0,Hd,4,0,0]);Ch:=Ax;
+ Call('CHUNKARRAYAPPEND','dw',[Ch,Hd,4]);
+ If (Ax<>0) Or (Dx<>0) Then Begin W16(Dx,Ax,$1111);W16(Dx,Word(Ax+2),$2222);End;
+ Call('CHUNKARRAYAPPEND','dw',[Ch,Hd,4]);
+ If (Ax<>0) Or (Dx<>0) Then Begin W16(Dx,Ax,$3333);W16(Dx,Word(Ax+2),$4444);End;
+ Call('CHUNKARRAYGETCOUNT','d',[Ch,Hd]);
+ GwAdd(Wd_,'ChunkArray test: count='+IntStr(Ax)+' (attendu 2)');
+ Call('CHUNKARRAYELEMENTTOPTR','dwd',[Ch,Hd,1,0,0]);
+ GwAdd(Wd_,'ChunkArray test: element 1 = '+HexW(M16(Dx,Ax))+':'+HexW(M16(Dx,
+     Word(Ax+2)))+' (attendu 3333:4444)');
+ { HugeArray }
+ Call('VMOPEN','dwww',[0,0,0,0,0,0]);
+ Call('HUGEARRAYCREATE','www',[Ax,2,0]);Hb:=Ax;
+ W16($9100,$200,$ABCD);
+ Call('HUGEARRAYAPPEND','wwwd',[VM_FILE,Hb,1,$0200,$9100]);
+ Call('HUGEARRAYAPPEND','wwwd',[VM_FILE,Hb,1,$0200,$9100]);
+ Call('HUGEARRAYGETCOUNT','ww',[VM_FILE,Hb]);
+ GwAdd(Wd_,'HugeArray test: count='+IntStr(Ax)+' (attendu 2)');
+ Call('HUGEARRAYLOCK','wwddd',[VM_FILE,Hb,1,0,$0300,$9100,$0310,$9100]);
+ GwAdd(Wd_,'HugeArray test: lock -> '+HexW(M16($9100,
+     $300))+' size '+HexW(M16($9100,$310)));
+End;
+
 Procedure RtCoverage(Wd_: PWindow);
  Var Dt_: PGeodeWin;
 Var I,J,L,Known,Tot: Integer; T: TRtSeen; S,E,Nm: String;
@@ -24980,11 +26134,14 @@ Begin
      'PC/GEOS-EMULATION')+' ----------------');
  If EMem=Nil Then GetMem(EMem,SizeOf(TEMem));
  FillChar(EMem^,SizeOf(TEMem),0);
+ FpuInit;
  RtNUser:=0;RtNSeen:=0;RtHeapTop:=$A000;FillChar(RtHan,SizeOf(RtHan),0);
  RtCalls:=0;RtUnkCalls:=0;
  RtLoadSls(JoinPath(BaseDir,'GEOS2.SLS'));
  RtLoadSls(JoinPath(HomeDir,'GEOS2.SLS'));
  FillChar(Cnts,SizeOf(Cnts),0);
+ If GetEnv('GEOFPUTEST')<>'' Then Begin FpuSelfTest(Wd_);ApiSelfTest(Wd_);End;
+ FillChar(RtHan,SizeOf(RtHan),0);RtHeapTop:=$A000;
  Nx:=$0200;
  For I:=0 To Dt_^.G.NS-1 Do Begin
   SegPara[I]:=Nx;
@@ -25062,6 +26219,7 @@ Begin
  { application : son code n'est atteint que par le systeme d'objets }
  If Dt_^.G.AType=1 Then Begin
   RtCoverage(Wd_);RtExercise(Wd_);
+  OtShow(Wd_);
   Dt_^.Top:=Max2(1,Dt_^.NL-14);
   Exit;
  End;
@@ -25194,6 +26352,468 @@ Begin
  End;
  Invalidate(Wd_);
 End;
+
+{ ====================================================================== }
+{   ARBRE GENERIQUE D'UNE GEODE : les blocs d'objets (LMem) sont lus     }
+{   en memoire emulee ; chaque objet Gen* est associe a un composant du  }
+{   clone (formulaire de GeoBasic).                                      }
+{   Disposition d'un objet : classe (ObjRelocationID + entree, 4 octets),}
+{   puis le mot a +6 donne le decalage de la partie GenInstance :        }
+{     GenOff = chunk + 4 + mot(+6)                                       }
+{     GI_link(4) GI_comp(4) GI_visMoniker(2) GI_kbd(2) GI_attrs GI_states}
+{   Un optr est [chunk][ObjRelocationID] ; bit 0 du chunk de GI_link =   }
+{   lien vers le parent (fin de la liste des freres).                    }
+{ ====================================================================== }
+{$IFDEF FPC}
+Const
+ OT_MAXDLG = 24;
+ CM_OTDLG  = 1560;           { +1..24 : ouverture d'une boite de dialogue }
+ OT_MAXMENU = 8;
+ OT_MAXTRG  = 64;
+ CM_OTTRIG  = 1600;          { +1..64 : declencheur d'un menu }
+
+Var
+ OtGeode   : PWindow;
+ OtNDlg    : Integer;
+ OtDlgRes  : Array[1..OT_MAXDLG] Of Integer;
+ OtDlgCh   : Array[1..OT_MAXDLG] Of Word;
+ OtDlgTit  : Array[1..OT_MAXDLG] Of String[28];
+ OtNMenu   : Integer;
+ OtMenuRes : Array[1..OT_MAXMENU] Of Integer;
+ OtMenuCh  : Array[1..OT_MAXMENU] Of Word;
+ OtMenuTit : Array[1..OT_MAXMENU] Of String[20];
+ OtNTrg    : Integer;
+ OtDry     : Boolean;
+ OtDryCnt  : Integer;
+ OtTrgRes  : Array[1..OT_MAXTRG] Of Integer;
+ OtTrgCh   : Array[1..OT_MAXTRG] Of Word;
+
+Function OtGw: PGeodeWin;
+Begin
+ OtGw:=PGeodeWin(OtGeode^.Data);
+End;
+
+{ decalage d'un chunk dans un bloc d'objets, 0 si invalide }
+Function OtChunkOfs(Res: Integer; H: Word): Word;
+Var Sg,HT,N,O: Word;
+Begin
+ OtChunkOfs:=0;
+ If (Res<0) Or (Res>=OtGw^.G.NS) Then Exit;
+ Sg:=SegPara[Res];
+ If M16(Sg,6)<>2 Then Exit;
+ HT:=M16(Sg,2);N:=M16(Sg,10);
+ If (H<HT) Or (H>=HT+2*N) Or Odd(H) Then Exit;
+ O:=M16(Sg,H);
+ If (O=0) Or (O=$FFFF) Or (O<4) Then Exit;
+ OtChunkOfs:=O;
+End;
+
+Function OtChunkSize(Res: Integer; H: Word): Word;
+Var O: Word;
+Begin
+ O:=OtChunkOfs(Res,H);
+ If O=0 Then OtChunkSize:=0 Else OtChunkSize:=M16(SegPara[Res],Word(O-2));
+End;
+
+{ classe de base (bibliotheque) d'une structure de classe de la geode }
+Function OtBaseOf(CS,CO: Word): String;
+Var K: Integer; Sup,Ofs: Word; Lb: String;
+Begin
+ OtBaseOf:='';
+ For K:=1 To 10 Do Begin
+  Ofs:=M16(CS,CO);Sup:=M16(CS,Word(CO+2));
+  If (Sup>=TRAP_LIB) And (Sup<TRAP_LIB+16) Then Begin
+   If Sup-TRAP_LIB<OtGw^.G.NL Then Begin
+    Lb:=TrimStr(OtGw^.G.Libs[Sup-TRAP_LIB].Name);
+    OtBaseOf:=RtField(RtEntry(RtLibId(Lb),Ofs),0);
+   End;
+   Exit;
+  End;
+  If Sup=0 Then Exit;
+  CS:=Sup;CO:=Ofs;
+ End;
+End;
+
+{ nom de la classe de bibliotheque d'un objet ; Own = classe de la geode }
+Function OtClassName(Res: Integer; H: Word; Var Own: Boolean): String;
+Var O,Rid,Ent: Word; Src: Integer; Lb: String;
+Begin
+ OtClassName:='';Own:=False;
+ O:=OtChunkOfs(Res,H);
+ If O=0 Then Exit;
+ Rid:=M16(SegPara[Res],O);Ent:=M16(SegPara[Res],Word(O+2));Src:=Rid Shr 12;
+ If (Src=3) And ((Rid And $FFF)<OtGw^.G.NL) Then Begin
+  Lb:=TrimStr(OtGw^.G.Libs[Rid And $FFF].Name);
+  OtClassName:=RtField(RtEntry(RtLibId(Lb),Ent),0);
+ End Else If (Src=6) And ((Rid And $FFF)=0) And (Ent<OtGw^.G.NE) Then Begin
+  Own:=True;
+  If OtGw^.G.Exp[Ent].Res<OtGw^.G.NS Then
+   OtClassName:=OtBaseOf(SegPara[OtGw^.G.Exp[Ent].Res],OtGw^.G.Exp[Ent].Ofs);
+ End;
+End;
+
+{ optr [chunk][relocation id] -> (ressource, chunk) ; False si nul }
+Function OtOptr(Res: Integer; Ch,Hr: Word; Var R2: Integer; Var H2: Word):
+    Boolean;
+Var Src: Integer;
+Begin
+ OtOptr:=False;
+ If Ch=0 Then Exit;
+ Src:=Hr Shr 12;
+ If Src=4 Then R2:=Res
+ Else If Src=1 Then R2:=Hr And $FFF
+ Else Exit;
+ H2:=Ch And $FFFE;
+ OtOptr:=OtChunkOfs(R2,H2)<>0;
+End;
+
+Function OtGenOfs(Res: Integer; H: Word): Word;
+Var O: Word;
+Begin
+ O:=OtChunkOfs(Res,H);
+ If O=0 Then OtGenOfs:=0 Else OtGenOfs:=Word(O+4+M16(SegPara[Res],Word(O+6)));
+End;
+
+Function OtMoniker(Res: Integer; H: Word): String;
+Var O,Sz,I: Word; S: String; C: Byte;
+Begin
+ OtMoniker:='';
+ If H=0 Then Exit;
+ O:=OtChunkOfs(Res,H);
+ If O=0 Then Exit;
+ Sz:=M16(SegPara[Res],Word(O-2));
+ S:='';
+ I:=4;
+ While (I<Sz) And (Length(S)<38) Do Begin
+  C:=M8(SegPara[Res],Word(O+I));
+  If C=0 Then Break;
+  If (C<32) Or (C>126) Then Begin S:='';Break;End;
+  S:=S+Chr(C);Inc(I);
+ End;
+ OtMoniker:=TrimStr(S);
+End;
+
+Function OtKindOf(Const Cn: String): Integer;
+Var B: String;
+Begin
+ B:=Cn;
+ If (Length(B)>5) And (Copy(B,Length(B)-4,5)='Class') Then Delete(B,Length(B)-4,
+     5);
+ If B='GenPrimary' Then OtKindOf:=FK_PRIMARY
+ Else If B='GenTrigger' Then OtKindOf:=FK_TRIG
+ Else If B='GenText' Then OtKindOf:=FK_TEXT
+ Else If B='GenGlyph' Then OtKindOf:=FK_GLYPH
+ Else If B='GenValue' Then OtKindOf:=FK_VALUE
+ Else If B='GenItemGroup' Then OtKindOf:=FK_IGROUP
+ Else If (B='GenDynamicList') Or (B='GenFileSelector') Then OtKindOf:=FK_LIST
+ Else If B='GenBooleanGroup' Then OtKindOf:=FK_BGROUP
+ Else If B='GenItem' Then OtKindOf:=FK_ITEM
+ Else If B='GenBoolean' Then OtKindOf:=FK_BOOL
+ Else If (B='GenEditControl') Or (Copy(B,1,
+     10)='GenControl') Then OtKindOf:=FK_DCTRL
+ Else If B='GenDisplayGroup' Then OtKindOf:=FK_DGROUP
+ Else If B='GenDisplay' Then OtKindOf:=FK_DISPLAY
+ Else OtKindOf:=FK_INTER;
+End;
+
+{ GenInteraction : 1 menu (popup), 4 dialogue, 5 popout }
+Function OtVisibility(Res: Integer; H: Word): Integer;
+Var G: Word; Own: Boolean; Cn: String;
+Begin
+ OtVisibility:=0;
+ Cn:=OtClassName(Res,H,Own);
+ If Copy(Cn,1,14)<>'GenInteraction' Then Exit;
+ G:=OtGenOfs(Res,H);
+ If G<>0 Then OtVisibility:=M8(SegPara[Res],Word(G+15));
+End;
+
+Function OtIsDialog(Res: Integer; H: Word): Boolean;
+Var G: Word; V: Byte; Own: Boolean; Cn: String;
+Begin
+ OtIsDialog:=False;
+ Cn:=OtClassName(Res,H,Own);
+ If OtKindOf(Cn)<>FK_INTER Then Exit;
+ If Copy(Cn,1,14)<>'GenInteraction' Then Exit;
+ G:=OtGenOfs(Res,H);
+ If G=0 Then Exit;
+ V:=M8(SegPara[Res],Word(G+15));
+ OtIsDialog:=V In [4,5];
+End;
+
+Function OtNextSibling(Res: Integer; H: Word; Var R2: Integer; Var H2: Word):
+    Boolean;
+Var G,Ch,Hr: Word;
+Begin
+ OtNextSibling:=False;
+ G:=OtGenOfs(Res,H);
+ If G=0 Then Exit;
+ Ch:=M16(SegPara[Res],G);Hr:=M16(SegPara[Res],Word(G+2));
+ If (Ch And 1)<>0 Then Exit;
+ OtNextSibling:=OtOptr(Res,Ch,Hr,R2,H2);
+End;
+
+Function OtFirstChild(Res: Integer; H: Word; Var R2: Integer; Var H2: Word):
+    Boolean;
+Var G: Word;
+Begin
+ OtFirstChild:=False;
+ G:=OtGenOfs(Res,H);
+ If G=0 Then Exit;
+ OtFirstChild:=OtOptr(Res,M16(SegPara[Res],Word(G+4)),M16(SegPara[Res],
+     Word(G+6)),R2,H2);
+End;
+
+{ indices de hints (genC.def) : rang depuis HINT_DUMMY ; mot = $6000 or
+  (9+4*rang) }
+Const
+ HNT_DRAW_BOX = 30; HNT_HORIZ = 45; HNT_VERT = 46; HNT_CENTER_H = 21;
+
+Procedure OtRegisterDialog(Res: Integer; H: Word; Const Tit: String);
+Begin
+ If OtNDlg>=OT_MAXDLG Then Exit;
+ Inc(OtNDlg);
+ OtDlgRes[OtNDlg]:=Res;OtDlgCh[OtNDlg]:=H;
+ If Tit<>'' Then OtDlgTit[OtNDlg]:=Copy(Tit,1,28)
+ Else OtDlgTit[OtNDlg]:='Dialog '+IntStr(Res)+':'+HexW(H);
+End;
+
+{ ajoute l'objet et ses descendants au formulaire ; retourne l'indice }
+Function OtBuild(F: PForm; Parent,Res: Integer; H: Word; Depth: Integer):
+    Integer;
+Var Cn,Tit: String; Own: Boolean; K,I,R2,Rc: Integer; H2,Hc,G,W,Q,E: Word;
+Hdr: Byte;
+Begin
+ OtBuild:=0;
+ If (F^.N>=FMAX) Or (Depth>14) Then Exit;
+ Cn:=OtClassName(Res,H,Own);
+ If Cn='' Then Exit;
+ K:=OtKindOf(Cn);
+ If K=FK_PRIMARY Then K:=FK_INTER;
+ G:=OtGenOfs(Res,H);
+ If G=0 Then Exit;
+ Tit:=OtMoniker(Res,M16(SegPara[Res],Word(G+8)));
+ If (Depth>0) And (OtIsDialog(Res,H) Or (OtVisibility(Res,H)=1)) Then Exit;
+ I:=FmAdd(F,K,Parent);
+ If I=0 Then Exit;
+ F^.O[I].Name:='o'+IntStr(Res)+'_'+HexW(H);
+ F^.O[I].Name:=Copy(F^.O[I].Name,1,20);
+ F^.O[I].Title:=Copy(Tit,1,40);
+ F^.O[I].SrcRes:=Res;F^.O[I].SrcCh:=H;
+ Hdr:=M8(SegPara[Res],Word(G+13));
+ F^.O[I].Enabled:=(Hdr And $40)<>0;
+ F^.O[I].Usable:=True;
+ If (K=FK_INTER) And (Tit='') Then F^.O[I].Feat:=F^.O[I].Feat Or $8000;
+ { conseils de mise en page (variable data des GenInteraction) }
+ If (K=FK_INTER) And (Copy(Cn,1,14)='GenInteraction') Then Begin
+  W:=OtChunkSize(Res,H);Q:=Word(G+17);
+  E:=Word(OtChunkOfs(Res,H)+W);
+  While Q+2<=E Do Begin
+   Rc:=M16(SegPara[Res],Q);
+   If (Rc=$CCCC) Or ((Rc And $F800)<>$6000) Then Break;
+   Rc:=((Rc And $1FFF)-9) Div 4;
+   If Rc=HNT_HORIZ Then F^.O[I].Orient:=1;
+   If Rc=HNT_VERT Then F^.O[I].Orient:=0;
+   Inc(Q,2);
+  End;
+ End;
+ If K=FK_VALUE Then Begin F^.O[I].Min:=0;F^.O[I].Max:=100;F^.O[I].Val:=50;End;
+ { enfants }
+ If OtFirstChild(Res,H,R2,H2) Then Begin
+  Hc:=H2;Rc:=R2;Q:=0;
+  Repeat
+   OtBuild(F,I,Rc,Hc,Depth+1);
+   Inc(Q);
+  Until (Q>60) Or (Not OtNextSibling(Rc,Hc,Rc,Hc));
+ End;
+ OtBuild:=I;
+End;
+
+{ recense les dialogues et les menus accessibles depuis un objet }
+Procedure OtScan(Res: Integer; H: Word; Depth: Integer; InDlg: Boolean);
+Var R2,Rc: Integer; H2,Hc: Word; Q: Integer; Dlg: Boolean;
+Begin
+ If Depth>14 Then Exit;
+ Dlg:=InDlg;
+ If Depth>0 Then Begin
+  If OtIsDialog(Res,H) Then Begin
+   OtRegisterDialog(Res,H,OtMoniker(Res,M16(SegPara[Res],Word(OtGenOfs(Res,
+       H)+8))));
+   Dlg:=True;
+  End Else If (OtVisibility(Res,H)=1) And (Not InDlg) And (OtNMenu<OT_MAXMENU)
+      Then Begin
+   Inc(OtNMenu);OtMenuRes[OtNMenu]:=Res;OtMenuCh[OtNMenu]:=H;
+   OtMenuTit[OtNMenu]:=Copy(OtMoniker(Res,M16(SegPara[Res],
+     Word(OtGenOfs(Res,H)+8))),1,20);
+   If OtMenuTit[OtNMenu]='' Then OtMenuTit[OtNMenu]:='Menu '+IntStr(OtNMenu);
+  End;
+ End;
+ If OtFirstChild(Res,H,R2,H2) Then Begin
+  Rc:=R2;Hc:=H2;Q:=0;
+  Repeat
+   OtScan(Rc,Hc,Depth+1,Dlg);
+   Inc(Q);
+  Until (Q>60) Or (Not OtNextSibling(Rc,Hc,Rc,Hc));
+ End;
+End;
+
+{ ajoute au menu courant les declencheurs descendants d'un objet }
+Procedure OtMenuItems(W: PWindow; Res: Integer; H: Word; Depth: Integer);
+Var R2,Rc: Integer; H2,Hc: Word; Q: Integer; Own: Boolean; Cn,T: String;
+Begin
+ If (Depth>6) Or ((Not OtDry) And (OtNTrg>=OT_MAXTRG)) Then Exit;
+ If OtFirstChild(Res,H,R2,H2) Then Begin
+  Rc:=R2;Hc:=H2;Q:=0;
+  Repeat
+   Cn:=OtClassName(Rc,Hc,Own);
+   If OtKindOf(Cn)=FK_TRIG Then Begin
+    T:=OtMoniker(Rc,M16(SegPara[Rc],Word(OtGenOfs(Rc,Hc)+8)));
+    If T='' Then T:='Item';
+    If OtDry Then Inc(OtDryCnt)
+    Else If OtNTrg<OT_MAXTRG Then Begin
+     Inc(OtNTrg);OtTrgRes[OtNTrg]:=Rc;OtTrgCh[OtNTrg]:=Hc;
+     WinAddItem(W,T,CM_OTTRIG+OtNTrg,'');
+    End;
+   End Else If OtVisibility(Rc,Hc)<>1 Then OtMenuItems(W,Rc,Hc,Depth+1);
+   Inc(Q);
+  Until (Q>60) Or (Not OtNextSibling(Rc,Hc,Rc,Hc));
+ End;
+End;
+
+Procedure OtMenus(W: PWindow);
+Var I: Integer;
+Begin
+ For I:=1 To OtNMenu Do Begin
+  OtDry:=True;OtDryCnt:=0;
+  OtMenuItems(W,OtMenuRes[I],OtMenuCh[I],0);
+  OtDry:=False;
+  If OtDryCnt>0 Then Begin
+   WinAddMenu(W,OtMenuTit[I]);
+   OtMenuItems(W,OtMenuRes[I],OtMenuCh[I],0);
+  End;
+ End;
+ If OtNDlg=0 Then Exit;
+ WinAddMenu(W,'Dialogs~Bo'#140'tes~Dialoge');
+ For I:=1 To OtNDlg Do
+  WinAddItem(W,OtDlgTit[I]+' ('+IntStr(OtDlgRes[I])+':'+HexW(OtDlgCh[I])+')',
+      CM_OTDLG+I,'');
+End;
+
+Function OtWindow(Res: Integer; H: Word; Const Title: String; Menus: Boolean):
+    PWindow;
+Var F: PForm; B: PBas; I,P: Integer; X,Y: Integer; Wd_: PWindow; R2: Integer;
+H2,Hc: Word; Q: Integer;
+Begin
+ OtWindow:=Nil;
+ New(F);FillChar(F^,SizeOf(TForm),0);
+ P:=FmAdd(F,FK_PRIMARY,0);
+ F^.O[P].Title:=Copy(Title,1,40);F^.O[P].Name:='root';
+ F^.O[P].SrcRes:=Res;F^.O[P].SrcCh:=H;
+ { les enfants de l'objet racine }
+ If OtFirstChild(Res,H,R2,H2) Then Begin
+  Q:=0;Hc:=H2;I:=R2;
+  Repeat
+   OtBuild(F,P,I,Hc,1);
+   Inc(Q);
+  Until (Q>60) Or (Not OtNextSibling(I,Hc,I,Hc));
+ End;
+ New(B);B:=BNewBas;B^.NoScr:=True;B^.NL:=1;B^.Src[1]:=NewStr('REM');
+ B^.LNo[1]:=-1;
+ NextWinPos(X,Y);
+ Wd_:=BrNew(X,Y,B,F,Title);
+ PBRun(Wd_^.Data)^.Tree:=True;
+ If Menus Then OtMenus(Wd_);
+ AddWindow(Wd_);
+ OtWindow:=Wd_;
+End;
+
+{ ouvre l'interface generique de l'application : GenApplication -> GenPrimary }
+Procedure OtShow(Wd_: PWindow);
+Var Dt_: PGeodeWin; R2,R3: Integer; H2,H3: Word; Own: Boolean; Cn,Tit: String;
+W: PWindow;
+Begin
+ Dt_:=Wd_^.Data;
+ OtGeode:=Wd_;
+ OtNDlg:=0;OtNMenu:=0;OtNTrg:=0;
+ If (Dt_^.G.AppRes=0) Or (Dt_^.G.AppRes>=Dt_^.G.NS) Then Exit;
+ If OtChunkOfs(Dt_^.G.AppRes,Dt_^.G.AppOfs)=0 Then Exit;
+ If Not OtFirstChild(Dt_^.G.AppRes,Dt_^.G.AppOfs,R2,H2) Then Exit;
+ Cn:=OtClassName(R2,H2,Own);
+ Tit:=OtMoniker(R2,M16(SegPara[R2],Word(OtGenOfs(R2,H2)+8)));
+ If Tit='' Then Tit:=TrimStr(Dt_^.G.Info.LongName);
+ If Tit='' Then Tit:=Dt_^.G.Name;
+ OtScan(R2,H2,0,False);
+ GwAdd(Wd_,T3('Generic tree: primary ','Arbre g'#130'n'#130'rique : primary ',
+     'Generischer Baum: Primary ')+IntStr(R2)+':'+HexW(H2)+
+   ' ('+Cn+'), '+IntStr(OtNDlg)+T3(' dialogs/menus',' dialogues/menus',
+       ' Dialoge/Men'#129's'));
+ W:=OtWindow(R2,H2,Tit,True);
+End;
+
+{ envoie le message d'un GenTrigger (destination puis message d'action) }
+Procedure OtSendTrigger(Res: Integer; H: Word; Const Title: String);
+Var G,Msg,Ch,Hr,A,C,D,B: Word; R2,N: Integer; H2: Word; Cy,IsP: Boolean;
+S: String;
+Begin
+ If OtGeode=Nil Then Exit;
+ G:=OtGenOfs(Res,H);
+ If G=0 Then Exit;
+ { GenTrigger : GTI_destination (optr) puis GTI_actionMsg }
+ Ch:=M16(SegPara[Res],Word(G+14));Hr:=M16(SegPara[Res],Word(G+16));
+ Msg:=M16(SegPara[Res],Word(G+18));
+ S:='> '+T3('trigger ','d'#130'clencheur ','Trigger ')+Title+'  msg='+
+    HexW(Msg)+' dest='+HexW(Hr)+':'+HexW(Ch);
+ If Msg=0 Then Begin GwAdd(OtGeode,S+'  (no message)');Exit;End;
+ IsP:=(Ch=0) And ((Hr Shr 12)=1) And ((Hr And $FFF)=0);
+ N:=0;
+ ELog:=OtGeode;
+ If IsP Then
+  N:=RtSendObj(0,0,True,False,0,0,Msg,0,0,0,A,C,D,B,Cy)
+ Else If OtOptr(Res,Ch,Hr,R2,H2) Then
+  N:=RtSendObj(R2,H2,False,False,0,0,Msg,0,0,0,A,C,D,B,Cy);
+ Case N Of
+  1: S:=S+'  -> handler executed';
+  2: S:=S+'  -> handler did not return';
+ Else S:=S+'  (no handler in the geode)';
+ End;
+ GwAdd(OtGeode,S);
+ GwSaveLog(OtGeode);
+End;
+
+{ commandes de menu des fenetres d'arbre ; True si traitee }
+Function OtCommand(Wd_: PWindow; Cmd: Integer): Boolean;
+Var K: Integer; W: PWindow;
+Begin
+ OtCommand:=False;
+ If OtGeode=Nil Then Exit;
+ If (Cmd>CM_OTTRIG) And (Cmd<=CM_OTTRIG+OT_MAXTRG) Then Begin
+  K:=Cmd-CM_OTTRIG;
+  If K<=OtNTrg Then OtSendTrigger(OtTrgRes[K],OtTrgCh[K],'menu '+IntStr(K));
+  OtCommand:=True;Exit;
+ End;
+ If (Cmd<=CM_OTDLG) Or (Cmd>CM_OTDLG+OT_MAXDLG) Then Exit;
+ K:=Cmd-CM_OTDLG;
+ If K>OtNDlg Then Exit;
+ W:=OtWindow(OtDlgRes[K],OtDlgCh[K],OtDlgTit[K],False);
+ OtCommand:=True;
+End;
+
+Procedure OtClick(Wd_: PWindow; I: Integer);
+Var F: PForm;
+Begin
+ F:=PBRun(Wd_^.Data)^.Form;
+ If (F=Nil) Or (OtGeode=Nil) Then Exit;
+ OtSendTrigger(F^.O[I].SrcRes,F^.O[I].SrcCh,F^.O[I].Title);
+End;
+{$ELSE}
+Procedure OtClick(Wd_: PWindow; I: Integer);
+Begin
+End;
+
+Function OtCommand(Wd_: PWindow; Cmd: Integer): Boolean;
+Begin
+ OtCommand:=False;
+End;
+{$ENDIF}
 
 { ====================================================================== }
 {      REPARTITION DES TRAITEMENTS SELON LE GENRE DE FENETRE (A_xxx)     }

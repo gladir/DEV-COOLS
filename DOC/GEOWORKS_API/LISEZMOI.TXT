@@ -64,19 +64,55 @@ Fait (60b_rt.pas : ObjDecode, ObjParamBytes) :
     entree 2...). Exemple INSTFE.GEO : GenInteraction 21, GenText 9, GenGlyph 17,
     GenValue 4, GenTrigger 11, GenDynamicList 2, GenFileSelector 1.
 
-Reste a faire :
-  * Recherche de methode : lire la table des messages de la classe
-    (ClassStruct : super, masterOffset, nombre de methodes, tableau des numeros
-    de messages puis des pointeurs de gestionnaires), appeler le gestionnaire
-    dans l'emulateur avec ax = message, cx/dx/bp, ds:si = objet, es = classe, et
-    renvoyer le resultat selon MPD_RETURN_TYPE (CMessageReturn).
-  * Relocalisation des chunks d'objets (ObjRelocation des classes) pour
-    transformer les ObjRelocationID en pointeurs, puis lecture de GenInstance
-    (GI_link, GI_comp, GI_visMoniker...) pour reconstruire l'arbre generique.
-  * Association des classes Gen* de "ui" aux composants du clone (GenPrimary ->
-    fenetre, GenTrigger -> bouton, GenText -> champ, GenGlyph -> libelle...).
-  * VMLock / tableaux de chunks / HugeArray / FPU : semantique encore absente.
+Fait ensuite (60b_rt, 60a_fpu, 60c_vm, 63_objtree) :
+  * Recherche de methode : RtMethodFind parcourt la table de messages de la
+    classe (ClassStruct : +0 super, +4 decalage maitre, +6 nombre de methodes,
+    +16 numeros de messages puis gestionnaires) et remonte les superclasses
+    de la geode ; RtInvoke execute le gestionnaire dans l'emulateur (AX =
+    message, CX/DX/BP, DS:SI = objet, ES = classe), sauvegarde/restaure les
+    registres, et ObjReturn applique MPD_RETURN_TYPE. CObjMessage et
+    CObjCallSuper remettent ainsi vraiment le message. Une classe parente de
+    bibliotheque (ui) n'a pas de code : la recherche s'arrete la.
+  * Blocs d'objets : le mot a +6 d'un objet donne le decalage de la partie
+    GenInstance (GenOff = chunk + 4 + mot). Champs : GI_link (optr, bit 0 =
+    lien vers le parent), GI_comp (premier enfant), GI_visMoniker, GI_kbd,
+    GI_attrs, GI_states. Un optr de fichier est [chunk][ObjRelocationID] ; ID
+    source 4 = bloc courant, 1 = ressource de la geode (index = ressource).
+    GenInteraction : GII_type, GII_visibility (1 menu, 4 dialogue) puis les
+    hints en donnees variables (mot $6000 + 9 + 4*rang ; rang = ordre de
+    declaration dans genC.def depuis HINT_DUMMY, ex. 31/32 expand, 45/46
+    orientation). GenTrigger : GTI_destination (optr) puis GTI_actionMsg.
+  * Arbre generique reconstruit (63_objtree.pas) : GenApplication ->
+    GenPrimary -> ... ; chaque classe Gen* est associee a un composant du clone
+    (formulaire de GeoBasic) : GenPrimary/GenInteraction -> fenetre/groupe,
+    GenTrigger -> bouton, GenText -> champ, GenGlyph -> libelle, GenValue ->
+    curseur, GenItem/GenBoolean -> case, GenDynamicList/GenFileSelector ->
+    liste, GenEditControl -> bouton de controle. Les GenInteraction de
+    visibilite menu deviennent des menus de la fenetre (leurs GenTrigger sont
+    les rubriques), ceux de visibilite dialogue sont ouverts depuis le menu
+    "Dialogs". Un clic sur un declencheur envoie son message a sa destination
+    (processus ou objet) : le gestionnaire de la geode est reellement execute.
+    INSTFE.GEO affiche ainsi sa vraie interface (Program name, Description,
+    Install, De-Install, boites Select directory, Information...).
+  * Coprocesseur 8087 (60a_fpu.pas) : Borland C compile le flottant en INT 34h..3Bh
+    (= ESC D8h..DFh + ModRM), INT 3Ch prefixe de segment, INT 3Dh FWAIT. Pile de 8
+    registres, fld/fst/fild/fist, arithmetique, comparaisons, fsqrt, fsin,
+    fcos, fpatan, frndint... Les fonctions de la bibliotheque borlandc (sin,
+    cos, tan, atan, sqrt, log, exp, pow, fmod, atan2, F_FTOL@...) recoivent
+    leur argument dans ST(0) et rendent le resultat dans ST(0).
+  * LMem, tableaux de chunks, fichiers VM et HugeArray (60c_vm.pas) : MemAllocLMem,
+    LMemAlloc/Free/ReAlloc/Deref/InsertAt/DeleteAt, ChunkArrayCreate/Append/
+    InsertAt/ElementToPtr/GetElement/Delete/GetCount (elements fixes ou de
+    taille variable), VMOpen/VMAlloc/VMLock/VMUnlock/VMFree/Get-SetMapBlock,
+    HugeArrayCreate/Append/Insert/Delete/Replace/Lock/GetCount (stockage dans un
+    bloc emule). GEOFPUTEST=1 lance des auto-tests (sqrt, 1/3.5, fild,
+    tableau de chunks, HugeArray) dont le resultat est dans GEOEMU.LOG.
 
-wrap80.py : coupe les lignes du source Pascal a 80 colonnes (apres les virgules,
-points-virgules, mots-cles ; les longues chaines sont coupees par '+') sans
-modifier le code. Usage : python3 wrap80.py entree.pas sortie.pas
+Limites actuelles :
+  * Une classe de "ui" n'a pas de code : les messages Gen* (MSG_GEN_*,
+    MSG_META_*) ne sont pas executes, seuls les gestionnaires de la geode le sont.
+  * Le contenu des GenText, les valeurs de GenValue, les listes dynamiques ne
+    sont pas lus (seulement le moniker) ; les hints de mise en page sont limites
+    a l'orientation.
+  * ElementArray, HugeArray de taille variable et VM persistants sur disque ne
+    sont pas emules.
