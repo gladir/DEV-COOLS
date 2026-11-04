@@ -7028,7 +7028,9 @@ Begin
   CM_GPAUSE: Begin Dt_^.Paused:=Not Dt_^.Paused;Invalidate(Wd_);End;
   CM_TPREV: Begin Dt_^.Preview:=Not Dt_^.Preview;Invalidate(Wd_);End;
   CM_TLINES: Begin
-     I:=ChoiceBox(T3('Starting Lines','Lignes de d'#130'part','Startlinien'),T3('Number of partially filled lines:','Nombre de lignes partiellement remplies :','Anzahl teilweise gef'#129'llter Zeilen:'),'0|1|2|3|4|5|6|7|8|9|10',Dt_^.StartLines+1);
+     I:=ChoiceBox(T3('Starting Lines','Lignes de d'#130'part','Startlinien'),
+      T3('Number of partially filled lines:','Nombre de lignes partiellement remplies :',
+         'Anzahl teilweise gef'#129'llter Zeilen:'),'0|1|2|3|4|5|6|7|8|9|10',Dt_^.StartLines+1);
      If I>0 Then Dt_^.StartLines:=I-1;
     End;
   CM_THIGH: TetShowHi;
@@ -7054,20 +7056,26 @@ Const
  BDY = 6;
 
 Type
+ TSolDeck = Array[1..52] Of Byte;
+ TSolFnd  = Array[1..4,1..13] Of Byte;
+ TSolFN   = Array[1..4] Of Integer;
+ TSolTab  = Array[1..7,1..30] Of Byte;
+ TSolTN   = Array[1..7] Of Integer;
+
  TSolSnap = Record
-  Stock : Array[1..52] Of Byte;  SN : Integer;
-  Waste : Array[1..52] Of Byte;  WN : Integer;
-  Fnd   : Array[1..4,1..13] Of Byte; FN : Array[1..4] Of Integer;
-  Tab   : Array[1..7,1..30] Of Byte; TN,TD : Array[1..7] Of Integer;
+  Stock : TSolDeck;  SN : Integer;
+  Waste : TSolDeck;  WN : Integer;
+  Fnd   : TSolFnd; FN : TSolFN;
+  Tab   : TSolTab; TN,TD : TSolTN;
   Score,Passes : Integer;
  End;
 
  PSolit = ^TSolit;
  TSolit = Record
-  Stock : Array[1..52] Of Byte;  SN : Integer;
-  Waste : Array[1..52] Of Byte;  WN : Integer;
-  Fnd   : Array[1..4,1..13] Of Byte; FN : Array[1..4] Of Integer;
-  Tab   : Array[1..7,1..30] Of Byte; TN,TD : Array[1..7] Of Integer;
+  Stock : TSolDeck;  SN : Integer;
+  Waste : TSolDeck;  WN : Integer;
+  Fnd   : TSolFnd; FN : TSolFN;
+  Tab   : TSolTab; TN,TD : TSolTN;
   Score : Integer;
   StartCs : LongInt;
   Secs  : LongInt;
