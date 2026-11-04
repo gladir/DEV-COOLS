@@ -253,6 +253,7 @@ Var
  PrinterName : String;
  PrintPort   : String;
  SpoolN      : Integer;
+ NPrn        : Integer;
  SpoolNames  : Array[1..8] Of String[40];
  SpoolPaused : Boolean;
  SpoolPrio   : Integer;
@@ -616,6 +617,9 @@ Var P,N: String;
 Begin
  P:=Upper(Pat);N:=Upper(Name);
  If P='' Then Begin WildMatch:=True;Exit;End;
+ { semantique DOS : un nom sans extension equivaut a NOM. }
+ If Pos('.',N)=0 Then N:=N+'.';
+ If Pos('.',P)=0 Then Begin If P[Length(P)]='*' Then P:=P+'.*' Else P:=P+'.';End;
  WildMatch:=M(1,1);
 End;
 
@@ -3052,7 +3056,7 @@ Begin
 End;
 
 Procedure DesktopLoop;
-Var E: TEvent;
+Var E: TEvent; HitW: PWindow; HitP: Integer;
 Begin
  Dirty:=True;DirtyTop:=False;
  Repeat
@@ -3067,6 +3071,13 @@ Begin
   DesktopTick;
   Case E.Kind Of
    EV_DOWN: HandleDown(E);
+   EV_RDOWN: Begin
+      HitW:=WinAt(E.X,E.Y,HitP);
+      If (HitW<>Nil) And (HitP=HT_CLIENT) Then Begin
+       If HitW<>ActiveWin Then BringToFront(HitW);
+       AppMouse(HitW,E);Dirty:=True;
+      End;
+     End;
    EV_MOVE,EV_UP: If Capture<>Nil Then Begin
       AppMouse(Capture,E);
       If E.Kind=EV_UP Then Capture:=Nil;
@@ -3098,6 +3109,7 @@ Type
   Time : LongInt;
   IsDir: Boolean;
   Virt : Boolean;
+  Mark : Boolean;         { selection etendue }
  End;
  PFileArr = ^TFileArr;
  TFileArr = Array[1..MAXF] Of TFileEnt;
@@ -3115,23 +3127,26 @@ Type
   Rows  : Integer;
   ColW  : Integer;
   Cols  : Integer;
+  Ext   : Boolean;         { mode extension de selection (F8) }
+  Anc   : Integer;         { ancre de la selection par bloc }
+  Nof   : Boolean;         { aucune selection (Espace) }
  End;
 
 Var
  VolNames : Array['A'..'D'] Of String[12];
 
 Const
- NBUILTIN = 16;
+ NBUILTIN = 17;
  BuiltName : Array[1..NBUILTIN] Of String[12] = (
   'CALC.EXE','CALENDAR.EXE','CARDFILE.EXE','CLIPBRD.EXE','CLOCK.EXE',
   'CONTROL.EXE','MSDOS.EXE','NOTEPAD.EXE','PAINT.EXE','PIFEDIT.EXE',
-  'REVERSI.EXE','SPOOLER.EXE','TERMINAL.EXE','WRITE.EXE','WIN.COM','WINOLDAP.GRB');
+  'REVERSI.EXE','SPOOLER.EXE','TERMINAL.EXE','WRITE.EXE','WIN.COM','WINOLDAP.GRB','COMMAND.COM');
  BuiltApp : Array[1..NBUILTIN] Of Integer = (
-  A_CALC,A_CALEN,A_CARD,A_CLIP,A_CLOCK,A_CTRL,A_DOSBOX,A_NOTE,A_PAINT,A_PIF,
-  A_REV,A_SPOOL,A_TERM,A_WRITE,0,0);
+  A_CALC,A_CALEN,A_CARD,A_CLIP,A_CLOCK,A_CTRL,A_EXEC,A_NOTE,A_PAINT,A_PIF,
+  A_REV,A_SPOOL,A_TERM,A_WRITE,0,0,A_DOSBOX);
  BuiltSize : Array[1..NBUILTIN] Of LongInt = (
   16784,59872,41360,6416,10640,64864,3584,32592,168672,39744,42240,
-  11760,67040,162272,3696,25360);
+  11760,67040,162272,3696,25360,25308);
 
 Function Launch(App: Integer; Const Arg: String): PWindow; Forward;
 Procedure RunFile(Const Path,Args: String; AsIcon: Boolean); Forward;
@@ -3203,7 +3218,7 @@ Begin
  For K:=1 To X^.N Do If X^.F^[K].Disp=U Then Exit;
  Inc(X^.N);
  X^.F^[X^.N].Name:=Nm;X^.F^[X^.N].Disp:=U;X^.F^[X^.N].Size:=Sz;
- X^.F^[X^.N].Time:=Tm;X^.F^[X^.N].IsDir:=IsD;X^.F^[X^.N].Virt:=Vt;
+ X^.F^[X^.N].Time:=Tm;X^.F^[X^.N].IsDir:=IsD;X^.F^[X^.N].Virt:=Vt;X^.F^[X^.N].Mark:=False;
 End;
 
 Procedure ExecRead(W: PWindow);
@@ -3291,9 +3306,55 @@ Procedure ExecDrives(W: PWindow; Var DX: Array Of Integer);
 Begin
 End;
 
+
+{ ---- selection multiple ---- }
+Function ExecMarks(X: PExec): Integer;
+Var I,C: Integer;
+Begin
+ C:=0;
+ For I:=1 To X^.N Do If X^.F^[I].Mark Then Inc(C);
+ ExecMarks:=C;
+End;
+
+Function ExecIsSel(X: PExec; I: Integer): Boolean;
+Begin
+ If ExecMarks(X)>0 Then ExecIsSel:=X^.F^[I].Mark
+ Else ExecIsSel:=(I=X^.Sel) And Not X^.Nof;
+End;
+
+Procedure ExecClearMarks(X: PExec);
+Var I: Integer;
+Begin
+ For I:=1 To X^.N Do X^.F^[I].Mark:=False;
+ X^.Ext:=False;X^.Nof:=False;
+End;
+
+{ liste des indices selectionnes }
+Function ExecSelected(X: PExec; Var Idx: Array Of Integer): Integer;
+Var I,C: Integer;
+Begin
+ C:=0;
+ For I:=1 To X^.N Do If ExecIsSel(X,I) And (C<=High(Idx)) Then Begin Idx[C]:=I;Inc(C);End;
+ ExecSelected:=C;
+End;
+
+Procedure ExecMarkRange(X: PExec);
+Var I,A,B: Integer;
+Begin
+ For I:=1 To X^.N Do X^.F^[I].Mark:=False;
+ A:=Min2(X^.Anc,X^.Sel);B:=Max2(X^.Anc,X^.Sel);
+ For I:=A To B Do X^.F^[I].Mark:=True;
+End;
+
+Procedure ExecBold(X,Y: Integer; Const T: String; Bold,Inv: Boolean);
+Begin
+ GText(X,Y,T,IfThen_(Inv,cWht,cBlk));
+ If Bold Then GText(X+1,Y,T,IfThen_(Inv,cWht,cBlk));
+End;
+
 Procedure ExecDraw(W: PWindow);
-Var X: PExec; X1,Y1,X2,Y2,I,J,Cc,Rr,PX,PY,Idx,TX: Integer; L: Char; T,Ln: String;
-    Sel: Boolean; Cur: Char;
+Var X: PExec; X1,Y1,X2,Y2,I,J,Cc,Rr,PX,PY,Idx,TX,P: Integer; L: Char; T,Ln,Bs,Ex: String;
+    Sel: Boolean; Cur: Char; Vn: String; Sx: Integer;
 Begin
  X:=W^.Data;
  WinClient(W,X1,Y1,X2,Y2);
@@ -3311,9 +3372,11 @@ Begin
   End;
   Inc(TX,64);
  End;
- { chemin }
+ { chemin : lecteur, nom de volume, repertoire }
  T:=X^.Dir;
- If (Length(T)>=2) And (T[2]=':') Then T:=Copy(T,1,2)+' '+Copy(T,3,200);
+ Vn:='';
+ If (Cur>='A') And (Cur<='D') Then Vn:=VolNames[Cur];
+ If (Length(T)>=2) And (T[2]=':') Then T:=Copy(T,1,2)+Vn+' '+Copy(T,3,200);
  GText(TX,Y1+8,T,cBlk);
  GHLine(X1,X2,Y1+23,cBlk);
  PY:=Y1+26;
@@ -3321,14 +3384,22 @@ Begin
   For I:=0 To X^.Rows-1 Do Begin
    Idx:=W^.VPos+I+1;
    If Idx>X^.N Then Break;
+   Sel:=ExecIsSel(X,Idx);
+   If Sel Then GBar(X1+2,PY+I*12-1,X2-2,PY+I*12+9,cBlk);
    With X^.F^[Idx] Do Begin
-    If IsDir Then Ln:=PadR(Disp,14)+'      <DIR>' Else Ln:=PadR(Disp,14)+PadL(IntStr(Size),11);
-    Ln:=Ln+'  '+DosDateOf(Time)+'  '+DosTimeOf(Time);
+    P:=Pos('.',Disp);
+    If P>0 Then Begin Bs:=Copy(Disp,1,P-1);Ex:=Copy(Disp,P+1,3);End Else Begin Bs:=Disp;Ex:='';End;
+    Sx:=X1+4;
+    ExecBold(Sx,PY+I*12,Bs,((X^.Sort=0) Or IsDir) And True,Sel);
+    ExecBold(Sx+80,PY+I*12,Ex,X^.Sort=3,Sel);
+    If IsDir Then ExecBold(Sx+128,PY+I*12,'    <DIR>',False,Sel)
+    Else ExecBold(Sx+128,PY+I*12,PadL(IntStr(Size),9),X^.Sort=2,Sel);
+    ExecBold(Sx+216,PY+I*12,DosDateOf(Time),X^.Sort=1,Sel);
+    ExecBold(Sx+312,PY+I*12,DosTimeOf(Time),X^.Sort=1,Sel);
    End;
-   Sel:=Idx=X^.Sel;
-   If Sel Then GBar(X1+4,PY+I*12-1,X1+4+Length(Ln)*8,PY+I*12+9,cBlk);
-   If Sel Then GText(X1+4,PY+I*12,Ln,cWht) Else GText(X1+4,PY+I*12,Ln,cBlk);
-   If X^.F^[Idx].IsDir And Not Sel Then GText(X1+5,PY+I*12,Copy(Ln,1,14),cBlk);
+   If (Idx=X^.Sel) And (ExecMarks(X)>0) Then Begin
+    For J:=X1+2 To X2-2 Do If (J And 1)=0 Then Begin GPix(J,PY+I*12-1,cWht);GPix(J,PY+I*12+9,cWht);End;
+   End;
   End;
  End Else Begin
   For I:=1 To X^.N Do Begin
@@ -3336,11 +3407,15 @@ Begin
    If (Cc<0) Then Continue;
    PX:=X1+6+Cc*X^.ColW;
    If PX>X2 Then Break;
-   Sel:=I=X^.Sel;
+   Sel:=ExecIsSel(X,I);
    T:=X^.F^[I].Disp;
    If Sel Then GBar(PX-2,PY+Rr*12-1,PX+Length(T)*8+1,PY+Rr*12+9,cBlk);
    If Sel Then GText(PX,PY+Rr*12,T,cWht) Else GText(PX,PY+Rr*12,T,cBlk);
    If X^.F^[I].IsDir And Not Sel Then GText(PX+1,PY+Rr*12,T,cBlk);
+   If (I=X^.Sel) And (ExecMarks(X)>0) Then Begin
+    For J:=PX-2 To PX+Length(T)*8+1 Do If (J And 1)=0 Then Begin GPix(J,PY+Rr*12-1,cBlk);GPix(J,PY+Rr*12+9,cBlk);End;
+    For J:=PY+Rr*12-1 To PY+Rr*12+9 Do If (J And 1)=0 Then Begin GPix(PX-2,J,cBlk);GPix(PX+Length(T)*8+1,J,cBlk);End;
+   End;
   End;
  End;
 End;
@@ -3438,69 +3513,131 @@ Begin
  CopyFileReal:=Ok;
 End;
 
+Function ExecNames(X: PExec; Const Idx: Array Of Integer; N: Integer): String;
+Var I: Integer; R: String;
+Begin
+ R:='';
+ For I:=0 To N-1 Do Begin
+  If I>0 Then R:=R+', ';
+  R:=R+X^.F^[Idx[I]].Disp;
+  If Length(R)>110 Then Begin R:=R+' ...';Break;End;
+ End;
+ ExecNames:=R;
+End;
+
+Function SameFile(Const A,B: String): Boolean;
+Begin
+ SameFile:=Upper(A)=Upper(B);
+End;
+
 Procedure ExecCopy(W: PWindow);
-Var X: PExec; S,Dest,Src: String; R: Integer;
+Var X: PExec; S,Dest,Src,D1: String; I,N,K,Ok: Integer; Idx: Array[0..MAXF-1] Of Integer; Lst: Array[0..MAXF-1] Of Integer;
 Begin
  X:=W^.Data;
- If (X^.Sel<1) Or X^.F^[X^.Sel].IsDir Or X^.F^[X^.Sel].Virt Then Begin
+ N:=ExecSelected(X,Idx);
+ K:=0;
+ For I:=0 To N-1 Do If Not X^.F^[Idx[I]].IsDir And Not X^.F^[Idx[I]].Virt Then Begin Lst[K]:=Idx[I];Inc(K);End;
+ If K=0 Then Begin
   InfoBox(T3('Select a file to copy.','S'#130'lectionnez un fichier '#133' copier.',
     'W'#132'hlen Sie eine Datei zum Kopieren.'));Exit;End;
- Src:=ExecSelPath(W);
- S:=X^.Dir;
- If Not InputBox(T3('Copy '+X^.F^[X^.Sel].Disp+' to:','Copier '+X^.F^[X^.Sel].Disp+' vers :',
-    X^.F^[X^.Sel].Disp+' kopieren nach:'),S,70,360) Then Exit;
- Dest:=S;
- If VDirExists(Dest) Then Dest:=VJoin(Dest,X^.F^[X^.Sel].Disp);
- If Not CopyFileReal(V2R(Src),V2R(Dest)) Then
-  InfoBox(T3('Cannot copy the file.','Impossible de copier le fichier.',
-    'Die Datei kann nicht kopiert werden.'))
- Else ExecRefresh(W);
+ S:='';
+ If Not InputBox(T3('Copy '+ExecNames(X,Lst,K)+'|To:','Copier '+ExecNames(X,Lst,K)+'|Vers :',
+    ExecNames(X,Lst,K)+' kopieren|Nach:'),S,70,360) Then Exit;
+ S:=Trim(S);
+ If S='' Then Exit;
+ If (Pos('\',S)=0) And (Pos(':',S)=0) Then Dest:=VJoin(X^.Dir,S) Else Dest:=S;
+ If (K>1) And Not VDirExists(Dest) Then Begin
+  InfoBox(T3('Cannot copy more than one file|to a single file.','Impossible de copier plusieurs fichiers|vers un seul fichier.',
+    'Mehrere Dateien k'#148'nnen nicht in|eine einzelne Datei kopiert werden.'));Exit;
+ End;
+ Ok:=0;
+ For I:=0 To K-1 Do Begin
+  Src:=VJoin(X^.Dir,X^.F^[Lst[I]].Disp);
+  If VDirExists(Dest) Then D1:=VJoin(Dest,X^.F^[Lst[I]].Disp) Else D1:=Dest;
+  If SameFile(V2R(Src),V2R(D1)) Then Begin
+   InfoBox(T3('Cannot copy file '+X^.F^[Lst[I]].Disp+' to itself.','Impossible de copier '+X^.F^[Lst[I]].Disp+' sur lui-m'#136'me.',
+     X^.F^[Lst[I]].Disp+' kann nicht auf sich selbst kopiert werden.'));
+   Continue;
+  End;
+  If CopyFileReal(V2R(Src),V2R(D1)) Then Inc(Ok)
+  Else Begin
+   InfoBox(T3('Cannot copy '+X^.F^[Lst[I]].Disp+'.','Impossible de copier '+X^.F^[Lst[I]].Disp+'.',
+    X^.F^[Lst[I]].Disp+' kann nicht kopiert werden.'));Break;
+  End;
+ End;
+ ExecRefresh(W);
 End;
 
 Procedure ExecInfo(W: PWindow);
-Var X: PExec; D: TDlg; R: Integer;
+Var X: PExec; D: TDlg; R,I,N: Integer; Idx: Array[0..MAXF-1] Of Integer; L: PStrList;
 Begin
  X:=W^.Data;
- If (X^.Sel<1) Or (X^.Sel>X^.N) Then Exit;
- DlgInit(D,'',280,120);
- With X^.F^[X^.Sel] Do Begin
-  DlgText(D,10,10,T3('Name:','Nom :','Name:')+' '+Disp);
-  DlgText(D,10,28,T3('Size:','Taille :','Gr'#148#225'e:')+' '+IntStr(Size)+' '+T3('bytes','octets','Bytes'));
-  DlgText(D,10,46,T3('Date:','Date :','Datum:')+' '+DosDateOf(Time));
-  DlgText(D,10,64,T3('Time:','Heure :','Zeit:')+' '+DosTimeOf(Time));
- End;
- DlgButton(D,ID_OK,100,90,80,'OK',True);
+ N:=ExecSelected(X,Idx);
+ If N=0 Then Exit;
+ New(L);L^.N:=N;
+ For I:=0 To N-1 Do With X^.F^[Idx[I]] Do
+  L^.S[I+1]:=Copy(PadR(Disp,13)+IfThenS(IsDir,'    <DIR>',PadL(IntStr(Size),9))+' '+DosDateOf(Time)+' '+DosTimeOf(Time),1,44);
+ DlgInit(D,T3('Get Info','Informations','Info'),360,150);
+ DlgList(D,10,10,10,340,92,L,1);
+ DlgButton(D,ID_OK,140,112,80,'OK',True);
  R:=RunDialog(D,@NoHook);
+ Dispose(L);
 End;
 
 Procedure ExecDelete(W: PWindow);
-Var X: PExec; F: File; R: Integer; P: String;
+Var X: PExec; F: File; R,I,N,K: Integer; P: String; Idx: Array[0..MAXF-1] Of Integer; Lst: Array[0..MAXF-1] Of Integer;
 Begin
  X:=W^.Data;
- If (X^.Sel<1) Or (X^.Sel>X^.N) Then Exit;
- If X^.F^[X^.Sel].Virt Then Begin
-  InfoBox(T3('This file is part of Windows|and cannot be deleted.',
+ N:=ExecSelected(X,Idx);
+ If N=0 Then Exit;
+ K:=0;
+ For I:=0 To N-1 Do Begin
+  If X^.F^[Idx[I]].Virt Then Begin
+   InfoBox(T3('This file is part of Windows|and cannot be deleted.',
     'Ce fichier fait partie de Windows|et ne peut '#136'tre supprim'#130'.',
     'Diese Datei ist Teil von Windows|und kann nicht gel'#148'scht werden.'));Exit;
+  End;
+  Lst[K]:=Idx[I];Inc(K);
  End;
- R:=MsgBox(T3('Delete '+X^.F^[X^.Sel].Disp+'?','Supprimer '+X^.F^[X^.Sel].Disp+' ?',
-    X^.F^[X^.Sel].Disp+' l'#148'schen?'),1,2);
+ R:=MsgBox(T3('Delete '+ExecNames(X,Lst,K)+'?','Supprimer '+ExecNames(X,Lst,K)+' ?',
+    ExecNames(X,Lst,K)+' l'#148'schen?'),1,2);
  If R<>ID_OK Then Exit;
- P:=V2R(ExecSelPath(W));
- {$I-}
- If X^.F^[X^.Sel].IsDir Then RmDir(P) Else Begin Assign(F,P);Erase(F);End;
- {$I+}
- If IOResult<>0 Then InfoBox(T3('Cannot delete.','Suppression impossible.','L'#148'schen nicht m'#148'glich.'));
+ For I:=0 To K-1 Do Begin
+  P:=V2R(VJoin(X^.Dir,X^.F^[Lst[I]].Disp));
+  {$I-}
+  If X^.F^[Lst[I]].IsDir Then RmDir(P) Else Begin Assign(F,P);Erase(F);End;
+  {$I+}
+  If IOResult<>0 Then Begin
+   If X^.F^[Lst[I]].IsDir Then
+    InfoBox(T3('Directory '+X^.F^[Lst[I]].Disp+' is not empty.','Le r'#130'pertoire '+X^.F^[Lst[I]].Disp+' n''est pas vide.',
+      'Verzeichnis '+X^.F^[Lst[I]].Disp+' ist nicht leer.'))
+   Else InfoBox(T3('Cannot delete '+X^.F^[Lst[I]].Disp+'.','Impossible de supprimer '+X^.F^[Lst[I]].Disp+'.',
+      X^.F^[Lst[I]].Disp+' kann nicht gel'#148'scht werden.'));
+   Break;
+  End;
+ End;
  ExecRefresh(W);
 End;
 
 Procedure ExecRename(W: PWindow);
-Var X: PExec; F: File; S: String;
+Var X: PExec; F: File; S: String; D: TDlg; R: Integer;
 Begin
  X:=W^.Data;
  If (X^.Sel<1) Or X^.F^[X^.Sel].Virt Then Exit;
- S:=X^.F^[X^.Sel].Disp;
- If Not InputBox(T3('New name:','Nouveau nom :','Neuer Name:'),S,40,300) Then Exit;
+ S:='';
+ DlgInit(D,'',320,100);
+ DlgText(D,10,10,T3('Rename ','Renommer ','Umbenennen ')+X^.F^[X^.Sel].Disp);
+ DlgText(D,10,32,T3('To:','Vers :','Nach:'));
+ DlgEdit(D,10,60,30,240,S,40);
+ DlgButton(D,ID_OK,60,66,90,'OK',True);
+ DlgButton(D,ID_CANCEL,170,66,90,T3('Cancel','Annuler','Abbrechen'),False);
+ R:=RunDialog(D,@NoHook);
+ If R<>ID_OK Then Exit;
+ S:=Trim(DlgGetText(D,10));
+ If S='' Then Exit;
+ If FileExists(JoinPath(V2R(X^.Dir),S)) Then Begin
+  InfoBox(T3('A file named '+S+' already exists.','Un fichier nomm'#130' '+S+' existe d'#130'j'#133'.','Eine Datei namens '+S+' existiert bereits.'));Exit;
+ End;
  {$I-}
  Assign(F,V2R(ExecSelPath(W)));
  Rename(F,JoinPath(V2R(X^.Dir),S));
@@ -3509,11 +3646,31 @@ Begin
  ExecRefresh(W);
 End;
 
+Procedure ExecPrint(W: PWindow);
+Var X: PExec; I,N,K: Integer; Idx: Array[0..MAXF-1] Of Integer; Nm: String; R: Integer;
+Begin
+ X:=W^.Data;
+ N:=ExecSelected(X,Idx);
+ If NPrn=0 Then Begin InfoBox(T3('Cannot print.|No printer is installed.','Impression impossible.|Aucune imprimante install'#130'e.','Drucken nicht m'#148'glich.|Kein Drucker installiert.'));Exit;End;
+ If N=0 Then Nm:=T3('directory listing '+X^.Dir,'liste du r'#130'pertoire '+X^.Dir,'Verzeichnisliste '+X^.Dir) Else Nm:=ExecNames(X,Idx,N);
+ R:=MsgBox(T3('Print '+Nm+'?','Imprimer '+Nm+' ?','Drucken: '+Nm+'?'),1,2);
+ If R<>ID_OK Then Exit;
+ If N=0 Then Begin
+  If SpoolN>=8 Then Begin InfoBox(T3('Cannot print.|The print queue is full.','Impression impossible.|La file d''attente est pleine.','Drucken nicht m'#148'glich.|Warteschlange voll.'));Exit;End;
+  Inc(SpoolN);SpoolNames[SpoolN]:='MS-DOS Executive - '+X^.Dir;
+ End Else For K:=0 To N-1 Do Begin
+  If X^.F^[Idx[K]].IsDir Then Begin
+   If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='MS-DOS Executive - '+X^.F^[Idx[K]].Disp+'\';End;
+  End Else If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:='MS-DOS Executive - '+X^.F^[Idx[K]].Disp;End
+  Else Begin InfoBox(T3('Cannot print.|The print queue is full.','Impression impossible.|La file d''attente est pleine.','Drucken nicht m'#148'glich.|Warteschlange voll.'));Break;End;
+ End;
+End;
+
 Procedure ExecRunDlg(W: PWindow; AsIcon: Boolean);
 Var X: PExec; S,Prog,Args: String; P: Integer;
 Begin
  X:=W^.Data;
- S:=''; If (X^.Sel>=1) And Not X^.F^[X^.Sel].IsDir Then S:=X^.F^[X^.Sel].Disp;
+ S:='';
  If Not InputBox(IfThenS(AsIcon,T3('Load:','Charger :','Laden:'),T3('Run (file name and parameters):',
     'Ex'#130'cuter (fichier et param'#138'tres) :','Ausf'#129'hren (Datei und Parameter):')),S,70,380) Then Exit;
  S:=Trim(S);
@@ -3521,6 +3678,7 @@ Begin
  P:=Pos(' ',S);
  If P>0 Then Begin Prog:=Copy(S,1,P-1);Args:=Trim(Copy(S,P+1,200));End Else Begin Prog:=S;Args:='';End;
  If (Pos('\',Prog)=0) And (Pos(':',Prog)=0) Then Prog:=VJoin(X^.Dir,Prog);
+ If (Args<>'') And (Args[1]<>'/') And (Pos('\',Args)=0) And (Pos(':',Args)=0) And ((BuiltIndex(Prog)>0) Or Not IsProgExt(ExtOf(Prog))) Then Args:=VJoin(X^.Dir,Args);
  RunFile(Prog,Args,AsIcon);
 End;
 
@@ -3571,15 +3729,10 @@ Begin
   CM_X_COPY: ExecCopy(W);
   CM_X_INFO: ExecInfo(W);
   CM_X_DEL: ExecDelete(W);
-  CM_X_PRINT: Begin
-    If (X^.Sel>=1) Then Begin
-     If SpoolN<8 Then Begin Inc(SpoolN);SpoolNames[SpoolN]:=X^.F^[X^.Sel].Disp;End;
-     R:=MsgBox(T3('"'+X^.F^[X^.Sel].Disp+'" sent to Spooler.','"'+X^.F^[X^.Sel].Disp+
-      '" envoy'#130' au Spooler.','"'+X^.F^[X^.Sel].Disp+'" an den Spooler gesendet.'),0,1);
-    End;
-   End;
+  CM_X_PRINT: ExecPrint(W);
   CM_X_REN: ExecRename(W);
-  CM_X_EXIT,CM_X_ENDSES: ExecEndSession;
+  CM_X_ENDSES: ExecEndSession;
+  CM_X_EXIT: If CountApp(A_EXEC)>1 Then CloseWindow(W) Else ExecEndSession;
   CM_X_ABOUT: ShowAboutMs('MS-DOS Executive',4,True);
   CM_X_SHORT: Begin X^.Long_:=False;W^.VPos:=0;ExecRefresh(W);End;
   CM_X_LONG: Begin X^.Long_:=True;W^.HPos:=0;ExecRefresh(W);End;
@@ -3604,12 +3757,28 @@ Begin
  End;
 End;
 
+{ cible d'un clic sur le chemin affiche }
+Function ExecPathTarget(X: PExec; PxClick,TX: Integer): String;
+Var Vn: String; Ci,Di,I: Integer; Cur: Char;
+Begin
+ Cur:=UpCase(X^.Dir[1]);Vn:='';
+ If (Cur>='A') And (Cur<='D') Then Vn:=VolNames[Cur];
+ Ci:=(PxClick-TX) Div 8+1;
+ ExecPathTarget:='';
+ If Ci<1 Then Exit;
+ Di:=Ci-Length(Vn)-1;
+ If Ci<=2 Then Di:=1;
+ If Di<=2 Then Begin ExecPathTarget:=Copy(X^.Dir,1,2)+'\';Exit;End;
+ I:=Di;
+ While (I<=Length(X^.Dir)) And (X^.Dir[I]<>'\') Do Inc(I);
+ ExecPathTarget:=Copy(X^.Dir,1,I-1);
+End;
+
 Procedure ExecMouse(W: PWindow; Var E: TEvent);
-Var X: PExec; X1,Y1,X2,Y2,I,Idx,Cc,Rr,TX,PY: Integer; L: Char; Sg,P: Integer; T: String;
-    Seg: Integer; XX: Integer;
+Var X: PExec; X1,Y1,X2,Y2,I,Idx,Cc,Rr,TX,PY: Integer; L: Char; T,S: String;
 Begin
  X:=W^.Data;
- If E.Kind<>EV_DOWN Then Exit;
+ If (E.Kind<>EV_DOWN) And (E.Kind<>EV_RDOWN) Then Exit;
  WinClient(W,X1,Y1,X2,Y2);
  { lecteurs }
  If (E.Y>=Y1+3) And (E.Y<=Y1+19) Then Begin
@@ -3618,15 +3787,21 @@ Begin
    If InBox(E.X,E.Y,TX,Y1+3,TX+50,Y1+19) Then Begin ExecChangeDrive(W,L);Exit;End;
    Inc(TX,64);
   End;
-  { segments du chemin : double-clic = remonter }
-  If E.Dbl Then Begin
-   T:=X^.Dir;
-   XX:=TX;
-   Seg:=0;
-   For I:=1 To Length(T) Do Begin
-    If (T[I]='\') And (I>3) And (E.X<TX+I*8+8) Then Begin Seg:=I-1;Break;End;
-   End;
-   If (Seg>=3) And (Seg<Length(T)) Then ExecChangeDir(W,Copy(T,1,Seg));
+  { chemin : clic = boite Change Directory, double-clic = changement direct }
+  If E.X>=TX Then Begin
+   T:=ExecPathTarget(X,E.X,TX);
+   If (T<>'') And (Upper(T)<>Upper(X^.Dir)) And (Upper(T)<>Upper(Copy(X^.Dir,1,2)+'\')+'') Then Begin
+    If E.Dbl Then ExecChangeDir(W,T)
+    Else Begin
+     S:=T;
+     If InputBox(T3('Change to directory:','Aller au r'#130'pertoire :','Wechseln zu Verzeichnis:'),S,70,360) Then Begin
+      If (Length(S)<2) Or (S[2]<>':') Then Begin
+       If S[1]='\' Then S:=Copy(X^.Dir,1,2)+S Else S:=VJoin(X^.Dir,S);
+      End;
+      ExecChangeDir(W,S);
+     End;
+    End;
+   End Else If (T<>'') And (Length(T)=3) And (Upper(X^.Dir)<>Upper(T)) Then ExecChangeDir(W,T);
   End;
   Exit;
  End;
@@ -3642,27 +3817,46 @@ Begin
   If (Rr>=0) And (Rr<X^.Rows) And (Cc>=0) Then Idx:=Cc*X^.Rows+Rr+1;
  End;
  If (Idx>=1) And (Idx<=X^.N) Then Begin
-  X^.Sel:=Idx;
+  If E.Kind=EV_RDOWN Then Begin
+   { bouton droit = SHIFT+clic : ajoute / retire de la selection }
+   If (ExecMarks(X)=0) And (X^.Sel>=1) And Not X^.Nof Then X^.F^[X^.Sel].Mark:=True;
+   X^.F^[Idx].Mark:=Not X^.F^[Idx].Mark;X^.Sel:=Idx;X^.Nof:=False;
+  End Else Begin
+   If (ExecMarks(X)>0) Or X^.Nof Then ExecClearMarks(X);
+   X^.Sel:=Idx;
+   If E.Dbl Then Begin ExecActivate(W,False);Exit;End;
+  End;
   Dirty:=True;
-  If E.Dbl Then ExecActivate(W,False);
  End;
 End;
 
 Procedure ExecKey(W: PWindow; K: Word);
-Var X: PExec; I,N: Integer; Ch: Char;
+Var X: PExec; I,N,O: Integer; Ch: Char; Mv: Boolean;
 Begin
  X:=W^.Data;
+ If (K>=1) And (K<=3) Then Begin ExecChangeDrive(W,Chr(64+K));Exit;End;   { CONTROL+A/B/C }
  If X^.N=0 Then Begin If K=K_BKSP Then ExecGoUp(W);Exit;End;
- N:=X^.Sel;
+ N:=X^.Sel;O:=N;Mv:=False;
  Case K Of
-  K_UP: Dec(N);
-  K_DOWN: Inc(N);
-  K_LEFT: If Not X^.Long_ Then Dec(N,X^.Rows);
-  K_RIGHT: If Not X^.Long_ Then Inc(N,X^.Rows);
-  K_HOME: N:=1;
-  K_END: N:=X^.N;
-  K_PGUP: Dec(N,X^.Rows);
-  K_PGDN: Inc(N,X^.Rows);
+  K_UP: Begin Dec(N);Mv:=True;End;
+  K_DOWN: Begin Inc(N);Mv:=True;End;
+  K_LEFT: If Not X^.Long_ Then Begin Dec(N,X^.Rows);Mv:=True;End;
+  K_RIGHT: If Not X^.Long_ Then Begin Inc(N,X^.Rows);Mv:=True;End;
+  K_HOME: Begin N:=1;Mv:=True;End;
+  K_END: Begin N:=X^.N;Mv:=True;End;
+  K_PGUP: Begin Dec(N,X^.Rows);Mv:=True;End;
+  K_PGDN: Begin Inc(N,X^.Rows);Mv:=True;End;
+  371: Begin Dec(N);X^.Sel:=Clamp(N,1,X^.N);ExecEnsure(W);Dirty:=True;Exit;End;   { CTRL+gauche : deplace le cadre }
+  372: Begin Inc(N);X^.Sel:=Clamp(N,1,X^.N);ExecEnsure(W);Dirty:=True;Exit;End;   { CTRL+droite }
+  32: Begin                                     { ESPACE : selectionne / deselectionne }
+       If ExecMarks(X)>0 Then X^.F^[X^.Sel].Mark:=Not X^.F^[X^.Sel].Mark
+       Else X^.Nof:=Not X^.Nof;
+       Dirty:=True;Exit;End;
+  322: Begin                                    { F8 : mode extension (equivalent de MAJ+fleches) }
+       X^.Ext:=Not X^.Ext;X^.Anc:=X^.Sel;
+       If X^.Ext Then X^.F^[X^.Sel].Mark:=True Else ;
+       Dirty:=True;Exit;End;
+  10: Begin ExecActivate(W,True);Exit;End;       { CTRL+ENTREE = MAJ+ENTREE : demarrer en icone }
   K_ENTER: Begin ExecActivate(W,False);Exit;End;
   K_BKSP: Begin ExecGoUp(W);Exit;End;
   K_DEL: Begin ExecDelete(W);Exit;End;
@@ -3672,9 +3866,14 @@ Begin
     If X^.F^[I].Disp[1]=Ch Then Begin N:=I;Break;End;
    If N=X^.Sel Then
     For I:=1 To X^.Sel-1 Do If X^.F^[I].Disp[1]=Ch Then Begin N:=I;Break;End;
+   Mv:=True;
   End;
  End;
- X^.Sel:=Clamp(N,1,X^.N);
+ If Mv Then Begin
+  If Not X^.Ext Then ExecClearMarks(X);
+  X^.Sel:=Clamp(N,1,X^.N);
+  If X^.Ext Then ExecMarkRange(X);
+ End;
  ExecEnsure(W);
  Dirty:=True;
 End;
@@ -5752,7 +5951,7 @@ Type
  TPrnList = Array[1..MAXPRN] Of String[30];
 
 Var
- PrnInst : TPrnList;  NPrn: Integer;
+ PrnInst : TPrnList;
  PrnPort : Array[1..MAXPRN] Of String[6];
  FontInst: Array[1..12] Of String[24]; NFont: Integer;
  CommPort: String[5];
@@ -13373,7 +13572,8 @@ Begin
   97: Begin SetSig('wpwp');                                { GetTempFileName }
      W16SelectDos(T);S:=Copy(Upper(GStr(2)),1,3);L:=GW(3);
      If L=0 Then L:=(NowCs And $FFF)+1;
-     S2:='C:\'+S+HexStr(L,4)+'.TMP';
+     S2:='C:\~'+S+HexStr(L,4)+'.TMP';
+     If (GetEnv('TEMP')<>'') And VDirExists(Upper(GetEnv('TEMP'))) Then S2:=Upper(GetEnv('TEMP'))+'\~'+S+HexStr(L,4)+'.TMP';
      If GW(3)=0 Then Begin
       {$I-}Assign(CV^.Files[0].F,V2R(S2));Rewrite(CV^.Files[0].F,1);Close(CV^.Files[0].F);{$I+}
       If IOResult<>0 Then ;
@@ -14892,13 +15092,33 @@ End;
 {                 LANCEMENT DES APPLICATIONS ET DES FICHIERS             }
 { ====================================================================== }
 
+Procedure DelTmpIn(Const Dir: String);
+Var SR: SearchRec; F: File;
+Begin
+ {$I-}
+ FindFirst(JoinPath(Dir,'~*.TMP'),AnyFile,SR);
+ While DosError=0 Do Begin
+  Assign(F,JoinPath(Dir,SR.Name));Erase(F);
+  If IOResult<>0 Then ;
+  FindNext(SR);
+ End;
+ {$IFDEF FPC}FindClose(SR);{$ENDIF}
+ {$I+}
+End;
+
 Procedure ExecEndSession;
-Var R: Integer;
+Var R: Integer; Tp: String;
 Begin
  R:=MsgBox(T3('This will end your Windows session.',
    'Ceci va terminer votre session Windows.',
    'Dadurch wird Ihre Windows-Sitzung beendet.'),1,2);
- If R=ID_OK Then QuitFlag:=True;
+ If R=ID_OK Then Begin
+  QuitFlag:=True;
+  { l'arret de la session supprime les fichiers temporaires }
+  DelTmpIn(V2R('C:\'));
+  Tp:=GetEnv('TEMP');
+  If Tp<>'' Then DelTmpIn(Tp);
+ End;
 End;
 
 Function Launch(App: Integer; Const Arg: String): PWindow;
@@ -14940,16 +15160,17 @@ Begin
  {$ENDIF}
  I:=BuiltIndex(Path);
  If (I>0) And (BuiltApp[I]>0) Then Begin
-  W:=Launch(BuiltApp[I],'');
+  W:=Launch(BuiltApp[I],IfThenS((BuiltApp[I]=A_NOTE) Or (BuiltApp[I]=A_WRITE) Or (BuiltApp[I]=A_CARD) Or (BuiltApp[I]=A_CALEN)
+     Or (BuiltApp[I]=A_PAINT) Or (BuiltApp[I]=A_PIF),Args,''));
   If (W<>Nil) And AsIcon Then MinimizeWin(W);
   Exit;
  End;
- If ExtOf(Path)='.TXT' Then Begin Launch(A_NOTE,Path);Exit;End;
- If ExtOf(Path)='.WRI' Then Begin Launch(A_WRITE,Path);Exit;End;
- If ExtOf(Path)='.PIF' Then Begin Launch(A_PIF,Path);Exit;End;
- If ExtOf(Path)='.CRD' Then Begin Launch(A_CARD,Path);Exit;End;
- If ExtOf(Path)='.CAL' Then Begin Launch(A_CALEN,Path);Exit;End;
- If ExtOf(Path)='.MSP' Then Begin Launch(A_PAINT,Path);Exit;End;
+ If ExtOf(Path)='.TXT' Then Begin W:=Launch(A_NOTE,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
+ If ExtOf(Path)='.WRI' Then Begin W:=Launch(A_WRITE,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
+ If ExtOf(Path)='.PIF' Then Begin W:=Launch(A_PIF,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
+ If ExtOf(Path)='.CRD' Then Begin W:=Launch(A_CARD,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
+ If ExtOf(Path)='.CAL' Then Begin W:=Launch(A_CALEN,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
+ If ExtOf(Path)='.MSP' Then Begin W:=Launch(A_PAINT,Path);If (W<>Nil) And AsIcon Then MinimizeWin(W);Exit;End;
  {$IFDEF FPC}
  If (ExtOf(Path)='.EXE') And IsNEFile(V2R(Path)) Then Begin Win16Start(Path,Args);Exit;End;
  {$ENDIF}
@@ -15092,7 +15313,8 @@ BEGIN
    If Arg='SPOOLER' Then RunApp:=A_SPOOL;
    If Arg='TERMINAL' Then RunApp:=A_TERM;
    If Arg='WRITE' Then RunApp:=A_WRITE;
-   If (Arg='MSDOS') Or (Arg='DOS') Then RunApp:=A_DOSBOX;
+   If (Arg='MSDOS') Or (Arg='EXEC') Then RunApp:=A_EXEC;
+   If (Arg='DOS') Or (Arg='COMMAND') Then RunApp:=A_DOSBOX;
    If (RunApp<>0) And (NRun<8) Then Begin Inc(NRun);RunList[NRun]:=RunApp;End;
   End Else If Arg[1]<>'/' Then StartFile:=Arg;
  End;
