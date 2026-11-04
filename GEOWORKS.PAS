@@ -2161,7 +2161,7 @@ Const
 
 Type
  PWindow = ^TWindow;
- TWindow = Object
+ TWindow = Record
   Id        : Integer;
   Kind      : Integer;
   WinX,WinY,WinW,WinH : Integer;
@@ -2176,21 +2176,7 @@ Type
   Dead      : Boolean;
   NMenu     : Integer;
   Menus     : Array[1..MAXMENU] Of TMenuDef;
-  Constructor Init(AKind,AX,AY,AW,AH: Integer; Const ATitle: String);
-  Destructor Done; Virtual;
-  Procedure AddMenu(Const T: String);
-  Procedure AddItem(Const T: String; Cmd: Integer; Const K: String);
-  Procedure AddSep;
-  Procedure SetFlag(Cmd: Integer; Flag: Byte; On: Boolean);
-  Procedure ClientRect(Var X1,Y1,X2,Y2: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
-  Function  Idle: Boolean; Virtual;
-  Procedure OnResize; Virtual;
-  Function  CanClose: Boolean; Virtual;
+  Data      : Pointer;          { donnees propres a l'application }
  End;
 
 Var
@@ -2201,109 +2187,78 @@ Var
  NeedFull: Boolean;
  SysDef  : TMenuDef;
 
-Constructor TWindow.Init(AKind,AX,AY,AW,AH: Integer; Const ATitle: String);
+{ Repartition par genre de fenetre (definie dans le module de dispatch) }
+Procedure WinDraw(W: PWindow); Forward;
+Procedure WinMouse(W: PWindow; Var E: TEvent); Forward;
+Procedure WinKey(W: PWindow; K: Word); Forward;
+Procedure WinCommand(W: PWindow; Cmd: Integer); Forward;
+Procedure WinPrepare(W: PWindow); Forward;
+Function  WinIdle(W: PWindow): Boolean; Forward;
+Procedure WinResize(W: PWindow); Forward;
+Function  WinCanClose(W: PWindow): Boolean; Forward;
+Procedure WinFree(W: PWindow); Forward;
+
+Procedure WinInit(W: PWindow; AKind,AX,AY,AW,AH: Integer; Const ATitle: String);
 Begin
- Id:=NextId;Inc(NextId);
- Kind:=AKind;WinX:=AX;WinY:=AY;WinW:=AW;WinH:=AH;
- SX:=AX;SY:=AY;SW:=AW;SH:=AH;
- MinW:=160;MinH:=100;
- Title:=ATitle;IconId:=IC_UNKNOWN;
- Maxim:=False;Iconic:=False;Resizable:=True;Dirty:=True;Dead:=False;
- NMenu:=0;
+ W^.Id:=NextId;Inc(NextId);
+ W^.Kind:=AKind;W^.WinX:=AX;W^.WinY:=AY;W^.WinW:=AW;W^.WinH:=AH;
+ W^.SX:=AX;W^.SY:=AY;W^.SW:=AW;W^.SH:=AH;
+ W^.MinW:=160;W^.MinH:=100;
+ W^.Title:=ATitle;W^.IconId:=IC_UNKNOWN;
+ W^.Maxim:=False;W^.Iconic:=False;W^.Resizable:=True;W^.Dirty:=True;W^.Dead:=False;
+ W^.NMenu:=0;
 End;
 
-Destructor TWindow.Done;
+Procedure WinAddMenu(W: PWindow; Const T: String);
 Begin
-End;
-
-Procedure TWindow.AddMenu(Const T: String);
-Begin
- If NMenu<MAXMENU Then Begin
-  Inc(NMenu);
-  Menus[NMenu].Title:=T;
-  Menus[NMenu].N:=0;
+ If W^.NMenu<MAXMENU Then Begin
+  Inc(W^.NMenu);
+  W^.Menus[W^.NMenu].Title:=T;
+  W^.Menus[W^.NMenu].N:=0;
  End;
 End;
 
-Procedure TWindow.AddItem(Const T: String; Cmd: Integer; Const K: String);
+Procedure WinAddItem(W: PWindow; Const T: String; Cmd: Integer; Const K: String);
 Var N: Integer;
 Begin
- If (NMenu>0) And (Menus[NMenu].N<MAXITEM) Then Begin
-  Inc(Menus[NMenu].N);
-  N:=Menus[NMenu].N;
-  Menus[NMenu].It[N].Txt:=T;
-  Menus[NMenu].It[N].Cmd:=Cmd;
-  Menus[NMenu].It[N].Flag:=0;
-  Menus[NMenu].It[N].Key:=K;
+ If (W^.NMenu>0) And (W^.Menus[W^.NMenu].N<MAXITEM) Then Begin
+  Inc(W^.Menus[W^.NMenu].N);
+  N:=W^.Menus[W^.NMenu].N;
+  W^.Menus[W^.NMenu].It[N].Txt:=T;
+  W^.Menus[W^.NMenu].It[N].Cmd:=Cmd;
+  W^.Menus[W^.NMenu].It[N].Flag:=0;
+  W^.Menus[W^.NMenu].It[N].Key:=K;
  End;
 End;
 
-Procedure TWindow.AddSep;
+Procedure WinAddSep(W: PWindow);
 Begin
- AddItem('-',0,'');
+ WinAddItem(W,'-',0,'');
 End;
 
-Procedure TWindow.SetFlag(Cmd: Integer; Flag: Byte; On: Boolean);
+Procedure WinSetFlag(W: PWindow; Cmd: Integer; Flag: Byte; On: Boolean);
 Var M,I: Integer;
 Begin
- For M:=1 To NMenu Do
-  For I:=1 To Menus[M].N Do
-   If Menus[M].It[I].Cmd=Cmd Then Begin
-    If On Then Menus[M].It[I].Flag:=Menus[M].It[I].Flag Or Flag
-    Else Menus[M].It[I].Flag:=Menus[M].It[I].Flag And (Not Flag);
+ For M:=1 To W^.NMenu Do
+  For I:=1 To W^.Menus[M].N Do
+   If W^.Menus[M].It[I].Cmd=Cmd Then Begin
+    If On Then W^.Menus[M].It[I].Flag:=W^.Menus[M].It[I].Flag Or Flag
+    Else W^.Menus[M].It[I].Flag:=W^.Menus[M].It[I].Flag And (Not Flag);
    End;
 End;
 
 { Rectangle de la zone client (sous la barre de menus) }
-Procedure TWindow.ClientRect(Var X1,Y1,X2,Y2: Integer);
+Procedure WinClientRect(W: PWindow; Var X1,Y1,X2,Y2: Integer);
 Begin
- X1:=WinX+BORDER;
- Y1:=WinY+BORDER+TITLE_H+1;
- If NMenu>0 Then Inc(Y1,MENU_H);
- X2:=WinX+WinW-BORDER-1;
- Y2:=WinY+WinH-BORDER-1;
-End;
-
-Procedure TWindow.DrawClient;
-Var X1,Y1,X2,Y2: Integer;
-Begin
- ClientRect(X1,Y1,X2,Y2);
- GBar(X1,Y1,X2,Y2,cLGr);
-End;
-
-Procedure TWindow.OnMouse(Var E: TEvent);
-Begin
-End;
-
-Procedure TWindow.OnKey(K: Word);
-Begin
-End;
-
-Procedure TWindow.PrepareMenus;
-Begin
-End;
-
-Function TWindow.Idle: Boolean;
-Begin
- Idle:=False;
-End;
-
-Procedure TWindow.OnResize;
-Begin
-End;
-
-Function TWindow.CanClose: Boolean;
-Begin
- CanClose:=True;
+ X1:=W^.WinX+BORDER;
+ Y1:=W^.WinY+BORDER+TITLE_H+1;
+ If W^.NMenu>0 Then Inc(Y1,MENU_H);
+ X2:=W^.WinX+W^.WinW-BORDER-1;
+ Y2:=W^.WinY+W^.WinH-BORDER-1;
 End;
 
 { Les commandes communes sont traitees par CommonCmd (defini plus bas) }
 Procedure CommonCmd(W: PWindow; Cmd: Integer); Forward;
-
-Procedure TWindow.OnCommand(Cmd: Integer);
-Begin
- CommonCmd(@Self,Cmd);
-End;
 
 Procedure Invalidate(W: PWindow);
 Begin
@@ -2342,7 +2297,7 @@ Begin
   Wins[NWins]:=W;
   NeedFull:=True;
  End Else Begin
-  Dispose(W,Done);
+  WinFree(W);
  End;
 End;
 
@@ -2354,7 +2309,7 @@ Begin
  If Capture=W Then Capture:=Nil;
  For I:=K To NWins-1 Do Wins[I]:=Wins[I+1];
  Dec(NWins);
- Dispose(W,Done);
+ WinFree(W);
  NeedFull:=True;
 End;
 
@@ -2488,14 +2443,14 @@ Begin
    If (W^.WinX<=X2) And (W^.WinX+W^.WinW-1>=X1) And (W^.WinY<=Y2) And (W^.WinY+W^.WinH-1>=Y1) Then Begin
     SetClip(X1,Y1,X2,Y2);
     DrawWinFrame(W,W=Act);
-    W^.ClientRect(A1,B1,A2,B2);
+    WinClientRect(W,A1,B1,A2,B2);
     If A1<X1 Then A1:=X1;
     If B1<Y1 Then B1:=Y1;
     If A2>X2 Then A2:=X2;
     If B2>Y2 Then B2:=Y2;
     If (A2>=A1) And (B2>=B1) Then Begin
      SetClip(A1,B1,A2,B2);
-     W^.DrawClient;
+     WinDraw(W);
     End;
    End;
  End;
@@ -2513,7 +2468,7 @@ Procedure PaintWinClient(W: PWindow);
 Var X1,Y1,X2,Y2: Integer;
 Begin
  If W^.Iconic Then Exit;
- W^.ClientRect(X1,Y1,X2,Y2);
+ WinClientRect(W,X1,Y1,X2,Y2);
  HideMouse;
  PaintRect(X1,Y1,X2,Y2);
  ShowMouse;
@@ -2704,7 +2659,7 @@ Begin
  Res:=0;
  Sv.P:=Nil;
  BarY:=W^.WinY+BORDER+TITLE_H;
- If Sys Then BuildSysMenu(W) Else W^.PrepareMenus;
+ If Sys Then BuildSysMenu(W) Else WinPrepare(W);
  M:=StartM;
  If Sys Then M:=1;
  Hi:=0;
@@ -3319,7 +3274,7 @@ Begin
  W^.WinX:=NX;W^.WinY:=NY;
  If (NW<>W^.WinW) Or (NH<>W^.WinH) Then Begin
   W^.WinW:=NW;W^.WinH:=NH;
-  W^.OnResize;
+  WinResize(W);
  End;
  NeedFull:=True;
 End;
@@ -3485,7 +3440,7 @@ End;
 Procedure CommonCmd(W: PWindow; Cmd: Integer);
 Begin
  Case Cmd Of
-  CM_CLOSE: If W^.CanClose Then W^.Dead:=True;
+  CM_CLOSE: If WinCanClose(W) Then W^.Dead:=True;
   CM_MINIMIZE: MinimizeWin(W);
   CM_MAXIMIZE: If W^.Maxim Then RestoreWin(W) Else MaximizeWin(W);
   CM_RESTORE: RestoreWin(W);
@@ -3550,12 +3505,12 @@ Begin
      End Else If Not Hit^.Maxim Then DragWindow(Hit,E.X,E.Y);
   6: Begin
       Cmd:=RunMenus(Hit,HitMenu,False);
-      If Cmd>0 Then Hit^.OnCommand(Cmd);
+      If Cmd>0 Then WinCommand(Hit,Cmd);
      End;
   7: SizeWindow(Hit,HitEdge,E.X,E.Y);
   1: Begin
       Capture:=Hit;
-      Hit^.OnMouse(E);
+      WinMouse(Hit,E);
      End;
  End;
 End;
@@ -3586,11 +3541,11 @@ Begin
       W:=TopWin;
       If W<>Nil Then Begin
        I:=WinFrameHit(W,E.X,E.Y);
-       If I=1 Then W^.OnMouse(E);
+       If I=1 Then WinMouse(W,E);
       End;
      End;
    EV_MOVE,EV_UP: Begin
-     If Capture<>Nil Then Capture^.OnMouse(E);
+     If Capture<>Nil Then WinMouse(Capture,E);
      If E.Kind=EV_UP Then Capture:=Nil;
     End;
    EV_KEY: Begin
@@ -3598,12 +3553,12 @@ Begin
      Case E.Key Of
       K_F10: If (W<>Nil) And (W^.NMenu>0) Then Begin
               Cmd:=RunMenus(W,1,False);
-              If Cmd>0 Then W^.OnCommand(Cmd);
+              If Cmd>0 Then WinCommand(W,Cmd);
              End;
       K_ALTF4: If W<>Nil Then CommonCmd(W,CM_CLOSE);
       K_F6: NextWindow;
      Else
-      If W<>Nil Then W^.OnKey(E.Key);
+      If W<>Nil Then WinKey(W,E.Key);
      End;
     End;
   End;
@@ -3611,7 +3566,7 @@ Begin
   If (Nw<Tick) Or (Nw-Tick>=8) Then Begin
    Tick:=Nw;
    For I:=1 To NWins Do
-    If Wins[I]^.Idle Then Wins[I]^.Dirty:=True;
+    If WinIdle(Wins[I]) Then Wins[I]^.Dirty:=True;
   End;
   PurgeDead;
   If NWins=0 Then ExitDesk:=1;
@@ -4137,7 +4092,7 @@ Type
  TEntArr = Array[0..MAXENT-1] Of TEnt;
 
  PManager = ^TManager;
- TManager = Object(TWindow)
+ TManager = Record
   Path      : String;
   Ents      : PEntArr;
   NE        : Integer;
@@ -4154,38 +4109,39 @@ Type
   SBDrag    : Boolean;
   SBGrab    : LongInt;
   TotBytes  : LongInt;
-  Constructor Init(AX,AY,AW,AH: Integer; Const APath: String);
-  Destructor Done; Virtual;
-  Procedure BuildMenus;
-  Procedure Scan;
-  Procedure SortEnts;
-  Procedure AddEnt(Const N,D: String; K: Byte; Ic,Ap: Integer; Sz: LongInt);
-  Procedure GoPath(Const P: String);
-  Procedure GoUp;
-  Procedure Geom(Var FX1,FY1,FX2,FY2: Integer);
-  Procedure BarRects(Var TX: Integer);
-  Function  Rows: Integer;
-  Function  ItemAt(PX,PY: LongInt): Integer;
-  Procedure ItemRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
-  Procedure SelectOnly(I: Integer);
-  Procedure OpenItem(I: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure DrawBar(X1,Y1,X2,Y2: Integer);
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
-  Procedure OnResize; Virtual;
-  Function  FullPath(I: Integer): String;
-  Function  IsVirtual: Boolean;
-  Procedure DoDelete;
-  Procedure DoRename;
-  Procedure DoCopyMove(Move,Dup: Boolean);
-  Procedure DoMkDir;
-  Procedure DoInfo;
-  Procedure EnsureVisible(I: Integer);
-  Function  DriveCount: Integer;
  End;
+
+Function MgrNew(AX,AY,AW,AH: Integer; Const APath: String): PWindow; Forward;
+Procedure MgrDone(Wd_: PWindow); Forward;
+Procedure MgrBuildMenus(Wd_: PWindow); Forward;
+Function MgrIsVirtual(Wd_: PWindow): Boolean; Forward;
+Procedure MgrAddEnt(Wd_: PWindow; Const N,D: String; K: Byte; Ic,Ap: Integer; Sz: LongInt); Forward;
+Procedure MgrSortEnts(Wd_: PWindow); Forward;
+Procedure MgrScan(Wd_: PWindow); Forward;
+Procedure MgrGoPath(Wd_: PWindow; Const P: String); Forward;
+Procedure MgrGoUp(Wd_: PWindow); Forward;
+Procedure MgrGeom(Wd_: PWindow; Var FX1,FY1,FX2,FY2: Integer); Forward;
+Function MgrRows(Wd_: PWindow): Integer; Forward;
+Procedure MgrItemRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
+Function MgrItemAt(Wd_: PWindow; PX,PY: LongInt): Integer; Forward;
+Procedure MgrOnResize(Wd_: PWindow); Forward;
+Procedure MgrEnsureVisible(Wd_: PWindow; I: Integer); Forward;
+Procedure MgrSelectOnly(Wd_: PWindow; I: Integer); Forward;
+Function MgrFullPath(Wd_: PWindow; I: Integer): String; Forward;
+Function MgrDriveCount(Wd_: PWindow): Integer; Forward;
+Procedure MgrOpenItem(Wd_: PWindow; I: Integer); Forward;
+Procedure MgrDrawBar(Wd_: PWindow; X1,Y1,X2,Y2: Integer); Forward;
+Procedure MgrDrawClient(Wd_: PWindow); Forward;
+Procedure MgrBarRects(Wd_: PWindow; Var TX: Integer); Forward;
+Procedure MgrOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure MgrOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure MgrPrepareMenus(Wd_: PWindow); Forward;
+Procedure MgrDoInfo(Wd_: PWindow); Forward;
+Procedure MgrDoDelete(Wd_: PWindow); Forward;
+Procedure MgrDoRename(Wd_: PWindow); Forward;
+Procedure MgrDoCopyMove(Wd_: PWindow; Move,Dup: Boolean); Forward;
+Procedure MgrDoMkDir(Wd_: PWindow); Forward;
+Procedure MgrOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
 
 Function DriveExists(D: Integer): Boolean;
 Begin
@@ -4233,126 +4189,141 @@ Begin
  CopyFileTo:=Ok;
 End;
 
-Constructor TManager.Init(AX,AY,AW,AH: Integer; Const APath: String);
+Function MgrNew(AX,AY,AW,AH: Integer; Const APath: String): PWindow;
+ Var Wd_: PWindow; Dt_: PManager;
 Begin
- TWindow.Init(A_MANAGER,AX,AY,AW,AH,'GeoManager');
- IconId:=IC_GEOMGR;
- MinW:=300;MinH:=200;
- GetMem(Ents,SizeOf(TEntArr));
- NE:=0;Top:=0;ViewMode:=0;LargeView:=False;SortMode:=0;ShowHid:=False;ConfirmDel:=True;
- Cur:=-1;DragEnt:=-1;Dragging:=False;SBDrag:=False;Cols:=4;
- Path:=APath;
- BuildMenus;
- Scan;
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_MANAGER,AX,AY,AW,AH,'GeoManager');
+ Wd_^.IconId:=IC_GEOMGR;
+ Wd_^.MinW:=300;Wd_^.MinH:=200;
+ GetMem(Dt_^.Ents,SizeOf(TEntArr));
+ Dt_^.NE:=0;Dt_^.Top:=0;Dt_^.ViewMode:=0;LargeView:=False;Dt_^.SortMode:=0;Dt_^.ShowHid:=False;Dt_^.ConfirmDel:=True;
+ Dt_^.Cur:=-1;Dt_^.DragEnt:=-1;Dt_^.Dragging:=False;Dt_^.SBDrag:=False;Dt_^.Cols:=4;
+ Dt_^.Path:=APath;
+ MgrBuildMenus(Wd_);
+ MgrScan(Wd_);
+ MgrNew:=Wd_;
 End;
 
-Destructor TManager.Done;
+Procedure MgrDone(Wd_: PWindow);
+ Var Dt_: PManager;
 Begin
- FreeMem(Ents,SizeOf(TEntArr));
+ Dt_:=Wd_^.Data;
+ FreeMem(Dt_^.Ents,SizeOf(TEntArr));
 End;
 
-Procedure TManager.BuildMenus;
+Procedure MgrBuildMenus(Wd_: PWindow);
+ Var Dt_: PManager;
 Var D: Integer; S: String;
 Begin
- NMenu:=0;
- AddMenu('File~Fichier~Datei');
- AddItem('Open~Ouvrir~'#142'ffnen',CM_OPEN,'Enter');
- AddItem('Get Info...~Informations...~Informationen...',CM_INFO,'');
- AddItem('Rename...~Renommer...~Umbenennen...',CM_RENAME,'F2');
- AddItem('Duplicate...~Dupliquer...~Duplizieren...',CM_DUP,'');
- AddItem('Copy to...~Copier vers...~Kopieren nach...',CM_COPYTO,'');
- AddItem('Move to...~D'#130'placer vers...~Verschieben nach...',CM_MOVETO,'');
- AddItem('Delete...~Supprimer...~L'#148'schen...',CM_DELETE,'Del');
- AddSep;
- AddItem('Create Directory...~Cr'#130'er un r'#130'pertoire...~Verzeichnis erstellen...',CM_MKDIR,'');
- AddItem('Select All~Tout s'#130'lectionner~Alles ausw'#132'hlen',CM_SELALL,'Ctrl+A');
- AddSep;
- AddItem('About GeoWorks...~A propos de GeoWorks...~'#154'ber GeoWorks...',CM_ABOUT,'');
- AddItem('Exit to Welcome~Retour '#133' l''accueil~Zur'#129'ck zum Willkommen',CM_EXITWEL,'');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ Dt_:=Wd_^.Data;
+ Wd_^.NMenu:=0;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Open~Ouvrir~'#142'ffnen',CM_OPEN,'Enter');
+ WinAddItem(Wd_,'Get Info...~Informations...~Informationen...',CM_INFO,'');
+ WinAddItem(Wd_,'Rename...~Renommer...~Umbenennen...',CM_RENAME,'F2');
+ WinAddItem(Wd_,'Duplicate...~Dupliquer...~Duplizieren...',CM_DUP,'');
+ WinAddItem(Wd_,'Copy to...~Copier vers...~Kopieren nach...',CM_COPYTO,'');
+ WinAddItem(Wd_,'Move to...~D'#130'placer vers...~Verschieben nach...',CM_MOVETO,'');
+ WinAddItem(Wd_,'Delete...~Supprimer...~L'#148'schen...',CM_DELETE,'Del');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Create Directory...~Cr'#130'er un r'#130'pertoire...~Verzeichnis erstellen...',CM_MKDIR,'');
+ WinAddItem(Wd_,'Select All~Tout s'#130'lectionner~Alles ausw'#132'hlen',CM_SELALL,'Ctrl+A');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'About GeoWorks...~A propos de GeoWorks...~'#154'ber GeoWorks...',CM_ABOUT,'');
+ WinAddItem(Wd_,'Exit to Welcome~Retour '#133' l''accueil~Zur'#129'ck zum Willkommen',CM_EXITWEL,'');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  If Level>0 Then Begin
-  AddMenu('Tree~Arbre~Baum');
-  AddItem('Go Up~Niveau sup'#130'rieur~Eine Ebene h'#148'her',CM_UP,'Backspace');
-  AddItem('Root Directory~R'#130'pertoire racine~Stammverzeichnis',CM_ROOT,'');
-  AddItem('World~Monde~Welt',CM_WORLD,'');
-  AddItem('Document~Document~Dokument',CM_DOCDIR,'');
-  AddItem('Home~Dossier de d'#130'part~Startverzeichnis',CM_HOMEDIR,'');
-  AddSep;
-  AddItem('Refresh~Actualiser~Aktualisieren',CM_REFRESH,'F5');
+  WinAddMenu(Wd_,'Tree~Arbre~Baum');
+  WinAddItem(Wd_,'Go Up~Niveau sup'#130'rieur~Eine Ebene h'#148'her',CM_UP,'Backspace');
+  WinAddItem(Wd_,'Root Directory~R'#130'pertoire racine~Stammverzeichnis',CM_ROOT,'');
+  WinAddItem(Wd_,'World~Monde~Welt',CM_WORLD,'');
+  WinAddItem(Wd_,'Document~Document~Dokument',CM_DOCDIR,'');
+  WinAddItem(Wd_,'Home~Dossier de d'#130'part~Startverzeichnis',CM_HOMEDIR,'');
+  WinAddSep(Wd_);
+  WinAddItem(Wd_,'Refresh~Actualiser~Aktualisieren',CM_REFRESH,'F5');
  End;
- AddMenu('View~Affichage~Ansicht');
- AddItem('Icons~Ic'#147'nes~Symbole',CM_VICON,'');
- AddItem('Large Icons~Grandes ic'#147'nes~Gro'#225'e Symbole',CM_VLARGE,'');
- AddItem('Names~Noms~Namen',CM_VNAME,'');
- AddItem('Details~D'#130'tails~Details',CM_VDET,'');
- AddSep;
- AddItem('Sort by Name~Tri par nom~Nach Name',CM_SNAME,'');
- AddItem('Sort by Type~Tri par type~Nach Typ',CM_STYPE,'');
- AddItem('Sort by Size~Tri par taille~Nach Gr'#148#225'e',CM_SSIZE,'');
+ WinAddMenu(Wd_,'View~Affichage~Ansicht');
+ WinAddItem(Wd_,'Icons~Ic'#147'nes~Symbole',CM_VICON,'');
+ WinAddItem(Wd_,'Large Icons~Grandes ic'#147'nes~Gro'#225'e Symbole',CM_VLARGE,'');
+ WinAddItem(Wd_,'Names~Noms~Namen',CM_VNAME,'');
+ WinAddItem(Wd_,'Details~D'#130'tails~Details',CM_VDET,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Sort by Name~Tri par nom~Nach Name',CM_SNAME,'');
+ WinAddItem(Wd_,'Sort by Type~Tri par type~Nach Typ',CM_STYPE,'');
+ WinAddItem(Wd_,'Sort by Size~Tri par taille~Nach Gr'#148#225'e',CM_SSIZE,'');
  If Level>0 Then Begin
-  AddMenu('Options~Options~Optionen');
-  AddItem('Show Hidden Files~Fichiers cach'#130's~Versteckte Dateien',CM_HIDDEN,'');
-  AddItem('Confirm Deletions~Confirmer suppressions~L'#148'schen best'#132'tigen',CM_CONFIRM,'');
-  AddMenu('Disk~Disque~Datentr'#132'ger');
-  AddItem('Disk Information...~Informations disque...~Datentr'#132'gerinfo...',CM_DINFO,'');
-  AddItem('Format Disk...~Formater...~Formatieren...',CM_FORMAT,'');
-  AddItem('Copy Disk...~Copier le disque...~Datentr'#132'ger kopieren...',CM_DCOPY,'');
-  AddSep;
+  WinAddMenu(Wd_,'Options~Options~Optionen');
+  WinAddItem(Wd_,'Show Hidden Files~Fichiers cach'#130's~Versteckte Dateien',CM_HIDDEN,'');
+  WinAddItem(Wd_,'Confirm Deletions~Confirmer suppressions~L'#148'schen best'#132'tigen',CM_CONFIRM,'');
+  WinAddMenu(Wd_,'Disk~Disque~Datentr'#132'ger');
+  WinAddItem(Wd_,'Disk Information...~Informations disque...~Datentr'#132'gerinfo...',CM_DINFO,'');
+  WinAddItem(Wd_,'Format Disk...~Formater...~Formatieren...',CM_FORMAT,'');
+  WinAddItem(Wd_,'Copy Disk...~Copier le disque...~Datentr'#132'ger kopieren...',CM_DCOPY,'');
+  WinAddSep(Wd_);
   For D:=1 To 26 Do
    If (D>=3) Or (Level>1) Then
-    If DriveExists(D) And (Menus[NMenu].N<MAXITEM-1) Then Begin
+    If DriveExists(D) And (Wd_^.Menus[Wd_^.NMenu].N<MAXITEM-1) Then Begin
      S:='Drive '+Chr(64+D)+':~Lecteur '+Chr(64+D)+':~Laufwerk '+Chr(64+D)+':';
-     AddItem(S,CM_DRIVE+D,'');
+     WinAddItem(Wd_,S,CM_DRIVE+D,'');
     End;
  End;
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('New GeoManager~Nouveau GeoManager~Neuer GeoManager',CM_NEWMGR,'');
- AddSep;
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- AddItem('Next Window~Fen'#136'tre suivante~N'#132'chstes Fenster',CM_NEXTWIN,'F6');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'New GeoManager~Nouveau GeoManager~Neuer GeoManager',CM_NEWMGR,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ WinAddItem(Wd_,'Next Window~Fen'#136'tre suivante~N'#132'chstes Fenster',CM_NEXTWIN,'F6');
 End;
 
-Function TManager.IsVirtual: Boolean;
+Function MgrIsVirtual(Wd_: PWindow): Boolean;
+ Var Dt_: PManager;
 Begin
- IsVirtual:=(Length(Path)>=2) And (Path[1]='V') And (Path[2]=':');
+ Dt_:=Wd_^.Data;
+ MgrIsVirtual:=(Length(Dt_^.Path)>=2) And (Dt_^.Path[1]='V') And (Dt_^.Path[2]=':');
 End;
 
-Procedure TManager.AddEnt(Const N,D: String; K: Byte; Ic,Ap: Integer; Sz: LongInt);
+Procedure MgrAddEnt(Wd_: PWindow; Const N,D: String; K: Byte; Ic,Ap: Integer; Sz: LongInt);
+ Var Dt_: PManager;
 Begin
- If NE>=MAXENT Then Exit;
- Ents^[NE].Name:=N;Ents^[NE].Disp:=D;Ents^[NE].Kind:=K;
- Ents^[NE].Icon:=Ic;Ents^[NE].App:=Ap;Ents^[NE].Size:=Sz;Ents^[NE].Sel:=False;
- Inc(NE);
+ Dt_:=Wd_^.Data;
+ If Dt_^.NE>=MAXENT Then Exit;
+ Dt_^.Ents^[Dt_^.NE].Name:=N;Dt_^.Ents^[Dt_^.NE].Disp:=D;Dt_^.Ents^[Dt_^.NE].Kind:=K;
+ Dt_^.Ents^[Dt_^.NE].Icon:=Ic;Dt_^.Ents^[Dt_^.NE].App:=Ap;Dt_^.Ents^[Dt_^.NE].Size:=Sz;Dt_^.Ents^[Dt_^.NE].Sel:=False;
+ Inc(Dt_^.NE);
 End;
 
-Procedure TManager.SortEnts;
+Procedure MgrSortEnts(Wd_: PWindow);
+ Var Dt_: PManager;
 Var I,J: Integer; T: TEnt; Swp: Boolean;
 Begin
- For I:=0 To NE-2 Do
-  For J:=I+1 To NE-1 Do Begin
+ Dt_:=Wd_^.Data;
+ For I:=0 To Dt_^.NE-2 Do
+  For J:=I+1 To Dt_^.NE-1 Do Begin
    Swp:=False;
-   If (Ents^[J].Kind=0) And (Ents^[I].Kind<>0) Then Swp:=True
-   Else If (Ents^[J].Kind=0)=(Ents^[I].Kind=0) Then Begin
-    Case SortMode Of
-     1: If (Ents^[J].Kind<Ents^[I].Kind) Or ((Ents^[J].Kind=Ents^[I].Kind) And
-         (Upper(Ents^[J].Disp)<Upper(Ents^[I].Disp))) Then Swp:=True;
-     2: If (Ents^[J].Size>Ents^[I].Size) Or ((Ents^[J].Size=Ents^[I].Size) And
-         (Upper(Ents^[J].Disp)<Upper(Ents^[I].Disp))) Then Swp:=True;
-    Else If Upper(Ents^[J].Disp)<Upper(Ents^[I].Disp) Then Swp:=True;
+   If (Dt_^.Ents^[J].Kind=0) And (Dt_^.Ents^[I].Kind<>0) Then Swp:=True
+   Else If (Dt_^.Ents^[J].Kind=0)=(Dt_^.Ents^[I].Kind=0) Then Begin
+    Case Dt_^.SortMode Of
+     1: If (Dt_^.Ents^[J].Kind<Dt_^.Ents^[I].Kind) Or ((Dt_^.Ents^[J].Kind=Dt_^.Ents^[I].Kind) And
+         (Upper(Dt_^.Ents^[J].Disp)<Upper(Dt_^.Ents^[I].Disp))) Then Swp:=True;
+     2: If (Dt_^.Ents^[J].Size>Dt_^.Ents^[I].Size) Or ((Dt_^.Ents^[J].Size=Dt_^.Ents^[I].Size) And
+         (Upper(Dt_^.Ents^[J].Disp)<Upper(Dt_^.Ents^[I].Disp))) Then Swp:=True;
+    Else If Upper(Dt_^.Ents^[J].Disp)<Upper(Dt_^.Ents^[I].Disp) Then Swp:=True;
     End;
    End;
-   If Swp Then Begin T:=Ents^[I];Ents^[I]:=Ents^[J];Ents^[J]:=T;End;
+   If Swp Then Begin T:=Dt_^.Ents^[I];Dt_^.Ents^[I]:=Dt_^.Ents^[J];Dt_^.Ents^[J]:=T;End;
   End;
 End;
 
-Procedure TManager.Scan;
+Procedure MgrScan(Wd_: PWindow);
+ Var Dt_: PManager;
 Var SR: SearchRec; G: TGeosInfo; E,P,Disp: String; Ap,Ic: Integer; K: Byte; I: Integer;
 Begin
- NE:=0;Top:=0;Cur:=-1;TotBytes:=0;
- If IsVirtual Then Begin
-  If Path='V:WORLD' Then Begin
-   AddEnt('EXTRAS','EXTRAS',0,IC_FOLDER,0,0);
+ Dt_:=Wd_^.Data;
+ Dt_^.NE:=0;Dt_^.Top:=0;Dt_^.Cur:=-1;Dt_^.TotBytes:=0;
+ If MgrIsVirtual(Wd_) Then Begin
+  If Dt_^.Path='V:WORLD' Then Begin
+   MgrAddEnt(Wd_,'EXTRAS','EXTRAS',0,IC_FOLDER,0,0);
    For I:=1 To 16 Do Begin
     Case I Of
      1: Ap:=A_AOL;      2: Ap:=A_CALC;    3: Ap:=A_BANNER;  4: Ap:=A_GEOCALC;
@@ -4360,25 +4331,25 @@ Begin
      9: Ap:=A_MANAGER; 10: Ap:=A_PLANNER; 11: Ap:=A_WRITE;  12: Ap:=A_NOTEPAD;
     13: Ap:=A_PREFS;   14: Ap:=A_SCRAP;   15: Ap:=A_SOLIT;  16: Ap:=A_TETRIS;
     End;
-    AddEnt(AppTitle(Ap),AppTitle(Ap),1,AppIcon(Ap),Ap,0);
+    MgrAddEnt(Wd_,AppTitle(Ap),AppTitle(Ap),1,AppIcon(Ap),Ap,0);
    End;
-  End Else If Path='V:WORLD\EXTRAS' Then Begin
-   AddEnt(AppTitle(A_CLOCK),AppTitle(A_CLOCK),1,IC_PERF,A_CLOCK,0);
-   AddEnt(AppTitle(A_TEXTED),AppTitle(A_TEXTED),1,IC_NOTE,A_TEXTED,0);
-   AddEnt(AppTitle(A_PERF),AppTitle(A_PERF),1,IC_PERF,A_PERF,0);
-   AddEnt(AppTitle(A_BOUNCE),AppTitle(A_BOUNCE),1,IC_UNKNOWN,A_BOUNCE,0);
+  End Else If Dt_^.Path='V:WORLD\EXTRAS' Then Begin
+   MgrAddEnt(Wd_,AppTitle(A_CLOCK),AppTitle(A_CLOCK),1,IC_PERF,A_CLOCK,0);
+   MgrAddEnt(Wd_,AppTitle(A_TEXTED),AppTitle(A_TEXTED),1,IC_NOTE,A_TEXTED,0);
+   MgrAddEnt(Wd_,AppTitle(A_PERF),AppTitle(A_PERF),1,IC_PERF,A_PERF,0);
+   MgrAddEnt(Wd_,AppTitle(A_BOUNCE),AppTitle(A_BOUNCE),1,IC_UNKNOWN,A_BOUNCE,0);
   End;
-  SortEnts;
+  MgrSortEnts(Wd_);
   Exit;
  End;
- P:=Path;
+ P:=Dt_^.Path;
  If (P<>'') And (P[Length(P)]<>'\') And (P[Length(P)]<>'/') Then P:=P+DirSep;
  FindFirst(P+'*',AnyFile,SR);
- While (DosError=0) And (NE<MAXENT) Do Begin
+ While (DosError=0) And (Dt_^.NE<MAXENT) Do Begin
   If (SR.Name<>'.') And (SR.Name<>'..') And
-     (((SR.Attr And (Hidden Or SysFile))=0) Or ShowHid) Then Begin
+     (((SR.Attr And (Hidden Or SysFile))=0) Or Dt_^.ShowHid) Then Begin
    If (SR.Attr And Directory)<>0 Then Begin
-    AddEnt(SR.Name,SR.Name,0,IC_FOLDER,0,0);
+    MgrAddEnt(Wd_,SR.Name,SR.Name,0,IC_FOLDER,0,0);
    End Else Begin
     E:=ExtOf(SR.Name);K:=6;Ic:=IC_DOSDOC;Ap:=0;Disp:=SR.Name;
     If (E='GEO') And ReadGeosHeader(P+SR.Name,G) Then Begin
@@ -4393,141 +4364,167 @@ Begin
     End Else If IsTextExt(E) Then Begin
      K:=5;Ic:=IC_NOTEDOC;
     End;
-    AddEnt(SR.Name,Disp,K,Ic,Ap,SR.Size);
-    TotBytes:=TotBytes+SR.Size;
+    MgrAddEnt(Wd_,SR.Name,Disp,K,Ic,Ap,SR.Size);
+    Dt_^.TotBytes:=Dt_^.TotBytes+SR.Size;
    End;
   End;
   FindNext(SR);
  End;
  {$IFDEF FPC}FindClose(SR);{$ENDIF}
- SortEnts;
+ MgrSortEnts(Wd_);
 End;
 
-Procedure TManager.GoPath(Const P: String);
+Procedure MgrGoPath(Wd_: PWindow; Const P: String);
+ Var Dt_: PManager;
 Begin
+ Dt_:=Wd_^.Data;
  If (Length(P)<2) Or (P[1]<>'V') Or (P[2]<>':') Then
   If Not DirExists(P) Then Begin
    Info(T3('Error','Erreur','Fehler'),T3('Directory not found|','R'#130'pertoire introuvable|','Verzeichnis nicht gefunden|')+P);
    Exit;
   End;
- Path:=P;
- Scan;
- Invalidate(@Self);
+ Dt_^.Path:=P;
+ MgrScan(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TManager.GoUp;
+Procedure MgrGoUp(Wd_: PWindow);
+ Var Dt_: PManager;
 Begin
- If IsVirtual Then Begin
-  If Path='V:WORLD\EXTRAS' Then GoPath('V:WORLD');
+ Dt_:=Wd_^.Data;
+ If MgrIsVirtual(Wd_) Then Begin
+  If Dt_^.Path='V:WORLD\EXTRAS' Then MgrGoPath(Wd_,'V:WORLD');
   Exit;
  End;
- GoPath(ParentDir(Path));
+ MgrGoPath(Wd_,ParentDir(Dt_^.Path));
 End;
 
 { Zone de la liste de fichiers }
-Procedure TManager.Geom(Var FX1,FY1,FX2,FY2: Integer);
+Procedure MgrGeom(Wd_: PWindow; Var FX1,FY1,FX2,FY2: Integer);
+ Var Dt_: PManager;
 Var X1,Y1,X2,Y2: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  FX1:=X1;FY1:=Y1+26;FX2:=X2;FY2:=Y2-BAR_H;
 End;
 
-Function TManager.Rows: Integer;
+Function MgrRows(Wd_: PWindow): Integer;
+ Var Dt_: PManager;
 Begin
- Case ViewMode Of
+ Dt_:=Wd_^.Data;
+ Case Dt_^.ViewMode Of
   0: Begin
-      If Cols<1 Then Cols:=1;
-      Rows:=(NE+Cols-1) Div Cols;
+      If Dt_^.Cols<1 Then Dt_^.Cols:=1;
+      MgrRows:=(Dt_^.NE+Dt_^.Cols-1) Div Dt_^.Cols;
      End;
- Else Rows:=NE;
+ Else MgrRows:=Dt_^.NE;
  End;
 End;
 
-Procedure TManager.ItemRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Procedure MgrItemRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PManager;
 Var FX1,FY1,FX2,FY2,R,C: Integer;
 Begin
- Geom(FX1,FY1,FX2,FY2);
- If ViewMode=0 Then Begin
-  R:=I Div Cols;C:=I Mod Cols;
-  X1:=FX1+4+C*CellW;Y1:=FY1+4+(R-Top)*CellH;
+ Dt_:=Wd_^.Data;
+ MgrGeom(Wd_,FX1,FY1,FX2,FY2);
+ If Dt_^.ViewMode=0 Then Begin
+  R:=I Div Dt_^.Cols;C:=I Mod Dt_^.Cols;
+  X1:=FX1+4+C*CellW;Y1:=FY1+4+(R-Dt_^.Top)*CellH;
   X2:=X1+CellW-1;Y2:=Y1+CellH-1;
  End Else Begin
-  X1:=FX1+2;Y1:=FY1+2+(I-Top)*14;X2:=FX2-SB-2;Y2:=Y1+13;
+  X1:=FX1+2;Y1:=FY1+2+(I-Dt_^.Top)*14;X2:=FX2-SB-2;Y2:=Y1+13;
  End;
 End;
 
-Function TManager.ItemAt(PX,PY: LongInt): Integer;
+Function MgrItemAt(Wd_: PWindow; PX,PY: LongInt): Integer;
+ Var Dt_: PManager;
 Var FX1,FY1,FX2,FY2,I,X1,Y1,X2,Y2: Integer;
 Begin
- ItemAt:=-1;
- Geom(FX1,FY1,FX2,FY2);
+ Dt_:=Wd_^.Data;
+ MgrItemAt:=-1;
+ MgrGeom(Wd_,FX1,FY1,FX2,FY2);
  If Not InBox(PX,PY,FX1,FY1,FX2-SB,FY2) Then Exit;
- For I:=0 To NE-1 Do Begin
-  ItemRect(I,X1,Y1,X2,Y2);
+ For I:=0 To Dt_^.NE-1 Do Begin
+  MgrItemRect(Wd_,I,X1,Y1,X2,Y2);
   If (Y2>=FY1) And (Y1<=FY2) Then
-   If InBox(PX,PY,X1,Y1,X2,Y2) Then Begin ItemAt:=I;Exit;End;
+   If InBox(PX,PY,X1,Y1,X2,Y2) Then Begin MgrItemAt:=I;Exit;End;
  End;
 End;
 
-Procedure TManager.OnResize;
+Procedure MgrOnResize(Wd_: PWindow);
+ Var Dt_: PManager;
 Var FX1,FY1,FX2,FY2: Integer;
 Begin
- Geom(FX1,FY1,FX2,FY2);
- Cols:=(FX2-FX1-SB-8) Div CellW;
- If Cols<1 Then Cols:=1;
- If Top>Rows-1 Then Top:=Max2(0,Rows-1);
+ Dt_:=Wd_^.Data;
+ MgrGeom(Wd_,FX1,FY1,FX2,FY2);
+ Dt_^.Cols:=(FX2-FX1-SB-8) Div CellW;
+ If Dt_^.Cols<1 Then Dt_^.Cols:=1;
+ If Dt_^.Top>MgrRows(Wd_)-1 Then Dt_^.Top:=Max2(0,MgrRows(Wd_)-1);
 End;
 
-Procedure TManager.EnsureVisible(I: Integer);
+Procedure MgrEnsureVisible(Wd_: PWindow; I: Integer);
+ Var Dt_: PManager;
 Var FX1,FY1,FX2,FY2,R,VR: Integer;
 Begin
- Geom(FX1,FY1,FX2,FY2);
- If ViewMode=0 Then Begin
-  R:=I Div Cols;VR:=(FY2-FY1-4) Div CellH;
+ Dt_:=Wd_^.Data;
+ MgrGeom(Wd_,FX1,FY1,FX2,FY2);
+ If Dt_^.ViewMode=0 Then Begin
+  R:=I Div Dt_^.Cols;VR:=(FY2-FY1-4) Div CellH;
  End Else Begin R:=I;VR:=(FY2-FY1-4) Div 14;End;
  If VR<1 Then VR:=1;
- If R<Top Then Top:=R;
- If R>=Top+VR Then Top:=R-VR+1;
+ If R<Dt_^.Top Then Dt_^.Top:=R;
+ If R>=Dt_^.Top+VR Then Dt_^.Top:=R-VR+1;
 End;
 
-Procedure TManager.SelectOnly(I: Integer);
+Procedure MgrSelectOnly(Wd_: PWindow; I: Integer);
+ Var Dt_: PManager;
 Var K: Integer;
 Begin
- For K:=0 To NE-1 Do Ents^[K].Sel:=(K=I);
- Cur:=I;
+ Dt_:=Wd_^.Data;
+ For K:=0 To Dt_^.NE-1 Do Dt_^.Ents^[K].Sel:=(K=I);
+ Dt_^.Cur:=I;
 End;
 
-Function TManager.FullPath(I: Integer): String;
+Function MgrFullPath(Wd_: PWindow; I: Integer): String;
+ Var Dt_: PManager;
 Begin
- If IsVirtual Then FullPath:=Ents^[I].Name
- Else FullPath:=JoinPath(Path,Ents^[I].Name);
+ Dt_:=Wd_^.Data;
+ If MgrIsVirtual(Wd_) Then MgrFullPath:=Dt_^.Ents^[I].Name
+ Else MgrFullPath:=JoinPath(Dt_^.Path,Dt_^.Ents^[I].Name);
 End;
 
-Function TManager.DriveCount: Integer;
+Function MgrDriveCount(Wd_: PWindow): Integer;
+ Var Dt_: PManager;
 Var D,N: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  N:=0;
  For D:=1 To 26 Do If DriveExists(D) Then Inc(N);
- DriveCount:=N;
+ MgrDriveCount:=N;
 End;
 
-Procedure TManager.OpenItem(I: Integer);
+Procedure MgrOpenItem(Wd_: PWindow; I: Integer);
+ Var Dt_: PManager;
 Begin
- If (I<0) Or (I>=NE) Then Exit;
- Case Ents^[I].Kind Of
+ Dt_:=Wd_^.Data;
+ If (I<0) Or (I>=Dt_^.NE) Then Exit;
+ Case Dt_^.Ents^[I].Kind Of
   0: Begin
-      If IsVirtual Then GoPath(Path+'\'+Ents^[I].Name)
-      Else GoPath(JoinPath(Path,Ents^[I].Name));
+      If MgrIsVirtual(Wd_) Then MgrGoPath(Wd_,Dt_^.Path+'\'+Dt_^.Ents^[I].Name)
+      Else MgrGoPath(Wd_,JoinPath(Dt_^.Path,Dt_^.Ents^[I].Name));
      End;
  Else
-  If IsVirtual Then LaunchApp(Ents^[I].App,'')
-  Else LaunchFile(FullPath(I));
+  If MgrIsVirtual(Wd_) Then LaunchApp(Dt_^.Ents^[I].App,'')
+  Else LaunchFile(MgrFullPath(Wd_,I));
  End;
 End;
 
-Procedure TManager.DrawBar(X1,Y1,X2,Y2: Integer);
+Procedure MgrDrawBar(Wd_: PWindow; X1,Y1,X2,Y2: Integer);
+ Var Dt_: PManager;
 Var BX,D,N,DX: Integer; L: String;
 Begin
+ Dt_:=Wd_^.Data;
  GBar(X1,Y1,X2,Y2,cLGr);
  GHLine(X1,X2,Y1,cWht);
  GHLine(X1,X2,Y1+1,cDGr);
@@ -4557,49 +4554,51 @@ Begin
   End;
 End;
 
-Procedure TManager.DrawClient;
+Procedure MgrDrawClient(Wd_: PWindow);
+ Var Dt_: PManager;
 Var X1,Y1,X2,Y2,FX1,FY1,FX2,FY2,I,IX,IY,VR,Ln,Tx,IcId: Integer; S,S2,P: String;
     Cap,Tot: LongInt; Sel: Boolean; Lines: Array[1..2] Of String[12];
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
- Geom(FX1,FY1,FX2,FY2);
- OnResize;
+ MgrGeom(Wd_,FX1,FY1,FX2,FY2);
+ MgrOnResize(Wd_);
  { barre de chemin }
  Btn3D(X1+4,Y1+3,X1+30,Y1+22,False);
  GArrow(X1+17,Y1+12,1,cBlk);GHLine(X1+11,X1+23,Y1+17,cBlk);
- If IsVirtual Then Begin
-  If Path='V:WORLD' Then P:='C:[Unnamed1] \GEOWORKS\WORLD'
-  Else If Path='V:WORLD\EXTRAS' Then P:='C:[Unnamed1] \GEOWORKS\WORLD\EXTRAS'
+ If MgrIsVirtual(Wd_) Then Begin
+  If Dt_^.Path='V:WORLD' Then P:='C:[Unnamed1] \GEOWORKS\WORLD'
+  Else If Dt_^.Path='V:WORLD\EXTRAS' Then P:='C:[Unnamed1] \GEOWORKS\WORLD\EXTRAS'
   Else P:='C:[Unnamed1] \GEOWORKS\DOCUMENT';
   Tot:=0;
  End Else Begin
-  P:=Path;
+  P:=Dt_^.Path;
   If (Length(P)>=2) And (P[2]=':') Then P:=Copy(P,1,2)+'[Unnamed'+IntStr(DriveOfPath(P)-2)+'] '+Copy(P,3,255);
  End;
- S:=P+' - '+IntStr(NE)+' '+T3('items',''#130'l'#130'ments','Elemente');
- If Not IsVirtual Then S:=S+' ('+NumFmt(TotBytes)+' '+T3('bytes','octets','Bytes')+')';
+ S:=P+' - '+IntStr(Dt_^.NE)+' '+T3('items',''#130'l'#130'ments','Elemente');
+ If Not MgrIsVirtual(Wd_) Then S:=S+' ('+NumFmt(Dt_^.TotBytes)+' '+T3('bytes','octets','Bytes')+')';
  S:=S+'.';
- If Not IsVirtual Then Begin
-  Tot:=DiskFree(DriveOfPath(Path));
+ If Not MgrIsVirtual(Wd_) Then Begin
+  Tot:=DiskFree(DriveOfPath(Dt_^.Path));
   If Tot>=0 Then S:=S+' '+NumFmt(Tot)+' '+T3('bytes free','octets libres','Bytes frei');
  End;
  Sunken1(X1+34,Y1+3,X2-4,Y1+22);
  GText(X1+38,Y1+9,Copy(S,1,(X2-X1-44) Div 8),cBlk);
  { liste }
  Sunken(FX1,FY1,FX2,FY2,cWht);
- OnResize;
- If ViewMode=0 Then VR:=(FY2-FY1-4) Div CellH Else VR:=(FY2-FY1-4) Div 14;
+ MgrOnResize(Wd_);
+ If Dt_^.ViewMode=0 Then VR:=(FY2-FY1-4) Div CellH Else VR:=(FY2-FY1-4) Div 14;
  If VR<1 Then VR:=1;
- For I:=0 To NE-1 Do Begin
-  ItemRect(I,IX,IY,Tx,Ln);
+ For I:=0 To Dt_^.NE-1 Do Begin
+  MgrItemRect(Wd_,I,IX,IY,Tx,Ln);
   If (Ln>=FY1+2) And (IY<=FY2-2) Then Begin
-   Sel:=Ents^[I].Sel;
-   If ViewMode=0 Then Begin
-    IcId:=Ents^[I].Icon;
+   Sel:=Dt_^.Ents^[I].Sel;
+   If Dt_^.ViewMode=0 Then Begin
+    IcId:=Dt_^.Ents^[I].Icon;
     If LargeView And (BigIcon(IcId)>=0) Then IcId:=BigIcon(IcId);
     DrawIcon(IcId,IX+(CellW-IconWd[IcId]) Div 2,IY,Sel);
-    S:=Ents^[I].Disp;
+    S:=Dt_^.Ents^[I].Disp;
     { libelle sur 2 lignes maximum }
     Lines[1]:=S;Lines[2]:='';
     If Length(S)>12 Then Begin
@@ -4622,12 +4621,12 @@ Begin
    End Else Begin
     If Sel Then GBar(IX,IY,FX2-SB-2,IY+13,cBlk);
     If Sel Then Ln:=cWht Else Ln:=cBlk;
-    GText(IX+4,IY+3,Copy(Ents^[I].Disp,1,26),Ln);
-    If ViewMode=2 Then Begin
-     If Ents^[I].Kind=0 Then S:=T3('<DIR>','<REP>','<VERZ>')
-     Else S:=NumFmt(Ents^[I].Size);
+    GText(IX+4,IY+3,Copy(Dt_^.Ents^[I].Disp,1,26),Ln);
+    If Dt_^.ViewMode=2 Then Begin
+     If Dt_^.Ents^[I].Kind=0 Then S:=T3('<DIR>','<REP>','<VERZ>')
+     Else S:=NumFmt(Dt_^.Ents^[I].Size);
      GText(IX+4+27*8,IY+3,S,Ln);
-     Case Ents^[I].Kind Of
+     Case Dt_^.Ents^[I].Kind Of
       0: S2:=T3('Directory','R'#130'pertoire','Verzeichnis');
       1: S2:=T3('Application','Application','Anwendung');
       2: S2:='Geode';
@@ -4641,26 +4640,30 @@ Begin
    End;
   End;
  End;
- DrawScroll(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,Rows,VR,Top);
- DrawBar(X1,Y2-BAR_H+1,X2,Y2);
+ DrawScroll(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,MgrRows(Wd_),VR,Dt_^.Top);
+ MgrDrawBar(Wd_,X1,Y2-BAR_H+1,X2,Y2);
 End;
 
-Procedure TManager.BarRects(Var TX: Integer);
+Procedure MgrBarRects(Wd_: PWindow; Var TX: Integer);
+ Var Dt_: PManager;
 Begin
+ Dt_:=Wd_^.Data;
  TX:=0;
 End;
 
-Procedure TManager.OnMouse(Var E: TEvent);
+Procedure MgrOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PManager;
 Var FX1,FY1,FX2,FY2,X1,Y1,X2,Y2,I,P,VR,D,N,DX,BX: Integer; Tgt: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
- Geom(FX1,FY1,FX2,FY2);
- If ViewMode=0 Then VR:=(FY2-FY1-4) Div CellH Else VR:=(FY2-FY1-4) Div 14;
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ MgrGeom(Wd_,FX1,FY1,FX2,FY2);
+ If Dt_^.ViewMode=0 Then VR:=(FY2-FY1-4) Div CellH Else VR:=(FY2-FY1-4) Div 14;
  If VR<1 Then VR:=1;
  If E.Kind=EV_DOWN Then Begin
-  SBDrag:=False;Dragging:=False;DragEnt:=-1;
+  Dt_^.SBDrag:=False;Dt_^.Dragging:=False;Dt_^.DragEnt:=-1;
   If E.Y<FY1 Then Begin
-   If InBox(E.X,E.Y,X1+4,Y1+3,X1+30,Y1+22) Then GoUp;
+   If InBox(E.X,E.Y,X1+4,Y1+3,X1+30,Y1+22) Then MgrGoUp(Wd_);
    Exit;
   End;
   If E.Y>FY2 Then Begin
@@ -4670,155 +4673,161 @@ Begin
     Info(T3('Wastebasket','Corbeille','Papierkorb'),
          T3('Drag files here to delete them.','Glissez des fichiers ici pour les supprimer.','Dateien hierher ziehen zum L'#148'schen.'));
    Inc(BX,52);
-   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then CommonCmd(@Self,CM_TILE);
+   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then CommonCmd(Wd_,CM_TILE);
    Inc(BX,48);
-   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then CommonCmd(@Self,CM_OVERLAP);
+   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then CommonCmd(Wd_,CM_OVERLAP);
    Inc(BX,56);
-   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then OnCommand(CM_WORLD);
+   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then MgrOnCommand(Wd_,CM_WORLD);
    Inc(BX,48);
-   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then OnCommand(CM_DOCDIR);
+   If InBox(E.X,E.Y,BX,Y2-BAR_H+5,BX+43,Y2-BAR_H+39) Then MgrOnCommand(Wd_,CM_DOCDIR);
    N:=0;
    For D:=1 To 26 Do If DriveExists(D) And (N<6) Then Inc(N);
    DX:=X2-6-N*54;
    N:=0;
    For D:=1 To 26 Do
     If DriveExists(D) And (N<6) Then Begin
-     If InBox(E.X,E.Y,DX,Y2-BAR_H+5,DX+49,Y2-BAR_H+39) Then GoPath(DriveRoot(D));
+     If InBox(E.X,E.Y,DX,Y2-BAR_H+5,DX+49,Y2-BAR_H+39) Then MgrGoPath(Wd_,DriveRoot(D));
      Inc(DX,54);Inc(N);
     End;
    Exit;
   End;
   If E.X>=FX2-SB+1 Then Begin
-   P:=ScrollPart(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,Rows,VR,Top,E.X,E.Y);
+   P:=ScrollPart(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,MgrRows(Wd_),VR,Dt_^.Top,E.X,E.Y);
    Case P Of
-    1: Top:=Max2(0,Top-1);
-    2: Top:=Max2(0,Min2(Rows-VR,Top+1));
-    3: Top:=Max2(0,Top-VR);
-    4: Top:=Max2(0,Min2(Rows-VR,Top+VR));
-    5: Begin SBDrag:=True;
-        ScrollThumb(FY1+2+SB,FY2-2-SB,Rows,VR,Top,I,N);
-        SBGrab:=E.Y-I;
+    1: Dt_^.Top:=Max2(0,Dt_^.Top-1);
+    2: Dt_^.Top:=Max2(0,Min2(MgrRows(Wd_)-VR,Dt_^.Top+1));
+    3: Dt_^.Top:=Max2(0,Dt_^.Top-VR);
+    4: Dt_^.Top:=Max2(0,Min2(MgrRows(Wd_)-VR,Dt_^.Top+VR));
+    5: Begin Dt_^.SBDrag:=True;
+        ScrollThumb(FY1+2+SB,FY2-2-SB,MgrRows(Wd_),VR,Dt_^.Top,I,N);
+        Dt_^.SBGrab:=E.Y-I;
        End;
    End;
-   Invalidate(@Self);
+   Invalidate(Wd_);
    Exit;
   End;
-  I:=ItemAt(E.X,E.Y);
+  I:=MgrItemAt(Wd_,E.X,E.Y);
   If I>=0 Then Begin
-   If Not Ents^[I].Sel Then SelectOnly(I);
-   Cur:=I;
-   If E.Dbl Then OpenItem(I)
-   Else Begin DragEnt:=I;DragX:=E.X;DragY:=E.Y;End;
+   If Not Dt_^.Ents^[I].Sel Then MgrSelectOnly(Wd_,I);
+   Dt_^.Cur:=I;
+   If E.Dbl Then MgrOpenItem(Wd_,I)
+   Else Begin Dt_^.DragEnt:=I;Dt_^.DragX:=E.X;Dt_^.DragY:=E.Y;End;
   End Else Begin
-   For P:=0 To NE-1 Do Ents^[P].Sel:=False;
-   Cur:=-1;
+   For P:=0 To Dt_^.NE-1 Do Dt_^.Ents^[P].Sel:=False;
+   Dt_^.Cur:=-1;
   End;
-  Invalidate(@Self);
+  Invalidate(Wd_);
  End Else If E.Kind=EV_MOVE Then Begin
-  If SBDrag Then Begin
-   Top:=ScrollDrag(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,Rows,VR,E.Y,SBGrab);
-   Invalidate(@Self);
-  End Else If (DragEnt>=0) And ((Abs(E.X-DragX)>5) Or (Abs(E.Y-DragY)>5)) Then Dragging:=True;
+  If Dt_^.SBDrag Then Begin
+   Dt_^.Top:=ScrollDrag(True,FX2-SB+1,FY1+2,FX2-2,FY2-2,MgrRows(Wd_),VR,E.Y,Dt_^.SBGrab);
+   Invalidate(Wd_);
+  End Else If (Dt_^.DragEnt>=0) And ((Abs(E.X-Dt_^.DragX)>5) Or (Abs(E.Y-Dt_^.DragY)>5)) Then Dt_^.Dragging:=True;
  End Else If E.Kind=EV_UP Then Begin
-  If Dragging And (DragEnt>=0) Then Begin
-   Tgt:=ItemAt(E.X,E.Y);
+  If Dt_^.Dragging And (Dt_^.DragEnt>=0) Then Begin
+   Tgt:=MgrItemAt(Wd_,E.X,E.Y);
    If (E.Y>FY2) And InBox(E.X,E.Y,X1+6,Y2-BAR_H+5,X1+49,Y2-BAR_H+39) Then Begin
-    DoDelete;
-   End Else If (Tgt>=0) And (Tgt<>DragEnt) And (Ents^[Tgt].Kind=0) And Not IsVirtual Then Begin
+    MgrDoDelete(Wd_);
+   End Else If (Tgt>=0) And (Tgt<>Dt_^.DragEnt) And (Dt_^.Ents^[Tgt].Kind=0) And Not MgrIsVirtual(Wd_) Then Begin
     If Confirm(T3('Move','D'#130'placer','Verschieben'),
-     T3('Move to directory|','D'#130'placer vers le r'#130'pertoire|','Verschieben nach|')+Ents^[Tgt].Name+'?') Then Begin
+     T3('Move to directory|','D'#130'placer vers le r'#130'pertoire|','Verschieben nach|')+Dt_^.Ents^[Tgt].Name+'?') Then Begin
      {$I-}
-     Assign(F_,FullPath(DragEnt));
+     Assign(F_,MgrFullPath(Wd_,Dt_^.DragEnt));
      {$I+}
-     If CopyFileTo(FullPath(DragEnt),JoinPath(FullPath(Tgt),Ents^[DragEnt].Name)) Then Begin
+     If CopyFileTo(MgrFullPath(Wd_,Dt_^.DragEnt),JoinPath(MgrFullPath(Wd_,Tgt),Dt_^.Ents^[Dt_^.DragEnt].Name)) Then Begin
       {$I-}Erase(F_);{$I+}
       If IOResult<>0 Then Beep;
      End;
-     Scan;
+     MgrScan(Wd_);
     End;
    End;
   End;
-  Dragging:=False;DragEnt:=-1;SBDrag:=False;
-  Invalidate(@Self);
+  Dt_^.Dragging:=False;Dt_^.DragEnt:=-1;Dt_^.SBDrag:=False;
+  Invalidate(Wd_);
  End;
 End;
 
-Procedure TManager.OnKey(K: Word);
+Procedure MgrOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PManager;
 Var N,Old: Integer;
 Begin
- If NE=0 Then Begin
-  If K=K_BKSP Then GoUp;
+ Dt_:=Wd_^.Data;
+ If Dt_^.NE=0 Then Begin
+  If K=K_BKSP Then MgrGoUp(Wd_);
   Exit;
  End;
- Old:=Cur;
+ Old:=Dt_^.Cur;
  Case K Of
-  K_ENTER: If Cur>=0 Then OpenItem(Cur);
-  K_BKSP: GoUp;
-  K_DEL: DoDelete;
-  K_F2: DoRename;
-  K_F5: Begin Scan;Invalidate(@Self);End;
-  K_CTRLA: OnCommand(CM_SELALL);
-  K_LEFT: Begin If Cur<0 Then N:=0 Else N:=Cur-1;If N<0 Then N:=0;SelectOnly(N);End;
-  K_RIGHT: Begin If Cur<0 Then N:=0 Else N:=Cur+1;If N>=NE Then N:=NE-1;SelectOnly(N);End;
+  K_ENTER: If Dt_^.Cur>=0 Then MgrOpenItem(Wd_,Dt_^.Cur);
+  K_BKSP: MgrGoUp(Wd_);
+  K_DEL: MgrDoDelete(Wd_);
+  K_F2: MgrDoRename(Wd_);
+  K_F5: Begin MgrScan(Wd_);Invalidate(Wd_);End;
+  K_CTRLA: MgrOnCommand(Wd_,CM_SELALL);
+  K_LEFT: Begin If Dt_^.Cur<0 Then N:=0 Else N:=Dt_^.Cur-1;If N<0 Then N:=0;MgrSelectOnly(Wd_,N);End;
+  K_RIGHT: Begin If Dt_^.Cur<0 Then N:=0 Else N:=Dt_^.Cur+1;If N>=Dt_^.NE Then N:=Dt_^.NE-1;MgrSelectOnly(Wd_,N);End;
   K_UP: Begin
-         If ViewMode=0 Then N:=Cur-Cols Else N:=Cur-1;
-         If Cur<0 Then N:=0;
+         If Dt_^.ViewMode=0 Then N:=Dt_^.Cur-Dt_^.Cols Else N:=Dt_^.Cur-1;
+         If Dt_^.Cur<0 Then N:=0;
          If N<0 Then N:=0;
-         SelectOnly(N);
+         MgrSelectOnly(Wd_,N);
         End;
   K_DOWN: Begin
-         If ViewMode=0 Then N:=Cur+Cols Else N:=Cur+1;
-         If Cur<0 Then N:=0;
-         If N>=NE Then N:=NE-1;
-         SelectOnly(N);
+         If Dt_^.ViewMode=0 Then N:=Dt_^.Cur+Dt_^.Cols Else N:=Dt_^.Cur+1;
+         If Dt_^.Cur<0 Then N:=0;
+         If N>=Dt_^.NE Then N:=Dt_^.NE-1;
+         MgrSelectOnly(Wd_,N);
         End;
-  K_HOME: SelectOnly(0);
-  K_END: SelectOnly(NE-1);
-  K_PGUP: Begin SelectOnly(Max2(0,Cur-Cols*3));End;
-  K_PGDN: Begin SelectOnly(Min2(NE-1,Cur+Cols*3));End;
+  K_HOME: MgrSelectOnly(Wd_,0);
+  K_END: MgrSelectOnly(Wd_,Dt_^.NE-1);
+  K_PGUP: Begin MgrSelectOnly(Wd_,Max2(0,Dt_^.Cur-Dt_^.Cols*3));End;
+  K_PGDN: Begin MgrSelectOnly(Wd_,Min2(Dt_^.NE-1,Dt_^.Cur+Dt_^.Cols*3));End;
  End;
- If (Cur>=0) And (Cur<>Old) Then EnsureVisible(Cur);
- Invalidate(@Self);
+ If (Dt_^.Cur>=0) And (Dt_^.Cur<>Old) Then MgrEnsureVisible(Wd_,Dt_^.Cur);
+ Invalidate(Wd_);
 End;
 
-Procedure TManager.PrepareMenus;
+Procedure MgrPrepareMenus(Wd_: PWindow);
+ Var Dt_: PManager;
 Var D: Integer; Any: Boolean;
 Begin
- Any:=Cur>=0;
- SetFlag(CM_OPEN,1,Not Any);
- SetFlag(CM_INFO,1,Not Any);
- SetFlag(CM_RENAME,1,Not Any Or IsVirtual);
- SetFlag(CM_DUP,1,Not Any Or IsVirtual);
- SetFlag(CM_COPYTO,1,Not Any Or IsVirtual);
- SetFlag(CM_MOVETO,1,Not Any Or IsVirtual);
- SetFlag(CM_DELETE,1,Not Any Or IsVirtual);
- SetFlag(CM_MKDIR,1,IsVirtual);
- SetFlag(CM_VICON,2,(ViewMode=0) And Not LargeView);
- SetFlag(CM_VLARGE,2,(ViewMode=0) And LargeView);
- SetFlag(CM_VNAME,2,ViewMode=1);
- SetFlag(CM_VDET,2,ViewMode=2);
- SetFlag(CM_SNAME,2,SortMode=0);
- SetFlag(CM_STYPE,2,SortMode=1);
- SetFlag(CM_SSIZE,2,SortMode=2);
- SetFlag(CM_HIDDEN,2,ShowHid);
- SetFlag(CM_CONFIRM,2,ConfirmDel);
- For D:=1 To 26 Do SetFlag(CM_DRIVE+D,2,(Not IsVirtual) And (DriveOfPath(Path)=D));
+ Dt_:=Wd_^.Data;
+ Any:=Dt_^.Cur>=0;
+ WinSetFlag(Wd_,CM_OPEN,1,Not Any);
+ WinSetFlag(Wd_,CM_INFO,1,Not Any);
+ WinSetFlag(Wd_,CM_RENAME,1,Not Any Or MgrIsVirtual(Wd_));
+ WinSetFlag(Wd_,CM_DUP,1,Not Any Or MgrIsVirtual(Wd_));
+ WinSetFlag(Wd_,CM_COPYTO,1,Not Any Or MgrIsVirtual(Wd_));
+ WinSetFlag(Wd_,CM_MOVETO,1,Not Any Or MgrIsVirtual(Wd_));
+ WinSetFlag(Wd_,CM_DELETE,1,Not Any Or MgrIsVirtual(Wd_));
+ WinSetFlag(Wd_,CM_MKDIR,1,MgrIsVirtual(Wd_));
+ WinSetFlag(Wd_,CM_VICON,2,(Dt_^.ViewMode=0) And Not LargeView);
+ WinSetFlag(Wd_,CM_VLARGE,2,(Dt_^.ViewMode=0) And LargeView);
+ WinSetFlag(Wd_,CM_VNAME,2,Dt_^.ViewMode=1);
+ WinSetFlag(Wd_,CM_VDET,2,Dt_^.ViewMode=2);
+ WinSetFlag(Wd_,CM_SNAME,2,Dt_^.SortMode=0);
+ WinSetFlag(Wd_,CM_STYPE,2,Dt_^.SortMode=1);
+ WinSetFlag(Wd_,CM_SSIZE,2,Dt_^.SortMode=2);
+ WinSetFlag(Wd_,CM_HIDDEN,2,Dt_^.ShowHid);
+ WinSetFlag(Wd_,CM_CONFIRM,2,Dt_^.ConfirmDel);
+ For D:=1 To 26 Do WinSetFlag(Wd_,CM_DRIVE+D,2,(Not MgrIsVirtual(Wd_)) And (DriveOfPath(Dt_^.Path)=D));
 End;
 
-Procedure TManager.DoInfo;
+Procedure MgrDoInfo(Wd_: PWindow);
+ Var Dt_: PManager;
 Var S,T: String; G: TGeosInfo; K: Integer;
 Begin
- If Cur<0 Then Exit;
- K:=Cur;
- If IsVirtual Then Begin
-  Info(Ents^[K].Disp,T3('Built-in application','Application int'#130'gr'#130'e','Eingebaute Anwendung'));
+ Dt_:=Wd_^.Data;
+ If Dt_^.Cur<0 Then Exit;
+ K:=Dt_^.Cur;
+ If MgrIsVirtual(Wd_) Then Begin
+  Info(Dt_^.Ents^[K].Disp,T3('Built-in application','Application int'#130'gr'#130'e','Eingebaute Anwendung'));
   Exit;
  End;
- S:=Ents^[K].Name+'|';
- If Ents^[K].Kind=0 Then S:=S+T3('Type: directory','Type : r'#130'pertoire','Typ: Verzeichnis')
+ S:=Dt_^.Ents^[K].Name+'|';
+ If Dt_^.Ents^[K].Kind=0 Then S:=S+T3('Type: directory','Type : r'#130'pertoire','Typ: Verzeichnis')
  Else Begin
-  S:=S+T3('Size: ','Taille : ','Gr'#148#225'e: ')+NumFmt(Ents^[K].Size)+' '+T3('bytes','octets','Bytes')+'|';
-  If ReadGeosHeader(FullPath(K),G) Then Begin
+  S:=S+T3('Size: ','Taille : ','Gr'#148#225'e: ')+NumFmt(Dt_^.Ents^[K].Size)+' '+T3('bytes','octets','Bytes')+'|';
+  If ReadGeosHeader(MgrFullPath(Wd_,K),G) Then Begin
    S:=S+T3('GEOS name: ','Nom GEOS : ','GEOS-Name: ')+G.LongName+'|';
    S:=S+T3('Token: ','Jeton : ','Token: ')+G.Tok+'   Creator: '+G.Creator+'|';
    S:=S+'PC/GEOS '+IntStr(G.Ver)+'.x   Release '+IntStr(G.Release shr 8)+'.'+IntStr(G.Release and 255);
@@ -4827,140 +4836,150 @@ Begin
  Info(T3('Get Info','Informations','Informationen'),S);
 End;
 
-Procedure TManager.DoDelete;
+Procedure MgrDoDelete(Wd_: PWindow);
+ Var Dt_: PManager;
 Var I,N: Integer; Ok: Boolean; Sg: String;
 Begin
- If IsVirtual Then Exit;
+ Dt_:=Wd_^.Data;
+ If MgrIsVirtual(Wd_) Then Exit;
  N:=0;
- For I:=0 To NE-1 Do If Ents^[I].Sel Then Inc(N);
+ For I:=0 To Dt_^.NE-1 Do If Dt_^.Ents^[I].Sel Then Inc(N);
  If N=0 Then Exit;
- If ConfirmDel Then Begin
-  If N=1 Then Sg:=T3('Delete ','Supprimer ','L'#148'schen ')+Ents^[Cur].Name+' ?'
+ If Dt_^.ConfirmDel Then Begin
+  If N=1 Then Sg:=T3('Delete ','Supprimer ','L'#148'schen ')+Dt_^.Ents^[Dt_^.Cur].Name+' ?'
   Else Sg:=T3('Delete ','Supprimer ','L'#148'schen ')+IntStr(N)+' '+T3('items?',''#130'l'#130'ments ?','Elemente?');
   If Not Confirm(T3('Delete','Supprimer','L'#148'schen'),Sg) Then Exit;
  End;
- For I:=0 To NE-1 Do
-  If Ents^[I].Sel Then Begin
+ For I:=0 To Dt_^.NE-1 Do
+  If Dt_^.Ents^[I].Sel Then Begin
    {$I-}
-   If Ents^[I].Kind=0 Then Begin RmDir(FullPath(I)); End
-   Else Begin Assign(F_,FullPath(I));Erase(F_);End;
+   If Dt_^.Ents^[I].Kind=0 Then Begin RmDir(MgrFullPath(Wd_,I)); End
+   Else Begin Assign(F_,MgrFullPath(Wd_,I));Erase(F_);End;
    Ok:=IOResult=0;
    {$I+}
-   If Not Ok Then Info(T3('Error','Erreur','Fehler'),T3('Cannot delete|','Impossible de supprimer|','Kann nicht l'#148'schen|')+Ents^[I].Name);
+   If Not Ok Then Info(T3('Error','Erreur','Fehler'),T3('Cannot delete|','Impossible de supprimer|','Kann nicht l'#148'schen|')+Dt_^.Ents^[I].Name);
   End;
- Scan;
- Invalidate(@Self);
+ MgrScan(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TManager.DoRename;
+Procedure MgrDoRename(Wd_: PWindow);
+ Var Dt_: PManager;
 Var S: String; Ok: Boolean;
 Begin
- If (Cur<0) Or IsVirtual Then Exit;
- S:=Ents^[Cur].Name;
+ Dt_:=Wd_^.Data;
+ If (Dt_^.Cur<0) Or MgrIsVirtual(Wd_) Then Exit;
+ S:=Dt_^.Ents^[Dt_^.Cur].Name;
  If InputBox(T3('Rename','Renommer','Umbenennen'),T3('New name:','Nouveau nom :','Neuer Name:'),S,44) Then Begin
-  If (S<>'') And (S<>Ents^[Cur].Name) Then Begin
+  If (S<>'') And (S<>Dt_^.Ents^[Dt_^.Cur].Name) Then Begin
    {$I-}
-   Assign(F_,FullPath(Cur));
-   Rename(F_,JoinPath(Path,S));
+   Assign(F_,MgrFullPath(Wd_,Dt_^.Cur));
+   Rename(F_,JoinPath(Dt_^.Path,S));
    Ok:=IOResult=0;
    {$I+}
    If Not Ok Then Info(T3('Error','Erreur','Fehler'),T3('Cannot rename.','Impossible de renommer.','Umbenennen nicht m'#148'glich.'));
-   Scan;Invalidate(@Self);
+   MgrScan(Wd_);Invalidate(Wd_);
   End;
  End;
 End;
 
-Procedure TManager.DoCopyMove(Move,Dup: Boolean);
+Procedure MgrDoCopyMove(Wd_: PWindow; Move,Dup: Boolean);
+ Var Dt_: PManager;
 Var S,Dst: String;
 Begin
- If (Cur<0) Or IsVirtual Or (Ents^[Cur].Kind=0) Then Exit;
+ Dt_:=Wd_^.Data;
+ If (Dt_^.Cur<0) Or MgrIsVirtual(Wd_) Or (Dt_^.Ents^[Dt_^.Cur].Kind=0) Then Exit;
  If Dup Then Begin
-  S:=Ents^[Cur].Name;
+  S:=Dt_^.Ents^[Dt_^.Cur].Name;
   If Pos('.',S)>0 Then S:=Copy(S,1,Pos('.',S)-1)+'2'+Copy(S,Pos('.',S),20) Else S:=S+'2';
   If Not InputBox(T3('Duplicate','Dupliquer','Duplizieren'),T3('Name of the copy:','Nom de la copie :','Name der Kopie:'),S,44) Then Exit;
-  Dst:=JoinPath(Path,S);
+  Dst:=JoinPath(Dt_^.Path,S);
  End Else Begin
-  S:=Path;
+  S:=Dt_^.Path;
   If Not InputBox(T3('Destination','Destination','Ziel'),T3('Directory:','R'#130'pertoire :','Verzeichnis:'),S,70) Then Exit;
   If Not DirExists(S) Then Begin
    Info(T3('Error','Erreur','Fehler'),T3('Directory not found.','R'#130'pertoire introuvable.','Verzeichnis nicht gefunden.'));
    Exit;
   End;
-  Dst:=JoinPath(S,Ents^[Cur].Name);
+  Dst:=JoinPath(S,Dt_^.Ents^[Dt_^.Cur].Name);
  End;
- If Not CopyFileTo(FullPath(Cur),Dst) Then Begin
+ If Not CopyFileTo(MgrFullPath(Wd_,Dt_^.Cur),Dst) Then Begin
   Info(T3('Error','Erreur','Fehler'),T3('Copy failed.',''#130'chec de la copie.','Kopieren fehlgeschlagen.'));
   Exit;
  End;
  If Move Then Begin
   {$I-}
-  Assign(F_,FullPath(Cur));Erase(F_);
+  Assign(F_,MgrFullPath(Wd_,Dt_^.Cur));Erase(F_);
   {$I+}
   If IOResult<>0 Then Beep;
  End;
- Scan;Invalidate(@Self);
+ MgrScan(Wd_);Invalidate(Wd_);
 End;
 
-Procedure TManager.DoMkDir;
+Procedure MgrDoMkDir(Wd_: PWindow);
+ Var Dt_: PManager;
 Var S: String; Ok: Boolean;
 Begin
- If IsVirtual Then Exit;
+ Dt_:=Wd_^.Data;
+ If MgrIsVirtual(Wd_) Then Exit;
  S:='';
  If InputBox(T3('Create Directory','Cr'#130'er un r'#130'pertoire','Verzeichnis erstellen'),
              T3('Name:','Nom :','Name:'),S,44) And (S<>'') Then Begin
   {$I-}
-  MkDir(JoinPath(Path,S));
+  MkDir(JoinPath(Dt_^.Path,S));
   Ok:=IOResult=0;
   {$I+}
   If Not Ok Then Info(T3('Error','Erreur','Fehler'),T3('Cannot create directory.','Impossible de cr'#130'er le r'#130'pertoire.','Verzeichnis nicht erstellbar.'));
-  Scan;Invalidate(@Self);
+  MgrScan(Wd_);Invalidate(Wd_);
  End;
 End;
 
-Procedure TManager.OnCommand(Cmd: Integer);
+Procedure MgrOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PManager;
 Var I,D: Integer; Tot,Fr: LongInt;
 Begin
+ Dt_:=Wd_^.Data;
  If (Cmd>CM_DRIVE) And (Cmd<=CM_DRIVE+26) Then Begin
-  GoPath(DriveRoot(Cmd-CM_DRIVE));
+  MgrGoPath(Wd_,DriveRoot(Cmd-CM_DRIVE));
   Exit;
  End;
  Case Cmd Of
-  CM_OPEN: OpenItem(Cur);
-  CM_INFO: DoInfo;
-  CM_RENAME: DoRename;
-  CM_DUP: DoCopyMove(False,True);
-  CM_COPYTO: DoCopyMove(False,False);
-  CM_MOVETO: DoCopyMove(True,False);
-  CM_DELETE: DoDelete;
-  CM_MKDIR: DoMkDir;
+  CM_OPEN: MgrOpenItem(Wd_,Dt_^.Cur);
+  CM_INFO: MgrDoInfo(Wd_);
+  CM_RENAME: MgrDoRename(Wd_);
+  CM_DUP: MgrDoCopyMove(Wd_,False,True);
+  CM_COPYTO: MgrDoCopyMove(Wd_,False,False);
+  CM_MOVETO: MgrDoCopyMove(Wd_,True,False);
+  CM_DELETE: MgrDoDelete(Wd_);
+  CM_MKDIR: MgrDoMkDir(Wd_);
   CM_SELALL: Begin
-              For I:=0 To NE-1 Do Ents^[I].Sel:=True;
-              If Cur<0 Then Cur:=0;
-              Invalidate(@Self);
+              For I:=0 To Dt_^.NE-1 Do Dt_^.Ents^[I].Sel:=True;
+              If Dt_^.Cur<0 Then Dt_^.Cur:=0;
+              Invalidate(Wd_);
              End;
-  CM_UP: GoUp;
-  CM_ROOT: GoPath(DriveRoot(DriveOfPath(Path)));
-  CM_WORLD: If WorldDir<>'' Then GoPath(WorldDir) Else GoPath('V:WORLD');
+  CM_UP: MgrGoUp(Wd_);
+  CM_ROOT: MgrGoPath(Wd_,DriveRoot(DriveOfPath(Dt_^.Path)));
+  CM_WORLD: If WorldDir<>'' Then MgrGoPath(Wd_,WorldDir) Else MgrGoPath(Wd_,'V:WORLD');
   CM_DOCDIR: Begin
               If WorldDir<>'' Then Begin
                If DirExists(JoinPath(DirOf(ParentDir(WorldDir)),'DOCUMENT')) Then
-                GoPath(JoinPath(DirOf(ParentDir(WorldDir)),'DOCUMENT'))
-               Else GoPath('V:DOCUMENT');
-              End Else GoPath('V:DOCUMENT');
+                MgrGoPath(Wd_,JoinPath(DirOf(ParentDir(WorldDir)),'DOCUMENT'))
+               Else MgrGoPath(Wd_,'V:DOCUMENT');
+              End Else MgrGoPath(Wd_,'V:DOCUMENT');
              End;
-  CM_HOMEDIR: If HomeDir<>'' Then GoPath(HomeDir);
-  CM_REFRESH: Begin Scan;Invalidate(@Self);End;
-  CM_VICON: Begin ViewMode:=0;LargeView:=False;Top:=0;NeedFull:=True;End;
-  CM_VLARGE: Begin ViewMode:=0;LargeView:=True;Top:=0;NeedFull:=True;End;
-  CM_VNAME: Begin ViewMode:=1;Top:=0;Invalidate(@Self);End;
-  CM_VDET: Begin ViewMode:=2;Top:=0;Invalidate(@Self);End;
-  CM_SNAME: Begin SortMode:=0;SortEnts;Invalidate(@Self);End;
-  CM_STYPE: Begin SortMode:=1;SortEnts;Invalidate(@Self);End;
-  CM_SSIZE: Begin SortMode:=2;SortEnts;Invalidate(@Self);End;
-  CM_HIDDEN: Begin ShowHid:=Not ShowHid;Scan;Invalidate(@Self);End;
-  CM_CONFIRM: ConfirmDel:=Not ConfirmDel;
+  CM_HOMEDIR: If HomeDir<>'' Then MgrGoPath(Wd_,HomeDir);
+  CM_REFRESH: Begin MgrScan(Wd_);Invalidate(Wd_);End;
+  CM_VICON: Begin Dt_^.ViewMode:=0;LargeView:=False;Dt_^.Top:=0;NeedFull:=True;End;
+  CM_VLARGE: Begin Dt_^.ViewMode:=0;LargeView:=True;Dt_^.Top:=0;NeedFull:=True;End;
+  CM_VNAME: Begin Dt_^.ViewMode:=1;Dt_^.Top:=0;Invalidate(Wd_);End;
+  CM_VDET: Begin Dt_^.ViewMode:=2;Dt_^.Top:=0;Invalidate(Wd_);End;
+  CM_SNAME: Begin Dt_^.SortMode:=0;MgrSortEnts(Wd_);Invalidate(Wd_);End;
+  CM_STYPE: Begin Dt_^.SortMode:=1;MgrSortEnts(Wd_);Invalidate(Wd_);End;
+  CM_SSIZE: Begin Dt_^.SortMode:=2;MgrSortEnts(Wd_);Invalidate(Wd_);End;
+  CM_HIDDEN: Begin Dt_^.ShowHid:=Not Dt_^.ShowHid;MgrScan(Wd_);Invalidate(Wd_);End;
+  CM_CONFIRM: Dt_^.ConfirmDel:=Not Dt_^.ConfirmDel;
   CM_DINFO: Begin
-             D:=DriveOfPath(Path);
+             D:=DriveOfPath(Dt_^.Path);
              Tot:=DiskSize(D);Fr:=DiskFree(D);
              Info(T3('Disk Information','Informations disque','Datentr'#132'gerinfo'),
               T3('Drive ','Lecteur ','Laufwerk ')+Chr(64+D)+':|'+
@@ -4971,7 +4990,7 @@ Begin
        T3('This operation is not available in this clone.|Use the DOS commands FORMAT / DISKCOPY.',
           'Cette op'#130'ration n''est pas disponible dans ce clone.|Utilisez les commandes DOS FORMAT / DISKCOPY.',
           'Dieser Vorgang ist in diesem Klon nicht verf'#129'gbar.|Benutzen Sie FORMAT / DISKCOPY unter DOS.'));
- Else CommonCmd(@Self,Cmd);
+ Else CommonCmd(Wd_,Cmd);
  End;
 End;
 
@@ -4991,7 +5010,7 @@ Const
 
 Type
  PEdit = ^TEdit;
- TEdit = Object
+ TEdit = Record
   L        : Array[1..MAXL] Of PString;
   Al       : Array[1..MAXL] Of Byte;
   N        : Integer;
@@ -5000,29 +5019,30 @@ Type
   SAX,SAY  : Integer;
   HasSel   : Boolean;
   Modified : Boolean;
-  Procedure Init;
-  Procedure Free;
-  Procedure Clear;
-  Function  Load(Const Path: String): Boolean;
-  Function  Save(Const Path: String): Boolean;
-  Function  Line(I: Integer): String;
-  Procedure SetLine(I: Integer; Const S: String);
-  Procedure InsLine(I: Integer; Const S: String);
-  Procedure DelLine(I: Integer);
-  Procedure InsChar(C: Char);
-  Procedure NewLine;
-  Procedure Backspace;
-  Procedure DelChar;
-  Procedure MoveCur(K: Word; Shift: Boolean);
-  Procedure SelOrder(Var X1,Y1,X2,Y2: Integer);
-  Procedure DelSel;
-  Procedure SelAll;
-  Function  SelText: String;
-  Procedure Paste;
-  Procedure CopySel;
-  Procedure GotoXY(X,Y: Integer);
-  Procedure InsText(Const S: String);
  End;
+
+Procedure EdInit(Var Ed: TEdit); Forward;
+Procedure EdFree(Var Ed: TEdit); Forward;
+Procedure EdClear(Var Ed: TEdit); Forward;
+Function EdLine(Var Ed: TEdit; I: Integer): String; Forward;
+Procedure EdSetLine(Var Ed: TEdit; I: Integer; Const S: String); Forward;
+Procedure EdInsLine(Var Ed: TEdit; I: Integer; Const S: String); Forward;
+Procedure EdDelLine(Var Ed: TEdit; I: Integer); Forward;
+Function EdLoad(Var Ed: TEdit; Const Path: String): Boolean; Forward;
+Function EdSave(Var Ed: TEdit; Const Path: String): Boolean; Forward;
+Procedure EdSelOrder(Var Ed: TEdit; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure EdDelSel(Var Ed: TEdit); Forward;
+Procedure EdSelAll(Var Ed: TEdit); Forward;
+Function EdSelText(Var Ed: TEdit): String; Forward;
+Procedure EdCopySel(Var Ed: TEdit); Forward;
+Procedure EdInsChar(Var Ed: TEdit; C: Char); Forward;
+Procedure EdInsText(Var Ed: TEdit; Const S: String); Forward;
+Procedure EdNewLine(Var Ed: TEdit); Forward;
+Procedure EdBackspace(Var Ed: TEdit); Forward;
+Procedure EdDelChar(Var Ed: TEdit); Forward;
+Procedure EdGotoXY(Var Ed: TEdit; X,Y: Integer); Forward;
+Procedure EdMoveCur(Var Ed: TEdit; K: Word; Shift: Boolean); Forward;
+Procedure EdPaste(Var Ed: TEdit); Forward;
 
 Var
  ClipL : Array[1..300] Of PString;
@@ -5035,239 +5055,239 @@ Begin
  ClipN:=0;
 End;
 
-Procedure TEdit.Init;
+Procedure EdInit(Var Ed: TEdit);
 Begin
- N:=0;
- Clear;
+ Ed.N:=0;
+ EdClear(Ed);
 End;
 
-Procedure TEdit.Free;
+Procedure EdFree(Var Ed: TEdit);
 Var I: Integer;
 Begin
- For I:=1 To N Do FreeStr(L[I]);
- N:=0;
+ For I:=1 To Ed.N Do FreeStr(Ed.L[I]);
+ Ed.N:=0;
 End;
 
-Procedure TEdit.Clear;
+Procedure EdClear(Var Ed: TEdit);
 Begin
- Free;
- N:=1;L[1]:=NewStr('');Al[1]:=0;
- CX:=0;CY:=1;TopL:=1;LeftC:=0;HasSel:=False;Modified:=False;
+ EdFree(Ed);
+ Ed.N:=1;Ed.L[1]:=NewStr('');Ed.Al[1]:=0;
+ Ed.CX:=0;Ed.CY:=1;Ed.TopL:=1;Ed.LeftC:=0;Ed.HasSel:=False;Ed.Modified:=False;
 End;
 
-Function TEdit.Line(I: Integer): String;
+Function EdLine(Var Ed: TEdit; I: Integer): String;
 Begin
- If (I<1) Or (I>N) Then Line:='' Else Line:=L[I]^;
+ If (I<1) Or (I>Ed.N) Then EdLine:='' Else EdLine:=Ed.L[I]^;
 End;
 
-Procedure TEdit.SetLine(I: Integer; Const S: String);
+Procedure EdSetLine(Var Ed: TEdit; I: Integer; Const S: String);
 Begin
- If (I<1) Or (I>N) Then Exit;
- FreeStr(L[I]);
- L[I]:=NewStr(S);
+ If (I<1) Or (I>Ed.N) Then Exit;
+ FreeStr(Ed.L[I]);
+ Ed.L[I]:=NewStr(S);
 End;
 
-Procedure TEdit.InsLine(I: Integer; Const S: String);
+Procedure EdInsLine(Var Ed: TEdit; I: Integer; Const S: String);
 Var K: Integer;
 Begin
- If N>=MAXL Then Exit;
- For K:=N DownTo I Do Begin L[K+1]:=L[K];Al[K+1]:=Al[K];End;
- L[I]:=NewStr(S);
- If I>1 Then Al[I]:=Al[I-1] Else Al[I]:=0;
- Inc(N);
+ If Ed.N>=MAXL Then Exit;
+ For K:=Ed.N DownTo I Do Begin Ed.L[K+1]:=Ed.L[K];Ed.Al[K+1]:=Ed.Al[K];End;
+ Ed.L[I]:=NewStr(S);
+ If I>1 Then Ed.Al[I]:=Ed.Al[I-1] Else Ed.Al[I]:=0;
+ Inc(Ed.N);
 End;
 
-Procedure TEdit.DelLine(I: Integer);
+Procedure EdDelLine(Var Ed: TEdit; I: Integer);
 Var K: Integer;
 Begin
- If (I<1) Or (I>N) Then Exit;
- FreeStr(L[I]);
- For K:=I To N-1 Do Begin L[K]:=L[K+1];Al[K]:=Al[K+1];End;
- Dec(N);
- If N=0 Then Begin N:=1;L[1]:=NewStr('');Al[1]:=0;End;
+ If (I<1) Or (I>Ed.N) Then Exit;
+ FreeStr(Ed.L[I]);
+ For K:=I To Ed.N-1 Do Begin Ed.L[K]:=Ed.L[K+1];Ed.Al[K]:=Ed.Al[K+1];End;
+ Dec(Ed.N);
+ If Ed.N=0 Then Begin Ed.N:=1;Ed.L[1]:=NewStr('');Ed.Al[1]:=0;End;
 End;
 
-Function TEdit.Load(Const Path: String): Boolean;
+Function EdLoad(Var Ed: TEdit; Const Path: String): Boolean;
 Var F: Text; S: String;
 Begin
- Load:=False;
+ EdLoad:=False;
  {$I-}
  Assign(F,Path);
  Reset(F);
  {$I+}
  If IOResult<>0 Then Exit;
- Free;
- N:=0;
+ EdFree(Ed);
+ Ed.N:=0;
  {$I-}
- While Not Eof(F) And (N<MAXL) Do Begin
+ While Not Eof(F) And (Ed.N<MAXL) Do Begin
   ReadLn(F,S);
-  Inc(N);L[N]:=NewStr(Copy(S,1,MAXLEN));Al[N]:=0;
+  Inc(Ed.N);Ed.L[Ed.N]:=NewStr(Copy(S,1,MAXLEN));Ed.Al[Ed.N]:=0;
  End;
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
- If N=0 Then Begin N:=1;L[1]:=NewStr('');Al[1]:=0;End;
- CX:=0;CY:=1;TopL:=1;LeftC:=0;HasSel:=False;Modified:=False;
- Load:=True;
+ If Ed.N=0 Then Begin Ed.N:=1;Ed.L[1]:=NewStr('');Ed.Al[1]:=0;End;
+ Ed.CX:=0;Ed.CY:=1;Ed.TopL:=1;Ed.LeftC:=0;Ed.HasSel:=False;Ed.Modified:=False;
+ EdLoad:=True;
 End;
 
-Function TEdit.Save(Const Path: String): Boolean;
+Function EdSave(Var Ed: TEdit; Const Path: String): Boolean;
 Var F: Text; I: Integer;
 Begin
- Save:=False;
+ EdSave:=False;
  {$I-}
  Assign(F,Path);
  Rewrite(F);
- For I:=1 To N Do WriteLn(F,L[I]^);
+ For I:=1 To Ed.N Do WriteLn(F,Ed.L[I]^);
  Close(F);
  {$I+}
  If IOResult<>0 Then Exit;
- Modified:=False;
- Save:=True;
+ Ed.Modified:=False;
+ EdSave:=True;
 End;
 
-Procedure TEdit.SelOrder(Var X1,Y1,X2,Y2: Integer);
+Procedure EdSelOrder(Var Ed: TEdit; Var X1,Y1,X2,Y2: Integer);
 Begin
- If (SAY<CY) Or ((SAY=CY) And (SAX<=CX)) Then Begin X1:=SAX;Y1:=SAY;X2:=CX;Y2:=CY;End
- Else Begin X1:=CX;Y1:=CY;X2:=SAX;Y2:=SAY;End;
+ If (Ed.SAY<Ed.CY) Or ((Ed.SAY=Ed.CY) And (Ed.SAX<=Ed.CX)) Then Begin X1:=Ed.SAX;Y1:=Ed.SAY;X2:=Ed.CX;Y2:=Ed.CY;End
+ Else Begin X1:=Ed.CX;Y1:=Ed.CY;X2:=Ed.SAX;Y2:=Ed.SAY;End;
 End;
 
-Procedure TEdit.DelSel;
+Procedure EdDelSel(Var Ed: TEdit);
 Var X1,Y1,X2,Y2,I: Integer; S: String;
 Begin
- If Not HasSel Then Exit;
- SelOrder(X1,Y1,X2,Y2);
+ If Not Ed.HasSel Then Exit;
+ EdSelOrder(Ed,X1,Y1,X2,Y2);
  If Y1=Y2 Then Begin
-  S:=Line(Y1);Delete(S,X1+1,X2-X1);SetLine(Y1,S);
+  S:=EdLine(Ed,Y1);Delete(S,X1+1,X2-X1);EdSetLine(Ed,Y1,S);
  End Else Begin
-  S:=Copy(Line(Y1),1,X1)+Copy(Line(Y2),X2+1,255);
-  SetLine(Y1,S);
-  For I:=Y2 DownTo Y1+1 Do DelLine(I);
+  S:=Copy(EdLine(Ed,Y1),1,X1)+Copy(EdLine(Ed,Y2),X2+1,255);
+  EdSetLine(Ed,Y1,S);
+  For I:=Y2 DownTo Y1+1 Do EdDelLine(Ed,I);
  End;
- CX:=X1;CY:=Y1;HasSel:=False;Modified:=True;
+ Ed.CX:=X1;Ed.CY:=Y1;Ed.HasSel:=False;Ed.Modified:=True;
 End;
 
-Procedure TEdit.SelAll;
+Procedure EdSelAll(Var Ed: TEdit);
 Begin
- SAX:=0;SAY:=1;CY:=N;CX:=Length(Line(N));HasSel:=True;
+ Ed.SAX:=0;Ed.SAY:=1;Ed.CY:=Ed.N;Ed.CX:=Length(EdLine(Ed,Ed.N));Ed.HasSel:=True;
 End;
 
-Function TEdit.SelText: String;
+Function EdSelText(Var Ed: TEdit): String;
 Var X1,Y1,X2,Y2,I: Integer; S: String;
 Begin
- SelText:='';
- If Not HasSel Then Exit;
- SelOrder(X1,Y1,X2,Y2);
- If Y1=Y2 Then SelText:=Copy(Line(Y1),X1+1,X2-X1)
+ EdSelText:='';
+ If Not Ed.HasSel Then Exit;
+ EdSelOrder(Ed,X1,Y1,X2,Y2);
+ If Y1=Y2 Then EdSelText:=Copy(EdLine(Ed,Y1),X1+1,X2-X1)
  Else Begin
-  S:=Copy(Line(Y1),X1+1,255);
-  For I:=Y1+1 To Y2-1 Do S:=S+'|'+Line(I);
-  S:=S+'|'+Copy(Line(Y2),1,X2);
-  SelText:=S;
+  S:=Copy(EdLine(Ed,Y1),X1+1,255);
+  For I:=Y1+1 To Y2-1 Do S:=S+'|'+EdLine(Ed,I);
+  S:=S+'|'+Copy(EdLine(Ed,Y2),1,X2);
+  EdSelText:=S;
  End;
 End;
 
-Procedure TEdit.CopySel;
+Procedure EdCopySel(Var Ed: TEdit);
 Var X1,Y1,X2,Y2,I: Integer;
 Begin
- If Not HasSel Then Exit;
+ If Not Ed.HasSel Then Exit;
  ClipClear;
- SelOrder(X1,Y1,X2,Y2);
- If Y1=Y2 Then Begin ClipN:=1;ClipL[1]:=NewStr(Copy(Line(Y1),X1+1,X2-X1));End
+ EdSelOrder(Ed,X1,Y1,X2,Y2);
+ If Y1=Y2 Then Begin ClipN:=1;ClipL[1]:=NewStr(Copy(EdLine(Ed,Y1),X1+1,X2-X1));End
  Else Begin
-  ClipN:=1;ClipL[1]:=NewStr(Copy(Line(Y1),X1+1,255));
-  For I:=Y1+1 To Y2-1 Do If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(Line(I));End;
-  If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(Copy(Line(Y2),1,X2));End;
+  ClipN:=1;ClipL[1]:=NewStr(Copy(EdLine(Ed,Y1),X1+1,255));
+  For I:=Y1+1 To Y2-1 Do If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(EdLine(Ed,I));End;
+  If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(Copy(EdLine(Ed,Y2),1,X2));End;
  End;
 End;
 
-Procedure TEdit.InsChar(C: Char);
+Procedure EdInsChar(Var Ed: TEdit; C: Char);
 Var S: String;
 Begin
- If HasSel Then DelSel;
- S:=Line(CY);
+ If Ed.HasSel Then EdDelSel(Ed);
+ S:=EdLine(Ed,Ed.CY);
  If Length(S)>=MAXLEN Then Exit;
- Insert(C,S,CX+1);
- SetLine(CY,S);
- Inc(CX);
- Modified:=True;
+ Insert(C,S,Ed.CX+1);
+ EdSetLine(Ed,Ed.CY,S);
+ Inc(Ed.CX);
+ Ed.Modified:=True;
 End;
 
-Procedure TEdit.InsText(Const S: String);
+Procedure EdInsText(Var Ed: TEdit; Const S: String);
 Var I: Integer;
 Begin
  For I:=1 To Length(S) Do
-  If S[I]='|' Then NewLine Else InsChar(S[I]);
+  If S[I]='|' Then EdNewLine(Ed) Else EdInsChar(Ed,S[I]);
 End;
 
-Procedure TEdit.NewLine;
+Procedure EdNewLine(Var Ed: TEdit);
 Var S,R: String;
 Begin
- If HasSel Then DelSel;
- S:=Line(CY);
- R:=Copy(S,CX+1,255);
- SetLine(CY,Copy(S,1,CX));
- InsLine(CY+1,R);
- Inc(CY);CX:=0;
- Modified:=True;
+ If Ed.HasSel Then EdDelSel(Ed);
+ S:=EdLine(Ed,Ed.CY);
+ R:=Copy(S,Ed.CX+1,255);
+ EdSetLine(Ed,Ed.CY,Copy(S,1,Ed.CX));
+ EdInsLine(Ed,Ed.CY+1,R);
+ Inc(Ed.CY);Ed.CX:=0;
+ Ed.Modified:=True;
 End;
 
-Procedure TEdit.Backspace;
+Procedure EdBackspace(Var Ed: TEdit);
 Var S: String;
 Begin
- If HasSel Then Begin DelSel;Exit;End;
- If CX>0 Then Begin
-  S:=Line(CY);Delete(S,CX,1);SetLine(CY,S);Dec(CX);Modified:=True;
- End Else If CY>1 Then Begin
-  CX:=Length(Line(CY-1));
-  SetLine(CY-1,Line(CY-1)+Line(CY));
-  DelLine(CY);Dec(CY);Modified:=True;
+ If Ed.HasSel Then Begin EdDelSel(Ed);Exit;End;
+ If Ed.CX>0 Then Begin
+  S:=EdLine(Ed,Ed.CY);Delete(S,Ed.CX,1);EdSetLine(Ed,Ed.CY,S);Dec(Ed.CX);Ed.Modified:=True;
+ End Else If Ed.CY>1 Then Begin
+  Ed.CX:=Length(EdLine(Ed,Ed.CY-1));
+  EdSetLine(Ed,Ed.CY-1,EdLine(Ed,Ed.CY-1)+EdLine(Ed,Ed.CY));
+  EdDelLine(Ed,Ed.CY);Dec(Ed.CY);Ed.Modified:=True;
  End;
 End;
 
-Procedure TEdit.DelChar;
+Procedure EdDelChar(Var Ed: TEdit);
 Var S: String;
 Begin
- If HasSel Then Begin DelSel;Exit;End;
- S:=Line(CY);
- If CX<Length(S) Then Begin Delete(S,CX+1,1);SetLine(CY,S);Modified:=True;End
- Else If CY<N Then Begin
-  SetLine(CY,S+Line(CY+1));DelLine(CY+1);Modified:=True;
+ If Ed.HasSel Then Begin EdDelSel(Ed);Exit;End;
+ S:=EdLine(Ed,Ed.CY);
+ If Ed.CX<Length(S) Then Begin Delete(S,Ed.CX+1,1);EdSetLine(Ed,Ed.CY,S);Ed.Modified:=True;End
+ Else If Ed.CY<Ed.N Then Begin
+  EdSetLine(Ed,Ed.CY,S+EdLine(Ed,Ed.CY+1));EdDelLine(Ed,Ed.CY+1);Ed.Modified:=True;
  End;
 End;
 
-Procedure TEdit.GotoXY(X,Y: Integer);
+Procedure EdGotoXY(Var Ed: TEdit; X,Y: Integer);
 Begin
- CY:=Clamp(Y,1,N);
- CX:=Clamp(X,0,Length(Line(CY)));
+ Ed.CY:=Clamp(Y,1,Ed.N);
+ Ed.CX:=Clamp(X,0,Length(EdLine(Ed,Ed.CY)));
 End;
 
-Procedure TEdit.MoveCur(K: Word; Shift: Boolean);
+Procedure EdMoveCur(Var Ed: TEdit; K: Word; Shift: Boolean);
 Begin
- If Shift And Not HasSel Then Begin SAX:=CX;SAY:=CY;HasSel:=True;End;
- If Not Shift Then HasSel:=False;
+ If Shift And Not Ed.HasSel Then Begin Ed.SAX:=Ed.CX;Ed.SAY:=Ed.CY;Ed.HasSel:=True;End;
+ If Not Shift Then Ed.HasSel:=False;
  Case K Of
-  K_LEFT: If CX>0 Then Dec(CX) Else If CY>1 Then Begin Dec(CY);CX:=Length(Line(CY));End;
-  K_RIGHT: If CX<Length(Line(CY)) Then Inc(CX) Else If CY<N Then Begin Inc(CY);CX:=0;End;
-  K_UP: If CY>1 Then Begin Dec(CY);If CX>Length(Line(CY)) Then CX:=Length(Line(CY));End;
-  K_DOWN: If CY<N Then Begin Inc(CY);If CX>Length(Line(CY)) Then CX:=Length(Line(CY));End;
-  K_HOME: CX:=0;
-  K_END: CX:=Length(Line(CY));
-  K_PGUP: Begin CY:=Max2(1,CY-12);If CX>Length(Line(CY)) Then CX:=Length(Line(CY));End;
-  K_PGDN: Begin CY:=Min2(N,CY+12);If CX>Length(Line(CY)) Then CX:=Length(Line(CY));End;
+  K_LEFT: If Ed.CX>0 Then Dec(Ed.CX) Else If Ed.CY>1 Then Begin Dec(Ed.CY);Ed.CX:=Length(EdLine(Ed,Ed.CY));End;
+  K_RIGHT: If Ed.CX<Length(EdLine(Ed,Ed.CY)) Then Inc(Ed.CX) Else If Ed.CY<Ed.N Then Begin Inc(Ed.CY);Ed.CX:=0;End;
+  K_UP: If Ed.CY>1 Then Begin Dec(Ed.CY);If Ed.CX>Length(EdLine(Ed,Ed.CY)) Then Ed.CX:=Length(EdLine(Ed,Ed.CY));End;
+  K_DOWN: If Ed.CY<Ed.N Then Begin Inc(Ed.CY);If Ed.CX>Length(EdLine(Ed,Ed.CY)) Then Ed.CX:=Length(EdLine(Ed,Ed.CY));End;
+  K_HOME: Ed.CX:=0;
+  K_END: Ed.CX:=Length(EdLine(Ed,Ed.CY));
+  K_PGUP: Begin Ed.CY:=Max2(1,Ed.CY-12);If Ed.CX>Length(EdLine(Ed,Ed.CY)) Then Ed.CX:=Length(EdLine(Ed,Ed.CY));End;
+  K_PGDN: Begin Ed.CY:=Min2(Ed.N,Ed.CY+12);If Ed.CX>Length(EdLine(Ed,Ed.CY)) Then Ed.CX:=Length(EdLine(Ed,Ed.CY));End;
  End;
- If HasSel And (SAX=CX) And (SAY=CY) Then HasSel:=False;
+ If Ed.HasSel And (Ed.SAX=Ed.CX) And (Ed.SAY=Ed.CY) Then Ed.HasSel:=False;
 End;
 
-Procedure TEdit.Paste;
+Procedure EdPaste(Var Ed: TEdit);
 Var I: Integer; S: String;
 Begin
  If ClipN=0 Then Exit;
- If HasSel Then DelSel;
+ If Ed.HasSel Then EdDelSel(Ed);
  For I:=1 To ClipN Do Begin
   S:=ClipL[I]^;
-  InsText(S);
-  If I<ClipN Then NewLine;
+  EdInsText(Ed,S);
+  If I<ClipN Then EdNewLine(Ed);
  End;
 End;
 
@@ -5277,7 +5297,7 @@ End;
 
 Type
  PEditWin = ^TEditWin;
- TEditWin = Object(TWindow)
+ TEditWin = Record
   E        : TEdit;
   FName    : String;
   Mode     : Integer;          { 1 Notepad, 2 editeur, 3 GeoWrite }
@@ -5290,167 +5310,187 @@ Type
   VGrab    : LongInt;
   CursorOn : Boolean;
   Blink    : Integer;
-  Constructor Init(AMode,AX,AY: Integer; Const AFile: String);
-  Destructor Done; Virtual;
-  Procedure Build;
-  Procedure TextRect(Var X1,Y1,X2,Y2: Integer);
-  Procedure CellSize(Var CW,CH: Integer);
-  Procedure UpdateTitle;
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var Ev: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
-  Function  Idle: Boolean; Virtual;
-  Function  CanClose: Boolean; Virtual;
-  Function  LineOfs(I: Integer; CW,TW: Integer): Integer;
-  Procedure Reveal;
-  Procedure DoOpen;
-  Function  DoSave(AsNew: Boolean): Boolean;
-  Procedure DoFind(Again: Boolean);
-  Procedure DoPrint;
  End;
 
-Constructor TEditWin.Init(AMode,AX,AY: Integer; Const AFile: String);
+Function EdwNew(AMode,AX,AY: Integer; Const AFile: String): PWindow; Forward;
+Procedure EdwDone(Wd_: PWindow); Forward;
+Procedure EdwBuild(Wd_: PWindow); Forward;
+Procedure EdwUpdateTitle(Wd_: PWindow); Forward;
+Procedure EdwCellSize(Wd_: PWindow; Var CW,CH: Integer); Forward;
+Procedure EdwTextRect(Wd_: PWindow; Var X1,Y1,X2,Y2: Integer); Forward;
+Function EdwLineOfs(Wd_: PWindow; I: Integer; CW,TW: Integer): Integer; Forward;
+Procedure EdwReveal(Wd_: PWindow); Forward;
+Procedure EdwDrawClient(Wd_: PWindow); Forward;
+Function EdwIdle(Wd_: PWindow): Boolean; Forward;
+Procedure EdwPrepareMenus(Wd_: PWindow); Forward;
+Function EdwCanClose(Wd_: PWindow): Boolean; Forward;
+Procedure EdwDoOpen(Wd_: PWindow); Forward;
+Function EdwDoSave(Wd_: PWindow; AsNew: Boolean): Boolean; Forward;
+Procedure EdwDoFind(Wd_: PWindow; Again: Boolean); Forward;
+Procedure EdwDoPrint(Wd_: PWindow); Forward;
+Procedure EdwOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+Procedure EdwOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure EdwOnMouse(Wd_: PWindow; Var Ev: TEvent); Forward;
+
+Function EdwNew(AMode,AX,AY: Integer; Const AFile: String): PWindow;
+ Var Wd_: PWindow; Dt_: PEditWin;
 Var T: String;
 Begin
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
  Case AMode Of
-  1: TWindow.Init(A_NOTEPAD,AX,AY,420,320,'Notepad');
-  2: TWindow.Init(A_TEXTED,AX,AY,520,340,'Text File Editor');
-  Else TWindow.Init(A_WRITE,AX,AY,560,380,'GeoWrite');
+  1: WinInit(Wd_,A_NOTEPAD,AX,AY,420,320,'Notepad');
+  2: WinInit(Wd_,A_TEXTED,AX,AY,520,340,'Text File Editor');
+  Else WinInit(Wd_,A_WRITE,AX,AY,560,380,'GeoWrite');
  End;
- Mode:=AMode;
+ Dt_^.Mode:=AMode;
  Case AMode Of
-  1: IconId:=IC_NOTE;
-  2: IconId:=IC_NOTE;
- Else IconId:=IC_WRITE;
+  1: Wd_^.IconId:=IC_NOTE;
+  2: Wd_^.IconId:=IC_NOTE;
+ Else Wd_^.IconId:=IC_WRITE;
  End;
- E.Init;
- FName:='';Scale:=1;Bold:=False;Ital:=False;Und:=False;RulerOn:=True;
- LastFind:='';Selecting:=False;VScrDrag:=False;CursorOn:=True;Blink:=0;
- MinW:=220;MinH:=140;
- Build;
+ EdInit(Dt_^.E);
+ Dt_^.FName:='';Dt_^.Scale:=1;Dt_^.Bold:=False;Dt_^.Ital:=False;Dt_^.Und:=False;Dt_^.RulerOn:=True;
+ Dt_^.LastFind:='';Dt_^.Selecting:=False;Dt_^.VScrDrag:=False;Dt_^.CursorOn:=True;Dt_^.Blink:=0;
+ Wd_^.MinW:=220;Wd_^.MinH:=140;
+ EdwBuild(Wd_);
  If AFile<>'' Then Begin
-  If E.Load(AFile) Then FName:=AFile
+  If EdLoad(Dt_^.E,AFile) Then Dt_^.FName:=AFile
   Else Info(T3('Error','Erreur','Fehler'),T3('Cannot open|','Impossible d''ouvrir|','Kann nicht '#148'ffnen|')+AFile);
  End;
- UpdateTitle;
+ EdwUpdateTitle(Wd_);
+ EdwNew:=Wd_;
 End;
 
-Destructor TEditWin.Done;
+Procedure EdwDone(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Begin
- E.Free;
+ Dt_:=Wd_^.Data;
+ EdFree(Dt_^.E);
 End;
 
-Procedure TEditWin.Build;
+Procedure EdwBuild(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Begin
- NMenu:=0;
- AddMenu('File~Fichier~Datei');
- AddItem('New~Nouveau~Neu',CM_NEW,'Ctrl+N');
- AddItem('Open...~Ouvrir...~'#142'ffnen...',CM_OPENF,'Ctrl+O');
- AddItem('Save~Enregistrer~Speichern',CM_SAVE,'Ctrl+S');
- AddItem('Save As...~Enregistrer sous...~Speichern unter...',CM_SAVEAS,'');
- AddSep;
- AddItem('Print~Imprimer~Drucken',CM_PRINT,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Edit~'#144'dition~Bearbeiten');
- AddItem('Cut~Couper~Ausschneiden',CM_CUT,'Ctrl+X');
- AddItem('Copy~Copier~Kopieren',CM_COPY,'Ctrl+C');
- AddItem('Paste~Coller~Einf'#129'gen',CM_PASTE,'Ctrl+V');
- AddItem('Select All~Tout s'#130'lectionner~Alles ausw'#132'hlen',CM_SELALL2,'Ctrl+A');
- AddSep;
- AddItem('Find...~Rechercher...~Suchen...',CM_FIND,'Ctrl+F');
- AddItem('Find Next~Suivant~Weitersuchen',CM_FINDNEXT,'F3');
- AddItem('Insert Date~Ins'#130'rer la date~Datum einf'#129'gen',CM_DATE,'');
- If Mode=3 Then Begin
-  AddMenu('View~Affichage~Ansicht');
-  AddItem('Ruler~R'#138'gle~Lineal',CM_RULER,'');
-  AddMenu('Paragraph~Paragraphe~Absatz');
-  AddItem('Left~'#133' gauche~Linksb'#129'ndig',CM_AL_L,'');
-  AddItem('Center~Centr'#130'~Zentriert',CM_AL_C,'');
-  AddItem('Right~'#133' droite~Rechtsb'#129'ndig',CM_AL_R,'');
-  AddItem('Justify~Justifi'#130'~Blocksatz',CM_AL_J,'');
-  AddMenu('Fonts~Polices~Schriften');
-  AddItem('URW Roman',CM_FONT,'');
-  AddItem('URW Sans',CM_FONT,'');
-  AddItem('URW Mono',CM_FONT,'');
-  AddItem('Berkeley',CM_FONT,'');
-  AddItem('Century',CM_FONT,'');
-  AddMenu('Sizes~Tailles~Gr'#148#225'en');
-  AddItem('8 pt',CM_SZ8,'');
-  AddItem('12 pt',CM_SZ12,'');
-  AddItem('18 pt',CM_SZ18,'');
-  AddItem('24 pt',CM_SZ24,'');
-  AddMenu('Styles~Styles~Stile');
-  AddItem('Bold~Gras~Fett',CM_BOLD,'Ctrl+B');
-  AddItem('Italic~Italique~Kursiv',CM_ITAL,'Ctrl+I');
-  AddItem('Underline~Soulign'#130'~Unterstrichen',CM_UNDER,'Ctrl+U');
+ Dt_:=Wd_^.Data;
+ Wd_^.NMenu:=0;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'New~Nouveau~Neu',CM_NEW,'Ctrl+N');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_OPENF,'Ctrl+O');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_SAVE,'Ctrl+S');
+ WinAddItem(Wd_,'Save As...~Enregistrer sous...~Speichern unter...',CM_SAVEAS,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Print~Imprimer~Drucken',CM_PRINT,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Cut~Couper~Ausschneiden',CM_CUT,'Ctrl+X');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_COPY,'Ctrl+C');
+ WinAddItem(Wd_,'Paste~Coller~Einf'#129'gen',CM_PASTE,'Ctrl+V');
+ WinAddItem(Wd_,'Select All~Tout s'#130'lectionner~Alles ausw'#132'hlen',CM_SELALL2,'Ctrl+A');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Find...~Rechercher...~Suchen...',CM_FIND,'Ctrl+F');
+ WinAddItem(Wd_,'Find Next~Suivant~Weitersuchen',CM_FINDNEXT,'F3');
+ WinAddItem(Wd_,'Insert Date~Ins'#130'rer la date~Datum einf'#129'gen',CM_DATE,'');
+ If Dt_^.Mode=3 Then Begin
+  WinAddMenu(Wd_,'View~Affichage~Ansicht');
+  WinAddItem(Wd_,'Ruler~R'#138'gle~Lineal',CM_RULER,'');
+  WinAddMenu(Wd_,'Paragraph~Paragraphe~Absatz');
+  WinAddItem(Wd_,'Left~'#133' gauche~Linksb'#129'ndig',CM_AL_L,'');
+  WinAddItem(Wd_,'Center~Centr'#130'~Zentriert',CM_AL_C,'');
+  WinAddItem(Wd_,'Right~'#133' droite~Rechtsb'#129'ndig',CM_AL_R,'');
+  WinAddItem(Wd_,'Justify~Justifi'#130'~Blocksatz',CM_AL_J,'');
+  WinAddMenu(Wd_,'Fonts~Polices~Schriften');
+  WinAddItem(Wd_,'URW Roman',CM_FONT,'');
+  WinAddItem(Wd_,'URW Sans',CM_FONT,'');
+  WinAddItem(Wd_,'URW Mono',CM_FONT,'');
+  WinAddItem(Wd_,'Berkeley',CM_FONT,'');
+  WinAddItem(Wd_,'Century',CM_FONT,'');
+  WinAddMenu(Wd_,'Sizes~Tailles~Gr'#148#225'en');
+  WinAddItem(Wd_,'8 pt',CM_SZ8,'');
+  WinAddItem(Wd_,'12 pt',CM_SZ12,'');
+  WinAddItem(Wd_,'18 pt',CM_SZ18,'');
+  WinAddItem(Wd_,'24 pt',CM_SZ24,'');
+  WinAddMenu(Wd_,'Styles~Styles~Stile');
+  WinAddItem(Wd_,'Bold~Gras~Fett',CM_BOLD,'Ctrl+B');
+  WinAddItem(Wd_,'Italic~Italique~Kursiv',CM_ITAL,'Ctrl+I');
+  WinAddItem(Wd_,'Underline~Soulign'#130'~Unterstrichen',CM_UNDER,'Ctrl+U');
  End;
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- AddItem('Next Window~Fen'#136'tre suivante~N'#132'chstes Fenster',CM_NEXTWIN,'F6');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ WinAddItem(Wd_,'Next Window~Fen'#136'tre suivante~N'#132'chstes Fenster',CM_NEXTWIN,'F6');
 End;
 
-Procedure TEditWin.UpdateTitle;
+Procedure EdwUpdateTitle(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Var N: String;
 Begin
- If FName='' Then N:=T3('Untitled','Sans titre','Unbenannt') Else N:=ShortName(FName);
- Case Mode Of
-  1: Title:='Notepad - '+N;
-  2: Title:=T3('Text File Editor','Editeur de texte','Texteditor')+' - '+N;
- Else Title:='GeoWrite - '+N+' - '+T3('Page 1','Page 1','Seite 1');
+ Dt_:=Wd_^.Data;
+ If Dt_^.FName='' Then N:=T3('Untitled','Sans titre','Unbenannt') Else N:=ShortName(Dt_^.FName);
+ Case Dt_^.Mode Of
+  1: Wd_^.Title:='Notepad - '+N;
+  2: Wd_^.Title:=T3('Text File Editor','Editeur de texte','Texteditor')+' - '+N;
+ Else Wd_^.Title:='GeoWrite - '+N+' - '+T3('Page 1','Page 1','Seite 1');
  End;
- If E.Modified Then Title:=Title+' *';
+ If Dt_^.E.Modified Then Wd_^.Title:=Wd_^.Title+' *';
 End;
 
-Procedure TEditWin.CellSize(Var CW,CH: Integer);
+Procedure EdwCellSize(Wd_: PWindow; Var CW,CH: Integer);
+ Var Dt_: PEditWin;
 Begin
- CW:=8*Scale;CH:=8*Scale+3;
+ Dt_:=Wd_^.Data;
+ CW:=8*Dt_^.Scale;CH:=8*Dt_^.Scale+3;
 End;
 
-Procedure TEditWin.TextRect(Var X1,Y1,X2,Y2: Integer);
+Procedure EdwTextRect(Wd_: PWindow; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PEditWin;
 Begin
- ClientRect(X1,Y1,X2,Y2);
- If (Mode=3) And RulerOn Then Inc(Y1,24);
- If Mode=1 Then Begin Inc(X1,6);Inc(Y1,6);End;
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ If (Dt_^.Mode=3) And Dt_^.RulerOn Then Inc(Y1,24);
+ If Dt_^.Mode=1 Then Begin Inc(X1,6);Inc(Y1,6);End;
  Dec(X2,SB);
 End;
 
-Function TEditWin.LineOfs(I: Integer; CW,TW: Integer): Integer;
+Function EdwLineOfs(Wd_: PWindow; I: Integer; CW,TW: Integer): Integer;
+ Var Dt_: PEditWin;
 Var Ln: Integer;
 Begin
- LineOfs:=0;
- If Mode<>3 Then Exit;
- Ln:=Length(E.Line(I))*CW;
- Case E.Al[I] Of
-  1: LineOfs:=Max2(0,(TW-Ln) Div 2-E.LeftC*CW);
-  2: LineOfs:=Max2(0,TW-Ln-E.LeftC*CW);
+ Dt_:=Wd_^.Data;
+ EdwLineOfs:=0;
+ If Dt_^.Mode<>3 Then Exit;
+ Ln:=Length(EdLine(Dt_^.E,I))*CW;
+ Case Dt_^.E.Al[I] Of
+  1: EdwLineOfs:=Max2(0,(TW-Ln) Div 2-Dt_^.E.LeftC*CW);
+  2: EdwLineOfs:=Max2(0,TW-Ln-Dt_^.E.LeftC*CW);
  End;
 End;
 
-Procedure TEditWin.Reveal;
+Procedure EdwReveal(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Var X1,Y1,X2,Y2,CW,CH,VR,VC: Integer;
 Begin
- TextRect(X1,Y1,X2,Y2);
- CellSize(CW,CH);
+ Dt_:=Wd_^.Data;
+ EdwTextRect(Wd_,X1,Y1,X2,Y2);
+ EdwCellSize(Wd_,CW,CH);
  VR:=(Y2-Y1+1) Div CH;VC:=(X2-X1+1) Div CW;
  If VR<1 Then VR:=1;
  If VC<1 Then VC:=1;
- If E.CY<E.TopL Then E.TopL:=E.CY;
- If E.CY>=E.TopL+VR Then E.TopL:=E.CY-VR+1;
- If E.CX<E.LeftC Then E.LeftC:=E.CX;
- If E.CX>=E.LeftC+VC Then E.LeftC:=E.CX-VC+1;
+ If Dt_^.E.CY<Dt_^.E.TopL Then Dt_^.E.TopL:=Dt_^.E.CY;
+ If Dt_^.E.CY>=Dt_^.E.TopL+VR Then Dt_^.E.TopL:=Dt_^.E.CY-VR+1;
+ If Dt_^.E.CX<Dt_^.E.LeftC Then Dt_^.E.LeftC:=Dt_^.E.CX;
+ If Dt_^.E.CX>=Dt_^.E.LeftC+VC Then Dt_^.E.LeftC:=Dt_^.E.CX-VC+1;
 End;
 
-Procedure TEditWin.DrawClient;
+Procedure EdwDrawClient(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Var X1,Y1,X2,Y2,CW,CH,VR,VC,I,Y,X,TW,Of_,SX1,SX2,A,B: Integer; S,T: String;
     HX1,HY1,HX2,HY2: Integer; Fg: Integer; CX_: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
- If (Mode=3) And RulerOn Then Begin
+ If (Dt_^.Mode=3) And Dt_^.RulerOn Then Begin
   { regle }
   GBar(X1,Y1,X2,Y1+23,cLGr);
   GHLine(X1,X2,Y1+23,cDGr);
@@ -5464,181 +5504,195 @@ Begin
   End;
   GText(X1+8,Y1+15,'<'+T3('Page 1','Page 1','Seite 1')+'>  '+#24+' '+#24+' '+#24,cBlk);
  End;
- TextRect(HX1,HY1,HX2,HY2);
- If Mode=1 Then Begin
+ EdwTextRect(Wd_,HX1,HY1,HX2,HY2);
+ If Dt_^.Mode=1 Then Begin
   GBar(X1,HY1-6,X2,Y2,cYel);
  End;
- If Mode=3 Then Begin
+ If Dt_^.Mode=3 Then Begin
   Sunken(HX1-1,HY1-1,HX2+1,HY2+1,cWht);
- End Else If Mode=2 Then Sunken(X1,Y1,X2,Y2,cWht)
+ End Else If Dt_^.Mode=2 Then Sunken(X1,Y1,X2,Y2,cWht)
  Else GBar(HX1-6,HY1-6,HX2+SB,Y2,cYel);
- CellSize(CW,CH);
- If Mode=2 Then Begin HX1:=X1+3;HY1:=Y1+3;HX2:=X2-SB-1;HY2:=Y2-3;End;
- If Mode=3 Then Begin Inc(HX1,2);Inc(HY1,2);End;
+ EdwCellSize(Wd_,CW,CH);
+ If Dt_^.Mode=2 Then Begin HX1:=X1+3;HY1:=Y1+3;HX2:=X2-SB-1;HY2:=Y2-3;End;
+ If Dt_^.Mode=3 Then Begin Inc(HX1,2);Inc(HY1,2);End;
  VR:=(HY2-HY1+1) Div CH;VC:=(HX2-HX1+1) Div CW;
  If VR<1 Then VR:=1;
  If VC<1 Then VC:=1;
  TW:=VC*CW;
- For I:=E.TopL To E.TopL+VR-1 Do Begin
-  If I>E.N Then Begin
-   If Mode=1 Then GHLine(HX1,HX2,HY1+(I-E.TopL)*CH+CH-1,cLBl);
+ For I:=Dt_^.E.TopL To Dt_^.E.TopL+VR-1 Do Begin
+  If I>Dt_^.E.N Then Begin
+   If Dt_^.Mode=1 Then GHLine(HX1,HX2,HY1+(I-Dt_^.E.TopL)*CH+CH-1,cLBl);
   End Else Begin
-   Y:=HY1+(I-E.TopL)*CH;
-   If Mode=1 Then GHLine(HX1,HX2,Y+CH-1,cLBl);
-   S:=Copy(E.Line(I),E.LeftC+1,VC);
-   X:=HX1+LineOfs(I,CW,TW);
+   Y:=HY1+(I-Dt_^.E.TopL)*CH;
+   If Dt_^.Mode=1 Then GHLine(HX1,HX2,Y+CH-1,cLBl);
+   S:=Copy(EdLine(Dt_^.E,I),Dt_^.E.LeftC+1,VC);
+   X:=HX1+EdwLineOfs(Wd_,I,CW,TW);
    { selection }
-   If E.HasSel Then Begin
-    E.SelOrder(A,B,SX1,SX2);
+   If Dt_^.E.HasSel Then Begin
+    EdSelOrder(Dt_^.E,A,B,SX1,SX2);
     { A,B = debut (col,ligne) ; SX1,SX2 = fin (col,ligne) }
     If (I>=B) And (I<=SX2) Then Begin
      HX1:=HX1;
      If I=B Then CX_:=A Else CX_:=0;
-     If I=SX2 Then Of_:=SX1 Else Of_:=Length(E.Line(I))+1;
-     CX_:=Max2(CX_,E.LeftC);Of_:=Min2(Of_,E.LeftC+VC);
-     If Of_>CX_ Then GBar(X+(CX_-E.LeftC)*CW,Y,X+(Of_-E.LeftC)*CW-1,Y+CH-1,cBlk);
+     If I=SX2 Then Of_:=SX1 Else Of_:=Length(EdLine(Dt_^.E,I))+1;
+     CX_:=Max2(CX_,Dt_^.E.LeftC);Of_:=Min2(Of_,Dt_^.E.LeftC+VC);
+     If Of_>CX_ Then GBar(X+(CX_-Dt_^.E.LeftC)*CW,Y,X+(Of_-Dt_^.E.LeftC)*CW-1,Y+CH-1,cBlk);
     End;
    End;
-   If Mode=1 Then Fg:=cBlu Else Fg:=cBlk;
-   If Scale=1 Then Begin
+   If Dt_^.Mode=1 Then Fg:=cBlu Else Fg:=cBlk;
+   If Dt_^.Scale=1 Then Begin
     GText(X,Y+1,S,Fg);
-    If Bold Then GText(X+1,Y+1,S,Fg);
+    If Dt_^.Bold Then GText(X+1,Y+1,S,Fg);
    End Else Begin
-    GTextBig(X,Y+1,S,Scale,Fg);
-    If Bold Then GTextBig(X+1,Y+1,S,Scale,Fg);
+    GTextBig(X,Y+1,S,Dt_^.Scale,Fg);
+    If Dt_^.Bold Then GTextBig(X+1,Y+1,S,Dt_^.Scale,Fg);
    End;
-   If Und Then GHLine(X,X+Length(S)*CW-1,Y+CH-2,Fg);
-   If E.HasSel Then Begin
+   If Dt_^.Und Then GHLine(X,X+Length(S)*CW-1,Y+CH-2,Fg);
+   If Dt_^.E.HasSel Then Begin
     { relecture en blanc de la partie selectionnee }
-    E.SelOrder(A,B,SX1,SX2);
+    EdSelOrder(Dt_^.E,A,B,SX1,SX2);
     If (I>=B) And (I<=SX2) Then Begin
      If I=B Then CX_:=A Else CX_:=0;
-     If I=SX2 Then Of_:=SX1 Else Of_:=Length(E.Line(I));
-     CX_:=Max2(CX_,E.LeftC);Of_:=Min2(Of_,E.LeftC+VC);
+     If I=SX2 Then Of_:=SX1 Else Of_:=Length(EdLine(Dt_^.E,I));
+     CX_:=Max2(CX_,Dt_^.E.LeftC);Of_:=Min2(Of_,Dt_^.E.LeftC+VC);
      If Of_>CX_ Then Begin
-      T:=Copy(E.Line(I),CX_+1,Of_-CX_);
-      If Scale=1 Then GText(X+(CX_-E.LeftC)*CW,Y+1,T,cWht)
-      Else GTextBig(X+(CX_-E.LeftC)*CW,Y+1,T,Scale,cWht);
+      T:=Copy(EdLine(Dt_^.E,I),CX_+1,Of_-CX_);
+      If Dt_^.Scale=1 Then GText(X+(CX_-Dt_^.E.LeftC)*CW,Y+1,T,cWht)
+      Else GTextBig(X+(CX_-Dt_^.E.LeftC)*CW,Y+1,T,Dt_^.Scale,cWht);
      End;
     End;
    End;
   End;
  End;
  { curseur }
- If CursorOn And (TopWin=@Self) Then Begin
-  If (E.CY>=E.TopL) And (E.CY<E.TopL+VR) And (E.CX>=E.LeftC) And (E.CX<=E.LeftC+VC) Then Begin
-   X:=HX1+LineOfs(E.CY,CW,TW)+(E.CX-E.LeftC)*CW;
-   Y:=HY1+(E.CY-E.TopL)*CH;
+ If Dt_^.CursorOn And (TopWin=Wd_) Then Begin
+  If (Dt_^.E.CY>=Dt_^.E.TopL) And (Dt_^.E.CY<Dt_^.E.TopL+VR) And (Dt_^.E.CX>=Dt_^.E.LeftC) And (Dt_^.E.CX<=Dt_^.E.LeftC+VC) Then Begin
+   X:=HX1+EdwLineOfs(Wd_,Dt_^.E.CY,CW,TW)+(Dt_^.E.CX-Dt_^.E.LeftC)*CW;
+   Y:=HY1+(Dt_^.E.CY-Dt_^.E.TopL)*CH;
    GVLine(X,Y,Y+CH-2,cBlk);
    GVLine(X+1,Y,Y+CH-2,cBlk);
   End;
  End;
  { barres de defilement }
- If Mode=2 Then DrawScroll(True,X2-SB+1,Y1,X2,Y2,E.N+VR-1,VR,E.TopL-1)
+ If Dt_^.Mode=2 Then DrawScroll(True,X2-SB+1,Y1,X2,Y2,Dt_^.E.N+VR-1,VR,Dt_^.E.TopL-1)
  Else Begin
-  If Mode=3 Then DrawScroll(True,X2-SB+1,HY1-3,X2,Y2,E.N+VR-1,VR,E.TopL-1)
-  Else DrawScroll(True,X2-SB+1,HY1-6,X2,Y2,E.N+VR-1,VR,E.TopL-1);
+  If Dt_^.Mode=3 Then DrawScroll(True,X2-SB+1,HY1-3,X2,Y2,Dt_^.E.N+VR-1,VR,Dt_^.E.TopL-1)
+  Else DrawScroll(True,X2-SB+1,HY1-6,X2,Y2,Dt_^.E.N+VR-1,VR,Dt_^.E.TopL-1);
  End;
 End;
 
-Function TEditWin.Idle: Boolean;
+Function EdwIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PEditWin;
 Begin
- Inc(Blink);
- If Blink>=5 Then Begin
-  Blink:=0;CursorOn:=Not CursorOn;
-  Idle:=TopWin=@Self;
- End Else Idle:=False;
+ Dt_:=Wd_^.Data;
+ Inc(Dt_^.Blink);
+ If Dt_^.Blink>=5 Then Begin
+  Dt_^.Blink:=0;Dt_^.CursorOn:=Not Dt_^.CursorOn;
+  EdwIdle:=TopWin=Wd_;
+ End Else EdwIdle:=False;
 End;
 
-Procedure TEditWin.PrepareMenus;
+Procedure EdwPrepareMenus(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Begin
- SetFlag(CM_CUT,1,Not E.HasSel);
- SetFlag(CM_COPY,1,Not E.HasSel);
- SetFlag(CM_PASTE,1,ClipN=0);
- SetFlag(CM_RULER,2,RulerOn);
- SetFlag(CM_BOLD,2,Bold);SetFlag(CM_ITAL,2,Ital);SetFlag(CM_UNDER,2,Und);
- SetFlag(CM_SZ8,2,Scale=1);SetFlag(CM_SZ12,2,Scale=1);
- SetFlag(CM_SZ18,2,Scale=2);SetFlag(CM_SZ24,2,Scale=3);
- SetFlag(CM_AL_L,2,E.Al[E.CY]=0);SetFlag(CM_AL_C,2,E.Al[E.CY]=1);
- SetFlag(CM_AL_R,2,E.Al[E.CY]=2);SetFlag(CM_AL_J,2,E.Al[E.CY]=3);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_CUT,1,Not Dt_^.E.HasSel);
+ WinSetFlag(Wd_,CM_COPY,1,Not Dt_^.E.HasSel);
+ WinSetFlag(Wd_,CM_PASTE,1,ClipN=0);
+ WinSetFlag(Wd_,CM_RULER,2,Dt_^.RulerOn);
+ WinSetFlag(Wd_,CM_BOLD,2,Dt_^.Bold);WinSetFlag(Wd_,CM_ITAL,2,Dt_^.Ital);WinSetFlag(Wd_,CM_UNDER,2,Dt_^.Und);
+ WinSetFlag(Wd_,CM_SZ8,2,Dt_^.Scale=1);WinSetFlag(Wd_,CM_SZ12,2,Dt_^.Scale=1);
+ WinSetFlag(Wd_,CM_SZ18,2,Dt_^.Scale=2);WinSetFlag(Wd_,CM_SZ24,2,Dt_^.Scale=3);
+ WinSetFlag(Wd_,CM_AL_L,2,Dt_^.E.Al[Dt_^.E.CY]=0);WinSetFlag(Wd_,CM_AL_C,2,Dt_^.E.Al[Dt_^.E.CY]=1);
+ WinSetFlag(Wd_,CM_AL_R,2,Dt_^.E.Al[Dt_^.E.CY]=2);WinSetFlag(Wd_,CM_AL_J,2,Dt_^.E.Al[Dt_^.E.CY]=3);
 End;
 
-Function TEditWin.CanClose: Boolean;
+Function EdwCanClose(Wd_: PWindow): Boolean;
+ Var Dt_: PEditWin;
 Var R: Integer;
 Begin
- CanClose:=True;
- If E.Modified Then Begin
+ Dt_:=Wd_^.Data;
+ EdwCanClose:=True;
+ If Dt_^.E.Modified Then Begin
   R:=MsgBox(T3('Close','Fermer','Schlie'#225'en'),
      T3('Save changes to|','Enregistrer les modifications de|',''#142'nderungen speichern f'#129'r|')+
-     ShortName(FName)+'?',T3('Yes|No|Cancel','Oui|Non|Annuler','Ja|Nein|Abbruch'),2);
-  If R=3 Then CanClose:=False
-  Else If R=1 Then CanClose:=DoSave(False);
+     ShortName(Dt_^.FName)+'?',T3('Yes|No|Cancel','Oui|Non|Annuler','Ja|Nein|Abbruch'),2);
+  If R=3 Then EdwCanClose:=False
+  Else If R=1 Then EdwCanClose:=EdwDoSave(Wd_,False);
  End;
 End;
 
-Procedure TEditWin.DoOpen;
+Procedure EdwDoOpen(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Var P: String;
 Begin
- If E.Modified Then If Not CanClose Then Exit;
+ Dt_:=Wd_^.Data;
+ If Dt_^.E.Modified Then If Not EdwCanClose(Wd_) Then Exit;
  P:=CurDirStr;
  If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.*',P,False) Then Begin
-  If E.Load(P) Then Begin FName:=P;UpdateTitle;End
+  If EdLoad(Dt_^.E,P) Then Begin Dt_^.FName:=P;EdwUpdateTitle(Wd_);End
   Else Info(T3('Error','Erreur','Fehler'),T3('Cannot open file.','Impossible d''ouvrir le fichier.','Datei nicht ladbar.'));
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Function TEditWin.DoSave(AsNew: Boolean): Boolean;
+Function EdwDoSave(Wd_: PWindow; AsNew: Boolean): Boolean;
+ Var Dt_: PEditWin;
 Var P: String;
 Begin
- DoSave:=False;
- P:=FName;
+ Dt_:=Wd_^.Data;
+ EdwDoSave:=False;
+ P:=Dt_^.FName;
  If AsNew Or (P='') Then Begin
   If P='' Then P:=JoinPath(CurDirStr,'UNTITLED.TXT');
   If Not FileDlg(T3('Save As','Enregistrer sous','Speichern unter'),'*.*',P,True) Then Exit;
  End;
- If E.Save(P) Then Begin FName:=P;DoSave:=True;UpdateTitle;End
+ If EdSave(Dt_^.E,P) Then Begin Dt_^.FName:=P;EdwDoSave:=True;EdwUpdateTitle(Wd_);End
  Else Info(T3('Error','Erreur','Fehler'),T3('Cannot save file.','Impossible d''enregistrer.','Datei nicht speicherbar.'));
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Procedure TEditWin.DoFind(Again: Boolean);
+Procedure EdwDoFind(Wd_: PWindow; Again: Boolean);
+ Var Dt_: PEditWin;
 Var I,P: Integer; S: String; Fnd: Boolean;
 Begin
- If (Not Again) Or (LastFind='') Then Begin
-  S:=LastFind;
+ Dt_:=Wd_^.Data;
+ If (Not Again) Or (Dt_^.LastFind='') Then Begin
+  S:=Dt_^.LastFind;
   If Not InputBox(T3('Find','Rechercher','Suchen'),T3('Find what:','Rechercher :','Suchen nach:'),S,60) Then Exit;
-  LastFind:=S;
+  Dt_^.LastFind:=S;
  End;
- If LastFind='' Then Exit;
+ If Dt_^.LastFind='' Then Exit;
  Fnd:=False;
- I:=E.CY;
- While (I<=E.N) And Not Fnd Do Begin
-  S:=E.Line(I);
-  If I=E.CY Then Begin
-   P:=Pos(Upper(LastFind),Upper(Copy(S,E.CX+2,255)));
-   If P>0 Then P:=P+E.CX+1;
-  End Else P:=Pos(Upper(LastFind),Upper(S));
+ I:=Dt_^.E.CY;
+ While (I<=Dt_^.E.N) And Not Fnd Do Begin
+  S:=EdLine(Dt_^.E,I);
+  If I=Dt_^.E.CY Then Begin
+   P:=Pos(Upper(Dt_^.LastFind),Upper(Copy(S,Dt_^.E.CX+2,255)));
+   If P>0 Then P:=P+Dt_^.E.CX+1;
+  End Else P:=Pos(Upper(Dt_^.LastFind),Upper(S));
   If P>0 Then Begin
-   E.SAX:=P-1;E.SAY:=I;E.CX:=P-1+Length(LastFind);E.CY:=I;E.HasSel:=True;
+   Dt_^.E.SAX:=P-1;Dt_^.E.SAY:=I;Dt_^.E.CX:=P-1+Length(Dt_^.LastFind);Dt_^.E.CY:=I;Dt_^.E.HasSel:=True;
    Fnd:=True;
   End;
   Inc(I);
  End;
  If Not Fnd Then Info(T3('Find','Rechercher','Suchen'),T3('Text not found.','Texte introuvable.','Text nicht gefunden.'))
- Else Reveal;
- Invalidate(@Self);
+ Else EdwReveal(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TEditWin.DoPrint;
+Procedure EdwDoPrint(Wd_: PWindow);
+ Var Dt_: PEditWin;
 Var F: Text; I: Integer; Ok: Boolean;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,'PRN');
  Rewrite(F);
  Ok:=IOResult=0;
  If Ok Then Begin
-  For I:=1 To E.N Do WriteLn(F,E.Line(I));
+  For I:=1 To Dt_^.E.N Do WriteLn(F,EdLine(Dt_^.E,I));
   Close(F);
  End;
  {$I+}
@@ -5646,125 +5700,131 @@ Begin
  If Not Ok Then Info(T3('Print','Imprimer','Drucken'),T3('No printer available.','Aucune imprimante disponible.','Kein Drucker verf'#129'gbar.'));
 End;
 
-Procedure TEditWin.OnCommand(Cmd: Integer);
+Procedure EdwOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PEditWin;
 Var D: Word; Y,M,Dd,W: Word; I: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_NEW: Begin If Not CanClose Then Exit;E.Clear;FName:='';UpdateTitle;Invalidate(@Self);End;
-  CM_OPENF: DoOpen;
-  CM_SAVE: D:=Ord(DoSave(False));
-  CM_SAVEAS: D:=Ord(DoSave(True));
-  CM_PRINT: DoPrint;
-  CM_CUT: If E.HasSel Then Begin E.CopySel;E.DelSel;Invalidate(@Self);End;
-  CM_COPY: E.CopySel;
-  CM_PASTE: Begin E.Paste;Reveal;Invalidate(@Self);End;
-  CM_SELALL2: Begin E.SelAll;Invalidate(@Self);End;
-  CM_FIND: DoFind(False);
-  CM_FINDNEXT: DoFind(True);
-  CM_DATE: Begin GetDate(Y,M,Dd,W);E.InsText(ShortDateStr(Y,M,Dd));Reveal;Invalidate(@Self);End;
-  CM_AL_L: Begin E.Al[E.CY]:=0;Invalidate(@Self);End;
-  CM_AL_C: Begin E.Al[E.CY]:=1;Invalidate(@Self);End;
-  CM_AL_R: Begin E.Al[E.CY]:=2;Invalidate(@Self);End;
-  CM_AL_J: Begin E.Al[E.CY]:=3;Invalidate(@Self);End;
-  CM_SZ8,CM_SZ12: Begin Scale:=1;Invalidate(@Self);End;
-  CM_SZ18: Begin Scale:=2;Invalidate(@Self);End;
-  CM_SZ24: Begin Scale:=3;Invalidate(@Self);End;
-  CM_BOLD: Begin Bold:=Not Bold;Invalidate(@Self);End;
-  CM_ITAL: Begin Ital:=Not Ital;Invalidate(@Self);End;
-  CM_UNDER: Begin Und:=Not Und;Invalidate(@Self);End;
-  CM_RULER: Begin RulerOn:=Not RulerOn;Invalidate(@Self);End;
+  CM_NEW: Begin If Not EdwCanClose(Wd_) Then Exit;EdClear(Dt_^.E);Dt_^.FName:='';EdwUpdateTitle(Wd_);Invalidate(Wd_);End;
+  CM_OPENF: EdwDoOpen(Wd_);
+  CM_SAVE: D:=Ord(EdwDoSave(Wd_,False));
+  CM_SAVEAS: D:=Ord(EdwDoSave(Wd_,True));
+  CM_PRINT: EdwDoPrint(Wd_);
+  CM_CUT: If Dt_^.E.HasSel Then Begin EdCopySel(Dt_^.E);EdDelSel(Dt_^.E);Invalidate(Wd_);End;
+  CM_COPY: EdCopySel(Dt_^.E);
+  CM_PASTE: Begin EdPaste(Dt_^.E);EdwReveal(Wd_);Invalidate(Wd_);End;
+  CM_SELALL2: Begin EdSelAll(Dt_^.E);Invalidate(Wd_);End;
+  CM_FIND: EdwDoFind(Wd_,False);
+  CM_FINDNEXT: EdwDoFind(Wd_,True);
+  CM_DATE: Begin GetDate(Y,M,Dd,W);EdInsText(Dt_^.E,ShortDateStr(Y,M,Dd));EdwReveal(Wd_);Invalidate(Wd_);End;
+  CM_AL_L: Begin Dt_^.E.Al[Dt_^.E.CY]:=0;Invalidate(Wd_);End;
+  CM_AL_C: Begin Dt_^.E.Al[Dt_^.E.CY]:=1;Invalidate(Wd_);End;
+  CM_AL_R: Begin Dt_^.E.Al[Dt_^.E.CY]:=2;Invalidate(Wd_);End;
+  CM_AL_J: Begin Dt_^.E.Al[Dt_^.E.CY]:=3;Invalidate(Wd_);End;
+  CM_SZ8,CM_SZ12: Begin Dt_^.Scale:=1;Invalidate(Wd_);End;
+  CM_SZ18: Begin Dt_^.Scale:=2;Invalidate(Wd_);End;
+  CM_SZ24: Begin Dt_^.Scale:=3;Invalidate(Wd_);End;
+  CM_BOLD: Begin Dt_^.Bold:=Not Dt_^.Bold;Invalidate(Wd_);End;
+  CM_ITAL: Begin Dt_^.Ital:=Not Dt_^.Ital;Invalidate(Wd_);End;
+  CM_UNDER: Begin Dt_^.Und:=Not Dt_^.Und;Invalidate(Wd_);End;
+  CM_RULER: Begin Dt_^.RulerOn:=Not Dt_^.RulerOn;Invalidate(Wd_);End;
   CM_FONT: Info(T3('Fonts','Polices','Schriften'),T3('Only the system font is available in this clone.','Seule la police syst'#138'me est disponible dans ce clone.','In diesem Klon ist nur die Systemschrift verf'#129'gbar.'));
- Else CommonCmd(@Self,Cmd);
+ Else CommonCmd(Wd_,Cmd);
  End;
- UpdateTitle;
+ EdwUpdateTitle(Wd_);
 End;
 
-Procedure TEditWin.OnKey(K: Word);
+Procedure EdwOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PEditWin;
 Var Shift: Boolean; 
 Begin
- CursorOn:=True;
+ Dt_:=Wd_^.Data;
+ Dt_^.CursorOn:=True;
  Case K Of
-  K_LEFT,K_RIGHT,K_UP,K_DOWN,K_HOME,K_END,K_PGUP,K_PGDN: E.MoveCur(K,False);
-  K_ENTER: E.NewLine;
-  K_BKSP: E.Backspace;
-  K_DEL: E.DelChar;
-  K_TAB: Begin E.InsChar(' ');E.InsChar(' ');E.InsChar(' ');E.InsChar(' ');End;
-  K_CTRLC: E.CopySel;
-  K_CTRLX: Begin E.CopySel;E.DelSel;End;
-  K_CTRLV: E.Paste;
-  K_CTRLA: E.SelAll;
-  K_CTRLS: Begin OnCommand(CM_SAVE);Exit;End;
-  K_CTRLN: Begin OnCommand(CM_NEW);Exit;End;
-  K_CTRLO: Begin OnCommand(CM_OPENF);Exit;End;
-  K_F3: Begin DoFind(True);Exit;End;
-  6: Begin DoFind(False);Exit;End;
-  2: Begin OnCommand(CM_BOLD);Exit;End;
+  K_LEFT,K_RIGHT,K_UP,K_DOWN,K_HOME,K_END,K_PGUP,K_PGDN: EdMoveCur(Dt_^.E,K,False);
+  K_ENTER: EdNewLine(Dt_^.E);
+  K_BKSP: EdBackspace(Dt_^.E);
+  K_DEL: EdDelChar(Dt_^.E);
+  K_TAB: Begin EdInsChar(Dt_^.E,' ');EdInsChar(Dt_^.E,' ');EdInsChar(Dt_^.E,' ');EdInsChar(Dt_^.E,' ');End;
+  K_CTRLC: EdCopySel(Dt_^.E);
+  K_CTRLX: Begin EdCopySel(Dt_^.E);EdDelSel(Dt_^.E);End;
+  K_CTRLV: EdPaste(Dt_^.E);
+  K_CTRLA: EdSelAll(Dt_^.E);
+  K_CTRLS: Begin EdwOnCommand(Wd_,CM_SAVE);Exit;End;
+  K_CTRLN: Begin EdwOnCommand(Wd_,CM_NEW);Exit;End;
+  K_CTRLO: Begin EdwOnCommand(Wd_,CM_OPENF);Exit;End;
+  K_F3: Begin EdwDoFind(Wd_,True);Exit;End;
+  6: Begin EdwDoFind(Wd_,False);Exit;End;
+  2: Begin EdwOnCommand(Wd_,CM_BOLD);Exit;End;
  Else
-  If (K>=32) And (K<256) Then E.InsChar(Chr(K));
+  If (K>=32) And (K<256) Then EdInsChar(Dt_^.E,Chr(K));
  End;
- Reveal;
- UpdateTitle;
- Invalidate(@Self);
+ EdwReveal(Wd_);
+ EdwUpdateTitle(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TEditWin.OnMouse(Var Ev: TEvent);
+Procedure EdwOnMouse(Wd_: PWindow; Var Ev: TEvent);
+ Var Dt_: PEditWin;
 Var X1,Y1,X2,Y2,CW,CH,TW,VR,Ln,Cl,P,VC: Integer; CX0,CY0: Integer;
 
  Procedure SetCaret(MX_,MY_: LongInt);
  Var HX1,HY1,HX2,HY2: Integer;
  Begin
-  TextRect(HX1,HY1,HX2,HY2);
-  If Mode=2 Then Begin HX1:=X1+3;HY1:=Y1+3;End;
-  If Mode=3 Then Begin Inc(HX1,2);Inc(HY1,2);End;
-  Ln:=E.TopL+(MY_-HY1) Div CH;
-  If MY_<HY1 Then Ln:=E.TopL-1;
-  Ln:=Clamp(Ln,1,E.N);
-  Cl:=E.LeftC+(MX_-HX1-LineOfs(Ln,CW,TW)+CW Div 2) Div CW;
-  E.CY:=Ln;
-  E.CX:=Clamp(Cl,0,Length(E.Line(Ln)));
+  EdwTextRect(Wd_,HX1,HY1,HX2,HY2);
+  If Dt_^.Mode=2 Then Begin HX1:=X1+3;HY1:=Y1+3;End;
+  If Dt_^.Mode=3 Then Begin Inc(HX1,2);Inc(HY1,2);End;
+  Ln:=Dt_^.E.TopL+(MY_-HY1) Div CH;
+  If MY_<HY1 Then Ln:=Dt_^.E.TopL-1;
+  Ln:=Clamp(Ln,1,Dt_^.E.N);
+  Cl:=Dt_^.E.LeftC+(MX_-HX1-EdwLineOfs(Wd_,Ln,CW,TW)+CW Div 2) Div CW;
+  Dt_^.E.CY:=Ln;
+  Dt_^.E.CX:=Clamp(Cl,0,Length(EdLine(Dt_^.E,Ln)));
  End;
 
 Begin
- ClientRect(X1,Y1,X2,Y2);
- TextRect(CX0,CY0,P,Ln);
- CellSize(CW,CH);
- If Mode=2 Then VR:=(Y2-Y1-6) Div CH Else VR:=(Ln-CY0+1) Div CH;
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ EdwTextRect(Wd_,CX0,CY0,P,Ln);
+ EdwCellSize(Wd_,CW,CH);
+ If Dt_^.Mode=2 Then VR:=(Y2-Y1-6) Div CH Else VR:=(Ln-CY0+1) Div CH;
  If VR<1 Then VR:=1;
  VC:=(P-CX0+1) Div CW;
  TW:=VC*CW;
  If Ev.Kind=EV_DOWN Then Begin
-  VScrDrag:=False;
+  Dt_^.VScrDrag:=False;
   If Ev.X>=X2-SB+1 Then Begin
-   P:=ScrollPart(True,X2-SB+1,Y1,X2,Y2,E.N+VR-1,VR,E.TopL-1,Ev.X,Ev.Y);
+   P:=ScrollPart(True,X2-SB+1,Y1,X2,Y2,Dt_^.E.N+VR-1,VR,Dt_^.E.TopL-1,Ev.X,Ev.Y);
    Case P Of
-    1: If E.TopL>1 Then Dec(E.TopL);
-    2: If E.TopL<E.N Then Inc(E.TopL);
-    3: E.TopL:=Max2(1,E.TopL-VR);
-    4: E.TopL:=Min2(E.N,E.TopL+VR);
-    5: Begin VScrDrag:=True;ScrollThumb(Y1+SB,Y2-SB,E.N+VR-1,VR,E.TopL-1,Cl,Ln);VGrab:=Ev.Y-Cl;End;
+    1: If Dt_^.E.TopL>1 Then Dec(Dt_^.E.TopL);
+    2: If Dt_^.E.TopL<Dt_^.E.N Then Inc(Dt_^.E.TopL);
+    3: Dt_^.E.TopL:=Max2(1,Dt_^.E.TopL-VR);
+    4: Dt_^.E.TopL:=Min2(Dt_^.E.N,Dt_^.E.TopL+VR);
+    5: Begin Dt_^.VScrDrag:=True;ScrollThumb(Y1+SB,Y2-SB,Dt_^.E.N+VR-1,VR,Dt_^.E.TopL-1,Cl,Ln);Dt_^.VGrab:=Ev.Y-Cl;End;
    End;
-   Invalidate(@Self);
+   Invalidate(Wd_);
    Exit;
   End;
-  If (Mode=3) And RulerOn And (Ev.Y<Y1+24) Then Exit;
+  If (Dt_^.Mode=3) And Dt_^.RulerOn And (Ev.Y<Y1+24) Then Exit;
   SetCaret(Ev.X,Ev.Y);
-  E.HasSel:=False;E.SAX:=E.CX;E.SAY:=E.CY;
-  Selecting:=True;
-  CursorOn:=True;
-  Invalidate(@Self);
+  Dt_^.E.HasSel:=False;Dt_^.E.SAX:=Dt_^.E.CX;Dt_^.E.SAY:=Dt_^.E.CY;
+  Dt_^.Selecting:=True;
+  Dt_^.CursorOn:=True;
+  Invalidate(Wd_);
  End Else If Ev.Kind=EV_MOVE Then Begin
-  If VScrDrag Then Begin
-   E.TopL:=1+ScrollDrag(True,X2-SB+1,Y1,X2,Y2,E.N+VR-1,VR,Ev.Y,VGrab);
-   If E.TopL>E.N Then E.TopL:=E.N;
-   Invalidate(@Self);
-  End Else If Selecting Then Begin
+  If Dt_^.VScrDrag Then Begin
+   Dt_^.E.TopL:=1+ScrollDrag(True,X2-SB+1,Y1,X2,Y2,Dt_^.E.N+VR-1,VR,Ev.Y,Dt_^.VGrab);
+   If Dt_^.E.TopL>Dt_^.E.N Then Dt_^.E.TopL:=Dt_^.E.N;
+   Invalidate(Wd_);
+  End Else If Dt_^.Selecting Then Begin
    SetCaret(Ev.X,Ev.Y);
-   E.HasSel:=(E.CX<>E.SAX) Or (E.CY<>E.SAY);
-   Reveal;
-   Invalidate(@Self);
+   Dt_^.E.HasSel:=(Dt_^.E.CX<>Dt_^.E.SAX) Or (Dt_^.E.CY<>Dt_^.E.SAY);
+   EdwReveal(Wd_);
+   Invalidate(Wd_);
   End;
  End Else If Ev.Kind=EV_UP Then Begin
-  Selecting:=False;VScrDrag:=False;
+  Dt_^.Selecting:=False;Dt_^.VScrDrag:=False;
  End;
 End;
 
@@ -5780,7 +5840,7 @@ Const
 
 Type
  PCalcWin = ^TCalcWin;
- TCalcWin = Object(TWindow)
+ TCalcWin = Record
   Entry,Expr : String[40];
   HaveRes    : Boolean;
   Res        : Real;
@@ -5790,18 +5850,19 @@ Type
   NTape      : Integer;
   ShowTape   : Boolean;
   Down       : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure TapeAdd(Const S: String);
-  Function  Cur: Real;
-  Procedure ShowVal(R: Real);
-  Procedure Press(Const B: String);
-  Procedure BtnRect(R,C: Integer; Var X1,Y1,X2,Y2: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
  End;
+
+Function CalcNew(AX,AY: Integer): PWindow; Forward;
+Procedure CalcTapeAdd(Wd_: PWindow; Const S: String); Forward;
+Function CalcCur(Wd_: PWindow): Real; Forward;
+Procedure CalcShowVal(Wd_: PWindow; R: Real); Forward;
+Procedure CalcPress(Wd_: PWindow; Const B: String); Forward;
+Procedure CalcBtnRect(Wd_: PWindow; R,C: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure CalcDrawClient(Wd_: PWindow); Forward;
+Procedure CalcOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure CalcOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure CalcPrepareMenus(Wd_: PWindow); Forward;
+Procedure CalcOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
 
 Const
  CalcBtn : Array[0..4,0..5] Of String[4] = (
@@ -5907,133 +5968,146 @@ Begin
  Ok:=Not EvErr;
 End;
 
-Constructor TCalcWin.Init(AX,AY: Integer);
+Function CalcNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PCalcWin;
 Begin
- TWindow.Init(A_CALC,AX,AY,404,270,T3('Calculator','Calculatrice','Rechner'));
- IconId:=IC_CALC;Resizable:=False;
- Entry:='';Expr:='';HaveRes:=False;Res:=0;Err:=False;MemV:=0;NTape:=0;ShowTape:=True;Down:=-1;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Edit~'#144'dition~Bearbeiten');
- AddItem('Copy~Copier~Kopieren',CM_COPYV,'Ctrl+C');
- AddItem('Paste~Coller~Einf'#129'gen',CM_PASTEV,'Ctrl+V');
- AddSep;
- AddItem('Clear Tape~Effacer la bande~Band l'#148'schen',CM_CLRTAPE,'');
- AddMenu('Options~Options~Optionen');
- AddItem('Show Tape~Afficher la bande~Band anzeigen',CM_TAPE,'');
- AddMenu('Convert~Convertir~Umrechnen');
- AddItem('Miles -> Km',CM_CONV1,'');
- AddItem('Km -> Miles',CM_CONV2,'');
- AddItem('Inch -> Cm',CM_CONV3,'');
- AddItem('Pounds -> Kg',CM_CONV4,'');
- AddItem('Fahrenheit -> Celsius',CM_CONV5,'');
- AddItem('Gallons -> Liters',CM_CONV6,'');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_CALC,AX,AY,404,270,T3('Calculator','Calculatrice','Rechner'));
+ Wd_^.IconId:=IC_CALC;Wd_^.Resizable:=False;
+ Dt_^.Entry:='';Dt_^.Expr:='';Dt_^.HaveRes:=False;Dt_^.Res:=0;Dt_^.Err:=False;Dt_^.MemV:=0;Dt_^.NTape:=0;Dt_^.ShowTape:=True;Dt_^.Down:=-1;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_COPYV,'Ctrl+C');
+ WinAddItem(Wd_,'Paste~Coller~Einf'#129'gen',CM_PASTEV,'Ctrl+V');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Clear Tape~Effacer la bande~Band l'#148'schen',CM_CLRTAPE,'');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Show Tape~Afficher la bande~Band anzeigen',CM_TAPE,'');
+ WinAddMenu(Wd_,'Convert~Convertir~Umrechnen');
+ WinAddItem(Wd_,'Miles -> Km',CM_CONV1,'');
+ WinAddItem(Wd_,'Km -> Miles',CM_CONV2,'');
+ WinAddItem(Wd_,'Inch -> Cm',CM_CONV3,'');
+ WinAddItem(Wd_,'Pounds -> Kg',CM_CONV4,'');
+ WinAddItem(Wd_,'Fahrenheit -> Celsius',CM_CONV5,'');
+ WinAddItem(Wd_,'Gallons -> Liters',CM_CONV6,'');
+ CalcNew:=Wd_;
 End;
 
-Procedure TCalcWin.TapeAdd(Const S: String);
+Procedure CalcTapeAdd(Wd_: PWindow; Const S: String);
+ Var Dt_: PCalcWin;
 Var I: Integer;
 Begin
- If NTape>=60 Then Begin
-  For I:=1 To 59 Do Tape[I]:=Tape[I+1];
-  NTape:=59;
+ Dt_:=Wd_^.Data;
+ If Dt_^.NTape>=60 Then Begin
+  For I:=1 To 59 Do Dt_^.Tape[I]:=Dt_^.Tape[I+1];
+  Dt_^.NTape:=59;
  End;
- Inc(NTape);Tape[NTape]:=S;
+ Inc(Dt_^.NTape);Dt_^.Tape[Dt_^.NTape]:=S;
 End;
 
-Function TCalcWin.Cur: Real;
+Function CalcCur(Wd_: PWindow): Real;
+ Var Dt_: PCalcWin;
 Var V: Real; Cd: Integer; S: String;
 Begin
- If Entry<>'' Then Begin
-  S:=Entry;
+ Dt_:=Wd_^.Data;
+ If Dt_^.Entry<>'' Then Begin
+  S:=Dt_^.Entry;
   If S[Length(S)]='E' Then S:=S+'0';
   Val(S,V,Cd);
   If Cd<>0 Then V:=0;
-  Cur:=V;
- End Else Cur:=Res;
+  CalcCur:=V;
+ End Else CalcCur:=Dt_^.Res;
 End;
 
-Procedure TCalcWin.ShowVal(R: Real);
+Procedure CalcShowVal(Wd_: PWindow; R: Real);
+ Var Dt_: PCalcWin;
 Begin
- Entry:=FmtReal(R);
- If Length(Entry)>16 Then Entry:=Copy(Entry,1,16);
+ Dt_:=Wd_^.Data;
+ Dt_^.Entry:=FmtReal(R);
+ If Length(Dt_^.Entry)>16 Then Dt_^.Entry:=Copy(Dt_^.Entry,1,16);
 End;
 
-Procedure TCalcWin.Press(Const B: String);
+Procedure CalcPress(Wd_: PWindow; Const B: String);
+ Var Dt_: PCalcWin;
 Var V: Real; Ok: Boolean; S: String; Ch: Char;
 Begin
- If Err And (B<>'C/CE') Then Exit;
+ Dt_:=Wd_^.Data;
+ If Dt_^.Err And (B<>'C/CE') Then Exit;
  Ch:=B[1];
  If (Length(B)=1) And (Ch In ['0'..'9']) Then Begin
-  If HaveRes And (Expr='') And (Entry='') Then HaveRes:=False;
-  If Length(Entry)<15 Then Begin
-   If Entry='0' Then Entry:=Ch Else Entry:=Entry+Ch;
+  If Dt_^.HaveRes And (Dt_^.Expr='') And (Dt_^.Entry='') Then Dt_^.HaveRes:=False;
+  If Length(Dt_^.Entry)<15 Then Begin
+   If Dt_^.Entry='0' Then Dt_^.Entry:=Ch Else Dt_^.Entry:=Dt_^.Entry+Ch;
   End;
  End Else If B='.' Then Begin
-  If Pos('.',Entry)=0 Then Begin If Entry='' Then Entry:='0';Entry:=Entry+'.';End;
+  If Pos('.',Dt_^.Entry)=0 Then Begin If Dt_^.Entry='' Then Dt_^.Entry:='0';Dt_^.Entry:=Dt_^.Entry+'.';End;
  End Else If B='+/-' Then Begin
-  If Entry='' Then Begin Res:=-Res;ShowVal(Res);End
-  Else If Pos('E',Entry)>0 Then Begin
-   If Entry[Length(Entry)]='-' Then Delete(Entry,Length(Entry),1) Else Entry:=Entry+'-';
-  End Else If Entry[1]='-' Then Delete(Entry,1,1) Else Entry:='-'+Entry;
+  If Dt_^.Entry='' Then Begin Dt_^.Res:=-Dt_^.Res;CalcShowVal(Wd_,Dt_^.Res);End
+  Else If Pos('E',Dt_^.Entry)>0 Then Begin
+   If Dt_^.Entry[Length(Dt_^.Entry)]='-' Then Delete(Dt_^.Entry,Length(Dt_^.Entry),1) Else Dt_^.Entry:=Dt_^.Entry+'-';
+  End Else If Dt_^.Entry[1]='-' Then Delete(Dt_^.Entry,1,1) Else Dt_^.Entry:='-'+Dt_^.Entry;
  End Else If B='EE' Then Begin
-  If (Entry<>'') And (Pos('E',Entry)=0) Then Entry:=Entry+'E';
+  If (Dt_^.Entry<>'') And (Pos('E',Dt_^.Entry)=0) Then Dt_^.Entry:=Dt_^.Entry+'E';
  End Else If (B='+') Or (B='-') Or (B='*') Or (B='/') Then Begin
-  If Entry<>'' Then Begin
-   If Entry[Length(Entry)]='E' Then Entry:=Entry+'0';
-   Expr:=Expr+Entry;TapeAdd(Entry+' '+B);
-   Entry:='';
-  End Else If (Expr='') And HaveRes Then Begin
-   Expr:=FmtReal(Res);TapeAdd(Expr+' '+B);
-  End Else If (Expr<>'') And (Expr[Length(Expr)] In ['+','-','*','/']) Then
-   Delete(Expr,Length(Expr),1);
-  Expr:=Expr+B;
+  If Dt_^.Entry<>'' Then Begin
+   If Dt_^.Entry[Length(Dt_^.Entry)]='E' Then Dt_^.Entry:=Dt_^.Entry+'0';
+   Dt_^.Expr:=Dt_^.Expr+Dt_^.Entry;CalcTapeAdd(Wd_,Dt_^.Entry+' '+B);
+   Dt_^.Entry:='';
+  End Else If (Dt_^.Expr='') And Dt_^.HaveRes Then Begin
+   Dt_^.Expr:=FmtReal(Dt_^.Res);CalcTapeAdd(Wd_,Dt_^.Expr+' '+B);
+  End Else If (Dt_^.Expr<>'') And (Dt_^.Expr[Length(Dt_^.Expr)] In ['+','-','*','/']) Then
+   Delete(Dt_^.Expr,Length(Dt_^.Expr),1);
+  Dt_^.Expr:=Dt_^.Expr+B;
  End Else If B='(' Then Begin
-  Expr:=Expr+'(';
+  Dt_^.Expr:=Dt_^.Expr+'(';
  End Else If B=')' Then Begin
-  If Entry<>'' Then Begin Expr:=Expr+Entry;Entry:='';End;
-  Expr:=Expr+')';
+  If Dt_^.Entry<>'' Then Begin Dt_^.Expr:=Dt_^.Expr+Dt_^.Entry;Dt_^.Entry:='';End;
+  Dt_^.Expr:=Dt_^.Expr+')';
  End Else If B='=' Then Begin
-  If Entry<>'' Then Begin
-   If Entry[Length(Entry)]='E' Then Entry:=Entry+'0';
-   Expr:=Expr+Entry;
+  If Dt_^.Entry<>'' Then Begin
+   If Dt_^.Entry[Length(Dt_^.Entry)]='E' Then Dt_^.Entry:=Dt_^.Entry+'0';
+   Dt_^.Expr:=Dt_^.Expr+Dt_^.Entry;
   End;
-  If Expr<>'' Then Begin
-   If Entry<>'' Then TapeAdd(Entry);
-   V:=EvalStr(Expr,Ok);
+  If Dt_^.Expr<>'' Then Begin
+   If Dt_^.Entry<>'' Then CalcTapeAdd(Wd_,Dt_^.Entry);
+   V:=EvalStr(Dt_^.Expr,Ok);
    If Ok Then Begin
-    Res:=V;HaveRes:=True;
-    TapeAdd('------');TapeAdd(FmtReal(V));
-    ShowVal(V);Entry:='';
-   End Else Begin Err:=True;Entry:='';TapeAdd('Error');End;
-   Expr:='';
+    Dt_^.Res:=V;Dt_^.HaveRes:=True;
+    CalcTapeAdd(Wd_,'------');CalcTapeAdd(Wd_,FmtReal(V));
+    CalcShowVal(Wd_,V);Dt_^.Entry:='';
+   End Else Begin Dt_^.Err:=True;Dt_^.Entry:='';CalcTapeAdd(Wd_,'Error');End;
+   Dt_^.Expr:='';
   End;
  End Else If B='C/CE' Then Begin
-  If Err Then Begin Err:=False;Entry:='';Expr:='';HaveRes:=False;Res:=0;End
-  Else If Entry<>'' Then Entry:=''
-  Else Begin Expr:='';HaveRes:=False;Res:=0;End;
+  If Dt_^.Err Then Begin Dt_^.Err:=False;Dt_^.Entry:='';Dt_^.Expr:='';Dt_^.HaveRes:=False;Dt_^.Res:=0;End
+  Else If Dt_^.Entry<>'' Then Dt_^.Entry:=''
+  Else Begin Dt_^.Expr:='';Dt_^.HaveRes:=False;Dt_^.Res:=0;End;
  End Else If B='<-' Then Begin
-  If Entry<>'' Then Delete(Entry,Length(Entry),1);
+  If Dt_^.Entry<>'' Then Delete(Dt_^.Entry,Length(Dt_^.Entry),1);
  End Else If B='1/x' Then Begin
-  V:=Cur;
-  If V=0 Then Begin Err:=True;Entry:='';End Else Begin Res:=1/V;ShowVal(Res);TapeAdd('1/x='+FmtReal(Res));End;
+  V:=CalcCur(Wd_);
+  If V=0 Then Begin Dt_^.Err:=True;Dt_^.Entry:='';End Else Begin Dt_^.Res:=1/V;CalcShowVal(Wd_,Dt_^.Res);CalcTapeAdd(Wd_,'1/x='+FmtReal(Dt_^.Res));End;
  End Else If B='x2' Then Begin
-  V:=Cur;Res:=V*V;ShowVal(Res);TapeAdd('x2='+FmtReal(Res));
+  V:=CalcCur(Wd_);Dt_^.Res:=V*V;CalcShowVal(Wd_,Dt_^.Res);CalcTapeAdd(Wd_,'x2='+FmtReal(Dt_^.Res));
  End Else If B='sqr' Then Begin
-  V:=Cur;
-  If V<0 Then Begin Err:=True;Entry:='';End Else Begin Res:=Sqrt(V);ShowVal(Res);TapeAdd('sqr='+FmtReal(Res));End;
+  V:=CalcCur(Wd_);
+  If V<0 Then Begin Dt_^.Err:=True;Dt_^.Entry:='';End Else Begin Dt_^.Res:=Sqrt(V);CalcShowVal(Wd_,Dt_^.Res);CalcTapeAdd(Wd_,'sqr='+FmtReal(Dt_^.Res));End;
  End Else If B='%' Then Begin
-  V:=Cur/100;Res:=V;ShowVal(Res);TapeAdd('%='+FmtReal(Res));
- End Else If B='STO' Then Begin MemV:=Cur;TapeAdd('STO '+FmtReal(MemV));End
- Else If B='RCL' Then Begin Entry:=FmtReal(MemV);HaveRes:=False;End
- Else If B='M+' Then Begin MemV:=MemV+Cur;TapeAdd('M+ '+FmtReal(MemV));End
- Else If B='M-' Then Begin MemV:=MemV-Cur;TapeAdd('M- '+FmtReal(MemV));End;
- Invalidate(@Self);
+  V:=CalcCur(Wd_)/100;Dt_^.Res:=V;CalcShowVal(Wd_,Dt_^.Res);CalcTapeAdd(Wd_,'%='+FmtReal(Dt_^.Res));
+ End Else If B='STO' Then Begin Dt_^.MemV:=CalcCur(Wd_);CalcTapeAdd(Wd_,'STO '+FmtReal(Dt_^.MemV));End
+ Else If B='RCL' Then Begin Dt_^.Entry:=FmtReal(Dt_^.MemV);Dt_^.HaveRes:=False;End
+ Else If B='M+' Then Begin Dt_^.MemV:=Dt_^.MemV+CalcCur(Wd_);CalcTapeAdd(Wd_,'M+ '+FmtReal(Dt_^.MemV));End
+ Else If B='M-' Then Begin Dt_^.MemV:=Dt_^.MemV-CalcCur(Wd_);CalcTapeAdd(Wd_,'M- '+FmtReal(Dt_^.MemV));End;
+ Invalidate(Wd_);
 End;
 
-Procedure TCalcWin.BtnRect(R,C: Integer; Var X1,Y1,X2,Y2: Integer);
+Procedure CalcBtnRect(Wd_: PWindow; R,C: Integer; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PCalcWin;
 Var CX1,CY1,CX2,CY2: Integer;
 Begin
- ClientRect(CX1,CY1,CX2,CY2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,CX1,CY1,CX2,CY2);
  X1:=CX1+8+C*41;Y1:=CY1+50+R*28;X2:=X1+38;Y2:=Y1+25;
 End;
 
@@ -6051,16 +6125,18 @@ Begin
  If Dot Then GBar(X+W+1,Y+H-3,X+W+3,Y+H-1,C);
 End;
 
-Procedure TCalcWin.DrawClient;
+Procedure CalcDrawClient(Wd_: PWindow);
+ Var Dt_: PCalcWin;
 Var X1,Y1,X2,Y2,R,C,BX1,BY1,BX2,BY2,I,DX,K,TX1: Integer; S,Z: String; Ch: Char;
     Sel: Boolean; P: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  { affichage LCD }
  Sunken(X1+6,Y1+6,X1+250,Y1+40,cBlk);
- If Err Then S:='Error' Else If Entry<>'' Then S:=Entry Else S:=FmtReal(Res);
- If Err Then Begin
+ If Dt_^.Err Then S:='Error' Else If Dt_^.Entry<>'' Then S:=Dt_^.Entry Else S:=FmtReal(Dt_^.Res);
+ If Dt_^.Err Then Begin
   GTextBig(X1+200,Y1+14,'Error',1,cLRd);
  End Else Begin
   K:=0;
@@ -6076,12 +6152,12 @@ Begin
     Inc(DX,14);
    End;
  End;
- If MemV<>0 Then GText(X1+10,Y1+9,'M',cLRd);
+ If Dt_^.MemV<>0 Then GText(X1+10,Y1+9,'M',cLRd);
  { boutons }
  For R:=0 To 4 Do
   For C:=0 To 5 Do Begin
-   BtnRect(R,C,BX1,BY1,BX2,BY2);
-   Sel:=Down=R*6+C;
+   CalcBtnRect(Wd_,R,C,BX1,BY1,BX2,BY2);
+   Sel:=Dt_^.Down=R*6+C;
    Z:=CalcBtn[R,C];
    If Z='/' Then Z:=#246;
    If Z='*' Then Z:='x';
@@ -6091,83 +6167,91 @@ Begin
    Button(BX1,BY1,BX2,BY2,Z,False,Sel,True);
   End;
  { bande }
- If ShowTape Then Begin
+ If Dt_^.ShowTape Then Begin
   TX1:=X1+262;
   Sunken(TX1,Y1+6,X2-6,Y2-6,cWht);
   K:=(Y2-6-(Y1+6)-8) Div 11;
-  For I:=NTape DownTo Max2(1,NTape-K+1) Do Begin
-   S:=Tape[I];
-   GText(X2-12-TextW(S),Y2-12-11*(NTape-I)-8,S,cBlk);
+  For I:=Dt_^.NTape DownTo Max2(1,Dt_^.NTape-K+1) Do Begin
+   S:=Dt_^.Tape[I];
+   GText(X2-12-TextW(S),Y2-12-11*(Dt_^.NTape-I)-8,S,cBlk);
   End;
  End;
 End;
 
-Procedure TCalcWin.OnMouse(Var E: TEvent);
+Procedure CalcOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PCalcWin;
 Var R,C,X1,Y1,X2,Y2: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind=EV_DOWN Then Begin
   For R:=0 To 4 Do
    For C:=0 To 5 Do Begin
-    BtnRect(R,C,X1,Y1,X2,Y2);
-    If InBox(E.X,E.Y,X1,Y1,X2,Y2) Then Begin Down:=R*6+C;Invalidate(@Self);End;
+    CalcBtnRect(Wd_,R,C,X1,Y1,X2,Y2);
+    If InBox(E.X,E.Y,X1,Y1,X2,Y2) Then Begin Dt_^.Down:=R*6+C;Invalidate(Wd_);End;
    End;
  End Else If E.Kind=EV_UP Then Begin
-  If Down>=0 Then Begin
-   R:=Down Div 6;C:=Down Mod 6;
-   BtnRect(R,C,X1,Y1,X2,Y2);
-   Down:=-1;
-   If InBox(E.X,E.Y,X1,Y1,X2,Y2) Then Press(CalcBtn[R,C]);
-   Invalidate(@Self);
+  If Dt_^.Down>=0 Then Begin
+   R:=Dt_^.Down Div 6;C:=Dt_^.Down Mod 6;
+   CalcBtnRect(Wd_,R,C,X1,Y1,X2,Y2);
+   Dt_^.Down:=-1;
+   If InBox(E.X,E.Y,X1,Y1,X2,Y2) Then CalcPress(Wd_,CalcBtn[R,C]);
+   Invalidate(Wd_);
   End;
  End;
 End;
 
-Procedure TCalcWin.OnKey(K: Word);
+Procedure CalcOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PCalcWin;
 Begin
+ Dt_:=Wd_^.Data;
  Case K Of
-  K_ENTER: Press('=');
-  K_BKSP: Press('<-');
-  K_ESC: Press('C/CE');
-  K_CTRLC: OnCommand(CM_COPYV);
-  K_CTRLV: OnCommand(CM_PASTEV);
+  K_ENTER: CalcPress(Wd_,'=');
+  K_BKSP: CalcPress(Wd_,'<-');
+  K_ESC: CalcPress(Wd_,'C/CE');
+  K_CTRLC: CalcOnCommand(Wd_,CM_COPYV);
+  K_CTRLV: CalcOnCommand(Wd_,CM_PASTEV);
  Else
   If (K>=32) And (K<127) Then Begin
    Case Chr(K) Of
-    '0'..'9': Press(Chr(K));
-    '.',',': Press('.');
-    '+': Press('+');
-    '-': Press('-');
-    '*': Press('*');
-    '/': Press('/');
-    '(': Press('(');
-    ')': Press(')');
-    '=': Press('=');
-    '%': Press('%');
-    'c','C': Press('C/CE');
+    '0'..'9': CalcPress(Wd_,Chr(K));
+    '.',',': CalcPress(Wd_,'.');
+    '+': CalcPress(Wd_,'+');
+    '-': CalcPress(Wd_,'-');
+    '*': CalcPress(Wd_,'*');
+    '/': CalcPress(Wd_,'/');
+    '(': CalcPress(Wd_,'(');
+    ')': CalcPress(Wd_,')');
+    '=': CalcPress(Wd_,'=');
+    '%': CalcPress(Wd_,'%');
+    'c','C': CalcPress(Wd_,'C/CE');
    End;
   End;
  End;
 End;
 
-Procedure TCalcWin.PrepareMenus;
+Procedure CalcPrepareMenus(Wd_: PWindow);
+ Var Dt_: PCalcWin;
 Begin
- SetFlag(CM_TAPE,2,ShowTape);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_TAPE,2,Dt_^.ShowTape);
 End;
 
-Procedure TCalcWin.OnCommand(Cmd: Integer);
+Procedure CalcOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PCalcWin;
 Var V,F: Real; S: String;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_TAPE: Begin ShowTape:=Not ShowTape;Invalidate(@Self);End;
-  CM_CLRTAPE: Begin NTape:=0;Invalidate(@Self);End;
-  CM_COPYV: Begin ClipClear;ClipN:=1;ClipL[1]:=NewStr(FmtReal(Cur));End;
+  CM_TAPE: Begin Dt_^.ShowTape:=Not Dt_^.ShowTape;Invalidate(Wd_);End;
+  CM_CLRTAPE: Begin Dt_^.NTape:=0;Invalidate(Wd_);End;
+  CM_COPYV: Begin ClipClear;ClipN:=1;ClipL[1]:=NewStr(FmtReal(CalcCur(Wd_)));End;
   CM_PASTEV: If ClipN>0 Then Begin
               S:=ClipL[1]^;
-              Entry:=Copy(TrimStr(S),1,15);
-              Invalidate(@Self);
+              Dt_^.Entry:=Copy(TrimStr(S),1,15);
+              Invalidate(Wd_);
              End;
   CM_CONV1..CM_CONV6: Begin
-              V:=Cur;
+              V:=CalcCur(Wd_);
               Case Cmd Of
                CM_CONV1: F:=V*1.609344;
                CM_CONV2: F:=V/1.609344;
@@ -6176,11 +6260,11 @@ Begin
                CM_CONV5: F:=(V-32)*5/9;
               Else F:=V*3.785411784;
               End;
-              Res:=F;HaveRes:=True;Entry:='';
-              TapeAdd(FmtReal(V)+' >>');TapeAdd(FmtReal(F));
-              Invalidate(@Self);
+              Dt_^.Res:=F;Dt_^.HaveRes:=True;Dt_^.Entry:='';
+              CalcTapeAdd(Wd_,FmtReal(V)+' >>');CalcTapeAdd(Wd_,FmtReal(F));
+              Invalidate(Wd_);
              End;
- Else CommonCmd(@Self,Cmd);
+ Else CommonCmd(Wd_,Cmd);
  End;
 End;
 
@@ -6192,65 +6276,77 @@ Const CM_ANALOG=320; CM_DIGITAL=321; CM_SECS=322; CM_24H=323;
 
 Type
  PClockWin = ^TClockWin;
- TClockWin = Object(TWindow)
+ TClockWin = Record
   Analog,Secs,H24 : Boolean;
   LastSec         : Word;
-  Constructor Init(AX,AY: Integer);
-  Procedure DrawClient; Virtual;
-  Function  Idle: Boolean; Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
  End;
 
-Constructor TClockWin.Init(AX,AY: Integer);
+Function ClkNew(AX,AY: Integer): PWindow; Forward;
+Procedure ClkPrepareMenus(Wd_: PWindow); Forward;
+Procedure ClkOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+Function ClkIdle(Wd_: PWindow): Boolean; Forward;
+Procedure ClkDrawClient(Wd_: PWindow); Forward;
+
+Function ClkNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PClockWin;
 Begin
- TWindow.Init(A_CLOCK,AX,AY,230,270,T3('Clock','Horloge','Uhr'));
- IconId:=IC_PERF;MinW:=140;MinH:=160;
- Analog:=True;Secs:=True;H24:=Lang<>0;LastSec:=99;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Options~Options~Optionen');
- AddItem('Analog~Analogique~Analog',CM_ANALOG,'');
- AddItem('Digital~Num'#130'rique~Digital',CM_DIGITAL,'');
- AddSep;
- AddItem('Show Seconds~Afficher les secondes~Sekunden anzeigen',CM_SECS,'');
- AddItem('24 Hour~24 heures~24 Stunden',CM_24H,'');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_CLOCK,AX,AY,230,270,T3('Clock','Horloge','Uhr'));
+ Wd_^.IconId:=IC_PERF;Wd_^.MinW:=140;Wd_^.MinH:=160;
+ Dt_^.Analog:=True;Dt_^.Secs:=True;Dt_^.H24:=Lang<>0;Dt_^.LastSec:=99;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Analog~Analogique~Analog',CM_ANALOG,'');
+ WinAddItem(Wd_,'Digital~Num'#130'rique~Digital',CM_DIGITAL,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Show Seconds~Afficher les secondes~Sekunden anzeigen',CM_SECS,'');
+ WinAddItem(Wd_,'24 Hour~24 heures~24 Stunden',CM_24H,'');
+ ClkNew:=Wd_;
 End;
 
-Procedure TClockWin.PrepareMenus;
+Procedure ClkPrepareMenus(Wd_: PWindow);
+ Var Dt_: PClockWin;
 Begin
- SetFlag(CM_ANALOG,2,Analog);SetFlag(CM_DIGITAL,2,Not Analog);
- SetFlag(CM_SECS,2,Secs);SetFlag(CM_24H,2,H24);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_ANALOG,2,Dt_^.Analog);WinSetFlag(Wd_,CM_DIGITAL,2,Not Dt_^.Analog);
+ WinSetFlag(Wd_,CM_SECS,2,Dt_^.Secs);WinSetFlag(Wd_,CM_24H,2,Dt_^.H24);
 End;
 
-Procedure TClockWin.OnCommand(Cmd: Integer);
+Procedure ClkOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PClockWin;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_ANALOG: Analog:=True;
-  CM_DIGITAL: Analog:=False;
-  CM_SECS: Secs:=Not Secs;
-  CM_24H: Begin H24:=Not H24;Clock24:=H24;End;
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+  CM_ANALOG: Dt_^.Analog:=True;
+  CM_DIGITAL: Dt_^.Analog:=False;
+  CM_SECS: Dt_^.Secs:=Not Dt_^.Secs;
+  CM_24H: Begin Dt_^.H24:=Not Dt_^.H24;Clock24:=Dt_^.H24;End;
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Function TClockWin.Idle: Boolean;
+Function ClkIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PClockWin;
 Var H,M,S,C: Word;
 Begin
+ Dt_:=Wd_^.Data;
  GetTime(H,M,S,C);
- If S<>LastSec Then Begin LastSec:=S;Idle:=Not Iconic;End Else Idle:=False;
+ If S<>Dt_^.LastSec Then Begin Dt_^.LastSec:=S;ClkIdle:=Not Wd_^.Iconic;End Else ClkIdle:=False;
 End;
 
-Procedure TClockWin.DrawClient;
+Procedure ClkDrawClient(Wd_: PWindow);
+ Var Dt_: PClockWin;
 Var X1,Y1,X2,Y2,CX,CY,R,I,HX,HY: Integer; H,M,S,C,Y,Mo,D,Wd: Word; A: Real; T: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  GetTime(H,M,S,C);GetDate(Y,Mo,D,Wd);
  CX:=(X1+X2) Div 2;CY:=Y1+(Y2-Y1-20) Div 2;
  R:=Min2((X2-X1) Div 2,(Y2-Y1-24) Div 2)-8;
- If Analog Then Begin
+ If Dt_^.Analog Then Begin
   GFillEllipse(CX,CY,R,R,cWht);
   GEllipse(CX,CY,R,R,cBlk);GEllipse(CX,CY,R-1,R-1,cBlk);
   GEllipse(CX,CY,R+2,R+2,cDGr);
@@ -6267,20 +6363,20 @@ Begin
   A:=(M+S/60)*Pi/30;
   HX:=CX+Round(Sin(A)*R*0.78);HY:=CY-Round(Cos(A)*R*0.78);
   GLine(CX,CY,HX,HY,cBlk);GLine(CX+1,CY,HX+1,HY,cBlk);
-  If Secs Then Begin
+  If Dt_^.Secs Then Begin
    A:=S*Pi/30;
    GLine(CX,CY,CX+Round(Sin(A)*R*0.85),CY-Round(Cos(A)*R*0.85),cRed);
   End;
   GFillEllipse(CX,CY,3,3,cBlk);
  End Else Begin
-  If H24 Then T:=Pad2(H)+':'+Pad2(M) Else Begin
+  If Dt_^.H24 Then T:=Pad2(H)+':'+Pad2(M) Else Begin
    If H=0 Then T:='12' Else If H>12 Then T:=Pad2(H-12) Else T:=Pad2(H);
    T:=T+':'+Pad2(M);
   End;
-  If Secs Then T:=T+':'+Pad2(S);
+  If Dt_^.Secs Then T:=T+':'+Pad2(S);
   Sunken(X1+8,CY-24,X2-8,CY+24,cBlk);
   GTextBig(CX-TextW(T),CY-8,T,2,cLRd);
-  If Not H24 Then Begin If H>=12 Then GText(X2-30,CY+14,'PM',cLRd) Else GText(X2-30,CY+14,'AM',cLRd);End;
+  If Not Dt_^.H24 Then Begin If H>=12 Then GText(X2-30,CY+14,'PM',cLRd) Else GText(X2-30,CY+14,'AM',cLRd);End;
  End;
  T:=LongDateStr(Y,Mo,D,Wd);
  GText((X1+X2-TextW(T)) Div 2,Y2-16,T,cBlk);
@@ -6302,203 +6398,229 @@ Const
 
 Type
  PTetris = ^TTetris;
- TTetris = Object(TWindow)
+ TTetris = Record
   Board  : Array[0..19,0..9] Of Byte;
   Mask   : Array[1..7,0..3,0..3,0..3] Of Boolean;   { piece, rot, y, x }
   PK,PR,PX,PY,NK : Integer;
   Lines,Score,Level : LongInt;
   Over,Paused : Boolean;
   Tick,Speed  : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure BuildMasks;
-  Procedure NewGame;
-  Function  Fits(K,R,X,Y: Integer): Boolean;
-  Procedure Lock;
-  Procedure Spawn;
-  Procedure DrawCell(X,Y,C: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Function  Idle: Boolean; Virtual;
-  Procedure PrepareMenus; Virtual;
  End;
 
-Constructor TTetris.Init(AX,AY: Integer);
+Function TetNew(AX,AY: Integer): PWindow; Forward;
+Procedure TetBuildMasks(Wd_: PWindow); Forward;
+Procedure TetNewGame(Wd_: PWindow); Forward;
+Function TetFits(Wd_: PWindow; K,R,X,Y: Integer): Boolean; Forward;
+Procedure TetSpawn(Wd_: PWindow); Forward;
+Procedure TetLock(Wd_: PWindow); Forward;
+Procedure TetDrawCell(Wd_: PWindow; X,Y,C: Integer); Forward;
+Procedure TetDrawClient(Wd_: PWindow); Forward;
+Function TetIdle(Wd_: PWindow): Boolean; Forward;
+Procedure TetOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure TetPrepareMenus(Wd_: PWindow); Forward;
+Procedure TetOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function TetNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PTetris;
 Begin
- TWindow.Init(A_TETRIS,AX,AY,TCELL*10+34+62,TCELL*20+BORDER*2+TITLE_H+MENU_H+66,'Tetris');
- IconId:=IC_TETRIS;Resizable:=False;
- AddMenu('Game~Jeu~Spiel');
- AddItem('New Game~Nouvelle partie~Neues Spiel',CM_GNEW,'F2');
- AddItem('Pause~Pause~Pause',CM_GPAUSE,'P');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Options~Options~Optionen');
- AddItem('Help~Aide~Hilfe',CM_GHELP,'');
- BuildMasks;
- NewGame;
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_TETRIS,AX,AY,TCELL*10+34+62,TCELL*20+BORDER*2+TITLE_H+MENU_H+66,'Tetris');
+ Wd_^.IconId:=IC_TETRIS;Wd_^.Resizable:=False;
+ WinAddMenu(Wd_,'Game~Jeu~Spiel');
+ WinAddItem(Wd_,'New Game~Nouvelle partie~Neues Spiel',CM_GNEW,'F2');
+ WinAddItem(Wd_,'Pause~Pause~Pause',CM_GPAUSE,'P');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Help~Aide~Hilfe',CM_GHELP,'');
+ TetBuildMasks(Wd_);
+ TetNewGame(Wd_);
+ TetNew:=Wd_;
 End;
 
-Procedure TTetris.BuildMasks;
+Procedure TetBuildMasks(Wd_: PWindow);
+ Var Dt_: PTetris;
 Var K,R,X,Y: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  For K:=1 To 7 Do Begin
-  For Y:=0 To 3 Do For X:=0 To 3 Do Mask[K,0,Y,X]:=PieceTxt[K][Y*4+X+1]<>'.';
+  For Y:=0 To 3 Do For X:=0 To 3 Do Dt_^.Mask[K,0,Y,X]:=PieceTxt[K][Y*4+X+1]<>'.';
   For R:=1 To 3 Do
-   For Y:=0 To 3 Do For X:=0 To 3 Do Mask[K,R,Y,X]:=Mask[K,R-1,3-X,Y];
+   For Y:=0 To 3 Do For X:=0 To 3 Do Dt_^.Mask[K,R,Y,X]:=Dt_^.Mask[K,R-1,3-X,Y];
  End;
 End;
 
-Procedure TTetris.NewGame;
+Procedure TetNewGame(Wd_: PWindow);
+ Var Dt_: PTetris;
 Begin
- FillChar(Board,SizeOf(Board),0);
- Lines:=0;Score:=0;Level:=0;Over:=False;Paused:=False;Tick:=0;Speed:=10;
- NK:=Random(7)+1;
- Spawn;
+ Dt_:=Wd_^.Data;
+ FillChar(Dt_^.Board,SizeOf(Dt_^.Board),0);
+ Dt_^.Lines:=0;Dt_^.Score:=0;Dt_^.Level:=0;Dt_^.Over:=False;Dt_^.Paused:=False;Dt_^.Tick:=0;Dt_^.Speed:=10;
+ Dt_^.NK:=Random(7)+1;
+ TetSpawn(Wd_);
 End;
 
-Function TTetris.Fits(K,R,X,Y: Integer): Boolean;
+Function TetFits(Wd_: PWindow; K,R,X,Y: Integer): Boolean;
+ Var Dt_: PTetris;
 Var I,J,BX,BY: Integer;
 Begin
- Fits:=False;
+ Dt_:=Wd_^.Data;
+ TetFits:=False;
  For I:=0 To 3 Do
   For J:=0 To 3 Do
-   If Mask[K,R,I,J] Then Begin
+   If Dt_^.Mask[K,R,I,J] Then Begin
     BX:=X+J;BY:=Y+I;
     If (BX<0) Or (BX>9) Or (BY>19) Then Exit;
-    If (BY>=0) And (Board[BY,BX]<>0) Then Exit;
+    If (BY>=0) And (Dt_^.Board[BY,BX]<>0) Then Exit;
    End;
- Fits:=True;
+ TetFits:=True;
 End;
 
-Procedure TTetris.Spawn;
+Procedure TetSpawn(Wd_: PWindow);
+ Var Dt_: PTetris;
 Begin
- PK:=NK;NK:=Random(7)+1;PR:=0;PX:=3;PY:=-1;
- If Not Fits(PK,PR,PX,PY) Then Begin
-  PY:=-2;
-  If Not Fits(PK,PR,PX,PY) Then Over:=True;
+ Dt_:=Wd_^.Data;
+ Dt_^.PK:=Dt_^.NK;Dt_^.NK:=Random(7)+1;Dt_^.PR:=0;Dt_^.PX:=3;Dt_^.PY:=-1;
+ If Not TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY) Then Begin
+  Dt_^.PY:=-2;
+  If Not TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY) Then Dt_^.Over:=True;
  End;
 End;
 
-Procedure TTetris.Lock;
+Procedure TetLock(Wd_: PWindow);
+ Var Dt_: PTetris;
 Var I,J,Y,X,N: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  For I:=0 To 3 Do
   For J:=0 To 3 Do
-   If Mask[PK,PR,I,J] And (PY+I>=0) Then Board[PY+I,PX+J]:=PK;
+   If Dt_^.Mask[Dt_^.PK,Dt_^.PR,I,J] And (Dt_^.PY+I>=0) Then Dt_^.Board[Dt_^.PY+I,Dt_^.PX+J]:=Dt_^.PK;
  N:=0;
  Y:=19;
  While Y>=0 Do Begin
   X:=0;
-  While (X<10) And (Board[Y,X]<>0) Do Inc(X);
+  While (X<10) And (Dt_^.Board[Y,X]<>0) Do Inc(X);
   If X=10 Then Begin
    Inc(N);
-   For I:=Y DownTo 1 Do For J:=0 To 9 Do Board[I,J]:=Board[I-1,J];
-   For J:=0 To 9 Do Board[0,J]:=0;
+   For I:=Y DownTo 1 Do For J:=0 To 9 Do Dt_^.Board[I,J]:=Dt_^.Board[I-1,J];
+   For J:=0 To 9 Do Dt_^.Board[0,J]:=0;
   End Else Dec(Y);
  End;
  If N>0 Then Begin
-  Lines:=Lines+N;
-  Case N Of 1: Score:=Score+40*(Level+1); 2: Score:=Score+100*(Level+1);
-   3: Score:=Score+300*(Level+1); Else Score:=Score+1200*(Level+1); End;
-  Level:=Lines Div 10;
-  Speed:=Max2(2,10-Level);
+  Dt_^.Lines:=Dt_^.Lines+N;
+  Case N Of 1: Dt_^.Score:=Dt_^.Score+40*(Dt_^.Level+1); 2: Dt_^.Score:=Dt_^.Score+100*(Dt_^.Level+1);
+   3: Dt_^.Score:=Dt_^.Score+300*(Dt_^.Level+1); Else Dt_^.Score:=Dt_^.Score+1200*(Dt_^.Level+1); End;
+  Dt_^.Level:=Dt_^.Lines Div 10;
+  Dt_^.Speed:=Max2(2,10-Dt_^.Level);
  End;
- Spawn;
+ TetSpawn(Wd_);
 End;
 
-Procedure TTetris.DrawCell(X,Y,C: Integer);
+Procedure TetDrawCell(Wd_: PWindow; X,Y,C: Integer);
+ Var Dt_: PTetris;
 Begin
+ Dt_:=Wd_^.Data;
  GBar(X,Y,X+TCELL-1,Y+TCELL-1,C);
  GHLine(X,X+TCELL-1,Y,cWht);GVLine(X,Y,Y+TCELL-1,cWht);
  GHLine(X,X+TCELL-1,Y+TCELL-1,cBlk);GVLine(X+TCELL-1,Y,Y+TCELL-1,cBlk);
 End;
 
-Procedure TTetris.DrawClient;
+Procedure TetDrawClient(Wd_: PWindow);
+ Var Dt_: PTetris;
 Var X1,Y1,X2,Y2,I,J,BX,BY: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
- S:=T3('Lines: ','Lignes : ','Linien: ')+IntStr(Lines)+T3('  Score: ','  Score : ','  Punkte: ')+IntStr(Score);
+ S:=T3('Lines: ','Lignes : ','Linien: ')+IntStr(Dt_^.Lines)+T3('  Score: ','  Score : ','  Punkte: ')+IntStr(Dt_^.Score);
  GText(X1+6,Y1+6,S,cBlk);
  BX:=X1+8;BY:=Y1+22;
  Sunken(BX-3,BY-3,BX+TCELL*10+2,BY+TCELL*20+2,cLGr);
  For I:=0 To 19 Do
   For J:=0 To 9 Do
-   If Board[I,J]<>0 Then DrawCell(BX+J*TCELL,BY+I*TCELL,PieceCol[Board[I,J]]);
- If Not Over Then
+   If Dt_^.Board[I,J]<>0 Then TetDrawCell(Wd_,BX+J*TCELL,BY+I*TCELL,PieceCol[Dt_^.Board[I,J]]);
+ If Not Dt_^.Over Then
   For I:=0 To 3 Do
    For J:=0 To 3 Do
-    If Mask[PK,PR,I,J] And (PY+I>=0) Then DrawCell(BX+(PX+J)*TCELL,BY+(PY+I)*TCELL,PieceCol[PK]);
+    If Dt_^.Mask[Dt_^.PK,Dt_^.PR,I,J] And (Dt_^.PY+I>=0) Then TetDrawCell(Wd_,BX+(Dt_^.PX+J)*TCELL,BY+(Dt_^.PY+I)*TCELL,PieceCol[Dt_^.PK]);
  { suivante }
  GText(BX+TCELL*10+14,BY,T3('Next','Suivant','N'#132'chstes'),cBlk);
  Sunken(BX+TCELL*10+12,BY+14,BX+TCELL*10+12+4*TCELL div 2+10+30,BY+14+60,cLGr);
  For I:=0 To 3 Do
   For J:=0 To 3 Do
-   If Mask[NK,0,I,J] Then Begin
-    GBar(BX+TCELL*10+22+J*10,BY+22+I*10,BX+TCELL*10+22+J*10+9,BY+22+I*10+9,PieceCol[NK]);
+   If Dt_^.Mask[Dt_^.NK,0,I,J] Then Begin
+    GBar(BX+TCELL*10+22+J*10,BY+22+I*10,BX+TCELL*10+22+J*10+9,BY+22+I*10+9,PieceCol[Dt_^.NK]);
     GRect(BX+TCELL*10+22+J*10,BY+22+I*10,BX+TCELL*10+22+J*10+9,BY+22+I*10+9,cBlk);
    End;
- GText(BX+TCELL*10+14,BY+90,T3('Level ','Niveau ','Stufe ')+IntStr(Level),cBlk);
- If Over Then Begin
+ GText(BX+TCELL*10+14,BY+90,T3('Level ','Niveau ','Stufe ')+IntStr(Dt_^.Level),cBlk);
+ If Dt_^.Over Then Begin
   GBar(BX+4,BY+TCELL*8,BX+TCELL*10-4,BY+TCELL*8+34,cBlk);
   GTextCtr(BX+4,BX+TCELL*10-4,BY+TCELL*8+6,'GAME OVER',cLRd);
   GTextCtr(BX+4,BX+TCELL*10-4,BY+TCELL*8+20,'F2',cWht);
- End Else If Paused Then Begin
+ End Else If Dt_^.Paused Then Begin
   GBar(BX+4,BY+TCELL*8,BX+TCELL*10-4,BY+TCELL*8+22,cBlk);
   GTextCtr(BX+4,BX+TCELL*10-4,BY+TCELL*8+7,'PAUSE',cYel);
  End;
 End;
 
-Function TTetris.Idle: Boolean;
+Function TetIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PTetris;
 Begin
- Idle:=False;
- If Over Or Paused Or Iconic Or (TopWin<>@Self) Then Exit;
- Inc(Tick);
- If Tick>=Speed Then Begin
-  Tick:=0;
-  If Fits(PK,PR,PX,PY+1) Then Inc(PY) Else Lock;
-  Idle:=True;
+ Dt_:=Wd_^.Data;
+ TetIdle:=False;
+ If Dt_^.Over Or Dt_^.Paused Or Wd_^.Iconic Or (TopWin<>Wd_) Then Exit;
+ Inc(Dt_^.Tick);
+ If Dt_^.Tick>=Dt_^.Speed Then Begin
+  Dt_^.Tick:=0;
+  If TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY+1) Then Inc(Dt_^.PY) Else TetLock(Wd_);
+  TetIdle:=True;
  End;
 End;
 
-Procedure TTetris.OnKey(K: Word);
+Procedure TetOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PTetris;
 Var NR: Integer;
 Begin
- If K=K_F2 Then Begin NewGame;Invalidate(@Self);Exit;End;
- If (K=Ord('p')) Or (K=Ord('P')) Then Begin Paused:=Not Paused;Invalidate(@Self);Exit;End;
- If Over Or Paused Then Exit;
+ Dt_:=Wd_^.Data;
+ If K=K_F2 Then Begin TetNewGame(Wd_);Invalidate(Wd_);Exit;End;
+ If (K=Ord('p')) Or (K=Ord('P')) Then Begin Dt_^.Paused:=Not Dt_^.Paused;Invalidate(Wd_);Exit;End;
+ If Dt_^.Over Or Dt_^.Paused Then Exit;
  Case K Of
-  K_LEFT: If Fits(PK,PR,PX-1,PY) Then Dec(PX);
-  K_RIGHT: If Fits(PK,PR,PX+1,PY) Then Inc(PX);
+  K_LEFT: If TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX-1,Dt_^.PY) Then Dec(Dt_^.PX);
+  K_RIGHT: If TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX+1,Dt_^.PY) Then Inc(Dt_^.PX);
   K_UP: Begin
-         NR:=(PR+1) And 3;
-         If Fits(PK,NR,PX,PY) Then PR:=NR
-         Else If Fits(PK,NR,PX-1,PY) Then Begin PR:=NR;Dec(PX);End
-         Else If Fits(PK,NR,PX+1,PY) Then Begin PR:=NR;Inc(PX);End;
+         NR:=(Dt_^.PR+1) And 3;
+         If TetFits(Wd_,Dt_^.PK,NR,Dt_^.PX,Dt_^.PY) Then Dt_^.PR:=NR
+         Else If TetFits(Wd_,Dt_^.PK,NR,Dt_^.PX-1,Dt_^.PY) Then Begin Dt_^.PR:=NR;Dec(Dt_^.PX);End
+         Else If TetFits(Wd_,Dt_^.PK,NR,Dt_^.PX+1,Dt_^.PY) Then Begin Dt_^.PR:=NR;Inc(Dt_^.PX);End;
         End;
-  K_DOWN: If Fits(PK,PR,PX,PY+1) Then Begin Inc(PY);Inc(Score);End Else Lock;
+  K_DOWN: If TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY+1) Then Begin Inc(Dt_^.PY);Inc(Dt_^.Score);End Else TetLock(Wd_);
   K_SPACE: Begin
-            While Fits(PK,PR,PX,PY+1) Do Begin Inc(PY);Inc(Score,2);End;
-            Lock;
+            While TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY+1) Do Begin Inc(Dt_^.PY);Inc(Dt_^.Score,2);End;
+            TetLock(Wd_);
            End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Procedure TTetris.PrepareMenus;
+Procedure TetPrepareMenus(Wd_: PWindow);
+ Var Dt_: PTetris;
 Begin
- SetFlag(CM_GPAUSE,2,Paused);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_GPAUSE,2,Dt_^.Paused);
 End;
 
-Procedure TTetris.OnCommand(Cmd: Integer);
+Procedure TetOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PTetris;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_GNEW: Begin NewGame;Invalidate(@Self);End;
-  CM_GPAUSE: Begin Paused:=Not Paused;Invalidate(@Self);End;
+  CM_GNEW: Begin TetNewGame(Wd_);Invalidate(Wd_);End;
+  CM_GPAUSE: Begin Dt_^.Paused:=Not Dt_^.Paused;Invalidate(Wd_);End;
   CM_GHELP: Info('Tetris',T3('Left/Right: move|Up: rotate|Down: drop one row|Space: drop|P: pause',
         'Gauche/Droite : d'#130'placer|Haut : tourner|Bas : descendre|Espace : chute|P : pause',
         'Links/Rechts: bewegen|Hoch: drehen|Runter: absenken|Leertaste: fallen|P: Pause'));
- Else CommonCmd(@Self,Cmd);
+ Else CommonCmd(Wd_,Cmd);
  End;
 End;
 
@@ -6517,7 +6639,7 @@ Const
 
 Type
  PSolit = ^TSolit;
- TSolit = Object(TWindow)
+ TSolit = Record
   Stock : Array[1..52] Of Byte;  SN : Integer;
   Waste : Array[1..52] Of Byte;  WN : Integer;
   Fnd   : Array[1..4,1..13] Of Byte; FN : Array[1..4] Of Integer;
@@ -6532,27 +6654,28 @@ Type
   GrabX,GrabY : Integer;
   RX,RY : Integer;
   RShown : Boolean;
-  Constructor Init(AX,AY: Integer);
-  Procedure Deal;
-  Procedure ColX(C: Integer; Var X: Integer);
-  Function  CardY(Col,K: Integer): Integer;
-  Procedure DrawCard(X,Y,C: Integer);
-  Procedure DrawBack(X,Y: Integer);
-  Procedure DrawSlot(X,Y: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
-  Function  Idle: Boolean; Virtual;
-  Function  CanTab(C,Col: Integer): Boolean;
-  Function  CanFnd(C,F: Integer): Boolean;
-  Function  AutoFnd(C: Integer): Integer;
-  Procedure RemoveSrc;
-  Procedure Rubber;
-  Procedure CheckWin;
-  Procedure Flip(Col: Integer);
  End;
+
+Function SolNew(AX,AY: Integer): PWindow; Forward;
+Procedure SolDeal(Wd_: PWindow); Forward;
+Procedure SolColX(Wd_: PWindow; C: Integer; Var X: Integer); Forward;
+Function SolCardY(Wd_: PWindow; Col,K: Integer): Integer; Forward;
+Procedure SolDrawCard(Wd_: PWindow; X,Y,C: Integer); Forward;
+Procedure SolDrawBack(Wd_: PWindow; X,Y: Integer); Forward;
+Procedure SolDrawSlot(Wd_: PWindow; X,Y: Integer); Forward;
+Procedure SolDrawClient(Wd_: PWindow); Forward;
+Function SolIdle(Wd_: PWindow): Boolean; Forward;
+Function SolCanTab(Wd_: PWindow; C,Col: Integer): Boolean; Forward;
+Function SolCanFnd(Wd_: PWindow; C,F: Integer): Boolean; Forward;
+Function SolAutoFnd(Wd_: PWindow; C: Integer): Integer; Forward;
+Procedure SolFlip(Wd_: PWindow; Col: Integer); Forward;
+Procedure SolCheckWin(Wd_: PWindow); Forward;
+Procedure SolRemoveSrc(Wd_: PWindow); Forward;
+Procedure SolRubber(Wd_: PWindow); Forward;
+Procedure SolOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure SolOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure SolPrepareMenus(Wd_: PWindow); Forward;
+Procedure SolOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
 
 Function CardRank(C: Integer): Integer;
 Begin
@@ -6591,60 +6714,71 @@ Begin
  End;
 End;
 
-Constructor TSolit.Init(AX,AY: Integer);
+Function SolNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PSolit;
 Begin
- TWindow.Init(A_SOLIT,AX,AY,516,BORDER*2+TITLE_H+MENU_H+TABY+CHT+7*FDY+60,'Solitaire');
- IconId:=IC_SOLI;MinW:=516;MinH:=300;
- Draw3:=False;
- AddMenu('Game~Jeu~Spiel');
- AddItem('Deal~Distribuer~Geben',CM_GNEW,'F2');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Options~Options~Optionen');
- AddItem('Draw One~Une carte~Eine Karte',CM_DRAW1,'');
- AddItem('Draw Three~Trois cartes~Drei Karten',CM_DRAW3,'');
- Deal;
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_SOLIT,AX,AY,516,BORDER*2+TITLE_H+MENU_H+TABY+CHT+7*FDY+60,'Solitaire');
+ Wd_^.IconId:=IC_SOLI;Wd_^.MinW:=516;Wd_^.MinH:=300;
+ Dt_^.Draw3:=False;
+ WinAddMenu(Wd_,'Game~Jeu~Spiel');
+ WinAddItem(Wd_,'Deal~Distribuer~Geben',CM_GNEW,'F2');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Draw One~Une carte~Eine Karte',CM_DRAW1,'');
+ WinAddItem(Wd_,'Draw Three~Trois cartes~Drei Karten',CM_DRAW3,'');
+ SolDeal(Wd_);
+ SolNew:=Wd_;
 End;
 
-Procedure TSolit.Deal;
+Procedure SolDeal(Wd_: PWindow);
+ Var Dt_: PSolit;
 Var Deck: Array[1..52] Of Byte; I,J,K,T: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  For I:=1 To 52 Do Deck[I]:=I-1;
  For I:=52 DownTo 2 Do Begin
   J:=Random(I)+1;T:=Deck[I];Deck[I]:=Deck[J];Deck[J]:=T;
  End;
  K:=0;
  For I:=1 To 7 Do Begin
-  TN[I]:=I;TD[I]:=I-1;
-  For J:=1 To I Do Begin Inc(K);Tab[I,J]:=Deck[K];End;
+  Dt_^.TN[I]:=I;Dt_^.TD[I]:=I-1;
+  For J:=1 To I Do Begin Inc(K);Dt_^.Tab[I,J]:=Deck[K];End;
  End;
- SN:=0;
- For I:=K+1 To 52 Do Begin Inc(SN);Stock[SN]:=Deck[I];End;
- WN:=0;
- For I:=1 To 4 Do FN[I]:=0;
- Score:=0;Secs:=0;Started:=False;Won:=False;Dragging:=False;RShown:=False;
+ Dt_^.SN:=0;
+ For I:=K+1 To 52 Do Begin Inc(Dt_^.SN);Dt_^.Stock[Dt_^.SN]:=Deck[I];End;
+ Dt_^.WN:=0;
+ For I:=1 To 4 Do Dt_^.FN[I]:=0;
+ Dt_^.Score:=0;Dt_^.Secs:=0;Dt_^.Started:=False;Dt_^.Won:=False;Dt_^.Dragging:=False;Dt_^.RShown:=False;
 End;
 
-Procedure TSolit.ColX(C: Integer; Var X: Integer);
+Procedure SolColX(Wd_: PWindow; C: Integer; Var X: Integer);
+ Var Dt_: PSolit;
 Var X1,Y1,X2,Y2: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  X:=X1+10+(C-1)*GAPX;
 End;
 
-Function TSolit.CardY(Col,K: Integer): Integer;
+Function SolCardY(Wd_: PWindow; Col,K: Integer): Integer;
+ Var Dt_: PSolit;
 Var Y1,X1,X2,Y2,I,Y: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  Y:=Y1+TABY;
  For I:=1 To K-1 Do
-  If I<=TD[Col] Then Y:=Y+BDY Else Y:=Y+FDY;
- CardY:=Y;
+  If I<=Dt_^.TD[Col] Then Y:=Y+BDY Else Y:=Y+FDY;
+ SolCardY:=Y;
 End;
 
-Procedure TSolit.DrawCard(X,Y,C: Integer);
+Procedure SolDrawCard(Wd_: PWindow; X,Y,C: Integer);
+ Var Dt_: PSolit;
 Var Col: Integer; S,R: String; Sc: Char;
 Begin
+ Dt_:=Wd_^.Data;
  GBar(X,Y,X+CWD-1,Y+CHT-1,cWht);
  GRect(X,Y,X+CWD-1,Y+CHT-1,cBlk);
  GPix(X,Y,cGrn);GPix(X+CWD-1,Y,cGrn);GPix(X,Y+CHT-1,cGrn);GPix(X+CWD-1,Y+CHT-1,cGrn);
@@ -6664,9 +6798,11 @@ Begin
  End;
 End;
 
-Procedure TSolit.DrawBack(X,Y: Integer);
+Procedure SolDrawBack(Wd_: PWindow; X,Y: Integer);
+ Var Dt_: PSolit;
 Var SC1,SC2,SC3,SC4,I,OX1,OY1,OX2,OY2: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  GBar(X,Y,X+CWD-1,Y+CHT-1,cWht);
  GRect(X,Y,X+CWD-1,Y+CHT-1,cBlk);
  GPix(X,Y,cGrn);GPix(X+CWD-1,Y,cGrn);GPix(X,Y+CHT-1,cGrn);GPix(X+CWD-1,Y+CHT-1,cGrn);
@@ -6686,272 +6822,300 @@ Begin
  GRect(X+3,Y+3,X+CWD-4,Y+CHT-4,cBlk);
 End;
 
-Procedure TSolit.DrawSlot(X,Y: Integer);
+Procedure SolDrawSlot(Wd_: PWindow; X,Y: Integer);
+ Var Dt_: PSolit;
 Begin
+ Dt_:=Wd_^.Data;
  GDither(X,Y,X+CWD-1,Y+CHT-1,cLGn,cGrn);
  GRect(X,Y,X+CWD-1,Y+CHT-1,cGrn);
 End;
 
-Procedure TSolit.DrawClient;
+Procedure SolDrawClient(Wd_: PWindow);
+ Var Dt_: PSolit;
 Var X1,Y1,X2,Y2,I,K,X,Y: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cGrn);
  { talon et defausse }
- ColX(1,X);
- If SN>0 Then DrawBack(X,Y1+TOPY) Else DrawSlot(X,Y1+TOPY);
- ColX(2,X);
- DrawSlot(X,Y1+TOPY);
- If WN>0 Then Begin
-  If Draw3 Then Begin
-   K:=Max2(1,WN-2);
-   For I:=K To WN Do
-    If Not (Dragging And (DSrc=0) And (I=WN)) Then DrawCard(X+(I-K)*14,Y1+TOPY,Waste[I]);
-   If Dragging And (DSrc=0) And (WN>1) Then DrawCard(X+(Min2(WN,3)-2)*14,Y1+TOPY,Waste[WN-1]);
+ SolColX(Wd_,1,X);
+ If Dt_^.SN>0 Then SolDrawBack(Wd_,X,Y1+TOPY) Else SolDrawSlot(Wd_,X,Y1+TOPY);
+ SolColX(Wd_,2,X);
+ SolDrawSlot(Wd_,X,Y1+TOPY);
+ If Dt_^.WN>0 Then Begin
+  If Dt_^.Draw3 Then Begin
+   K:=Max2(1,Dt_^.WN-2);
+   For I:=K To Dt_^.WN Do
+    If Not (Dt_^.Dragging And (Dt_^.DSrc=0) And (I=Dt_^.WN)) Then SolDrawCard(Wd_,X+(I-K)*14,Y1+TOPY,Dt_^.Waste[I]);
+   If Dt_^.Dragging And (Dt_^.DSrc=0) And (Dt_^.WN>1) Then SolDrawCard(Wd_,X+(Min2(Dt_^.WN,3)-2)*14,Y1+TOPY,Dt_^.Waste[Dt_^.WN-1]);
   End Else Begin
-   If Dragging And (DSrc=0) Then Begin
-    If WN>1 Then DrawCard(X,Y1+TOPY,Waste[WN-1]);
-   End Else DrawCard(X,Y1+TOPY,Waste[WN]);
+   If Dt_^.Dragging And (Dt_^.DSrc=0) Then Begin
+    If Dt_^.WN>1 Then SolDrawCard(Wd_,X,Y1+TOPY,Dt_^.Waste[Dt_^.WN-1]);
+   End Else SolDrawCard(Wd_,X,Y1+TOPY,Dt_^.Waste[Dt_^.WN]);
   End;
  End;
  { fondations }
  For I:=1 To 4 Do Begin
-  ColX(3+I,X);
-  If FN[I]>0 Then Begin
-   If Dragging And (DSrc=7+I) Then Begin
-    If FN[I]>1 Then DrawCard(X,Y1+TOPY,Fnd[I,FN[I]-1]) Else DrawSlot(X,Y1+TOPY);
-   End Else DrawCard(X,Y1+TOPY,Fnd[I,FN[I]]);
-  End Else DrawSlot(X,Y1+TOPY);
+  SolColX(Wd_,3+I,X);
+  If Dt_^.FN[I]>0 Then Begin
+   If Dt_^.Dragging And (Dt_^.DSrc=7+I) Then Begin
+    If Dt_^.FN[I]>1 Then SolDrawCard(Wd_,X,Y1+TOPY,Dt_^.Fnd[I,Dt_^.FN[I]-1]) Else SolDrawSlot(Wd_,X,Y1+TOPY);
+   End Else SolDrawCard(Wd_,X,Y1+TOPY,Dt_^.Fnd[I,Dt_^.FN[I]]);
+  End Else SolDrawSlot(Wd_,X,Y1+TOPY);
  End;
  { colonnes }
  For I:=1 To 7 Do Begin
-  ColX(I,X);
-  If TN[I]=0 Then DrawSlot(X,Y1+TABY);
-  For K:=1 To TN[I] Do Begin
-   If Dragging And (DSrc=I) And (K>TN[I]-DCount) Then
+  SolColX(Wd_,I,X);
+  If Dt_^.TN[I]=0 Then SolDrawSlot(Wd_,X,Y1+TABY);
+  For K:=1 To Dt_^.TN[I] Do Begin
+   If Dt_^.Dragging And (Dt_^.DSrc=I) And (K>Dt_^.TN[I]-Dt_^.DCount) Then
    Else Begin
-    Y:=CardY(I,K);
-    If K<=TD[I] Then DrawBack(X,Y) Else DrawCard(X,Y,Tab[I,K]);
+    Y:=SolCardY(Wd_,I,K);
+    If K<=Dt_^.TD[I] Then SolDrawBack(Wd_,X,Y) Else SolDrawCard(Wd_,X,Y,Dt_^.Tab[I,K]);
    End;
   End;
  End;
  { barre d'etat }
  GBar(X1,Y2-18,X2,Y2,cLGr);
  GHLine(X1,X2,Y2-18,cWht);
- S:=T3('Score: ','Score : ','Punkte: ')+IntStr(Score)+'     '+T3('Time: ','Temps : ','Zeit: ')+IntStr(Secs Div 60)+':'+Pad2(Secs Mod 60);
+ S:=T3('Score: ','Score : ','Punkte: ')+IntStr(Dt_^.Score)+'     '+T3('Time: ','Temps : ','Zeit: ')+IntStr(Dt_^.Secs Div 60)+':'+Pad2(Dt_^.Secs Mod 60);
  GText(X1+10,Y2-12,S,cBlk);
 End;
 
-Function TSolit.Idle: Boolean;
+Function SolIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PSolit;
 Var N: LongInt;
 Begin
- Idle:=False;
- If Started And Not Won And Not Iconic Then Begin
-  N:=(NowCs-StartCs) Div 100;
-  If N<0 Then N:=Secs+1;
-  If N<>Secs Then Begin Secs:=N;Idle:=True;End;
+ Dt_:=Wd_^.Data;
+ SolIdle:=False;
+ If Dt_^.Started And Not Dt_^.Won And Not Wd_^.Iconic Then Begin
+  N:=(NowCs-Dt_^.StartCs) Div 100;
+  If N<0 Then N:=Dt_^.Secs+1;
+  If N<>Dt_^.Secs Then Begin Dt_^.Secs:=N;SolIdle:=True;End;
  End;
 End;
 
-Function TSolit.CanTab(C,Col: Integer): Boolean;
+Function SolCanTab(Wd_: PWindow; C,Col: Integer): Boolean;
+ Var Dt_: PSolit;
 Var T: Integer;
 Begin
- If TN[Col]=0 Then CanTab:=CardRank(C)=12
+ Dt_:=Wd_^.Data;
+ If Dt_^.TN[Col]=0 Then SolCanTab:=CardRank(C)=12
  Else Begin
-  T:=Tab[Col,TN[Col]];
-  CanTab:=(CardRed(C)<>CardRed(T)) And (CardRank(C)=CardRank(T)-1);
+  T:=Dt_^.Tab[Col,Dt_^.TN[Col]];
+  SolCanTab:=(CardRed(C)<>CardRed(T)) And (CardRank(C)=CardRank(T)-1);
  End;
 End;
 
-Function TSolit.CanFnd(C,F: Integer): Boolean;
+Function SolCanFnd(Wd_: PWindow; C,F: Integer): Boolean;
+ Var Dt_: PSolit;
 Begin
- If FN[F]=0 Then CanFnd:=CardRank(C)=0
- Else CanFnd:=(CardSuit(Fnd[F,FN[F]])=CardSuit(C)) And (CardRank(C)=CardRank(Fnd[F,FN[F]])+1);
+ Dt_:=Wd_^.Data;
+ If Dt_^.FN[F]=0 Then SolCanFnd:=CardRank(C)=0
+ Else SolCanFnd:=(CardSuit(Dt_^.Fnd[F,Dt_^.FN[F]])=CardSuit(C)) And (CardRank(C)=CardRank(Dt_^.Fnd[F,Dt_^.FN[F]])+1);
 End;
 
-Function TSolit.AutoFnd(C: Integer): Integer;
+Function SolAutoFnd(Wd_: PWindow; C: Integer): Integer;
+ Var Dt_: PSolit;
 Var F: Integer;
 Begin
- AutoFnd:=0;
- For F:=1 To 4 Do If CanFnd(C,F) Then Begin AutoFnd:=F;Exit;End;
+ Dt_:=Wd_^.Data;
+ SolAutoFnd:=0;
+ For F:=1 To 4 Do If SolCanFnd(Wd_,C,F) Then Begin SolAutoFnd:=F;Exit;End;
 End;
 
-Procedure TSolit.Flip(Col: Integer);
+Procedure SolFlip(Wd_: PWindow; Col: Integer);
+ Var Dt_: PSolit;
 Begin
- If (TN[Col]>0) And (TD[Col]>=TN[Col]) Then Begin
-  TD[Col]:=TN[Col]-1;
-  Inc(Score,5);
+ Dt_:=Wd_^.Data;
+ If (Dt_^.TN[Col]>0) And (Dt_^.TD[Col]>=Dt_^.TN[Col]) Then Begin
+  Dt_^.TD[Col]:=Dt_^.TN[Col]-1;
+  Inc(Dt_^.Score,5);
  End;
 End;
 
-Procedure TSolit.CheckWin;
+Procedure SolCheckWin(Wd_: PWindow);
+ Var Dt_: PSolit;
 Var I,T: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  T:=0;
- For I:=1 To 4 Do Inc(T,FN[I]);
- If (T=52) And Not Won Then Begin
-  Won:=True;
+ For I:=1 To 4 Do Inc(T,Dt_^.FN[I]);
+ If (T=52) And Not Dt_^.Won Then Begin
+  Dt_^.Won:=True;
   Info('Solitaire',T3('Congratulations! You won!','F'#130'licitations ! Vous avez gagn'#130' !','Gl'#129'ckwunsch! Sie haben gewonnen!'));
  End;
 End;
 
-Procedure TSolit.RemoveSrc;
+Procedure SolRemoveSrc(Wd_: PWindow);
+ Var Dt_: PSolit;
 Begin
- If DSrc=0 Then Dec(WN)
- Else If DSrc<=7 Then Begin Dec(TN[DSrc],DCount);Flip(DSrc);End
- Else Dec(FN[DSrc-7]);
+ Dt_:=Wd_^.Data;
+ If Dt_^.DSrc=0 Then Dec(Dt_^.WN)
+ Else If Dt_^.DSrc<=7 Then Begin Dec(Dt_^.TN[Dt_^.DSrc],Dt_^.DCount);SolFlip(Wd_,Dt_^.DSrc);End
+ Else Dec(Dt_^.FN[Dt_^.DSrc-7]);
 End;
 
-Procedure TSolit.Rubber;
+Procedure SolRubber(Wd_: PWindow);
+ Var Dt_: PSolit;
 Var X1,Y1,X2,Y2: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  ClipFull;
  SetWriteMode(XORPut);
  SetColor(15);
- Rectangle(RX,RY,RX+CWD-1,RY+CHT+(DCount-1)*FDY-1);
- Rectangle(RX+1,RY+1,RX+CWD-2,RY+CHT+(DCount-1)*FDY-2);
+ Rectangle(Dt_^.RX,Dt_^.RY,Dt_^.RX+CWD-1,Dt_^.RY+CHT+(Dt_^.DCount-1)*FDY-1);
+ Rectangle(Dt_^.RX+1,Dt_^.RY+1,Dt_^.RX+CWD-2,Dt_^.RY+CHT+(Dt_^.DCount-1)*FDY-2);
  SetWriteMode(NormalPut);
 End;
 
-Procedure TSolit.OnMouse(Var E: TEvent);
+Procedure SolOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PSolit;
 Var X1,Y1,X2,Y2,I,K,X,Y,C,F,Col,Tx: Integer; Hit: Boolean; CxC: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  If E.Kind=EV_DOWN Then Begin
-  Dragging:=False;
+  Dt_^.Dragging:=False;
   { talon }
-  ColX(1,X);
+  SolColX(Wd_,1,X);
   If InBox(E.X,E.Y,X,Y1+TOPY,X+CWD-1,Y1+TOPY+CHT-1) Then Begin
-   If Not Started Then Begin Started:=True;StartCs:=NowCs;End;
-   If SN>0 Then Begin
-    K:=1;If Draw3 Then K:=Min2(3,SN);
-    For I:=1 To K Do Begin Inc(WN);Waste[WN]:=Stock[SN];Dec(SN);End;
-   End Else If WN>0 Then Begin
-    For I:=WN DownTo 1 Do Begin Inc(SN);Stock[SN]:=Waste[I];End;
-    WN:=0;
-    If Not Draw3 Then Score:=Max2(0,Score-100);
+   If Not Dt_^.Started Then Begin Dt_^.Started:=True;Dt_^.StartCs:=NowCs;End;
+   If Dt_^.SN>0 Then Begin
+    K:=1;If Dt_^.Draw3 Then K:=Min2(3,Dt_^.SN);
+    For I:=1 To K Do Begin Inc(Dt_^.WN);Dt_^.Waste[Dt_^.WN]:=Dt_^.Stock[Dt_^.SN];Dec(Dt_^.SN);End;
+   End Else If Dt_^.WN>0 Then Begin
+    For I:=Dt_^.WN DownTo 1 Do Begin Inc(Dt_^.SN);Dt_^.Stock[Dt_^.SN]:=Dt_^.Waste[I];End;
+    Dt_^.WN:=0;
+    If Not Dt_^.Draw3 Then Dt_^.Score:=Max2(0,Dt_^.Score-100);
    End;
-   Invalidate(@Self);Exit;
+   Invalidate(Wd_);Exit;
   End;
   { defausse }
-  ColX(2,X);
-  If (WN>0) And InBox(E.X,E.Y,X+Ord(Draw3 And (WN>1))*14*(Min2(WN,3)-1),Y1+TOPY,X+Ord(Draw3 And (WN>1))*14*(Min2(WN,3)-1)+CWD-1,Y1+TOPY+CHT-1) Then Begin
+  SolColX(Wd_,2,X);
+  If (Dt_^.WN>0) And InBox(E.X,E.Y,X+Ord(Dt_^.Draw3 And (Dt_^.WN>1))*14*(Min2(Dt_^.WN,3)-1),Y1+TOPY,X+Ord(Dt_^.Draw3 And (Dt_^.WN>1))*14*(Min2(Dt_^.WN,3)-1)+CWD-1,Y1+TOPY+CHT-1) Then Begin
    If E.Dbl Then Begin
-    F:=AutoFnd(Waste[WN]);
+    F:=SolAutoFnd(Wd_,Dt_^.Waste[Dt_^.WN]);
     If F>0 Then Begin
-     Inc(FN[F]);Fnd[F,FN[F]]:=Waste[WN];Dec(WN);Inc(Score,10);CheckWin;Invalidate(@Self);
+     Inc(Dt_^.FN[F]);Dt_^.Fnd[F,Dt_^.FN[F]]:=Dt_^.Waste[Dt_^.WN];Dec(Dt_^.WN);Inc(Dt_^.Score,10);SolCheckWin(Wd_);Invalidate(Wd_);
     End;
     Exit;
    End;
-   Dragging:=True;DSrc:=0;DCount:=1;DCards[1]:=Waste[WN];
-   GrabX:=E.X-(X+Ord(Draw3 And (WN>1))*14*(Min2(WN,3)-1));GrabY:=E.Y-(Y1+TOPY);
+   Dt_^.Dragging:=True;Dt_^.DSrc:=0;Dt_^.DCount:=1;Dt_^.DCards[1]:=Dt_^.Waste[Dt_^.WN];
+   Dt_^.GrabX:=E.X-(X+Ord(Dt_^.Draw3 And (Dt_^.WN>1))*14*(Min2(Dt_^.WN,3)-1));Dt_^.GrabY:=E.Y-(Y1+TOPY);
   End;
   { fondations }
-  If Not Dragging Then
+  If Not Dt_^.Dragging Then
    For I:=1 To 4 Do Begin
-    ColX(3+I,X);
-    If (FN[I]>0) And InBox(E.X,E.Y,X,Y1+TOPY,X+CWD-1,Y1+TOPY+CHT-1) Then Begin
-     Dragging:=True;DSrc:=7+I;DCount:=1;DCards[1]:=Fnd[I,FN[I]];GrabX:=E.X-X;GrabY:=E.Y-(Y1+TOPY);
+    SolColX(Wd_,3+I,X);
+    If (Dt_^.FN[I]>0) And InBox(E.X,E.Y,X,Y1+TOPY,X+CWD-1,Y1+TOPY+CHT-1) Then Begin
+     Dt_^.Dragging:=True;Dt_^.DSrc:=7+I;Dt_^.DCount:=1;Dt_^.DCards[1]:=Dt_^.Fnd[I,Dt_^.FN[I]];Dt_^.GrabX:=E.X-X;Dt_^.GrabY:=E.Y-(Y1+TOPY);
     End;
    End;
   { colonnes }
-  If Not Dragging Then
+  If Not Dt_^.Dragging Then
    For I:=1 To 7 Do Begin
-    ColX(I,X);
-    K:=TN[I];
-    While (K>=1) And Not Dragging Do Begin
-     Y:=CardY(I,K);
-     If K>TD[I] Then Begin
-      If K=TN[I] Then Tx:=Y+CHT-1 Else Tx:=CardY(I,K+1)-1;
+    SolColX(Wd_,I,X);
+    K:=Dt_^.TN[I];
+    While (K>=1) And Not Dt_^.Dragging Do Begin
+     Y:=SolCardY(Wd_,I,K);
+     If K>Dt_^.TD[I] Then Begin
+      If K=Dt_^.TN[I] Then Tx:=Y+CHT-1 Else Tx:=SolCardY(Wd_,I,K+1)-1;
       If InBox(E.X,E.Y,X,Y,X+CWD-1,Tx) Then Begin
-       If E.Dbl And (K=TN[I]) Then Begin
-        F:=AutoFnd(Tab[I,K]);
+       If E.Dbl And (K=Dt_^.TN[I]) Then Begin
+        F:=SolAutoFnd(Wd_,Dt_^.Tab[I,K]);
         If F>0 Then Begin
-         Inc(FN[F]);Fnd[F,FN[F]]:=Tab[I,K];Dec(TN[I]);Flip(I);Inc(Score,10);CheckWin;
-         Invalidate(@Self);Exit;
+         Inc(Dt_^.FN[F]);Dt_^.Fnd[F,Dt_^.FN[F]]:=Dt_^.Tab[I,K];Dec(Dt_^.TN[I]);SolFlip(Wd_,I);Inc(Dt_^.Score,10);SolCheckWin(Wd_);
+         Invalidate(Wd_);Exit;
         End;
        End;
-       Dragging:=True;DSrc:=I;DCount:=TN[I]-K+1;
-       For C:=1 To DCount Do DCards[C]:=Tab[I,K+C-1];
-       GrabX:=E.X-X;GrabY:=E.Y-Y;
+       Dt_^.Dragging:=True;Dt_^.DSrc:=I;Dt_^.DCount:=Dt_^.TN[I]-K+1;
+       For C:=1 To Dt_^.DCount Do Dt_^.DCards[C]:=Dt_^.Tab[I,K+C-1];
+       Dt_^.GrabX:=E.X-X;Dt_^.GrabY:=E.Y-Y;
       End;
      End;
      Dec(K);
     End;
    End;
-  If Dragging Then Begin
-   If Not Started Then Begin Started:=True;StartCs:=NowCs;End;
-   RX:=E.X-GrabX;RY:=E.Y-GrabY;
+  If Dt_^.Dragging Then Begin
+   If Not Dt_^.Started Then Begin Dt_^.Started:=True;Dt_^.StartCs:=NowCs;End;
+   Dt_^.RX:=E.X-Dt_^.GrabX;Dt_^.RY:=E.Y-Dt_^.GrabY;
    HideMouse;
-   Dirty:=False;
-   PaintWinClient(@Self);
+   Wd_^.Dirty:=False;
+   PaintWinClient(Wd_);
    HideMouse;
-   Rubber;RShown:=True;
+   SolRubber(Wd_);Dt_^.RShown:=True;
    ShowMouse;
   End;
  End Else If E.Kind=EV_MOVE Then Begin
-  If Dragging Then Begin
+  If Dt_^.Dragging Then Begin
    HideMouse;
-   If RShown Then Rubber;
-   RX:=E.X-GrabX;RY:=E.Y-GrabY;
-   Rubber;RShown:=True;
+   If Dt_^.RShown Then SolRubber(Wd_);
+   Dt_^.RX:=E.X-Dt_^.GrabX;Dt_^.RY:=E.Y-Dt_^.GrabY;
+   SolRubber(Wd_);Dt_^.RShown:=True;
    ShowMouse;
   End;
  End Else If E.Kind=EV_UP Then Begin
-  If Dragging Then Begin
+  If Dt_^.Dragging Then Begin
    HideMouse;
-   If RShown Then Rubber;
-   RShown:=False;
+   If Dt_^.RShown Then SolRubber(Wd_);
+   Dt_^.RShown:=False;
    ShowMouse;
-   Dragging:=False;
-   CxC:=RX+CWD Div 2;Hit:=False;
+   Dt_^.Dragging:=False;
+   CxC:=Dt_^.RX+CWD Div 2;Hit:=False;
    { colonne de tableau ? }
-   If RY+CHT>Y1+TABY-20 Then Begin
+   If Dt_^.RY+CHT>Y1+TABY-20 Then Begin
     For I:=1 To 7 Do Begin
-     ColX(I,X);
+     SolColX(Wd_,I,X);
      If (CxC>=X-GAPX Div 2+CWD Div 2) And (CxC<X+CWD+(GAPX-CWD) Div 2+0) And Not Hit Then
-      If CanTab(DCards[1],I) And (I<>DSrc) Then Begin
+      If SolCanTab(Wd_,Dt_^.DCards[1],I) And (I<>Dt_^.DSrc) Then Begin
        Hit:=True;
-       RemoveSrc;
-       For K:=1 To DCount Do Begin Inc(TN[I]);Tab[I,TN[I]]:=DCards[K];End;
-       If DSrc=0 Then Inc(Score,5) Else If DSrc>7 Then Score:=Max2(0,Score-15);
+       SolRemoveSrc(Wd_);
+       For K:=1 To Dt_^.DCount Do Begin Inc(Dt_^.TN[I]);Dt_^.Tab[I,Dt_^.TN[I]]:=Dt_^.DCards[K];End;
+       If Dt_^.DSrc=0 Then Inc(Dt_^.Score,5) Else If Dt_^.DSrc>7 Then Dt_^.Score:=Max2(0,Dt_^.Score-15);
       End;
     End;
-   End Else If DCount=1 Then Begin
+   End Else If Dt_^.DCount=1 Then Begin
     For I:=1 To 4 Do Begin
-     ColX(3+I,X);
+     SolColX(Wd_,3+I,X);
      If (CxC>=X-6) And (CxC<X+CWD+6) And Not Hit Then
-      If CanFnd(DCards[1],I) And (DSrc<>7+I) Then Begin
+      If SolCanFnd(Wd_,Dt_^.DCards[1],I) And (Dt_^.DSrc<>7+I) Then Begin
        Hit:=True;
-       RemoveSrc;
-       Inc(FN[I]);Fnd[I,FN[I]]:=DCards[1];
-       If DSrc<=7 Then Inc(Score,10);
-       CheckWin;
+       SolRemoveSrc(Wd_);
+       Inc(Dt_^.FN[I]);Dt_^.Fnd[I,Dt_^.FN[I]]:=Dt_^.DCards[1];
+       If Dt_^.DSrc<=7 Then Inc(Dt_^.Score,10);
+       SolCheckWin(Wd_);
       End;
     End;
    End;
   End;
-  Invalidate(@Self);
+  Invalidate(Wd_);
  End;
 End;
 
-Procedure TSolit.OnKey(K: Word);
+Procedure SolOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PSolit;
 Begin
- If K=K_F2 Then Begin Deal;Invalidate(@Self);End;
+ Dt_:=Wd_^.Data;
+ If K=K_F2 Then Begin SolDeal(Wd_);Invalidate(Wd_);End;
 End;
 
-Procedure TSolit.PrepareMenus;
+Procedure SolPrepareMenus(Wd_: PWindow);
+ Var Dt_: PSolit;
 Begin
- SetFlag(CM_DRAW1,2,Not Draw3);SetFlag(CM_DRAW3,2,Draw3);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_DRAW1,2,Not Dt_^.Draw3);WinSetFlag(Wd_,CM_DRAW3,2,Dt_^.Draw3);
 End;
 
-Procedure TSolit.OnCommand(Cmd: Integer);
+Procedure SolOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PSolit;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_GNEW: Begin Deal;Invalidate(@Self);End;
-  CM_DRAW1: Begin Draw3:=False;Deal;Invalidate(@Self);End;
-  CM_DRAW3: Begin Draw3:=True;Deal;Invalidate(@Self);End;
- Else CommonCmd(@Self,Cmd);
+  CM_GNEW: Begin SolDeal(Wd_);Invalidate(Wd_);End;
+  CM_DRAW1: Begin Dt_^.Draw3:=False;SolDeal(Wd_);Invalidate(Wd_);End;
+  CM_DRAW3: Begin Dt_^.Draw3:=True;SolDeal(Wd_);Invalidate(Wd_);End;
+ Else CommonCmd(Wd_,Cmd);
  End;
 End;
 
@@ -6986,35 +7150,43 @@ Const
 
 Type
  PPrefs = ^TPrefs;
- TPrefs = Object(TWindow)
+ TPrefs = Record
   Sel : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure CellRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
-  Procedure Art(I,X,Y: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure Module(I: Integer);
  End;
 
-Constructor TPrefs.Init(AX,AY: Integer);
+Function PrefNew(AX,AY: Integer): PWindow; Forward;
+Procedure PrefCellRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure PrefArt(Wd_: PWindow; I,X,Y: Integer); Forward;
+Procedure PrefDrawClient(Wd_: PWindow); Forward;
+Procedure PrefModule(Wd_: PWindow; I: Integer); Forward;
+Procedure PrefOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure PrefOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure PrefOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function PrefNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PPrefs;
 Begin
- TWindow.Init(A_PREFS,AX,AY,4*112+12+BORDER*2,BORDER*2+TITLE_H+MENU_H+4*74+16,T3('Preferences','Pr'#130'f'#130'rences','Einstellungen'));
- IconId:=IC_PREF;Resizable:=False;Sel:=6;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_PREFS,AX,AY,4*112+12+BORDER*2,BORDER*2+TITLE_H+MENU_H+4*74+16,T3('Preferences','Pr'#130'f'#130'rences','Einstellungen'));
+ Wd_^.IconId:=IC_PREF;Wd_^.Resizable:=False;Dt_^.Sel:=6;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ PrefNew:=Wd_;
 End;
 
-Procedure TPrefs.CellRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Procedure PrefCellRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PPrefs;
 Var CX1,CY1,CX2,CY2: Integer;
 Begin
- ClientRect(CX1,CY1,CX2,CY2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,CX1,CY1,CX2,CY2);
  X1:=CX1+6+(I Mod 4)*112;Y1:=CY1+6+(I Div 4)*74;X2:=X1+107;Y2:=Y1+69;
 End;
 
-Procedure TPrefs.Art(I,X,Y: Integer);
+Procedure PrefArt(Wd_: PWindow; I,X,Y: Integer);
+ Var Dt_: PPrefs;
 Begin
+ Dt_:=Wd_^.Data;
  Case I Of
   0: Begin GBar(X+8,Y+2,X+40,Y+22,cDGr);GBar(X+10,Y+4,X+38,Y+20,cBlk);
       GBar(X+10,Y+4,X+17,Y+20,cWht);GBar(X+17,Y+4,X+24,Y+20,cYel);GBar(X+24,Y+4,X+31,Y+20,cLCy);
@@ -7047,27 +7219,31 @@ Begin
  End;
 End;
 
-Procedure TPrefs.DrawClient;
+Procedure PrefDrawClient(Wd_: PWindow);
+ Var Dt_: PPrefs;
 Var X1,Y1,X2,Y2,I,A1,B1,A2,B2: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  For I:=0 To 15 Do Begin
-  CellRect(I,A1,B1,A2,B2);
+  PrefCellRect(Wd_,I,A1,B1,A2,B2);
   Btn3D(A1,B1,A2,B2,False);
   GBar(A1+20,B1+4,A2-20,B1+40,cLGr);
   Sunken1(A1+20,B1+4,A2-20,B1+40);
-  Art(I,A1+30,B1+8);
+  PrefArt(Wd_,I,A1+30,B1+8);
   S:=TL(PrefNames[I]);
   GTextCtr(A1,A2,B1+50,S,cBlk);
   GTextCtr(A1+1,A2+1,B1+50,S,cBlk);
-  If I=Sel Then GDotRect(A1+2,B1+2,A2-2,B2-2,cBlk);
+  If I=Dt_^.Sel Then GDotRect(A1+2,B1+2,A2-2,B2-2,cBlk);
  End;
 End;
 
-Procedure TPrefs.Module(I: Integer);
+Procedure PrefModule(Wd_: PWindow; I: Integer);
+ Var Dt_: PPrefs;
 Var R,K: Integer; S: String; Y,M,D,W,H,Mi,Sc,C: Word;
 Begin
+ Dt_:=Wd_^.Data;
  Case I Of
   6: Begin
       R:=ChoiceBox(T3('Background','Fond d''ecran','Hintergrund'),T3('Pattern:','Motif :','Muster:'),
@@ -7120,34 +7296,40 @@ Begin
  End;
 End;
 
-Procedure TPrefs.OnMouse(Var E: TEvent);
+Procedure PrefOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PPrefs;
 Var I,X1,Y1,X2,Y2: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind=EV_DOWN Then
   For I:=0 To 15 Do Begin
-   CellRect(I,X1,Y1,X2,Y2);
+   PrefCellRect(Wd_,I,X1,Y1,X2,Y2);
    If InBox(E.X,E.Y,X1,Y1,X2,Y2) Then Begin
-    Sel:=I;Invalidate(@Self);
-    If E.Dbl Then Module(I);
+    Dt_^.Sel:=I;Invalidate(Wd_);
+    If E.Dbl Then PrefModule(Wd_,I);
    End;
   End;
 End;
 
-Procedure TPrefs.OnKey(K: Word);
+Procedure PrefOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PPrefs;
 Begin
+ Dt_:=Wd_^.Data;
  Case K Of
-  K_LEFT: If Sel>0 Then Dec(Sel);
-  K_RIGHT: If Sel<15 Then Inc(Sel);
-  K_UP: If Sel>=4 Then Dec(Sel,4);
-  K_DOWN: If Sel<12 Then Inc(Sel,4);
-  K_ENTER: Module(Sel);
+  K_LEFT: If Dt_^.Sel>0 Then Dec(Dt_^.Sel);
+  K_RIGHT: If Dt_^.Sel<15 Then Inc(Dt_^.Sel);
+  K_UP: If Dt_^.Sel>=4 Then Dec(Dt_^.Sel,4);
+  K_DOWN: If Dt_^.Sel<12 Then Inc(Dt_^.Sel,4);
+  K_ENTER: PrefModule(Wd_,Dt_^.Sel);
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Procedure TPrefs.OnCommand(Cmd: Integer);
+Procedure PrefOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PPrefs;
 Begin
- CommonCmd(@Self,Cmd);
+ Dt_:=Wd_^.Data;
+ CommonCmd(Wd_,Cmd);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -7156,82 +7338,94 @@ End;
 
 Type
  PBanner = ^TBanner;
- TBanner = Object(TWindow)
+ TBanner = Record
   Txt : String[40];
   Sz  : Integer;
   Col : Integer;
   Box : Boolean;
-  Constructor Init(AX,AY: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
  End;
 
-Constructor TBanner.Init(AX,AY: Integer);
+Function BanNew(AX,AY: Integer): PWindow; Forward;
+Procedure BanPrepareMenus(Wd_: PWindow); Forward;
+Procedure BanDrawClient(Wd_: PWindow); Forward;
+Procedure BanOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure BanOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function BanNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PBanner;
 Begin
- TWindow.Init(A_BANNER,AX,AY,480,260,'GeoBanner');
- IconId:=IC_BANNER;MinW:=260;MinH:=160;
- Txt:='GeoWorks';Sz:=4;Col:=cBlu;Box:=True;
- AddMenu('File~Fichier~Datei');
- AddItem('Print~Imprimer~Drucken',CM_PRINT,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Options~Options~Optionen');
- AddItem('Small~Petit~Klein',CM_BSZ1,'');
- AddItem('Medium~Moyen~Mittel',CM_BSZ2,'');
- AddItem('Large~Grand~Gro'#225,CM_BSZ3,'');
- AddItem('Huge~'#130'norme~Riesig',CM_BSZ4,'');
- AddSep;
- AddItem('Text Color...~Couleur du texte...~Textfarbe...',CM_BCOL,'');
- AddItem('Border~Bordure~Rahmen',CM_BBOX,'');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_BANNER,AX,AY,480,260,'GeoBanner');
+ Wd_^.IconId:=IC_BANNER;Wd_^.MinW:=260;Wd_^.MinH:=160;
+ Dt_^.Txt:='GeoWorks';Dt_^.Sz:=4;Dt_^.Col:=cBlu;Dt_^.Box:=True;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Print~Imprimer~Drucken',CM_PRINT,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Small~Petit~Klein',CM_BSZ1,'');
+ WinAddItem(Wd_,'Medium~Moyen~Mittel',CM_BSZ2,'');
+ WinAddItem(Wd_,'Large~Grand~Gro'#225,CM_BSZ3,'');
+ WinAddItem(Wd_,'Huge~'#130'norme~Riesig',CM_BSZ4,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Text Color...~Couleur du texte...~Textfarbe...',CM_BCOL,'');
+ WinAddItem(Wd_,'Border~Bordure~Rahmen',CM_BBOX,'');
+ BanNew:=Wd_;
 End;
 
-Procedure TBanner.PrepareMenus;
+Procedure BanPrepareMenus(Wd_: PWindow);
+ Var Dt_: PBanner;
 Begin
- SetFlag(CM_BSZ1,2,Sz=2);SetFlag(CM_BSZ2,2,Sz=4);SetFlag(CM_BSZ3,2,Sz=6);SetFlag(CM_BSZ4,2,Sz=8);
- SetFlag(CM_BBOX,2,Box);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_BSZ1,2,Dt_^.Sz=2);WinSetFlag(Wd_,CM_BSZ2,2,Dt_^.Sz=4);WinSetFlag(Wd_,CM_BSZ3,2,Dt_^.Sz=6);WinSetFlag(Wd_,CM_BSZ4,2,Dt_^.Sz=8);
+ WinSetFlag(Wd_,CM_BBOX,2,Dt_^.Box);
 End;
 
-Procedure TBanner.DrawClient;
+Procedure BanDrawClient(Wd_: PWindow);
+ Var Dt_: PBanner;
 Var X1,Y1,X2,Y2,S,TW,TH: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  GText(X1+8,Y1+8,T3('Banner text:','Texte de la banni'#138're :','Bannertext:'),cBlk);
  Sunken(X1+8,Y1+20,X2-8,Y1+42,cWht);
- GText(X1+12,Y1+27,Txt+'_',cBlk);
+ GText(X1+12,Y1+27,Dt_^.Txt+'_',cBlk);
  Sunken(X1+8,Y1+50,X2-8,Y2-8,cWht);
- S:=Sz;
- TW:=Length(Txt)*8*S;
- While (S>1) And (TW>X2-X1-40) Do Begin Dec(S);TW:=Length(Txt)*8*S;End;
+ S:=Dt_^.Sz;
+ TW:=Length(Dt_^.Txt)*8*S;
+ While (S>1) And (TW>X2-X1-40) Do Begin Dec(S);TW:=Length(Dt_^.Txt)*8*S;End;
  TH:=8*S;
- If Box Then GRect(X1+14,Y1+56,X2-14,Y2-14,cBlk);
- GTextBig((X1+X2-TW) Div 2,(Y1+50+Y2-8-TH) Div 2,Txt,S,Col);
- GTextBig((X1+X2-TW) Div 2+1,(Y1+50+Y2-8-TH) Div 2,Txt,S,Col);
+ If Dt_^.Box Then GRect(X1+14,Y1+56,X2-14,Y2-14,cBlk);
+ GTextBig((X1+X2-TW) Div 2,(Y1+50+Y2-8-TH) Div 2,Dt_^.Txt,S,Dt_^.Col);
+ GTextBig((X1+X2-TW) Div 2+1,(Y1+50+Y2-8-TH) Div 2,Dt_^.Txt,S,Dt_^.Col);
 End;
 
-Procedure TBanner.OnKey(K: Word);
+Procedure BanOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PBanner;
 Begin
- If K=K_BKSP Then Begin If Txt<>'' Then Delete(Txt,Length(Txt),1);End
- Else If (K>=32) And (K<256) And (Length(Txt)<30) Then Txt:=Txt+Chr(K);
- Invalidate(@Self);
+ Dt_:=Wd_^.Data;
+ If K=K_BKSP Then Begin If Dt_^.Txt<>'' Then Delete(Dt_^.Txt,Length(Dt_^.Txt),1);End
+ Else If (K>=32) And (K<256) And (Length(Dt_^.Txt)<30) Then Dt_^.Txt:=Dt_^.Txt+Chr(K);
+ Invalidate(Wd_);
 End;
 
-Procedure TBanner.OnCommand(Cmd: Integer);
+Procedure BanOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PBanner;
 Var R: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_BSZ1: Sz:=2;
-  CM_BSZ2: Sz:=4;
-  CM_BSZ3: Sz:=6;
-  CM_BSZ4: Sz:=8;
-  CM_BCOL: Begin R:=ChoiceBox(T3('Color','Couleur','Farbe'),T3('Text color:','Couleur du texte :','Textfarbe:'),ColorList,Col+1);If R>0 Then Col:=R-1;End;
-  CM_BBOX: Box:=Not Box;
+  CM_BSZ1: Dt_^.Sz:=2;
+  CM_BSZ2: Dt_^.Sz:=4;
+  CM_BSZ3: Dt_^.Sz:=6;
+  CM_BSZ4: Dt_^.Sz:=8;
+  CM_BCOL: Begin R:=ChoiceBox(T3('Color','Couleur','Farbe'),T3('Text color:','Couleur du texte :','Textfarbe:'),ColorList,Dt_^.Col+1);If R>0 Then Dt_^.Col:=R-1;End;
+  CM_BBOX: Dt_^.Box:=Not Dt_^.Box;
   CM_PRINT: Info('GeoBanner',T3('No printer available.','Aucune imprimante disponible.','Kein Drucker verf'#129'gbar.'));
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -7240,73 +7434,85 @@ End;
 
 Type
  PScrap = ^TScrap;
- TScrap = Object(TWindow)
+ TScrap = Record
   Page : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
  End;
 
-Constructor TScrap.Init(AX,AY: Integer);
+Function ScrNew(AX,AY: Integer): PWindow; Forward;
+Procedure ScrDrawClient(Wd_: PWindow); Forward;
+Procedure ScrOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure ScrOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure ScrOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function ScrNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PScrap;
 Begin
- TWindow.Init(A_SCRAP,AX,AY,380,300,'Scrapbook');
- IconId:=IC_SCRAP;Resizable:=False;Page:=0;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Edit~'#144'dition~Bearbeiten');
- AddItem('Copy~Copier~Kopieren',CM_COPYIC,'Ctrl+C');
- AddMenu('View~Affichage~Ansicht');
- AddItem('Next~Suivant~Weiter',CM_NEXTP,'');
- AddItem('Previous~Pr'#130'c'#130'dent~Zur'#129'ck',CM_PREVP,'');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_SCRAP,AX,AY,380,300,'Scrapbook');
+ Wd_^.IconId:=IC_SCRAP;Wd_^.Resizable:=False;Dt_^.Page:=0;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_COPYIC,'Ctrl+C');
+ WinAddMenu(Wd_,'View~Affichage~Ansicht');
+ WinAddItem(Wd_,'Next~Suivant~Weiter',CM_NEXTP,'');
+ WinAddItem(Wd_,'Previous~Pr'#130'c'#130'dent~Zur'#129'ck',CM_PREVP,'');
+ ScrNew:=Wd_;
 End;
 
-Procedure TScrap.DrawClient;
+Procedure ScrDrawClient(Wd_: PWindow);
+ Var Dt_: PScrap;
 Var X1,Y1,X2,Y2: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  Sunken(X1+8,Y1+8,X2-8,Y2-44,cWht);
- If BigIcon(Page)>=0 Then Begin
-  DrawIconZ(BigIcon(Page),(X1+X2-IconWd[BigIcon(Page)]*3) Div 2,Y1+30,3);
-  S:=T3('Picture ','Image ','Bild ')+IntStr(Page+1)+T3(' of ',' sur ',' von ')+IntStr(NICONS)+'  (64x40)';
+ If BigIcon(Dt_^.Page)>=0 Then Begin
+  DrawIconZ(BigIcon(Dt_^.Page),(X1+X2-IconWd[BigIcon(Dt_^.Page)]*3) Div 2,Y1+30,3);
+  S:=T3('Picture ','Image ','Bild ')+IntStr(Dt_^.Page+1)+T3(' of ',' sur ',' von ')+IntStr(NICONS)+'  (64x40)';
  End Else Begin
-  DrawIconZ(Page,(X1+X2-IconWd[Page]*4) Div 2,Y1+30,4);
-  S:=T3('Picture ','Image ','Bild ')+IntStr(Page+1)+T3(' of ',' sur ',' von ')+IntStr(NICONS)+'  (48x30)';
+  DrawIconZ(Dt_^.Page,(X1+X2-IconWd[Dt_^.Page]*4) Div 2,Y1+30,4);
+  S:=T3('Picture ','Image ','Bild ')+IntStr(Dt_^.Page+1)+T3(' of ',' sur ',' von ')+IntStr(NICONS)+'  (48x30)';
  End;
  GTextCtr(X1,X2,Y2-36,S,cBlk);
- Button(X1+8,Y2-26,X1+80,Y2-4,'<<',False,False,Page>0);
- Button(X2-80,Y2-26,X2-8,Y2-4,'>>',False,False,Page<NICONS-1);
+ Button(X1+8,Y2-26,X1+80,Y2-4,'<<',False,False,Dt_^.Page>0);
+ Button(X2-80,Y2-26,X2-8,Y2-4,'>>',False,False,Dt_^.Page<NICONS-1);
 End;
 
-Procedure TScrap.OnMouse(Var E: TEvent);
+Procedure ScrOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PScrap;
 Var X1,Y1,X2,Y2: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind<>EV_DOWN Then Exit;
- ClientRect(X1,Y1,X2,Y2);
- If InBox(E.X,E.Y,X1+8,Y2-26,X1+80,Y2-4) And (Page>0) Then Dec(Page);
- If InBox(E.X,E.Y,X2-80,Y2-26,X2-8,Y2-4) And (Page<NICONS-1) Then Inc(Page);
- Invalidate(@Self);
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ If InBox(E.X,E.Y,X1+8,Y2-26,X1+80,Y2-4) And (Dt_^.Page>0) Then Dec(Dt_^.Page);
+ If InBox(E.X,E.Y,X2-80,Y2-26,X2-8,Y2-4) And (Dt_^.Page<NICONS-1) Then Inc(Dt_^.Page);
+ Invalidate(Wd_);
 End;
 
-Procedure TScrap.OnKey(K: Word);
+Procedure ScrOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PScrap;
 Begin
- If (K=K_LEFT) And (Page>0) Then Dec(Page);
- If (K=K_RIGHT) And (Page<NICONS-1) Then Inc(Page);
- If K=K_CTRLC Then OnCommand(CM_COPYIC);
- Invalidate(@Self);
+ Dt_:=Wd_^.Data;
+ If (K=K_LEFT) And (Dt_^.Page>0) Then Dec(Dt_^.Page);
+ If (K=K_RIGHT) And (Dt_^.Page<NICONS-1) Then Inc(Dt_^.Page);
+ If K=K_CTRLC Then ScrOnCommand(Wd_,CM_COPYIC);
+ Invalidate(Wd_);
 End;
 
-Procedure TScrap.OnCommand(Cmd: Integer);
+Procedure ScrOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PScrap;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_COPYIC: ClipIconId:=Page;
-  CM_NEXTP: If Page<NICONS-1 Then Inc(Page);
-  CM_PREVP: If Page>0 Then Dec(Page);
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+  CM_COPYIC: ClipIconId:=Dt_^.Page;
+  CM_NEXTP: If Dt_^.Page<NICONS-1 Then Inc(Dt_^.Page);
+  CM_PREVP: If Dt_^.Page>0 Then Dec(Dt_^.Page);
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -7315,95 +7521,111 @@ End;
 
 Type
  PComm = ^TComm;
- TComm = Object(TWindow)
+ TComm = Record
   Scr  : Array[1..200] Of PString;
   NL   : Integer;
   Cur  : String[78];
-  Constructor Init(AX,AY: Integer);
-  Destructor Done; Virtual;
-  Procedure PutLine(Const S: String);
-  Procedure DrawClient; Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure Execute(Const S: String);
  End;
 
-Constructor TComm.Init(AX,AY: Integer);
+Function CommNew(AX,AY: Integer): PWindow; Forward;
+Procedure CommDone(Wd_: PWindow); Forward;
+Procedure CommPutLine(Wd_: PWindow; Const S: String); Forward;
+Procedure CommExecute(Wd_: PWindow; Const S: String); Forward;
+Procedure CommDrawClient(Wd_: PWindow); Forward;
+Procedure CommOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure CommOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function CommNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PComm;
 Begin
- TWindow.Init(A_COMM,AX,AY,560,330,'GeoComm');
- IconId:=IC_COMM;
- NL:=0;Cur:='';
- AddMenu('File~Fichier~Datei');
- AddItem('Clear Screen~Effacer l'''#130'cran~Bildschirm l'#148'schen',CM_CLRSCR,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Dial~Appeler~W'#132'hlen');
- AddItem('Dial...~Composer...~W'#132'hlen...',CM_DIAL,'');
- AddItem('Hang Up~Raccrocher~Auflegen',CM_HANG,'');
- PutLine('GeoComm - '+T3('local terminal (no modem detected)','terminal local (aucun modem d'#130'tect'#130')','lokales Terminal (kein Modem erkannt)'));
- PutLine(T3('Type AT commands. ATZ resets, ATD dials.','Tapez des commandes AT. ATZ r'#130'initialise, ATD compose.','AT-Befehle eingeben. ATZ setzt zur'#129'ck, ATD w'#132'hlt.'));
- PutLine('');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_COMM,AX,AY,560,330,'GeoComm');
+ Wd_^.IconId:=IC_COMM;
+ Dt_^.NL:=0;Dt_^.Cur:='';
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Clear Screen~Effacer l'''#130'cran~Bildschirm l'#148'schen',CM_CLRSCR,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Dial~Appeler~W'#132'hlen');
+ WinAddItem(Wd_,'Dial...~Composer...~W'#132'hlen...',CM_DIAL,'');
+ WinAddItem(Wd_,'Hang Up~Raccrocher~Auflegen',CM_HANG,'');
+ CommPutLine(Wd_,'GeoComm - '+T3('local terminal (no modem detected)','terminal local (aucun modem d'#130'tect'#130')','lokales Terminal (kein Modem erkannt)'));
+ CommPutLine(Wd_,T3('Type AT commands. ATZ resets, ATD dials.','Tapez des commandes AT. ATZ r'#130'initialise, ATD compose.','AT-Befehle eingeben. ATZ setzt zur'#129'ck, ATD w'#132'hlt.'));
+ CommPutLine(Wd_,'');
+ CommNew:=Wd_;
 End;
 
-Destructor TComm.Done;
+Procedure CommDone(Wd_: PWindow);
+ Var Dt_: PComm;
 Var I: Integer;
 Begin
- For I:=1 To NL Do FreeStr(Scr[I]);
+ Dt_:=Wd_^.Data;
+ For I:=1 To Dt_^.NL Do FreeStr(Dt_^.Scr[I]);
 End;
 
-Procedure TComm.PutLine(Const S: String);
+Procedure CommPutLine(Wd_: PWindow; Const S: String);
+ Var Dt_: PComm;
 Var I: Integer;
 Begin
- If NL>=200 Then Begin FreeStr(Scr[1]);For I:=1 To 199 Do Scr[I]:=Scr[I+1];NL:=199;End;
- Inc(NL);Scr[NL]:=NewStr(S);
+ Dt_:=Wd_^.Data;
+ If Dt_^.NL>=200 Then Begin FreeStr(Dt_^.Scr[1]);For I:=1 To 199 Do Dt_^.Scr[I]:=Dt_^.Scr[I+1];Dt_^.NL:=199;End;
+ Inc(Dt_^.NL);Dt_^.Scr[Dt_^.NL]:=NewStr(S);
 End;
 
-Procedure TComm.Execute(Const S: String);
+Procedure CommExecute(Wd_: PWindow; Const S: String);
+ Var Dt_: PComm;
 Var U: String;
 Begin
+ Dt_:=Wd_^.Data;
  U:=Upper(TrimStr(S));
  If U='' Then Exit;
  If Copy(U,1,2)='AT' Then Begin
-  If Copy(U,1,3)='ATD' Then Begin PutLine('NO DIALTONE');End
-  Else If Copy(U,1,3)='ATH' Then PutLine('OK')
-  Else PutLine('OK');
- End Else PutLine('?');
+  If Copy(U,1,3)='ATD' Then Begin CommPutLine(Wd_,'NO DIALTONE');End
+  Else If Copy(U,1,3)='ATH' Then CommPutLine(Wd_,'OK')
+  Else CommPutLine(Wd_,'OK');
+ End Else CommPutLine(Wd_,'?');
 End;
 
-Procedure TComm.DrawClient;
+Procedure CommDrawClient(Wd_: PWindow);
+ Var Dt_: PComm;
 Var X1,Y1,X2,Y2,Rw,I,K: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cBlk);
  Rw:=(Y2-Y1-6) Div 10;
- K:=NL-Rw+2;
+ K:=Dt_^.NL-Rw+2;
  If K<1 Then K:=1;
- For I:=K To NL Do GText(X1+4,Y1+4+(I-K)*10,Scr[I]^,cLGr);
- GText(X1+4,Y1+4+(NL-K+1)*10,Cur+#219,cWht);
+ For I:=K To Dt_^.NL Do GText(X1+4,Y1+4+(I-K)*10,Dt_^.Scr[I]^,cLGr);
+ GText(X1+4,Y1+4+(Dt_^.NL-K+1)*10,Dt_^.Cur+#219,cWht);
 End;
 
-Procedure TComm.OnKey(K: Word);
+Procedure CommOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PComm;
 Begin
- If K=K_ENTER Then Begin PutLine(Cur);Execute(Cur);Cur:='';End
- Else If K=K_BKSP Then Begin If Cur<>'' Then Delete(Cur,Length(Cur),1);End
- Else If (K>=32) And (K<256) And (Length(Cur)<76) Then Cur:=Cur+Chr(K);
- Invalidate(@Self);
+ Dt_:=Wd_^.Data;
+ If K=K_ENTER Then Begin CommPutLine(Wd_,Dt_^.Cur);CommExecute(Wd_,Dt_^.Cur);Dt_^.Cur:='';End
+ Else If K=K_BKSP Then Begin If Dt_^.Cur<>'' Then Delete(Dt_^.Cur,Length(Dt_^.Cur),1);End
+ Else If (K>=32) And (K<256) And (Length(Dt_^.Cur)<76) Then Dt_^.Cur:=Dt_^.Cur+Chr(K);
+ Invalidate(Wd_);
 End;
 
-Procedure TComm.OnCommand(Cmd: Integer);
+Procedure CommOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PComm;
 Var S: String;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_CLRSCR: Begin While NL>0 Do Begin FreeStr(Scr[NL]);Dec(NL);End;Invalidate(@Self);End;
+  CM_CLRSCR: Begin While Dt_^.NL>0 Do Begin FreeStr(Dt_^.Scr[Dt_^.NL]);Dec(Dt_^.NL);End;Invalidate(Wd_);End;
   CM_DIAL: Begin
             S:='';
             If InputBox(T3('Dial','Appeler','W'#132'hlen'),T3('Phone number:','Num'#130'ro de t'#130'l'#130'phone :','Telefonnummer:'),S,30) Then Begin
-             PutLine('ATD'+S);PutLine('NO DIALTONE');
+             CommPutLine(Wd_,'ATD'+S);CommPutLine(Wd_,'NO DIALTONE');
             End;
-            Invalidate(@Self);
+            Invalidate(Wd_);
            End;
-  CM_HANG: Begin PutLine('ATH');PutLine('OK');Invalidate(@Self);End;
- Else CommonCmd(@Self,Cmd);
+  CM_HANG: Begin CommPutLine(Wd_,'ATH');CommPutLine(Wd_,'OK');Invalidate(Wd_);End;
+ Else CommonCmd(Wd_,Cmd);
  End;
 End;
 
@@ -7413,24 +7635,31 @@ End;
 
 Type
  PAol = ^TAol;
- TAol = Object(TWindow)
-  Constructor Init(AX,AY: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
+ TAol = Record
+
  End;
 
-Constructor TAol.Init(AX,AY: Integer);
+Function AolNew(AX,AY: Integer): PWindow; Forward;
+Procedure AolDrawClient(Wd_: PWindow); Forward;
+Procedure AolOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+
+Function AolNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PAol;
 Begin
- TWindow.Init(A_AOL,AX,AY,440,250,'America Online');
- IconId:=IC_AOL;Resizable:=False;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_AOL,AX,AY,440,250,'America Online');
+ Wd_^.IconId:=IC_AOL;Wd_^.Resizable:=False;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ AolNew:=Wd_;
 End;
 
-Procedure TAol.DrawClient;
+Procedure AolDrawClient(Wd_: PWindow);
+ Var Dt_: PAol;
 Var X1,Y1,X2,Y2: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  DrawIconZ(IC_AOL,X1+20,Y1+16,3);
  VecText(X1+160,Y1+20,16,28,'AMERICA',cBlu,2);
@@ -7440,14 +7669,16 @@ Begin
  Button(X1+270,Y2-40,X1+380,Y2-14,T3('Exit','Quitter','Beenden'),False,False,True);
 End;
 
-Procedure TAol.OnMouse(Var E: TEvent);
+Procedure AolOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PAol;
 Var X1,Y1,X2,Y2: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind<>EV_DOWN Then Exit;
- ClientRect(X1,Y1,X2,Y2);
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  If InBox(E.X,E.Y,X1+40,Y2-40,X1+150,Y2-14) Then
   Info('America Online',T3('No modem detected.','Aucun modem d'#130'tect'#130'.','Kein Modem erkannt.'));
- If InBox(E.X,E.Y,X1+270,Y2-40,X1+380,Y2-14) Then Dead:=True;
+ If InBox(E.X,E.Y,X1+270,Y2-40,X1+380,Y2-14) Then Wd_^.Dead:=True;
 End;
 
 { ---------------------------------------------------------------------- }
@@ -7456,38 +7687,46 @@ End;
 
 Type
  PPerf = ^TPerf;
- TPerf = Object(TWindow)
+ TPerf = Record
   Hist : Array[1..60] Of Integer;
   LastCs : LongInt;
-  Constructor Init(AX,AY: Integer);
-  Procedure DrawClient; Virtual;
-  Function  Idle: Boolean; Virtual;
  End;
 
-Constructor TPerf.Init(AX,AY: Integer);
+Function PerfNew(AX,AY: Integer): PWindow; Forward;
+Function PerfIdle(Wd_: PWindow): Boolean; Forward;
+Procedure PerfDrawClient(Wd_: PWindow); Forward;
+
+Function PerfNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PPerf;
 Begin
- TWindow.Init(A_PERF,AX,AY,300,200,'Perf');
- IconId:=IC_PERF;Resizable:=False;
- FillChar(Hist,SizeOf(Hist),0);LastCs:=NowCs;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_PERF,AX,AY,300,200,'Perf');
+ Wd_^.IconId:=IC_PERF;Wd_^.Resizable:=False;
+ FillChar(Dt_^.Hist,SizeOf(Dt_^.Hist),0);Dt_^.LastCs:=NowCs;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ PerfNew:=Wd_;
 End;
 
-Function TPerf.Idle: Boolean;
+Function PerfIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PPerf;
 Var I: Integer;
 Begin
- For I:=1 To 59 Do Hist[I]:=Hist[I+1];
- Hist[60]:=Clamp(Random(30)+NWins*8,0,100);
- Idle:=Not Iconic;
+ Dt_:=Wd_^.Data;
+ For I:=1 To 59 Do Dt_^.Hist[I]:=Dt_^.Hist[I+1];
+ Dt_^.Hist[60]:=Clamp(Random(30)+NWins*8,0,100);
+ PerfIdle:=Not Wd_^.Iconic;
 End;
 
-Procedure TPerf.DrawClient;
+Procedure PerfDrawClient(Wd_: PWindow);
+ Var Dt_: PPerf;
 Var X1,Y1,X2,Y2,I: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  Sunken(X1+8,Y1+8,X2-8,Y1+100,cBlk);
- For I:=1 To 60 Do GVLine(X1+10+I*4,Y1+98-Hist[I],Y1+98,cLGn);
+ For I:=1 To 60 Do GVLine(X1+10+I*4,Y1+98-Dt_^.Hist[I],Y1+98,cLGn);
  GText(X1+10,Y1+110,T3('Activity','Activit'#130,'Aktivit'#132't'),cBlk);
  S:=T3('Free memory: ','M'#130'moire libre : ','Freier Speicher: ')+NumFmt(FreeMemory);
  GText(X1+10,Y1+126,S,cBlk);
@@ -7497,39 +7736,47 @@ End;
 
 Type
  PBounce = ^TBounce;
- TBounce = Object(TWindow)
+ TBounce = Record
   BX,BY,VX_,VY_ : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure DrawClient; Virtual;
-  Function  Idle: Boolean; Virtual;
  End;
 
-Constructor TBounce.Init(AX,AY: Integer);
+Function BncNew(AX,AY: Integer): PWindow; Forward;
+Function BncIdle(Wd_: PWindow): Boolean; Forward;
+Procedure BncDrawClient(Wd_: PWindow); Forward;
+
+Function BncNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PBounce;
 Begin
- TWindow.Init(A_BOUNCE,AX,AY,320,240,'Bounce');
- IconId:=IC_UNKNOWN;
- BX:=40;BY:=40;VX_:=5;VY_:=4;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_BOUNCE,AX,AY,320,240,'Bounce');
+ Wd_^.IconId:=IC_UNKNOWN;
+ Dt_^.BX:=40;Dt_^.BY:=40;Dt_^.VX_:=5;Dt_^.VY_:=4;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ BncNew:=Wd_;
 End;
 
-Function TBounce.Idle: Boolean;
+Function BncIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PBounce;
 Var X1,Y1,X2,Y2: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
- BX:=BX+VX_;BY:=BY+VY_;
- If (BX<12) Or (BX>X2-X1-12) Then Begin VX_:=-VX_;BX:=Clamp(BX,12,X2-X1-12);End;
- If (BY<12) Or (BY>Y2-Y1-12) Then Begin VY_:=-VY_;BY:=Clamp(BY,12,Y2-Y1-12);End;
- Idle:=Not Iconic;
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ Dt_^.BX:=Dt_^.BX+Dt_^.VX_;Dt_^.BY:=Dt_^.BY+Dt_^.VY_;
+ If (Dt_^.BX<12) Or (Dt_^.BX>X2-X1-12) Then Begin Dt_^.VX_:=-Dt_^.VX_;Dt_^.BX:=Clamp(Dt_^.BX,12,X2-X1-12);End;
+ If (Dt_^.BY<12) Or (Dt_^.BY>Y2-Y1-12) Then Begin Dt_^.VY_:=-Dt_^.VY_;Dt_^.BY:=Clamp(Dt_^.BY,12,Y2-Y1-12);End;
+ BncIdle:=Not Wd_^.Iconic;
 End;
 
-Procedure TBounce.DrawClient;
+Procedure BncDrawClient(Wd_: PWindow);
+ Var Dt_: PBounce;
 Var X1,Y1,X2,Y2: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cBlk);
- GFillEllipse(X1+BX,Y1+BY,10,10,cLRd);
- GEllipse(X1+BX,Y1+BY,10,10,cWht);
+ GFillEllipse(X1+Dt_^.BX,Y1+Dt_^.BY,10,10,cLRd);
+ GEllipse(X1+Dt_^.BX,Y1+Dt_^.BY,10,10,cWht);
 End;
 
 { ====================================================================== }
@@ -7549,72 +7796,78 @@ Type
  End;
 
  PPlanner = ^TPlanner;
- TPlanner = Object(TWindow)
+ TPlanner = Record
   Ap     : Array[1..MAXAP] Of TAppt;
   NAp    : Integer;
   CY,CM_,CD : Integer;     { date selectionnee }
   TY,TM,TD  : Integer;     { aujourd'hui }
   SelAp  : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure LoadData;
-  Procedure SaveData;
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Function  CanClose: Boolean; Virtual;
-  Procedure DayRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
-  Function  CountDay(Y,M,D: Integer): Integer;
-  Function  NthOfDay(Y,M,D,N: Integer): Integer;
-  Procedure AddAp;
-  Procedure EditAp;
-  Procedure DelAp;
-  Procedure MoveMonth(Delta: Integer);
  End;
 
-Constructor TPlanner.Init(AX,AY: Integer);
+Function PlnNew(AX,AY: Integer): PWindow; Forward;
+Procedure PlnLoadData(Wd_: PWindow); Forward;
+Procedure PlnSaveData(Wd_: PWindow); Forward;
+Function PlnCanClose(Wd_: PWindow): Boolean; Forward;
+Function PlnCountDay(Wd_: PWindow; Y,M,D: Integer): Integer; Forward;
+Function PlnNthOfDay(Wd_: PWindow; Y,M,D,N: Integer): Integer; Forward;
+Procedure PlnDayRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure PlnDrawClient(Wd_: PWindow); Forward;
+Procedure PlnMoveMonth(Wd_: PWindow; Delta: Integer); Forward;
+Procedure PlnAddAp(Wd_: PWindow); Forward;
+Procedure PlnEditAp(Wd_: PWindow); Forward;
+Procedure PlnDelAp(Wd_: PWindow); Forward;
+Procedure PlnOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure PlnOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure PlnOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function PlnNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PPlanner;
 Var Y,M,D,W: Word;
 Begin
- TWindow.Init(A_PLANNER,AX,AY,520,330,'GeoPlanner');
- IconId:=IC_PLAN;MinW:=520;MinH:=330;
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_PLANNER,AX,AY,520,330,'GeoPlanner');
+ Wd_^.IconId:=IC_PLAN;Wd_^.MinW:=520;Wd_^.MinH:=330;
  GetDate(Y,M,D,W);
- CY:=Y;CM_:=M;CD:=D;TY:=Y;TM:=M;TD:=D;
- NAp:=0;SelAp:=0;
- AddMenu('File~Fichier~Datei');
- AddItem('Save~Enregistrer~Speichern',CM_PSAVE,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('View~Affichage~Ansicht');
- AddItem('Today~Aujourd''hui~Heute',CM_PTODAY,'');
- AddItem('Next Month~Mois suivant~N'#132'chster Monat',CM_PNEXT,'PgDn');
- AddItem('Previous Month~Mois pr'#130'c'#130'dent~Vorheriger Monat',CM_PPREV,'PgUp');
- AddItem('Next Year~Ann'#130'e suivante~N'#132'chstes Jahr',CM_PNEXTY,'');
- AddItem('Previous Year~Ann'#130'e pr'#130'c'#130'dente~Vorheriges Jahr',CM_PPREVY,'');
- AddMenu('Event~'#144'v'#130'nement~Termin');
- AddItem('New...~Nouveau...~Neu...',CM_PNEWAP,'');
- AddItem('Edit...~Modifier...~'#142'ndern...',CM_PEDIT,'');
- AddItem('Delete~Supprimer~L'#148'schen',CM_PDEL,'');
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- LoadData;
+ Dt_^.CY:=Y;Dt_^.CM_:=M;Dt_^.CD:=D;Dt_^.TY:=Y;Dt_^.TM:=M;Dt_^.TD:=D;
+ Dt_^.NAp:=0;Dt_^.SelAp:=0;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_PSAVE,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'View~Affichage~Ansicht');
+ WinAddItem(Wd_,'Today~Aujourd''hui~Heute',CM_PTODAY,'');
+ WinAddItem(Wd_,'Next Month~Mois suivant~N'#132'chster Monat',CM_PNEXT,'PgDn');
+ WinAddItem(Wd_,'Previous Month~Mois pr'#130'c'#130'dent~Vorheriger Monat',CM_PPREV,'PgUp');
+ WinAddItem(Wd_,'Next Year~Ann'#130'e suivante~N'#132'chstes Jahr',CM_PNEXTY,'');
+ WinAddItem(Wd_,'Previous Year~Ann'#130'e pr'#130'c'#130'dente~Vorheriges Jahr',CM_PPREVY,'');
+ WinAddMenu(Wd_,'Event~'#144'v'#130'nement~Termin');
+ WinAddItem(Wd_,'New...~Nouveau...~Neu...',CM_PNEWAP,'');
+ WinAddItem(Wd_,'Edit...~Modifier...~'#142'ndern...',CM_PEDIT,'');
+ WinAddItem(Wd_,'Delete~Supprimer~L'#148'schen',CM_PDEL,'');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ PlnLoadData(Wd_);
+ PlnNew:=Wd_;
 End;
 
-Procedure TPlanner.LoadData;
+Procedure PlnLoadData(Wd_: PWindow);
+ Var Dt_: PPlanner;
 Var F: Text; S: String; A: TAppt; Cde: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,JoinPath(HomeDir,'PLANNER.DAT'));
  Reset(F);
  {$I+}
  If IOResult<>0 Then Exit;
  {$I-}
- While Not Eof(F) And (NAp<MAXAP) Do Begin
+ While Not Eof(F) And (Dt_^.NAp<MAXAP) Do Begin
   ReadLn(F,S);
   If Length(S)>=18 Then Begin
    Val(Copy(S,1,4),A.Y,Cde);Val(Copy(S,6,2),A.M,Cde);Val(Copy(S,9,2),A.D,Cde);
    A.Tm:=Copy(S,12,5);A.Txt:=Copy(S,18,60);
-   Inc(NAp);Ap[NAp]:=A;
+   Inc(Dt_^.NAp);Dt_^.Ap[Dt_^.NAp]:=A;
   End;
  End;
  Close(F);
@@ -7622,202 +7875,228 @@ Begin
  If IOResult<>0 Then Begin End;
 End;
 
-Procedure TPlanner.SaveData;
+Procedure PlnSaveData(Wd_: PWindow);
+ Var Dt_: PPlanner;
 Var F: Text; I: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,JoinPath(HomeDir,'PLANNER.DAT'));
  Rewrite(F);
- For I:=1 To NAp Do
-  WriteLn(F,IntStr(Ap[I].Y),'-',Pad2(Ap[I].M),'-',Pad2(Ap[I].D),' ',Ap[I].Tm,' ',Ap[I].Txt);
+ For I:=1 To Dt_^.NAp Do
+  WriteLn(F,IntStr(Dt_^.Ap[I].Y),'-',Pad2(Dt_^.Ap[I].M),'-',Pad2(Dt_^.Ap[I].D),' ',Dt_^.Ap[I].Tm,' ',Dt_^.Ap[I].Txt);
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
 End;
 
-Function TPlanner.CanClose: Boolean;
+Function PlnCanClose(Wd_: PWindow): Boolean;
+ Var Dt_: PPlanner;
 Begin
- SaveData;
- CanClose:=True;
+ Dt_:=Wd_^.Data;
+ PlnSaveData(Wd_);
+ PlnCanClose:=True;
 End;
 
-Function TPlanner.CountDay(Y,M,D: Integer): Integer;
+Function PlnCountDay(Wd_: PWindow; Y,M,D: Integer): Integer;
+ Var Dt_: PPlanner;
 Var I,N: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  N:=0;
- For I:=1 To NAp Do If (Ap[I].Y=Y) And (Ap[I].M=M) And (Ap[I].D=D) Then Inc(N);
- CountDay:=N;
+ For I:=1 To Dt_^.NAp Do If (Dt_^.Ap[I].Y=Y) And (Dt_^.Ap[I].M=M) And (Dt_^.Ap[I].D=D) Then Inc(N);
+ PlnCountDay:=N;
 End;
 
-Function TPlanner.NthOfDay(Y,M,D,N: Integer): Integer;
+Function PlnNthOfDay(Wd_: PWindow; Y,M,D,N: Integer): Integer;
+ Var Dt_: PPlanner;
 Var I,K: Integer;
 Begin
- K:=0;NthOfDay:=0;
- For I:=1 To NAp Do
-  If (Ap[I].Y=Y) And (Ap[I].M=M) And (Ap[I].D=D) Then Begin
+ Dt_:=Wd_^.Data;
+ K:=0;PlnNthOfDay:=0;
+ For I:=1 To Dt_^.NAp Do
+  If (Dt_^.Ap[I].Y=Y) And (Dt_^.Ap[I].M=M) And (Dt_^.Ap[I].D=D) Then Begin
    Inc(K);
-   If K=N Then Begin NthOfDay:=I;Exit;End;
+   If K=N Then Begin PlnNthOfDay:=I;Exit;End;
   End;
 End;
 
-Procedure TPlanner.DayRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Procedure PlnDayRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PPlanner;
 Var CX1,CY1,CX2,CY2: Integer;
 Begin
- ClientRect(CX1,CY1,CX2,CY2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,CX1,CY1,CX2,CY2);
  X1:=CX1+10+(I Mod 7)*36;Y1:=CY1+64+(I Div 7)*28;X2:=X1+34;Y2:=Y1+26;
 End;
 
-Procedure TPlanner.DrawClient;
+Procedure PlnDrawClient(Wd_: PWindow);
+ Var Dt_: PPlanner;
 Var X1,Y1,X2,Y2,I,N,First,DM,A,B,C,D,K,PX: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
- S:=MonthName(CM_);S[1]:=UpCase(S[1]);
- S:=S+' '+IntStr(CY);
+ S:=MonthName(Dt_^.CM_);S[1]:=UpCase(S[1]);
+ S:=S+' '+IntStr(Dt_^.CY);
  Button(X1+10,Y1+8,X1+34,Y1+30,'<',False,False,True);
  Button(X1+10+216,Y1+8,X1+10+250,Y1+30,'>',False,False,True);
  GTextCtr(X1+36,X1+10+214,Y1+15,S,cBlk);
  GTextCtr(X1+37,X1+10+215,Y1+15,S,cBlk);
  For I:=0 To 6 Do GTextCtr(X1+10+I*36,X1+10+I*36+34,Y1+44,Copy(DayName((I+1) Mod 7),1,2),cBlk);
- First:=DayOfWeek(CY,CM_,1);
+ First:=DayOfWeek(Dt_^.CY,Dt_^.CM_,1);
  First:=(First+6) Mod 7;
- DM:=DaysInMonth(CY,CM_);
+ DM:=DaysInMonth(Dt_^.CY,Dt_^.CM_);
  For I:=0 To 41 Do Begin
-  DayRect(I,A,B,C,D);
+  PlnDayRect(Wd_,I,A,B,C,D);
   N:=I-First+1;
   If (N>=1) And (N<=DM) Then Begin
-   If (N=CD) Then Begin Btn3D(A,B,C,D,True);End
+   If (N=Dt_^.CD) Then Begin Btn3D(A,B,C,D,True);End
    Else Begin GBar(A,B,C,D,cWht);GRect(A,B,C,D,cDGr);End;
-   If (CY=TY) And (CM_=TM) And (N=TD) Then Begin GRect(A+1,B+1,C-1,D-1,cRed);GRect(A+2,B+2,C-2,D-2,cRed);End;
+   If (Dt_^.CY=Dt_^.TY) And (Dt_^.CM_=Dt_^.TM) And (N=Dt_^.TD) Then Begin GRect(A+1,B+1,C-1,D-1,cRed);GRect(A+2,B+2,C-2,D-2,cRed);End;
    GText(A+4,B+4,IntStr(N),cBlk);
-   K:=CountDay(CY,CM_,N);
+   K:=PlnCountDay(Wd_,Dt_^.CY,Dt_^.CM_,N);
    If K>0 Then GBar(A+4,D-6,C-4,D-3,cBlu);
   End Else GBar(A,B,C,D,cLGr);
  End;
  { liste des evenements }
  PX:=X1+280;
- S:=LongDateStr(CY,CM_,CD,DayOfWeek(CY,CM_,CD));
+ S:=LongDateStr(Dt_^.CY,Dt_^.CM_,Dt_^.CD,DayOfWeek(Dt_^.CY,Dt_^.CM_,Dt_^.CD));
  GText(PX,Y1+10,Copy(S,1,(X2-PX-6) Div 8),cBlk);
  Sunken(PX,Y1+28,X2-8,Y2-44,cWht);
- K:=CountDay(CY,CM_,CD);
+ K:=PlnCountDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD);
  For I:=1 To Min2(K,14) Do Begin
-  A:=NthOfDay(CY,CM_,CD,I);
-  If I=SelAp Then GBar(PX+3,Y1+31+(I-1)*14,X2-11,Y1+43+(I-1)*14,cBlk);
-  If I=SelAp Then GText(PX+6,Y1+34+(I-1)*14,Ap[A].Tm+' '+Ap[A].Txt,cWht)
-  Else GText(PX+6,Y1+34+(I-1)*14,Ap[A].Tm+' '+Ap[A].Txt,cBlk);
+  A:=PlnNthOfDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD,I);
+  If I=Dt_^.SelAp Then GBar(PX+3,Y1+31+(I-1)*14,X2-11,Y1+43+(I-1)*14,cBlk);
+  If I=Dt_^.SelAp Then GText(PX+6,Y1+34+(I-1)*14,Dt_^.Ap[A].Tm+' '+Dt_^.Ap[A].Txt,cWht)
+  Else GText(PX+6,Y1+34+(I-1)*14,Dt_^.Ap[A].Tm+' '+Dt_^.Ap[A].Txt,cBlk);
  End;
  Button(PX,Y2-36,PX+60,Y2-12,T3('New','Nouveau','Neu'),False,False,True);
  Button(PX+66,Y2-36,PX+126,Y2-12,T3('Edit','Modifier','Edit.'),False,False,K>0);
  Button(PX+132,Y2-36,PX+192,Y2-12,T3('Delete','Suppr.','L'#148'sch.'),False,False,K>0);
 End;
 
-Procedure TPlanner.MoveMonth(Delta: Integer);
+Procedure PlnMoveMonth(Wd_: PWindow; Delta: Integer);
+ Var Dt_: PPlanner;
 Begin
- CM_:=CM_+Delta;
- While CM_>12 Do Begin CM_:=CM_-12;Inc(CY);End;
- While CM_<1 Do Begin CM_:=CM_+12;Dec(CY);End;
- If CD>DaysInMonth(CY,CM_) Then CD:=DaysInMonth(CY,CM_);
- SelAp:=0;
+ Dt_:=Wd_^.Data;
+ Dt_^.CM_:=Dt_^.CM_+Delta;
+ While Dt_^.CM_>12 Do Begin Dt_^.CM_:=Dt_^.CM_-12;Inc(Dt_^.CY);End;
+ While Dt_^.CM_<1 Do Begin Dt_^.CM_:=Dt_^.CM_+12;Dec(Dt_^.CY);End;
+ If Dt_^.CD>DaysInMonth(Dt_^.CY,Dt_^.CM_) Then Dt_^.CD:=DaysInMonth(Dt_^.CY,Dt_^.CM_);
+ Dt_^.SelAp:=0;
 End;
 
-Procedure TPlanner.AddAp;
+Procedure PlnAddAp(Wd_: PWindow);
+ Var Dt_: PPlanner;
 Var T,S: String; A: TAppt;
 Begin
- If NAp>=MAXAP Then Exit;
+ Dt_:=Wd_^.Data;
+ If Dt_^.NAp>=MAXAP Then Exit;
  T:='09:00';
  If Not InputBox(T3('New Event','Nouvel '#130'v'#130'nement','Neuer Termin'),T3('Time (HH:MM):','Heure (HH:MM) :','Zeit (HH:MM):'),T,5) Then Exit;
  S:='';
  If Not InputBox(T3('New Event','Nouvel '#130'v'#130'nement','Neuer Termin'),T3('Description:','Description :','Beschreibung:'),S,58) Then Exit;
- A.Y:=CY;A.M:=CM_;A.D:=CD;A.Tm:=T;A.Txt:=S;
- Inc(NAp);Ap[NAp]:=A;
- SaveData;
- Invalidate(@Self);
+ A.Y:=Dt_^.CY;A.M:=Dt_^.CM_;A.D:=Dt_^.CD;A.Tm:=T;A.Txt:=S;
+ Inc(Dt_^.NAp);Dt_^.Ap[Dt_^.NAp]:=A;
+ PlnSaveData(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TPlanner.EditAp;
+Procedure PlnEditAp(Wd_: PWindow);
+ Var Dt_: PPlanner;
 Var I: Integer; T,S: String;
 Begin
- If SelAp=0 Then Exit;
- I:=NthOfDay(CY,CM_,CD,SelAp);
+ Dt_:=Wd_^.Data;
+ If Dt_^.SelAp=0 Then Exit;
+ I:=PlnNthOfDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD,Dt_^.SelAp);
  If I=0 Then Exit;
- T:=Ap[I].Tm;S:=Ap[I].Txt;
+ T:=Dt_^.Ap[I].Tm;S:=Dt_^.Ap[I].Txt;
  If InputBox(T3('Edit Event','Modifier','Termin '#132'ndern'),T3('Time (HH:MM):','Heure (HH:MM) :','Zeit (HH:MM):'),T,5) Then
   If InputBox(T3('Edit Event','Modifier','Termin '#132'ndern'),T3('Description:','Description :','Beschreibung:'),S,58) Then Begin
-   Ap[I].Tm:=T;Ap[I].Txt:=S;SaveData;
+   Dt_^.Ap[I].Tm:=T;Dt_^.Ap[I].Txt:=S;PlnSaveData(Wd_);
   End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Procedure TPlanner.DelAp;
+Procedure PlnDelAp(Wd_: PWindow);
+ Var Dt_: PPlanner;
 Var I,K: Integer;
 Begin
- If SelAp=0 Then Exit;
- I:=NthOfDay(CY,CM_,CD,SelAp);
+ Dt_:=Wd_^.Data;
+ If Dt_^.SelAp=0 Then Exit;
+ I:=PlnNthOfDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD,Dt_^.SelAp);
  If I=0 Then Exit;
- For K:=I To NAp-1 Do Ap[K]:=Ap[K+1];
- Dec(NAp);SelAp:=0;SaveData;
- Invalidate(@Self);
+ For K:=I To Dt_^.NAp-1 Do Dt_^.Ap[K]:=Dt_^.Ap[K+1];
+ Dec(Dt_^.NAp);Dt_^.SelAp:=0;PlnSaveData(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TPlanner.OnMouse(Var E: TEvent);
+Procedure PlnOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PPlanner;
 Var X1,Y1,X2,Y2,I,A,B,C,D,First,N,PX,K: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind<>EV_DOWN Then Exit;
- ClientRect(X1,Y1,X2,Y2);
- If InBox(E.X,E.Y,X1+10,Y1+8,X1+34,Y1+30) Then Begin MoveMonth(-1);Invalidate(@Self);Exit;End;
- If InBox(E.X,E.Y,X1+226,Y1+8,X1+260,Y1+30) Then Begin MoveMonth(1);Invalidate(@Self);Exit;End;
- First:=(DayOfWeek(CY,CM_,1)+6) Mod 7;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ If InBox(E.X,E.Y,X1+10,Y1+8,X1+34,Y1+30) Then Begin PlnMoveMonth(Wd_,-1);Invalidate(Wd_);Exit;End;
+ If InBox(E.X,E.Y,X1+226,Y1+8,X1+260,Y1+30) Then Begin PlnMoveMonth(Wd_,1);Invalidate(Wd_);Exit;End;
+ First:=(DayOfWeek(Dt_^.CY,Dt_^.CM_,1)+6) Mod 7;
  For I:=0 To 41 Do Begin
-  DayRect(I,A,B,C,D);
+  PlnDayRect(Wd_,I,A,B,C,D);
   N:=I-First+1;
-  If (N>=1) And (N<=DaysInMonth(CY,CM_)) And InBox(E.X,E.Y,A,B,C,D) Then Begin
-   CD:=N;SelAp:=0;Invalidate(@Self);
-   If E.Dbl Then AddAp;
+  If (N>=1) And (N<=DaysInMonth(Dt_^.CY,Dt_^.CM_)) And InBox(E.X,E.Y,A,B,C,D) Then Begin
+   Dt_^.CD:=N;Dt_^.SelAp:=0;Invalidate(Wd_);
+   If E.Dbl Then PlnAddAp(Wd_);
    Exit;
   End;
  End;
  PX:=X1+280;
- K:=CountDay(CY,CM_,CD);
- If InBox(E.X,E.Y,PX,Y2-36,PX+60,Y2-12) Then AddAp
- Else If InBox(E.X,E.Y,PX+66,Y2-36,PX+126,Y2-12) Then EditAp
- Else If InBox(E.X,E.Y,PX+132,Y2-36,PX+192,Y2-12) Then DelAp
+ K:=PlnCountDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD);
+ If InBox(E.X,E.Y,PX,Y2-36,PX+60,Y2-12) Then PlnAddAp(Wd_)
+ Else If InBox(E.X,E.Y,PX+66,Y2-36,PX+126,Y2-12) Then PlnEditAp(Wd_)
+ Else If InBox(E.X,E.Y,PX+132,Y2-36,PX+192,Y2-12) Then PlnDelAp(Wd_)
  Else If InBox(E.X,E.Y,PX,Y1+28,X2-8,Y2-44) Then Begin
   I:=(E.Y-Y1-31) Div 14+1;
-  If (I>=1) And (I<=K) Then Begin SelAp:=I;Invalidate(@Self);If E.Dbl Then EditAp;End;
+  If (I>=1) And (I<=K) Then Begin Dt_^.SelAp:=I;Invalidate(Wd_);If E.Dbl Then PlnEditAp(Wd_);End;
  End;
 End;
 
-Procedure TPlanner.OnKey(K: Word);
+Procedure PlnOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PPlanner;
 Begin
+ Dt_:=Wd_^.Data;
  Case K Of
-  K_LEFT: If CD>1 Then Dec(CD);
-  K_RIGHT: If CD<DaysInMonth(CY,CM_) Then Inc(CD);
-  K_UP: If CD>7 Then Dec(CD,7);
-  K_DOWN: If CD+7<=DaysInMonth(CY,CM_) Then Inc(CD,7);
-  K_PGUP: MoveMonth(-1);
-  K_PGDN: MoveMonth(1);
-  K_ENTER: AddAp;
-  K_DEL: DelAp;
+  K_LEFT: If Dt_^.CD>1 Then Dec(Dt_^.CD);
+  K_RIGHT: If Dt_^.CD<DaysInMonth(Dt_^.CY,Dt_^.CM_) Then Inc(Dt_^.CD);
+  K_UP: If Dt_^.CD>7 Then Dec(Dt_^.CD,7);
+  K_DOWN: If Dt_^.CD+7<=DaysInMonth(Dt_^.CY,Dt_^.CM_) Then Inc(Dt_^.CD,7);
+  K_PGUP: PlnMoveMonth(Wd_,-1);
+  K_PGDN: PlnMoveMonth(Wd_,1);
+  K_ENTER: PlnAddAp(Wd_);
+  K_DEL: PlnDelAp(Wd_);
  End;
- SelAp:=0;
- Invalidate(@Self);
+ Dt_^.SelAp:=0;
+ Invalidate(Wd_);
 End;
 
-Procedure TPlanner.OnCommand(Cmd: Integer);
+Procedure PlnOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PPlanner;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_PTODAY: Begin CY:=TY;CM_:=TM;CD:=TD;SelAp:=0;End;
-  CM_PNEXT: MoveMonth(1);
-  CM_PPREV: MoveMonth(-1);
-  CM_PNEXTY: MoveMonth(12);
-  CM_PPREVY: MoveMonth(-12);
-  CM_PNEWAP: AddAp;
-  CM_PEDIT: EditAp;
-  CM_PDEL: DelAp;
-  CM_PSAVE: SaveData;
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+  CM_PTODAY: Begin Dt_^.CY:=Dt_^.TY;Dt_^.CM_:=Dt_^.TM;Dt_^.CD:=Dt_^.TD;Dt_^.SelAp:=0;End;
+  CM_PNEXT: PlnMoveMonth(Wd_,1);
+  CM_PPREV: PlnMoveMonth(Wd_,-1);
+  CM_PNEXTY: PlnMoveMonth(Wd_,12);
+  CM_PPREVY: PlnMoveMonth(Wd_,-12);
+  CM_PNEWAP: PlnAddAp(Wd_);
+  CM_PEDIT: PlnEditAp(Wd_);
+  CM_PDEL: PlnDelAp(Wd_);
+  CM_PSAVE: PlnSaveData(Wd_);
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
 { ---------------------------------------------------------------------- }
@@ -7834,70 +8113,76 @@ Type
  End;
 
  PDex = ^TDex;
- TDex = Object(TWindow)
+ TDex = Record
   C     : Array[1..MAXCARD] Of TCard;
   NC    : Integer;
   Cur   : Integer;
   Fld   : Integer;
-  Constructor Init(AX,AY: Integer);
-  Procedure LoadData;
-  Procedure SaveData;
-  Procedure SortCards;
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Function  CanClose: Boolean; Virtual;
-  Procedure NewCard;
-  Procedure DelCard;
-  Procedure FindCard;
-  Procedure FieldRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
  End;
 
-Constructor TDex.Init(AX,AY: Integer);
+Function DexNew(AX,AY: Integer): PWindow; Forward;
+Procedure DexLoadData(Wd_: PWindow); Forward;
+Procedure DexSaveData(Wd_: PWindow); Forward;
+Function DexCanClose(Wd_: PWindow): Boolean; Forward;
+Procedure DexSortCards(Wd_: PWindow); Forward;
+Procedure DexNewCard(Wd_: PWindow); Forward;
+Procedure DexDelCard(Wd_: PWindow); Forward;
+Procedure DexFindCard(Wd_: PWindow); Forward;
+Procedure DexFieldRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure DexDrawClient(Wd_: PWindow); Forward;
+Procedure DexOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure DexOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure DexOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function DexNew(AX,AY: Integer): PWindow;
+ Var Wd_: PWindow; Dt_: PDex;
 Begin
- TWindow.Init(A_DEX,AX,AY,470,330,'GeoDex');
- IconId:=IC_DEX;MinW:=470;MinH:=330;
- NC:=0;Cur:=1;Fld:=1;
- AddMenu('File~Fichier~Datei');
- AddItem('Save~Enregistrer~Speichern',CM_DSAVE,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Card~Fiche~Karte');
- AddItem('New~Nouvelle~Neu',CM_DNEW,'Ctrl+N');
- AddItem('Delete~Supprimer~L'#148'schen',CM_DDEL,'');
- AddItem('Next~Suivante~N'#132'chste',CM_DNEXT,'PgDn');
- AddItem('Previous~Pr'#130'c'#130'dente~Vorherige',CM_DPREV,'PgUp');
- AddItem('Find...~Rechercher...~Suchen...',CM_DFIND,'Ctrl+F');
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- LoadData;
- If NC=0 Then Begin
-  NC:=1;
-  FillChar(C[1],SizeOf(TCard),0);
-  C[1].F[1]:='GeoWorks';C[1].F[2]:='2150 Shattuck Avenue';C[1].F[3]:='Berkeley, CA 94704';
-  C[1].F[4]:='(415) 644-0883';C[1].F[5]:='GeoWorks Ensemble';
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_DEX,AX,AY,470,330,'GeoDex');
+ Wd_^.IconId:=IC_DEX;Wd_^.MinW:=470;Wd_^.MinH:=330;
+ Dt_^.NC:=0;Dt_^.Cur:=1;Dt_^.Fld:=1;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_DSAVE,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Card~Fiche~Karte');
+ WinAddItem(Wd_,'New~Nouvelle~Neu',CM_DNEW,'Ctrl+N');
+ WinAddItem(Wd_,'Delete~Supprimer~L'#148'schen',CM_DDEL,'');
+ WinAddItem(Wd_,'Next~Suivante~N'#132'chste',CM_DNEXT,'PgDn');
+ WinAddItem(Wd_,'Previous~Pr'#130'c'#130'dente~Vorherige',CM_DPREV,'PgUp');
+ WinAddItem(Wd_,'Find...~Rechercher...~Suchen...',CM_DFIND,'Ctrl+F');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ DexLoadData(Wd_);
+ If Dt_^.NC=0 Then Begin
+  Dt_^.NC:=1;
+  FillChar(Dt_^.C[1],SizeOf(TCard),0);
+  Dt_^.C[1].F[1]:='GeoWorks';Dt_^.C[1].F[2]:='2150 Shattuck Avenue';Dt_^.C[1].F[3]:='Berkeley, CA 94704';
+  Dt_^.C[1].F[4]:='(415) 644-0883';Dt_^.C[1].F[5]:='GeoWorks Ensemble';
  End;
+ DexNew:=Wd_;
 End;
 
-Procedure TDex.LoadData;
+Procedure DexLoadData(Wd_: PWindow);
+ Var Dt_: PDex;
 Var F: Text; S: String; I,P: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,JoinPath(HomeDir,'GEODEX.DAT'));
  Reset(F);
  {$I+}
  If IOResult<>0 Then Exit;
  {$I-}
- While Not Eof(F) And (NC<MAXCARD) Do Begin
+ While Not Eof(F) And (Dt_^.NC<MAXCARD) Do Begin
   ReadLn(F,S);
   If S<>'' Then Begin
-   Inc(NC);FillChar(C[NC],SizeOf(TCard),0);
+   Inc(Dt_^.NC);FillChar(Dt_^.C[Dt_^.NC],SizeOf(TCard),0);
    For I:=1 To 5 Do Begin
     P:=Pos(#9,S);
-    If P=0 Then Begin C[NC].F[I]:=Copy(S,1,50);S:='';End
-    Else Begin C[NC].F[I]:=Copy(S,1,P-1);Delete(S,1,P);End;
+    If P=0 Then Begin Dt_^.C[Dt_^.NC].F[I]:=Copy(S,1,50);S:='';End
+    Else Begin Dt_^.C[Dt_^.NC].F[I]:=Copy(S,1,P-1);Delete(S,1,P);End;
    End;
   End;
  End;
@@ -7906,15 +8191,17 @@ Begin
  If IOResult<>0 Then Begin End;
 End;
 
-Procedure TDex.SaveData;
+Procedure DexSaveData(Wd_: PWindow);
+ Var Dt_: PDex;
 Var F: Text; I,K: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,JoinPath(HomeDir,'GEODEX.DAT'));
  Rewrite(F);
- For I:=1 To NC Do Begin
+ For I:=1 To Dt_^.NC Do Begin
   For K:=1 To 5 Do Begin
-   Write(F,C[I].F[K]);
+   Write(F,Dt_^.C[I].F[K]);
    If K<5 Then Write(F,#9);
   End;
   WriteLn(F);
@@ -7924,75 +8211,89 @@ Begin
  If IOResult<>0 Then Begin End;
 End;
 
-Function TDex.CanClose: Boolean;
+Function DexCanClose(Wd_: PWindow): Boolean;
+ Var Dt_: PDex;
 Begin
- SaveData;CanClose:=True;
+ Dt_:=Wd_^.Data;
+ DexSaveData(Wd_);DexCanClose:=True;
 End;
 
-Procedure TDex.SortCards;
+Procedure DexSortCards(Wd_: PWindow);
+ Var Dt_: PDex;
 Var I,J: Integer; T: TCard; Cd: TCard;
 Begin
- Cd:=C[Cur];
- For I:=1 To NC-1 Do
-  For J:=I+1 To NC Do
-   If Upper(C[J].F[1])<Upper(C[I].F[1]) Then Begin T:=C[I];C[I]:=C[J];C[J]:=T;End;
- For I:=1 To NC Do If (C[I].F[1]=Cd.F[1]) And (C[I].F[4]=Cd.F[4]) Then Cur:=I;
+ Dt_:=Wd_^.Data;
+ Cd:=Dt_^.C[Dt_^.Cur];
+ For I:=1 To Dt_^.NC-1 Do
+  For J:=I+1 To Dt_^.NC Do
+   If Upper(Dt_^.C[J].F[1])<Upper(Dt_^.C[I].F[1]) Then Begin T:=Dt_^.C[I];Dt_^.C[I]:=Dt_^.C[J];Dt_^.C[J]:=T;End;
+ For I:=1 To Dt_^.NC Do If (Dt_^.C[I].F[1]=Cd.F[1]) And (Dt_^.C[I].F[4]=Cd.F[4]) Then Dt_^.Cur:=I;
 End;
 
-Procedure TDex.NewCard;
+Procedure DexNewCard(Wd_: PWindow);
+ Var Dt_: PDex;
 Begin
- If NC>=MAXCARD Then Exit;
- SortCards;
- Inc(NC);FillChar(C[NC],SizeOf(TCard),0);
- Cur:=NC;Fld:=1;
- Invalidate(@Self);
+ Dt_:=Wd_^.Data;
+ If Dt_^.NC>=MAXCARD Then Exit;
+ DexSortCards(Wd_);
+ Inc(Dt_^.NC);FillChar(Dt_^.C[Dt_^.NC],SizeOf(TCard),0);
+ Dt_^.Cur:=Dt_^.NC;Dt_^.Fld:=1;
+ Invalidate(Wd_);
 End;
 
-Procedure TDex.DelCard;
+Procedure DexDelCard(Wd_: PWindow);
+ Var Dt_: PDex;
 Var I: Integer;
 Begin
- If NC<=1 Then Begin FillChar(C[1],SizeOf(TCard),0);Exit;End;
+ Dt_:=Wd_^.Data;
+ If Dt_^.NC<=1 Then Begin FillChar(Dt_^.C[1],SizeOf(TCard),0);Exit;End;
  If Not Confirm('GeoDex',T3('Delete this card?','Supprimer cette fiche ?','Diese Karte l'#148'schen?')) Then Exit;
- For I:=Cur To NC-1 Do C[I]:=C[I+1];
- Dec(NC);
- If Cur>NC Then Cur:=NC;
- Invalidate(@Self);
+ For I:=Dt_^.Cur To Dt_^.NC-1 Do Dt_^.C[I]:=Dt_^.C[I+1];
+ Dec(Dt_^.NC);
+ If Dt_^.Cur>Dt_^.NC Then Dt_^.Cur:=Dt_^.NC;
+ Invalidate(Wd_);
 End;
 
-Procedure TDex.FindCard;
+Procedure DexFindCard(Wd_: PWindow);
+ Var Dt_: PDex;
 Var S: String; I,K: Integer; Fnd: Boolean;
 Begin
+ Dt_:=Wd_^.Data;
  S:='';
  If Not InputBox(T3('Find','Rechercher','Suchen'),T3('Find what:','Rechercher :','Suchen nach:'),S,40) Then Exit;
  S:=Upper(S);
- For I:=1 To NC Do Begin
+ For I:=1 To Dt_^.NC Do Begin
   Fnd:=False;
-  For K:=1 To 5 Do If Pos(S,Upper(C[I].F[K]))>0 Then Fnd:=True;
-  If Fnd Then Begin Cur:=I;Invalidate(@Self);Exit;End;
+  For K:=1 To 5 Do If Pos(S,Upper(Dt_^.C[I].F[K]))>0 Then Fnd:=True;
+  If Fnd Then Begin Dt_^.Cur:=I;Invalidate(Wd_);Exit;End;
  End;
  Info(T3('Find','Rechercher','Suchen'),T3('Not found.','Introuvable.','Nicht gefunden.'));
 End;
 
-Procedure TDex.FieldRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Procedure DexFieldRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PDex;
 Var CX1,CY1,CX2,CY2: Integer;
 Begin
- ClientRect(CX1,CY1,CX2,CY2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,CX1,CY1,CX2,CY2);
  X1:=CX1+92;Y1:=CY1+44+(I-1)*30;X2:=CX2-34;Y2:=Y1+20;
 End;
 
-Procedure TDex.DrawClient;
+Procedure DexDrawClient(Wd_: PWindow);
+ Var Dt_: PDex;
 Var X1,Y1,X2,Y2,I,A,B,E,F,L: Integer; Lb: String; Ch: Char;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  { carte }
  GBar(X1+8,Y1+8,X2-30,Y2-34,cYel);
  GRect(X1+8,Y1+8,X2-30,Y2-34,cBlk);
  GBar(X1+9,Y1+9,X2-31,Y1+28,cLRd);
  GHLine(X1+9,X2-31,Y1+30,cBlk);
- GTextB(X1+16,Y1+15,T3('Card ','Fiche ','Karte ')+IntStr(Cur)+T3(' of ',' sur ',' von ')+IntStr(NC),cWht);
+ GTextB(X1+16,Y1+15,T3('Card ','Fiche ','Karte ')+IntStr(Dt_^.Cur)+T3(' of ',' sur ',' von ')+IntStr(Dt_^.NC),cWht);
  For I:=1 To 5 Do Begin
-  FieldRect(I,A,B,E,F);
+  DexFieldRect(Wd_,I,A,B,E,F);
   Case I Of
    1: Lb:=T3('Name','Nom','Name');
    2: Lb:=T3('Address','Adresse','Adresse');
@@ -8002,8 +8303,8 @@ Begin
   End;
   GText(X1+16,B+6,Lb,cBlk);
   Sunken(A,B,E,F,cWht);
-  GText(A+5,B+7,Copy(C[Cur].F[I],1,(E-A-10) Div 8),cBlk);
-  If I=Fld Then GVLine(A+5+Min2(Length(C[Cur].F[I]),(E-A-10) Div 8)*8,B+4,F-4,cBlk);
+  GText(A+5,B+7,Copy(Dt_^.C[Dt_^.Cur].F[I],1,(E-A-10) Div 8),cBlk);
+  If I=Dt_^.Fld Then GVLine(A+5+Min2(Length(Dt_^.C[Dt_^.Cur].F[I]),(E-A-10) Div 8)*8,B+4,F-4,cBlk);
  End;
  { onglets A-Z }
  For I:=0 To 25 Do Begin
@@ -8012,70 +8313,76 @@ Begin
   Btn3D(X2-26,B,X2-4,B+(Y2-Y1-16) Div 26-1,False);
   GText(X2-19,B+((Y2-Y1-16) Div 26-8) Div 2,Ch,cBlk);
  End;
- Button(X1+8,Y2-28,X1+70,Y2-6,'<<',False,False,Cur>1);
- Button(X1+76,Y2-28,X1+138,Y2-6,'>>',False,False,Cur<NC);
+ Button(X1+8,Y2-28,X1+70,Y2-6,'<<',False,False,Dt_^.Cur>1);
+ Button(X1+76,Y2-28,X1+138,Y2-6,'>>',False,False,Dt_^.Cur<Dt_^.NC);
  Button(X1+144,Y2-28,X1+206,Y2-6,T3('New','Nouv.','Neu'),False,False,True);
  Button(X1+212,Y2-28,X1+274,Y2-6,T3('Delete','Suppr.','L'#148'sch.'),False,False,True);
 End;
 
-Procedure TDex.OnMouse(Var E: TEvent);
+Procedure DexOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PDex;
 Var X1,Y1,X2,Y2,I,A,B,C_,D,H: Integer; U: Char;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind<>EV_DOWN Then Exit;
- ClientRect(X1,Y1,X2,Y2);
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  For I:=1 To 5 Do Begin
-  FieldRect(I,A,B,C_,D);
-  If InBox(E.X,E.Y,A,B,C_,D) Then Begin Fld:=I;Invalidate(@Self);Exit;End;
+  DexFieldRect(Wd_,I,A,B,C_,D);
+  If InBox(E.X,E.Y,A,B,C_,D) Then Begin Dt_^.Fld:=I;Invalidate(Wd_);Exit;End;
  End;
  If E.X>=X2-26 Then Begin
   H:=(Y2-Y1-16) Div 26;
   If H>0 Then Begin
    I:=(E.Y-Y1-8) Div H;
    If (I>=0) And (I<=25) Then Begin
-    SortCards;
+    DexSortCards(Wd_);
     U:=Chr(65+I);
-    For D:=1 To NC Do
-     If (C[D].F[1]<>'') And (UpCase(C[D].F[1][1])>=U) Then Begin Cur:=D;Invalidate(@Self);Exit;End;
+    For D:=1 To Dt_^.NC Do
+     If (Dt_^.C[D].F[1]<>'') And (UpCase(Dt_^.C[D].F[1][1])>=U) Then Begin Dt_^.Cur:=D;Invalidate(Wd_);Exit;End;
    End;
   End;
   Exit;
  End;
- If InBox(E.X,E.Y,X1+8,Y2-28,X1+70,Y2-6) And (Cur>1) Then Dec(Cur);
- If InBox(E.X,E.Y,X1+76,Y2-28,X1+138,Y2-6) And (Cur<NC) Then Inc(Cur);
- If InBox(E.X,E.Y,X1+144,Y2-28,X1+206,Y2-6) Then NewCard;
- If InBox(E.X,E.Y,X1+212,Y2-28,X1+274,Y2-6) Then DelCard;
- Invalidate(@Self);
+ If InBox(E.X,E.Y,X1+8,Y2-28,X1+70,Y2-6) And (Dt_^.Cur>1) Then Dec(Dt_^.Cur);
+ If InBox(E.X,E.Y,X1+76,Y2-28,X1+138,Y2-6) And (Dt_^.Cur<Dt_^.NC) Then Inc(Dt_^.Cur);
+ If InBox(E.X,E.Y,X1+144,Y2-28,X1+206,Y2-6) Then DexNewCard(Wd_);
+ If InBox(E.X,E.Y,X1+212,Y2-28,X1+274,Y2-6) Then DexDelCard(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TDex.OnKey(K: Word);
+Procedure DexOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PDex;
 Begin
+ Dt_:=Wd_^.Data;
  Case K Of
-  K_TAB,K_DOWN: Begin Inc(Fld);If Fld>5 Then Fld:=1;End;
-  K_UP: Begin Dec(Fld);If Fld<1 Then Fld:=5;End;
-  K_PGDN: If Cur<NC Then Inc(Cur);
-  K_PGUP: If Cur>1 Then Dec(Cur);
-  K_BKSP: If C[Cur].F[Fld]<>'' Then Delete(C[Cur].F[Fld],Length(C[Cur].F[Fld]),1);
-  K_ENTER: Begin Inc(Fld);If Fld>5 Then Fld:=1;End;
-  K_CTRLN: NewCard;
-  6: FindCard;
+  K_TAB,K_DOWN: Begin Inc(Dt_^.Fld);If Dt_^.Fld>5 Then Dt_^.Fld:=1;End;
+  K_UP: Begin Dec(Dt_^.Fld);If Dt_^.Fld<1 Then Dt_^.Fld:=5;End;
+  K_PGDN: If Dt_^.Cur<Dt_^.NC Then Inc(Dt_^.Cur);
+  K_PGUP: If Dt_^.Cur>1 Then Dec(Dt_^.Cur);
+  K_BKSP: If Dt_^.C[Dt_^.Cur].F[Dt_^.Fld]<>'' Then Delete(Dt_^.C[Dt_^.Cur].F[Dt_^.Fld],Length(Dt_^.C[Dt_^.Cur].F[Dt_^.Fld]),1);
+  K_ENTER: Begin Inc(Dt_^.Fld);If Dt_^.Fld>5 Then Dt_^.Fld:=1;End;
+  K_CTRLN: DexNewCard(Wd_);
+  6: DexFindCard(Wd_);
  Else
-  If (K>=32) And (K<256) And (Length(C[Cur].F[Fld])<48) Then C[Cur].F[Fld]:=C[Cur].F[Fld]+Chr(K);
+  If (K>=32) And (K<256) And (Length(Dt_^.C[Dt_^.Cur].F[Dt_^.Fld])<48) Then Dt_^.C[Dt_^.Cur].F[Dt_^.Fld]:=Dt_^.C[Dt_^.Cur].F[Dt_^.Fld]+Chr(K);
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Procedure TDex.OnCommand(Cmd: Integer);
+Procedure DexOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PDex;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_DNEW: NewCard;
-  CM_DDEL: DelCard;
-  CM_DNEXT: If Cur<NC Then Inc(Cur);
-  CM_DPREV: If Cur>1 Then Dec(Cur);
-  CM_DFIND: FindCard;
-  CM_DSAVE: SaveData;
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+  CM_DNEW: DexNewCard(Wd_);
+  CM_DDEL: DexDelCard(Wd_);
+  CM_DNEXT: If Dt_^.Cur<Dt_^.NC Then Inc(Dt_^.Cur);
+  CM_DPREV: If Dt_^.Cur>1 Then Dec(Dt_^.Cur);
+  CM_DFIND: DexFindCard(Wd_);
+  CM_DSAVE: DexSaveData(Wd_);
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
 { ====================================================================== }
@@ -8101,7 +8408,7 @@ Type
  End;
 
  PDraw = ^TDraw;
- TDraw = Object(TWindow)
+ TDraw = Record
   O      : Array[1..MAXOBJ] Of TObj;
   NO     : Integer;
   Pts    : Array[1..MAXPTS] Of PointType;
@@ -8114,98 +8421,112 @@ Type
   FName  : String;
   Modified : Boolean;
   FillOn : Boolean;
-  Constructor Init(AX,AY: Integer; Const AFile: String);
-  Procedure Canvas(Var X1,Y1,X2,Y2: Integer);
-  Procedure ToolRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
-  Procedure DrawObj(Var Ob: TObj; Shift: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Procedure PrepareMenus; Virtual;
-  Function  CanClose: Boolean; Virtual;
-  Function  ObjAt(PX,PY: Integer): Integer;
-  Procedure Bounds(Var Ob: TObj; Var X1,Y1,X2,Y2: Integer);
-  Procedure Rubber;
-  Procedure AddObj(Var Ob: TObj);
-  Procedure DelObj(I: Integer);
-  Procedure SaveFile(Const P: String);
-  Procedure LoadFile(Const P: String);
-  Procedure UpdateTitle;
-  Procedure MoveObj(I,DX,DY: Integer);
  End;
 
-Constructor TDraw.Init(AX,AY: Integer; Const AFile: String);
+Function DrwNew(AX,AY: Integer; Const AFile: String): PWindow; Forward;
+Procedure DrwUpdateTitle(Wd_: PWindow); Forward;
+Procedure DrwCanvas(Wd_: PWindow; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure DrwToolRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure DrwBounds(Wd_: PWindow; Var Ob: TObj; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure DrwDrawObj(Wd_: PWindow; Var Ob: TObj; Shift: Integer); Forward;
+Procedure DrwDrawClient(Wd_: PWindow); Forward;
+Function DrwObjAt(Wd_: PWindow; PX,PY: Integer): Integer; Forward;
+Procedure DrwAddObj(Wd_: PWindow; Var Ob: TObj); Forward;
+Procedure DrwDelObj(Wd_: PWindow; I: Integer); Forward;
+Procedure DrwMoveObj(Wd_: PWindow; I,DX,DY: Integer); Forward;
+Procedure DrwRubber(Wd_: PWindow); Forward;
+Procedure DrwOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure DrwOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure DrwPrepareMenus(Wd_: PWindow); Forward;
+Procedure DrwSaveFile(Wd_: PWindow; Const P: String); Forward;
+Procedure DrwLoadFile(Wd_: PWindow; Const P: String); Forward;
+Function DrwCanClose(Wd_: PWindow): Boolean; Forward;
+Procedure DrwOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Function DrwNew(AX,AY: Integer; Const AFile: String): PWindow;
+ Var Wd_: PWindow; Dt_: PDraw;
 Begin
- TWindow.Init(A_DRAW,AX,AY,580,400,'GeoDraw');
- IconId:=IC_DRAW;MinW:=360;MinH:=260;
- NO:=0;NP:=0;Tool:=TL_LINE;Col:=cBlk;Fill:=-1;Wd:=1;Sel:=0;Mode:=0;FName:='';Modified:=False;FillOn:=False;
- AddMenu('File~Fichier~Datei');
- AddItem('New~Nouveau~Neu',CM_DNEWD,'');
- AddItem('Open...~Ouvrir...~'#142'ffnen...',CM_DOPEN,'');
- AddItem('Save~Enregistrer~Speichern',CM_DSAVE2,'');
- AddItem('Save As...~Enregistrer sous...~Speichern unter...',CM_DSAVEAS,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Edit~'#144'dition~Bearbeiten');
- AddItem('Duplicate~Dupliquer~Duplizieren',CM_DDUP,'');
- AddItem('Delete~Supprimer~L'#148'schen',CM_DDELO,'Del');
- AddItem('Clear All~Tout effacer~Alles l'#148'schen',CM_DCLR,'');
- AddItem('Paste Scrapbook Image~Coller image Scrapbook~Scrapbook-Bild einf'#129'gen',CM_DPASTEI,'');
- AddMenu('Arrange~Disposition~Anordnen');
- AddItem('Bring to Front~Premier plan~In den Vordergrund',CM_DFRONT,'');
- AddItem('Send to Back~Arri'#138're-plan~In den Hintergrund',CM_DBACK,'');
- AddMenu('Options~Options~Optionen');
- AddItem('Fill Shapes~Remplir les formes~Formen f'#129'llen',CM_DFILL,'');
- AddSep;
- AddItem('Line Width 1~'#144'paisseur 1~Linienbreite 1',CM_DW1,'');
- AddItem('Line Width 2~'#144'paisseur 2~Linienbreite 2',CM_DW2,'');
- AddItem('Line Width 3~'#144'paisseur 3~Linienbreite 3',CM_DW3,'');
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- If AFile<>'' Then Begin LoadFile(AFile);FName:=AFile;End;
- UpdateTitle;
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_DRAW,AX,AY,580,400,'GeoDraw');
+ Wd_^.IconId:=IC_DRAW;Wd_^.MinW:=360;Wd_^.MinH:=260;
+ Dt_^.NO:=0;Dt_^.NP:=0;Dt_^.Tool:=TL_LINE;Dt_^.Col:=cBlk;Dt_^.Fill:=-1;Dt_^.Wd:=1;Dt_^.Sel:=0;Dt_^.Mode:=0;Dt_^.FName:='';Dt_^.Modified:=False;Dt_^.FillOn:=False;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'New~Nouveau~Neu',CM_DNEWD,'');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_DOPEN,'');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_DSAVE2,'');
+ WinAddItem(Wd_,'Save As...~Enregistrer sous...~Speichern unter...',CM_DSAVEAS,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Duplicate~Dupliquer~Duplizieren',CM_DDUP,'');
+ WinAddItem(Wd_,'Delete~Supprimer~L'#148'schen',CM_DDELO,'Del');
+ WinAddItem(Wd_,'Clear All~Tout effacer~Alles l'#148'schen',CM_DCLR,'');
+ WinAddItem(Wd_,'Paste Scrapbook Image~Coller image Scrapbook~Scrapbook-Bild einf'#129'gen',CM_DPASTEI,'');
+ WinAddMenu(Wd_,'Arrange~Disposition~Anordnen');
+ WinAddItem(Wd_,'Bring to Front~Premier plan~In den Vordergrund',CM_DFRONT,'');
+ WinAddItem(Wd_,'Send to Back~Arri'#138're-plan~In den Hintergrund',CM_DBACK,'');
+ WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Fill Shapes~Remplir les formes~Formen f'#129'llen',CM_DFILL,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Line Width 1~'#144'paisseur 1~Linienbreite 1',CM_DW1,'');
+ WinAddItem(Wd_,'Line Width 2~'#144'paisseur 2~Linienbreite 2',CM_DW2,'');
+ WinAddItem(Wd_,'Line Width 3~'#144'paisseur 3~Linienbreite 3',CM_DW3,'');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ If AFile<>'' Then Begin DrwLoadFile(Wd_,AFile);Dt_^.FName:=AFile;End;
+ DrwUpdateTitle(Wd_);
+ DrwNew:=Wd_;
 End;
 
-Procedure TDraw.UpdateTitle;
+Procedure DrwUpdateTitle(Wd_: PWindow);
+ Var Dt_: PDraw;
 Var N: String;
 Begin
- If FName='' Then N:=T3('Untitled','Sans titre','Unbenannt') Else N:=ShortName(FName);
- Title:='GeoDraw - '+N;
- If Modified Then Title:=Title+' *';
+ Dt_:=Wd_^.Data;
+ If Dt_^.FName='' Then N:=T3('Untitled','Sans titre','Unbenannt') Else N:=ShortName(Dt_^.FName);
+ Wd_^.Title:='GeoDraw - '+N;
+ If Dt_^.Modified Then Wd_^.Title:=Wd_^.Title+' *';
 End;
 
-Procedure TDraw.Canvas(Var X1,Y1,X2,Y2: Integer);
+Procedure DrwCanvas(Wd_: PWindow; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PDraw;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  Inc(X1,62);Dec(Y2,30);Inc(Y1,4);Dec(X2,4);
 End;
 
-Procedure TDraw.ToolRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Procedure DrwToolRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PDraw;
 Var CX1,CY1,CX2,CY2: Integer;
 Begin
- ClientRect(CX1,CY1,CX2,CY2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,CX1,CY1,CX2,CY2);
  X1:=CX1+4+(I Mod 2)*28;Y1:=CY1+4+(I Div 2)*28;X2:=X1+26;Y2:=Y1+26;
 End;
 
-Procedure TDraw.Bounds(Var Ob: TObj; Var X1,Y1,X2,Y2: Integer);
+Procedure DrwBounds(Wd_: PWindow; Var Ob: TObj; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PDraw;
 Var I: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  X1:=Min2(Ob.X1,Ob.X2);Y1:=Min2(Ob.Y1,Ob.Y2);X2:=Max2(Ob.X1,Ob.X2);Y2:=Max2(Ob.Y1,Ob.Y2);
  If Ob.K=4 Then Begin
   X1:=32000;Y1:=32000;X2:=-32000;Y2:=-32000;
   For I:=Ob.P0 To Ob.P0+Ob.PN-1 Do Begin
-   If Pts[I].X<X1 Then X1:=Pts[I].X;If Pts[I].X>X2 Then X2:=Pts[I].X;
-   If Pts[I].Y<Y1 Then Y1:=Pts[I].Y;If Pts[I].Y>Y2 Then Y2:=Pts[I].Y;
+   If Dt_^.Pts[I].X<X1 Then X1:=Dt_^.Pts[I].X;If Dt_^.Pts[I].X>X2 Then X2:=Dt_^.Pts[I].X;
+   If Dt_^.Pts[I].Y<Y1 Then Y1:=Dt_^.Pts[I].Y;If Dt_^.Pts[I].Y>Y2 Then Y2:=Dt_^.Pts[I].Y;
   End;
  End Else If Ob.K=5 Then Begin X2:=X1+Length(Ob.Txt)*8;Y2:=Y1+8;End
  Else If Ob.K=6 Then Begin X2:=X1+IconWd[Ob.Ic]-1;Y2:=Y1+IconHt[Ob.Ic]-1;End;
 End;
 
-Procedure TDraw.DrawObj(Var Ob: TObj; Shift: Integer);
+Procedure DrwDrawObj(Wd_: PWindow; Var Ob: TObj; Shift: Integer);
+ Var Dt_: PDraw;
 Var I,A,B,C,D,T: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  T:=Ob.Wd;
  Case Ob.K Of
   1: GThickLine(Ob.X1,Ob.Y1,Ob.X2,Ob.Y2,Ob.Col,T);
@@ -8223,21 +8544,23 @@ Begin
       GEllipse(A,B,C,D,Ob.Col);
       If T>1 Then GEllipse(A,B,C+1,D+1,Ob.Col);
      End;
-  4: For I:=Ob.P0 To Ob.P0+Ob.PN-2 Do GThickLine(Pts[I].X,Pts[I].Y,Pts[I+1].X,Pts[I+1].Y,Ob.Col,T);
+  4: For I:=Ob.P0 To Ob.P0+Ob.PN-2 Do GThickLine(Dt_^.Pts[I].X,Dt_^.Pts[I].Y,Dt_^.Pts[I+1].X,Dt_^.Pts[I+1].Y,Ob.Col,T);
   5: GText(Ob.X1,Ob.Y1,Ob.Txt,Ob.Col);
   6: DrawIcon(Ob.Ic,Ob.X1,Ob.Y1,False);
  End;
 End;
 
-Procedure TDraw.DrawClient;
+Procedure DrwDrawClient(Wd_: PWindow);
+ Var Dt_: PDraw;
 Var X1,Y1,X2,Y2,I,A,B,C,D,SC1,SC2,SC3,SC4: Integer; OX1,OY1,OX2,OY2: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  { boite a outils }
  For I:=0 To 7 Do Begin
-  ToolRect(I,A,B,C,D);
-  Btn3D(A,B,C,D,Tool=I);
+  DrwToolRect(Wd_,I,A,B,C,D);
+  Btn3D(A,B,C,D,Dt_^.Tool=I);
   Case I Of
    0: Begin GArrow(A+13,B+13,1,cBlk);GLine(A+9,B+9,A+17,B+19,cBlk);End;
    1: GTextBig(A+7,B+5,'T',2,cBlk);
@@ -8250,12 +8573,12 @@ Begin
   End;
  End;
  { couleurs courantes }
- GBar(X1+6,Y1+4+4*28+4,X1+30,Y1+4+4*28+22,Col);GRect(X1+6,Y1+4+4*28+4,X1+30,Y1+4+4*28+22,cBlk);
- If Fill>=0 Then GBar(X1+26,Y1+4+4*28+14,X1+50,Y1+4+4*28+32,Fill)
+ GBar(X1+6,Y1+4+4*28+4,X1+30,Y1+4+4*28+22,Dt_^.Col);GRect(X1+6,Y1+4+4*28+4,X1+30,Y1+4+4*28+22,cBlk);
+ If Dt_^.Fill>=0 Then GBar(X1+26,Y1+4+4*28+14,X1+50,Y1+4+4*28+32,Dt_^.Fill)
  Else GDither(X1+26,Y1+4+4*28+14,X1+50,Y1+4+4*28+32,cLGr,cWht);
  GRect(X1+26,Y1+4+4*28+14,X1+50,Y1+4+4*28+32,cBlk);
  { page }
- Canvas(A,B,C,D);
+ DrwCanvas(Wd_,A,B,C,D);
  Sunken(A-2,B-2,C+2,D+2,cWht);
  { palette }
  For I:=0 To 15 Do Begin
@@ -8269,9 +8592,9 @@ Begin
  SC1:=Max2(OX1,A);SC2:=Max2(OY1,B);SC3:=Min2(OX2,C);SC4:=Min2(OY2,D);
  If (SC3>=SC1) And (SC4>=SC2) Then Begin
   SetClip(SC1,SC2,SC3,SC4);
-  For I:=1 To NO Do DrawObj(O[I],0);
-  If (Sel>0) And (Sel<=NO) Then Begin
-   Bounds(O[Sel],A,B,C,D);
+  For I:=1 To Dt_^.NO Do DrwDrawObj(Wd_,Dt_^.O[I],0);
+  If (Dt_^.Sel>0) And (Dt_^.Sel<=Dt_^.NO) Then Begin
+   DrwBounds(Wd_,Dt_^.O[Dt_^.Sel],A,B,C,D);
    GDotRect(A-2,B-2,C+2,D+2,cBlk);
    GBar(A-4,B-4,A-1,B-1,cBlk);GBar(C+1,B-4,C+4,B-1,cBlk);GBar(A-4,D+1,A-1,D+4,cBlk);GBar(C+1,D+1,C+4,D+4,cBlk);
   End;
@@ -8279,218 +8602,237 @@ Begin
  End;
 End;
 
-Function TDraw.ObjAt(PX,PY: Integer): Integer;
+Function DrwObjAt(Wd_: PWindow; PX,PY: Integer): Integer;
+ Var Dt_: PDraw;
 Var I,A,B,C,D,J: Integer; Hit: Boolean; DX,DY,L: Real;
 Begin
- ObjAt:=0;
- For I:=NO DownTo 1 Do Begin
-  Bounds(O[I],A,B,C,D);
+ Dt_:=Wd_^.Data;
+ DrwObjAt:=0;
+ For I:=Dt_^.NO DownTo 1 Do Begin
+  DrwBounds(Wd_,Dt_^.O[I],A,B,C,D);
   Hit:=False;
-  If O[I].K=1 Then Begin
+  If Dt_^.O[I].K=1 Then Begin
    If InBox(PX,PY,A-4,B-4,C+4,D+4) Then Begin
-    DX:=O[I].X2-O[I].X1;DY:=O[I].Y2-O[I].Y1;L:=Sqrt(DX*DX+DY*DY);
+    DX:=Dt_^.O[I].X2-Dt_^.O[I].X1;DY:=Dt_^.O[I].Y2-Dt_^.O[I].Y1;L:=Sqrt(DX*DX+DY*DY);
     If L<1 Then Hit:=True
-    Else Hit:=Abs(DX*(O[I].Y1-PY)-(O[I].X1-PX)*DY)/L<=4;
+    Else Hit:=Abs(DX*(Dt_^.O[I].Y1-PY)-(Dt_^.O[I].X1-PX)*DY)/L<=4;
    End;
-  End Else If O[I].K=4 Then Begin
-   For J:=O[I].P0 To O[I].P0+O[I].PN-1 Do
-    If (Abs(Pts[J].X-PX)<=4) And (Abs(Pts[J].Y-PY)<=4) Then Hit:=True;
-  End Else If (O[I].K=2) Or (O[I].K=3) Then Begin
-   If (O[I].Fill>=0) Then Hit:=InBox(PX,PY,A,B,C,D)
+  End Else If Dt_^.O[I].K=4 Then Begin
+   For J:=Dt_^.O[I].P0 To Dt_^.O[I].P0+Dt_^.O[I].PN-1 Do
+    If (Abs(Dt_^.Pts[J].X-PX)<=4) And (Abs(Dt_^.Pts[J].Y-PY)<=4) Then Hit:=True;
+  End Else If (Dt_^.O[I].K=2) Or (Dt_^.O[I].K=3) Then Begin
+   If (Dt_^.O[I].Fill>=0) Then Hit:=InBox(PX,PY,A,B,C,D)
    Else Hit:=InBox(PX,PY,A-3,B-3,C+3,D+3) And Not InBox(PX,PY,A+4,B+4,C-4,D-4);
   End Else Hit:=InBox(PX,PY,A-2,B-2,C+2,D+2);
-  If Hit Then Begin ObjAt:=I;Exit;End;
+  If Hit Then Begin DrwObjAt:=I;Exit;End;
  End;
 End;
 
-Procedure TDraw.AddObj(Var Ob: TObj);
+Procedure DrwAddObj(Wd_: PWindow; Var Ob: TObj);
+ Var Dt_: PDraw;
 Begin
- If NO>=MAXOBJ Then Exit;
- Inc(NO);O[NO]:=Ob;Sel:=NO;Modified:=True;UpdateTitle;
+ Dt_:=Wd_^.Data;
+ If Dt_^.NO>=MAXOBJ Then Exit;
+ Inc(Dt_^.NO);Dt_^.O[Dt_^.NO]:=Ob;Dt_^.Sel:=Dt_^.NO;Dt_^.Modified:=True;DrwUpdateTitle(Wd_);
 End;
 
-Procedure TDraw.DelObj(I: Integer);
+Procedure DrwDelObj(Wd_: PWindow; I: Integer);
+ Var Dt_: PDraw;
 Var K: Integer;
 Begin
- If (I<1) Or (I>NO) Then Exit;
- For K:=I To NO-1 Do O[K]:=O[K+1];
- Dec(NO);Sel:=0;Modified:=True;UpdateTitle;
+ Dt_:=Wd_^.Data;
+ If (I<1) Or (I>Dt_^.NO) Then Exit;
+ For K:=I To Dt_^.NO-1 Do Dt_^.O[K]:=Dt_^.O[K+1];
+ Dec(Dt_^.NO);Dt_^.Sel:=0;Dt_^.Modified:=True;DrwUpdateTitle(Wd_);
 End;
 
-Procedure TDraw.MoveObj(I,DX,DY: Integer);
+Procedure DrwMoveObj(Wd_: PWindow; I,DX,DY: Integer);
+ Var Dt_: PDraw;
 Var K: Integer;
 Begin
- O[I].X1:=O[I].X1+DX;O[I].X2:=O[I].X2+DX;O[I].Y1:=O[I].Y1+DY;O[I].Y2:=O[I].Y2+DY;
- If O[I].K=4 Then For K:=O[I].P0 To O[I].P0+O[I].PN-1 Do Begin
-  Pts[K].X:=Pts[K].X+DX;Pts[K].Y:=Pts[K].Y+DY;
+ Dt_:=Wd_^.Data;
+ Dt_^.O[I].X1:=Dt_^.O[I].X1+DX;Dt_^.O[I].X2:=Dt_^.O[I].X2+DX;Dt_^.O[I].Y1:=Dt_^.O[I].Y1+DY;Dt_^.O[I].Y2:=Dt_^.O[I].Y2+DY;
+ If Dt_^.O[I].K=4 Then For K:=Dt_^.O[I].P0 To Dt_^.O[I].P0+Dt_^.O[I].PN-1 Do Begin
+  Dt_^.Pts[K].X:=Dt_^.Pts[K].X+DX;Dt_^.Pts[K].Y:=Dt_^.Pts[K].Y+DY;
  End;
 End;
 
-Procedure TDraw.Rubber;
+Procedure DrwRubber(Wd_: PWindow);
+ Var Dt_: PDraw;
 Var A,B,C,D: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  ClipFull;
  SetWriteMode(XORPut);
  SetColor(15);
  SetLineStyle(SolidLn,0,NormWidth);
- Case Tool Of
-  TL_LINE: Line(RbX,RbY,CXp,CYp);
-  TL_RECT: Rectangle(Min2(RbX,CXp),Min2(RbY,CYp),Max2(RbX,CXp),Max2(RbY,CYp));
-  TL_ELL: Ellipse((RbX+CXp) Div 2,(RbY+CYp) Div 2,0,360,Abs(CXp-RbX) Div 2,Abs(CYp-RbY) Div 2);
+ Case Dt_^.Tool Of
+  TL_LINE: Line(Dt_^.RbX,Dt_^.RbY,Dt_^.CXp,Dt_^.CYp);
+  TL_RECT: Rectangle(Min2(Dt_^.RbX,Dt_^.CXp),Min2(Dt_^.RbY,Dt_^.CYp),Max2(Dt_^.RbX,Dt_^.CXp),Max2(Dt_^.RbY,Dt_^.CYp));
+  TL_ELL: Ellipse((Dt_^.RbX+Dt_^.CXp) Div 2,(Dt_^.RbY+Dt_^.CYp) Div 2,0,360,Abs(Dt_^.CXp-Dt_^.RbX) Div 2,Abs(Dt_^.CYp-Dt_^.RbY) Div 2);
  End;
  SetWriteMode(NormalPut);
 End;
 
-Procedure TDraw.OnMouse(Var E: TEvent);
+Procedure DrwOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PDraw;
 Var X1,Y1,X2,Y2,I,A,B,C,D,Px,Py: Integer; Ob: TObj; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
- Canvas(A,B,C,D);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ DrwCanvas(Wd_,A,B,C,D);
  If (E.Kind=EV_DOWN) Or (E.Kind=EV_RDOWN) Then Begin
   { boite a outils }
   For I:=0 To 7 Do Begin
-   ToolRect(I,Px,Py,Px,Py);
+   DrwToolRect(Wd_,I,Px,Py,Px,Py);
   End;
   For I:=0 To 7 Do Begin
-   ToolRect(I,A,B,C,D);
-   If InBox(E.X,E.Y,A,B,C,D) Then Begin Tool:=I;Invalidate(@Self);Exit;End;
+   DrwToolRect(Wd_,I,A,B,C,D);
+   If InBox(E.X,E.Y,A,B,C,D) Then Begin Dt_^.Tool:=I;Invalidate(Wd_);Exit;End;
   End;
-  Canvas(A,B,C,D);
+  DrwCanvas(Wd_,A,B,C,D);
   { palette }
   If E.Y>=Y2-26 Then Begin
    For I:=0 To 16 Do
     If InBox(E.X,E.Y,X1+66+I*22,Y2-26,X1+66+I*22+19,Y2-8) Then Begin
      If E.Kind=EV_DOWN Then Begin
       If I<16 Then Begin
-       Col:=I;
-       If (Sel>0) And (Sel<=NO) Then Begin O[Sel].Col:=I;Modified:=True;End;
-      End Else Fill:=-1;
+       Dt_^.Col:=I;
+       If (Dt_^.Sel>0) And (Dt_^.Sel<=Dt_^.NO) Then Begin Dt_^.O[Dt_^.Sel].Col:=I;Dt_^.Modified:=True;End;
+      End Else Dt_^.Fill:=-1;
      End Else Begin
       If I<16 Then Begin
-       Fill:=I;
-       If (Sel>0) And (Sel<=NO) Then Begin O[Sel].Fill:=I;Modified:=True;End;
-      End Else Fill:=-1;
+       Dt_^.Fill:=I;
+       If (Dt_^.Sel>0) And (Dt_^.Sel<=Dt_^.NO) Then Begin Dt_^.O[Dt_^.Sel].Fill:=I;Dt_^.Modified:=True;End;
+      End Else Dt_^.Fill:=-1;
      End;
-     Invalidate(@Self);
+     Invalidate(Wd_);
     End;
    Exit;
   End;
   If Not InBox(E.X,E.Y,A,B,C,D) Then Exit;
   If E.Kind=EV_RDOWN Then Exit;
-  Mode:=0;RbX:=E.X;RbY:=E.Y;CXp:=E.X;CYp:=E.Y;LastX:=E.X;LastY:=E.Y;
-  Case Tool Of
+  Dt_^.Mode:=0;Dt_^.RbX:=E.X;Dt_^.RbY:=E.Y;Dt_^.CXp:=E.X;Dt_^.CYp:=E.Y;Dt_^.LastX:=E.X;Dt_^.LastY:=E.Y;
+  Case Dt_^.Tool Of
    TL_SEL: Begin
-            Sel:=ObjAt(E.X,E.Y);
-            If Sel>0 Then Mode:=2;
-            Invalidate(@Self);
+            Dt_^.Sel:=DrwObjAt(Wd_,E.X,E.Y);
+            If Dt_^.Sel>0 Then Dt_^.Mode:=2;
+            Invalidate(Wd_);
            End;
    TL_ERASE: Begin
-              I:=ObjAt(E.X,E.Y);
-              If I>0 Then Begin DelObj(I);Invalidate(@Self);End;
+              I:=DrwObjAt(Wd_,E.X,E.Y);
+              If I>0 Then Begin DrwDelObj(Wd_,I);Invalidate(Wd_);End;
              End;
    TL_TEXT: Begin
              S:='';
              If InputBox('GeoDraw',T3('Text:','Texte :','Text:'),S,40) And (S<>'') Then Begin
               FillChar(Ob,SizeOf(Ob),0);
-              Ob.K:=5;Ob.X1:=E.X;Ob.Y1:=E.Y;Ob.Col:=Col;Ob.Txt:=S;
-              AddObj(Ob);
-              Invalidate(@Self);
+              Ob.K:=5;Ob.X1:=E.X;Ob.Y1:=E.Y;Ob.Col:=Dt_^.Col;Ob.Txt:=S;
+              DrwAddObj(Wd_,Ob);
+              Invalidate(Wd_);
              End;
             End;
    TL_ICON: Begin
              If ClipIconId>=0 Then Begin
               FillChar(Ob,SizeOf(Ob),0);
               Ob.K:=6;Ob.X1:=E.X;Ob.Y1:=E.Y;Ob.Ic:=ClipIconId;
-              AddObj(Ob);Invalidate(@Self);
+              DrwAddObj(Wd_,Ob);Invalidate(Wd_);
              End Else Info('GeoDraw',T3('Copy an image in the Scrapbook first.','Copiez d''abord une image dans le Scrapbook.','Kopieren Sie zuerst ein Bild im Scrapbook.'));
             End;
    TL_LINE,TL_RECT,TL_ELL: Begin
-            Mode:=1;HideMouse;Rubber;ShowMouse;
+            Dt_^.Mode:=1;HideMouse;DrwRubber(Wd_);ShowMouse;
            End;
    TL_FREE: Begin
-             Mode:=1;
-             If NP<MAXPTS-2 Then Begin Inc(NP);Pts[NP].X:=E.X;Pts[NP].Y:=E.Y;End;
-             RbX:=NP;
+             Dt_^.Mode:=1;
+             If Dt_^.NP<MAXPTS-2 Then Begin Inc(Dt_^.NP);Dt_^.Pts[Dt_^.NP].X:=E.X;Dt_^.Pts[Dt_^.NP].Y:=E.Y;End;
+             Dt_^.RbX:=Dt_^.NP;
             End;
   End;
  End Else If E.Kind=EV_MOVE Then Begin
-  If Mode=1 Then Begin
-   Case Tool Of
+  If Dt_^.Mode=1 Then Begin
+   Case Dt_^.Tool Of
     TL_LINE,TL_RECT,TL_ELL: Begin
-      HideMouse;Rubber;CXp:=E.X;CYp:=E.Y;Rubber;ShowMouse;
+      HideMouse;DrwRubber(Wd_);Dt_^.CXp:=E.X;Dt_^.CYp:=E.Y;DrwRubber(Wd_);ShowMouse;
      End;
-    TL_FREE: If NP<MAXPTS-1 Then Begin
+    TL_FREE: If Dt_^.NP<MAXPTS-1 Then Begin
       HideMouse;
       ClipFull;
-      GLine(Pts[NP].X,Pts[NP].Y,E.X,E.Y,Col);
-      Inc(NP);Pts[NP].X:=E.X;Pts[NP].Y:=E.Y;
+      GLine(Dt_^.Pts[Dt_^.NP].X,Dt_^.Pts[Dt_^.NP].Y,E.X,E.Y,Dt_^.Col);
+      Inc(Dt_^.NP);Dt_^.Pts[Dt_^.NP].X:=E.X;Dt_^.Pts[Dt_^.NP].Y:=E.Y;
       ShowMouse;
      End;
    End;
-  End Else If (Mode=2) And (Sel>0) Then Begin
-   MoveObj(Sel,E.X-LastX,E.Y-LastY);
-   LastX:=E.X;LastY:=E.Y;Modified:=True;
-   Invalidate(@Self);
+  End Else If (Dt_^.Mode=2) And (Dt_^.Sel>0) Then Begin
+   DrwMoveObj(Wd_,Dt_^.Sel,E.X-Dt_^.LastX,E.Y-Dt_^.LastY);
+   Dt_^.LastX:=E.X;Dt_^.LastY:=E.Y;Dt_^.Modified:=True;
+   Invalidate(Wd_);
   End;
  End Else If E.Kind=EV_UP Then Begin
-  If Mode=1 Then Begin
+  If Dt_^.Mode=1 Then Begin
    FillChar(Ob,SizeOf(Ob),0);
-   Ob.Col:=Col;Ob.Wd:=Wd;
-   If FillOn Then Ob.Fill:=Fill Else Ob.Fill:=-1;
-   Case Tool Of
+   Ob.Col:=Dt_^.Col;Ob.Wd:=Dt_^.Wd;
+   If Dt_^.FillOn Then Ob.Fill:=Dt_^.Fill Else Ob.Fill:=-1;
+   Case Dt_^.Tool Of
     TL_LINE,TL_RECT,TL_ELL: Begin
-      HideMouse;Rubber;ShowMouse;
-      Ob.K:=Tool-1;
-      If Tool=TL_LINE Then Ob.K:=1 Else If Tool=TL_RECT Then Ob.K:=2 Else Ob.K:=3;
-      Ob.X1:=RbX;Ob.Y1:=RbY;Ob.X2:=E.X;Ob.Y2:=E.Y;
-      If (Abs(E.X-RbX)>2) Or (Abs(E.Y-RbY)>2) Then AddObj(Ob);
+      HideMouse;DrwRubber(Wd_);ShowMouse;
+      Ob.K:=Dt_^.Tool-1;
+      If Dt_^.Tool=TL_LINE Then Ob.K:=1 Else If Dt_^.Tool=TL_RECT Then Ob.K:=2 Else Ob.K:=3;
+      Ob.X1:=Dt_^.RbX;Ob.Y1:=Dt_^.RbY;Ob.X2:=E.X;Ob.Y2:=E.Y;
+      If (Abs(E.X-Dt_^.RbX)>2) Or (Abs(E.Y-Dt_^.RbY)>2) Then DrwAddObj(Wd_,Ob);
      End;
     TL_FREE: Begin
-      If NP-RbX>=1 Then Begin
-       Ob.K:=4;Ob.P0:=RbX;Ob.PN:=NP-RbX+1;
-       AddObj(Ob);
+      If Dt_^.NP-Dt_^.RbX>=1 Then Begin
+       Ob.K:=4;Ob.P0:=Dt_^.RbX;Ob.PN:=Dt_^.NP-Dt_^.RbX+1;
+       DrwAddObj(Wd_,Ob);
       End;
      End;
    End;
-   Mode:=0;
-   Invalidate(@Self);
+   Dt_^.Mode:=0;
+   Invalidate(Wd_);
   End;
-  Mode:=0;
+  Dt_^.Mode:=0;
  End;
 End;
 
-Procedure TDraw.OnKey(K: Word);
+Procedure DrwOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PDraw;
 Begin
- If (K=K_DEL) And (Sel>0) Then Begin DelObj(Sel);Invalidate(@Self);End;
+ Dt_:=Wd_^.Data;
+ If (K=K_DEL) And (Dt_^.Sel>0) Then Begin DrwDelObj(Wd_,Dt_^.Sel);Invalidate(Wd_);End;
 End;
 
-Procedure TDraw.PrepareMenus;
+Procedure DrwPrepareMenus(Wd_: PWindow);
+ Var Dt_: PDraw;
 Begin
- SetFlag(CM_DFILL,2,FillOn);
- SetFlag(CM_DW1,2,Wd=1);SetFlag(CM_DW2,2,Wd=2);SetFlag(CM_DW3,2,Wd=3);
- SetFlag(CM_DDELO,1,Sel=0);SetFlag(CM_DDUP,1,Sel=0);
- SetFlag(CM_DFRONT,1,Sel=0);SetFlag(CM_DBACK,1,Sel=0);
- SetFlag(CM_DPASTEI,1,ClipIconId<0);
+ Dt_:=Wd_^.Data;
+ WinSetFlag(Wd_,CM_DFILL,2,Dt_^.FillOn);
+ WinSetFlag(Wd_,CM_DW1,2,Dt_^.Wd=1);WinSetFlag(Wd_,CM_DW2,2,Dt_^.Wd=2);WinSetFlag(Wd_,CM_DW3,2,Dt_^.Wd=3);
+ WinSetFlag(Wd_,CM_DDELO,1,Dt_^.Sel=0);WinSetFlag(Wd_,CM_DDUP,1,Dt_^.Sel=0);
+ WinSetFlag(Wd_,CM_DFRONT,1,Dt_^.Sel=0);WinSetFlag(Wd_,CM_DBACK,1,Dt_^.Sel=0);
+ WinSetFlag(Wd_,CM_DPASTEI,1,ClipIconId<0);
 End;
 
-Procedure TDraw.SaveFile(Const P: String);
+Procedure DrwSaveFile(Wd_: PWindow; Const P: String);
+ Var Dt_: PDraw;
 Var F: Text; I,K: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,P);
  Rewrite(F);
  WriteLn(F,'GEODRAW1');
- For I:=1 To NO Do Begin
-  WriteLn(F,O[I].K,' ',O[I].X1,' ',O[I].Y1,' ',O[I].X2,' ',O[I].Y2,' ',O[I].Col,' ',O[I].Fill,' ',O[I].Wd,' ',O[I].PN,' ',O[I].Ic,' ',O[I].Txt);
-  If O[I].K=4 Then For K:=O[I].P0 To O[I].P0+O[I].PN-1 Do WriteLn(F,Pts[K].X,' ',Pts[K].Y);
+ For I:=1 To Dt_^.NO Do Begin
+  WriteLn(F,Dt_^.O[I].K,' ',Dt_^.O[I].X1,' ',Dt_^.O[I].Y1,' ',Dt_^.O[I].X2,' ',Dt_^.O[I].Y2,' ',Dt_^.O[I].Col,' ',Dt_^.O[I].Fill,' ',Dt_^.O[I].Wd,' ',Dt_^.O[I].PN,' ',Dt_^.O[I].Ic,' ',Dt_^.O[I].Txt);
+  If Dt_^.O[I].K=4 Then For K:=Dt_^.O[I].P0 To Dt_^.O[I].P0+Dt_^.O[I].PN-1 Do WriteLn(F,Dt_^.Pts[K].X,' ',Dt_^.Pts[K].Y);
  End;
  Close(F);
  {$I+}
  If IOResult<>0 Then Info(T3('Error','Erreur','Fehler'),T3('Cannot save file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'))
- Else Begin Modified:=False;End;
+ Else Begin Dt_^.Modified:=False;End;
 End;
 
-Procedure TDraw.LoadFile(Const P: String);
+Procedure DrwLoadFile(Wd_: PWindow; Const P: String);
+ Var Dt_: PDraw;
 Var F: Text; S: String; N: Integer; Ob: TObj;
 
  Function NextInt: Integer;
@@ -8504,6 +8846,7 @@ Var F: Text; S: String; N: Integer; Ob: TObj;
  End;
 
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,P);
  Reset(F);
@@ -8512,88 +8855,92 @@ Begin
   Info(T3('Error','Erreur','Fehler'),T3('Cannot open|','Impossible d''ouvrir|','Kann nicht '#148'ffnen|')+P);
   Exit;
  End;
- NO:=0;NP:=0;
+ Dt_^.NO:=0;Dt_^.NP:=0;
  {$I-}
  ReadLn(F,S);
  If S<>'GEODRAW1' Then Begin Close(F);Info('GeoDraw',T3('Not a GeoDraw file.','Ce n''est pas un fichier GeoDraw.','Keine GeoDraw-Datei.'));Exit;End;
- While Not Eof(F) And (NO<MAXOBJ) Do Begin
+ While Not Eof(F) And (Dt_^.NO<MAXOBJ) Do Begin
   ReadLn(F,S);
   FillChar(Ob,SizeOf(Ob),0);
   Ob.K:=NextInt;Ob.X1:=NextInt;Ob.Y1:=NextInt;Ob.X2:=NextInt;Ob.Y2:=NextInt;
   Ob.Col:=NextInt;Ob.Fill:=NextInt;Ob.Wd:=NextInt;Ob.PN:=NextInt;Ob.Ic:=NextInt;
   Ob.Txt:=Copy(S,1,40);
   If Ob.K=4 Then Begin
-   Ob.P0:=NP+1;
+   Ob.P0:=Dt_^.NP+1;
    For N:=1 To Ob.PN Do Begin
-    If Not Eof(F) And (NP<MAXPTS) Then Begin
-     ReadLn(F,S);Inc(NP);Pts[NP].X:=NextInt;Pts[NP].Y:=NextInt;
+    If Not Eof(F) And (Dt_^.NP<MAXPTS) Then Begin
+     ReadLn(F,S);Inc(Dt_^.NP);Dt_^.Pts[Dt_^.NP].X:=NextInt;Dt_^.Pts[Dt_^.NP].Y:=NextInt;
     End;
    End;
   End;
-  Inc(NO);O[NO]:=Ob;
+  Inc(Dt_^.NO);Dt_^.O[Dt_^.NO]:=Ob;
  End;
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
- Modified:=False;Sel:=0;
+ Dt_^.Modified:=False;Dt_^.Sel:=0;
 End;
 
-Function TDraw.CanClose: Boolean;
+Function DrwCanClose(Wd_: PWindow): Boolean;
+ Var Dt_: PDraw;
 Var R: Integer;
 Begin
- CanClose:=True;
- If Modified Then Begin
+ Dt_:=Wd_^.Data;
+ DrwCanClose:=True;
+ If Dt_^.Modified Then Begin
   R:=MsgBox(T3('Close','Fermer','Schlie'#225'en'),T3('Save changes?','Enregistrer les modifications ?',#142'nderungen speichern?'),
      T3('Yes|No|Cancel','Oui|Non|Annuler','Ja|Nein|Abbruch'),2);
-  If R=3 Then CanClose:=False
-  Else If R=1 Then Begin OnCommand(CM_DSAVE2);CanClose:=Not Modified;End;
+  If R=3 Then DrwCanClose:=False
+  Else If R=1 Then Begin DrwOnCommand(Wd_,CM_DSAVE2);DrwCanClose:=Not Dt_^.Modified;End;
  End;
 End;
 
-Procedure TDraw.OnCommand(Cmd: Integer);
+Procedure DrwOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PDraw;
 Var P: String; I: Integer; Ob: TObj;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_DNEWD: Begin If Not CanClose Then Exit;NO:=0;NP:=0;Sel:=0;FName:='';Modified:=False;End;
+  CM_DNEWD: Begin If Not DrwCanClose(Wd_) Then Exit;Dt_^.NO:=0;Dt_^.NP:=0;Dt_^.Sel:=0;Dt_^.FName:='';Dt_^.Modified:=False;End;
   CM_DOPEN: Begin
              P:=CurDirStr;
-             If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.GDR',P,False) Then Begin LoadFile(P);FName:=P;End;
+             If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.GDR',P,False) Then Begin DrwLoadFile(Wd_,P);Dt_^.FName:=P;End;
             End;
   CM_DSAVE2,CM_DSAVEAS: Begin
-             P:=FName;
+             P:=Dt_^.FName;
              If (P='') Or (Cmd=CM_DSAVEAS) Then Begin
               If P='' Then P:=JoinPath(CurDirStr,'DRAWING.GDR');
-              If Not FileDlg(T3('Save As','Enregistrer sous','Speichern unter'),'*.GDR',P,True) Then Begin UpdateTitle;Exit;End;
+              If Not FileDlg(T3('Save As','Enregistrer sous','Speichern unter'),'*.GDR',P,True) Then Begin DrwUpdateTitle(Wd_);Exit;End;
              End;
-             SaveFile(P);FName:=P;
+             DrwSaveFile(Wd_,P);Dt_^.FName:=P;
             End;
-  CM_DDELO: If Sel>0 Then DelObj(Sel);
-  CM_DCLR: Begin NO:=0;NP:=0;Sel:=0;Modified:=True;End;
-  CM_DFRONT: If Sel>0 Then Begin Ob:=O[Sel];For I:=Sel To NO-1 Do O[I]:=O[I+1];O[NO]:=Ob;Sel:=NO;End;
-  CM_DBACK: If Sel>0 Then Begin Ob:=O[Sel];For I:=Sel DownTo 2 Do O[I]:=O[I-1];O[1]:=Ob;Sel:=1;End;
-  CM_DDUP: If Sel>0 Then Begin Ob:=O[Sel];
+  CM_DDELO: If Dt_^.Sel>0 Then DrwDelObj(Wd_,Dt_^.Sel);
+  CM_DCLR: Begin Dt_^.NO:=0;Dt_^.NP:=0;Dt_^.Sel:=0;Dt_^.Modified:=True;End;
+  CM_DFRONT: If Dt_^.Sel>0 Then Begin Ob:=Dt_^.O[Dt_^.Sel];For I:=Dt_^.Sel To Dt_^.NO-1 Do Dt_^.O[I]:=Dt_^.O[I+1];Dt_^.O[Dt_^.NO]:=Ob;Dt_^.Sel:=Dt_^.NO;End;
+  CM_DBACK: If Dt_^.Sel>0 Then Begin Ob:=Dt_^.O[Dt_^.Sel];For I:=Dt_^.Sel DownTo 2 Do Dt_^.O[I]:=Dt_^.O[I-1];Dt_^.O[1]:=Ob;Dt_^.Sel:=1;End;
+  CM_DDUP: If Dt_^.Sel>0 Then Begin Ob:=Dt_^.O[Dt_^.Sel];
             If Ob.K=4 Then Begin
-             If NP+Ob.PN<MAXPTS Then Begin
-              For I:=0 To Ob.PN-1 Do Begin Pts[NP+1+I].X:=Pts[Ob.P0+I].X+12;Pts[NP+1+I].Y:=Pts[Ob.P0+I].Y+12;End;
-              Ob.P0:=NP+1;NP:=NP+Ob.PN;
+             If Dt_^.NP+Ob.PN<MAXPTS Then Begin
+              For I:=0 To Ob.PN-1 Do Begin Dt_^.Pts[Dt_^.NP+1+I].X:=Dt_^.Pts[Ob.P0+I].X+12;Dt_^.Pts[Dt_^.NP+1+I].Y:=Dt_^.Pts[Ob.P0+I].Y+12;End;
+              Ob.P0:=Dt_^.NP+1;Dt_^.NP:=Dt_^.NP+Ob.PN;
              End;
             End;
             Ob.X1:=Ob.X1+12;Ob.X2:=Ob.X2+12;Ob.Y1:=Ob.Y1+12;Ob.Y2:=Ob.Y2+12;
-            AddObj(Ob);
+            DrwAddObj(Wd_,Ob);
            End;
   CM_DPASTEI: Begin
                If ClipIconId>=0 Then Begin
-                FillChar(Ob,SizeOf(Ob),0);Ob.K:=6;Ob.X1:=100;Ob.Y1:=60;Ob.Ic:=ClipIconId;AddObj(Ob);
+                FillChar(Ob,SizeOf(Ob),0);Ob.K:=6;Ob.X1:=100;Ob.Y1:=60;Ob.Ic:=ClipIconId;DrwAddObj(Wd_,Ob);
                End;
               End;
-  CM_DFILL: FillOn:=Not FillOn;
-  CM_DW1: Wd:=1;
-  CM_DW2: Wd:=2;
-  CM_DW3: Wd:=3;
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+  CM_DFILL: Dt_^.FillOn:=Not Dt_^.FillOn;
+  CM_DW1: Dt_^.Wd:=1;
+  CM_DW2: Dt_^.Wd:=2;
+  CM_DW3: Dt_^.Wd:=3;
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- UpdateTitle;
- Invalidate(@Self);
+ DrwUpdateTitle(Wd_);
+ Invalidate(Wd_);
 End;
 
 { ====================================================================== }
@@ -8610,7 +8957,7 @@ Const
 
 Type
  PSheet = ^TSheet;
- TSheet = Object(TWindow)
+ TSheet = Record
   Cells    : Array[1..SROWS,1..SCOLS] Of PString;
   SR,SC    : Integer;
   TopR,LeftC : Integer;
@@ -8619,26 +8966,27 @@ Type
   FName    : String;
   Modified : Boolean;
   DB       : Boolean;
-  Constructor Init(AX,AY: Integer; ADB: Boolean; Const AFile: String);
-  Destructor Done; Virtual;
-  Function  Get(R,C: Integer): String;
-  Procedure SetCell(R,C: Integer; Const S: String);
-  Procedure CellName(R,C: Integer; Var S: String);
-  Procedure GridRect(Var X1,Y1,X2,Y2: Integer);
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
-  Function  CanClose: Boolean; Virtual;
-  Procedure Commit;
-  Procedure Reveal;
-  Procedure SaveFile(Const P: String);
-  Procedure LoadFile(Const P: String);
-  Procedure UpdateTitle;
  End;
 
+Function ShtNew(AX,AY: Integer; ADB: Boolean; Const AFile: String): PWindow; Forward;
+Procedure ShtDone(Wd_: PWindow); Forward;
+Procedure ShtUpdateTitle(Wd_: PWindow); Forward;
+Function ShtGet(Wd_: PWindow; R,C: Integer): String; Forward;
+Procedure ShtSetCell(Wd_: PWindow; R,C: Integer; Const S: String); Forward;
+Procedure ShtCellName(Wd_: PWindow; R,C: Integer; Var S: String); Forward;
+Procedure ShtGridRect(Wd_: PWindow; Var X1,Y1,X2,Y2: Integer); Forward;
+Procedure ShtReveal(Wd_: PWindow); Forward;
+Procedure ShtDrawClient(Wd_: PWindow); Forward;
+Procedure ShtCommit(Wd_: PWindow); Forward;
+Procedure ShtOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure ShtOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure ShtSaveFile(Wd_: PWindow; Const P: String); Forward;
+Procedure ShtLoadFile(Wd_: PWindow; Const P: String); Forward;
+Function ShtCanClose(Wd_: PWindow): Boolean; Forward;
+Procedure ShtOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
 Var
- ShSheet : PSheet;
+ ShSheet : PWindow;
  FmDepth : Integer;
  FmS     : String;
  FmP     : Integer;
@@ -8730,12 +9078,12 @@ Begin
      If FmCellRef(R2,C2) Then Begin
       For I:=Min2(R,R2) To Max2(R,R2) Do
        For J:=Min2(C,C2) To Max2(C,C2) Do Begin
-        S:=ShSheet^.Get(I,J);
+        S:=ShtGet(ShSheet,I,J);
         If S<>'' Then FmAccAdd(CellValue(I,J,Er));
        End;
      End Else FmErr:=True;
     End Else Begin
-     If ShSheet^.Get(R,C)<>'' Then FmAccAdd(CellValue(R,C,Er));
+     If ShtGet(ShSheet,R,C)<>'' Then FmAccAdd(CellValue(R,C,Er));
     End;
    End Else Begin
     FmP:=St;
@@ -8815,7 +9163,7 @@ Function CellValue(R,C: Integer; Var Err: Boolean): Real;
 Var S: String; V: Real; Cd: Integer; SaveS: String; SaveP: Integer; SaveErr: Boolean;
 Begin
  CellValue:=0;
- S:=ShSheet^.Get(R,C);
+ S:=ShtGet(ShSheet,R,C);
  If S='' Then Exit;
  If S[1]='=' Then Begin
   If FmDepth>14 Then Begin Err:=True;Exit;End;
@@ -8835,109 +9183,128 @@ Begin
  End;
 End;
 
-Constructor TSheet.Init(AX,AY: Integer; ADB: Boolean; Const AFile: String);
+Function ShtNew(AX,AY: Integer; ADB: Boolean; Const AFile: String): PWindow;
+ Var Wd_: PWindow; Dt_: PSheet;
 Var R,C: Integer;
 Begin
- If ADB Then TWindow.Init(A_GEOFILE,AX,AY,600,380,'GeoFile')
- Else TWindow.Init(A_GEOCALC,AX,AY,600,380,'GeoCalc');
- DB:=ADB;
- If DB Then IconId:=IC_DEXDOC Else IconId:=IC_CALC;
- MinW:=300;MinH:=200;
- For R:=1 To SROWS Do For C:=1 To SCOLS Do Cells[R,C]:=Nil;
- SR:=1;SC:=1;TopR:=1;LeftC:=1;Editing:=False;EditBuf:='';FName:='';Modified:=False;
- AddMenu('File~Fichier~Datei');
- AddItem('New~Nouveau~Neu',CM_SNEW,'');
- AddItem('Open...~Ouvrir...~'#142'ffnen...',CM_SOPEN,'');
- AddItem('Save~Enregistrer~Speichern',CM_SSAVE,'');
- AddItem('Save As...~Enregistrer sous...~Speichern unter...',CM_SSAVEAS,'');
- AddSep;
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Edit~'#144'dition~Bearbeiten');
- AddItem('Cut~Couper~Ausschneiden',CM_SCUT,'');
- AddItem('Copy~Copier~Kopieren',CM_SCOPY,'');
- AddItem('Paste~Coller~Einf'#129'gen',CM_SPASTE,'');
- AddItem('Clear~Effacer~L'#148'schen',CM_SCLR,'Del');
- AddMenu('Cell~Cellule~Zelle');
- AddItem('Fill Down~Recopier vers le bas~Nach unten f'#129'llen',CM_SFILLD,'');
- AddMenu('Formula~Formule~Formel');
- AddItem('AutoSum~Somme auto~AutoSumme',CM_SSUM,'');
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- If DB Then Begin
-  SetCell(1,1,T3('Name','Nom','Name'));SetCell(1,2,T3('Phone','T'#130'l'#130'phone','Telefon'));
-  SetCell(1,3,T3('City','Ville','Ort'));Modified:=False;
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ If ADB Then WinInit(Wd_,A_GEOFILE,AX,AY,600,380,'GeoFile')
+ Else WinInit(Wd_,A_GEOCALC,AX,AY,600,380,'GeoCalc');
+ Dt_^.DB:=ADB;
+ If Dt_^.DB Then Wd_^.IconId:=IC_DEXDOC Else Wd_^.IconId:=IC_CALC;
+ Wd_^.MinW:=300;Wd_^.MinH:=200;
+ For R:=1 To SROWS Do For C:=1 To SCOLS Do Dt_^.Cells[R,C]:=Nil;
+ Dt_^.SR:=1;Dt_^.SC:=1;Dt_^.TopR:=1;Dt_^.LeftC:=1;Dt_^.Editing:=False;Dt_^.EditBuf:='';Dt_^.FName:='';Dt_^.Modified:=False;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'New~Nouveau~Neu',CM_SNEW,'');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_SOPEN,'');
+ WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_SSAVE,'');
+ WinAddItem(Wd_,'Save As...~Enregistrer sous...~Speichern unter...',CM_SSAVEAS,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Cut~Couper~Ausschneiden',CM_SCUT,'');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_SCOPY,'');
+ WinAddItem(Wd_,'Paste~Coller~Einf'#129'gen',CM_SPASTE,'');
+ WinAddItem(Wd_,'Clear~Effacer~L'#148'schen',CM_SCLR,'Del');
+ WinAddMenu(Wd_,'Cell~Cellule~Zelle');
+ WinAddItem(Wd_,'Fill Down~Recopier vers le bas~Nach unten f'#129'llen',CM_SFILLD,'');
+ WinAddMenu(Wd_,'Formula~Formule~Formel');
+ WinAddItem(Wd_,'AutoSum~Somme auto~AutoSumme',CM_SSUM,'');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ If Dt_^.DB Then Begin
+  ShtSetCell(Wd_,1,1,T3('Name','Nom','Name'));ShtSetCell(Wd_,1,2,T3('Phone','T'#130'l'#130'phone','Telefon'));
+  ShtSetCell(Wd_,1,3,T3('City','Ville','Ort'));Dt_^.Modified:=False;
  End;
- If AFile<>'' Then Begin LoadFile(AFile);FName:=AFile;End;
- UpdateTitle;
+ If AFile<>'' Then Begin ShtLoadFile(Wd_,AFile);Dt_^.FName:=AFile;End;
+ ShtUpdateTitle(Wd_);
+ ShtNew:=Wd_;
 End;
 
-Destructor TSheet.Done;
+Procedure ShtDone(Wd_: PWindow);
+ Var Dt_: PSheet;
 Var R,C: Integer;
 Begin
- For R:=1 To SROWS Do For C:=1 To SCOLS Do FreeStr(Cells[R,C]);
+ Dt_:=Wd_^.Data;
+ For R:=1 To SROWS Do For C:=1 To SCOLS Do FreeStr(Dt_^.Cells[R,C]);
 End;
 
-Procedure TSheet.UpdateTitle;
+Procedure ShtUpdateTitle(Wd_: PWindow);
+ Var Dt_: PSheet;
 Var N,B: String;
 Begin
- If FName='' Then N:=T3('Untitled','Sans titre','Unbenannt') Else N:=ShortName(FName);
- If DB Then B:='GeoFile' Else B:='GeoCalc';
- If DB Then Title:=B+' - '+N Else Title:=B+' - Calc '+N;
- If Modified Then Title:=Title+' *';
+ Dt_:=Wd_^.Data;
+ If Dt_^.FName='' Then N:=T3('Untitled','Sans titre','Unbenannt') Else N:=ShortName(Dt_^.FName);
+ If Dt_^.DB Then B:='GeoFile' Else B:='GeoCalc';
+ If Dt_^.DB Then Wd_^.Title:=B+' - '+N Else Wd_^.Title:=B+' - Calc '+N;
+ If Dt_^.Modified Then Wd_^.Title:=Wd_^.Title+' *';
 End;
 
-Function TSheet.Get(R,C: Integer): String;
+Function ShtGet(Wd_: PWindow; R,C: Integer): String;
+ Var Dt_: PSheet;
 Begin
- If (R<1) Or (R>SROWS) Or (C<1) Or (C>SCOLS) Or (Cells[R,C]=Nil) Then Get:='' Else Get:=Cells[R,C]^;
+ Dt_:=Wd_^.Data;
+ If (R<1) Or (R>SROWS) Or (C<1) Or (C>SCOLS) Or (Dt_^.Cells[R,C]=Nil) Then ShtGet:='' Else ShtGet:=Dt_^.Cells[R,C]^;
 End;
 
-Procedure TSheet.SetCell(R,C: Integer; Const S: String);
+Procedure ShtSetCell(Wd_: PWindow; R,C: Integer; Const S: String);
+ Var Dt_: PSheet;
 Begin
+ Dt_:=Wd_^.Data;
  If (R<1) Or (R>SROWS) Or (C<1) Or (C>SCOLS) Then Exit;
- FreeStr(Cells[R,C]);
- If S<>'' Then Cells[R,C]:=NewStr(Copy(S,1,200));
- Modified:=True;
+ FreeStr(Dt_^.Cells[R,C]);
+ If S<>'' Then Dt_^.Cells[R,C]:=NewStr(Copy(S,1,200));
+ Dt_^.Modified:=True;
 End;
 
-Procedure TSheet.CellName(R,C: Integer; Var S: String);
+Procedure ShtCellName(Wd_: PWindow; R,C: Integer; Var S: String);
+ Var Dt_: PSheet;
 Begin
+ Dt_:=Wd_^.Data;
  S:=Chr(64+C)+IntStr(R);
 End;
 
-Procedure TSheet.GridRect(Var X1,Y1,X2,Y2: Integer);
+Procedure ShtGridRect(Wd_: PWindow; Var X1,Y1,X2,Y2: Integer);
+ Var Dt_: PSheet;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  Inc(Y1,52);
 End;
 
-Procedure TSheet.Reveal;
+Procedure ShtReveal(Wd_: PWindow);
+ Var Dt_: PSheet;
 Var X1,Y1,X2,Y2,VR,VC: Integer;
 Begin
- GridRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ ShtGridRect(Wd_,X1,Y1,X2,Y2);
  VR:=(Y2-Y1-SRH) Div SRH;VC:=(X2-X1-30-SB) Div SCW;
  If VR<1 Then VR:=1;
  If VC<1 Then VC:=1;
- If SR<TopR Then TopR:=SR;
- If SR>=TopR+VR Then TopR:=SR-VR+1;
- If SC<LeftC Then LeftC:=SC;
- If SC>=LeftC+VC Then LeftC:=SC-VC+1;
+ If Dt_^.SR<Dt_^.TopR Then Dt_^.TopR:=Dt_^.SR;
+ If Dt_^.SR>=Dt_^.TopR+VR Then Dt_^.TopR:=Dt_^.SR-VR+1;
+ If Dt_^.SC<Dt_^.LeftC Then Dt_^.LeftC:=Dt_^.SC;
+ If Dt_^.SC>=Dt_^.LeftC+VC Then Dt_^.LeftC:=Dt_^.SC-VC+1;
 End;
 
-Procedure TSheet.DrawClient;
+Procedure ShtDrawClient(Wd_: PWindow);
+ Var Dt_: PSheet;
 Var X1,Y1,X2,Y2,GX1,GY1,GX2,GY2,I,J,R,C,X,Y,VR,VC,Cd: Integer; S,T: String; V: Real; Er: Boolean;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
- ShSheet:=@Self;
+ ShSheet:=Wd_;
  { barre de formule }
- CellName(SR,SC,S);
+ ShtCellName(Wd_,Dt_^.SR,Dt_^.SC,S);
  Sunken(X1+4,Y1+4,X1+60,Y1+22,cWht);GText(X1+10,Y1+9,S,cBlk);
  Sunken(X1+66,Y1+4,X2-4,Y1+22,cWht);
- If Editing Then Begin
-  GText(X1+72,Y1+9,Copy(EditBuf,Max2(1,Length(EditBuf)-((X2-X1-90) Div 8)+1),255),cBlk);
-  GVLine(X1+72+Min2(Length(EditBuf),(X2-X1-90) Div 8)*8,Y1+7,Y1+19,cBlk);
- End Else GText(X1+72,Y1+9,Copy(Get(SR,SC),1,(X2-X1-80) Div 8),cBlk);
+ If Dt_^.Editing Then Begin
+  GText(X1+72,Y1+9,Copy(Dt_^.EditBuf,Max2(1,Length(Dt_^.EditBuf)-((X2-X1-90) Div 8)+1),255),cBlk);
+  GVLine(X1+72+Min2(Length(Dt_^.EditBuf),(X2-X1-90) Div 8)*8,Y1+7,Y1+19,cBlk);
+ End Else GText(X1+72,Y1+9,Copy(ShtGet(Wd_,Dt_^.SR,Dt_^.SC),1,(X2-X1-80) Div 8),cBlk);
  { barre d'outils decorative }
  GBar(X1,Y1+26,X2,Y1+48,cLGr);
  For I:=0 To 9 Do Btn3D(X1+4+I*26,Y1+27,X1+26+I*26,Y1+47,False);
@@ -8945,12 +9312,12 @@ Begin
  GText(X1+88,Y1+33,#17,cBlk);GText(X1+114,Y1+33,#18,cBlk);GText(X1+140,Y1+33,#16,cBlk);
  GText(X1+166,Y1+33,'$',cBlk);GText(X1+192,Y1+33,'%',cBlk);GText(X1+218,Y1+33,'+',cBlk);GText(X1+244,Y1+33,'-',cBlk);
  { grille }
- GridRect(GX1,GY1,GX2,GY2);
+ ShtGridRect(Wd_,GX1,GY1,GX2,GY2);
  GBar(GX1,GY1,GX2,GY2,cWht);
  VR:=(GY2-GY1-SRH) Div SRH+1;VC:=(GX2-GX1-30-SB) Div SCW+1;
  GBar(GX1,GY1,GX1+29,GY1+SRH-1,cLGr);Bevel1(GX1,GY1,GX1+29,GY1+SRH-1,cWht,cDGr);
  For J:=0 To VC-1 Do Begin
-  C:=LeftC+J;
+  C:=Dt_^.LeftC+J;
   If C<=SCOLS Then Begin
    X:=GX1+30+J*SCW;
    GBar(X,GY1,X+SCW-1,GY1+SRH-1,cLGr);Bevel1(X,GY1,X+SCW-1,GY1+SRH-1,cWht,cDGr);
@@ -8958,18 +9325,18 @@ Begin
   End;
  End;
  For I:=0 To VR-1 Do Begin
-  R:=TopR+I;
+  R:=Dt_^.TopR+I;
   If R<=SROWS Then Begin
    Y:=GY1+SRH+I*SRH;
    GBar(GX1,Y,GX1+29,Y+SRH-1,cLGr);Bevel1(GX1,Y,GX1+29,Y+SRH-1,cWht,cDGr);
    GTextCtr(GX1,GX1+29,Y+3,IntStr(R),cBlk);
    For J:=0 To VC-1 Do Begin
-    C:=LeftC+J;
+    C:=Dt_^.LeftC+J;
     If C<=SCOLS Then Begin
      X:=GX1+30+J*SCW;
      GRect(X,Y,X+SCW-1,Y+SRH-1,cLGr);
-     If DB And (R=1) Then GBar(X+1,Y+1,X+SCW-2,Y+SRH-2,cLGr);
-     S:=Get(R,C);
+     If Dt_^.DB And (R=1) Then GBar(X+1,Y+1,X+SCW-2,Y+SRH-2,cLGr);
+     S:=ShtGet(Wd_,R,C);
      If S<>'' Then Begin
       If S[1]='=' Then Begin
        Er:=False;FmDepth:=0;
@@ -8989,100 +9356,110 @@ Begin
   End;
  End;
  { cellule active }
- If (SR>=TopR) And (SR<TopR+VR) And (SC>=LeftC) And (SC<LeftC+VC) Then Begin
-  X:=GX1+30+(SC-LeftC)*SCW;Y:=GY1+SRH+(SR-TopR)*SRH;
+ If (Dt_^.SR>=Dt_^.TopR) And (Dt_^.SR<Dt_^.TopR+VR) And (Dt_^.SC>=Dt_^.LeftC) And (Dt_^.SC<Dt_^.LeftC+VC) Then Begin
+  X:=GX1+30+(Dt_^.SC-Dt_^.LeftC)*SCW;Y:=GY1+SRH+(Dt_^.SR-Dt_^.TopR)*SRH;
   GRect(X,Y,X+SCW-1,Y+SRH-1,cBlk);GRect(X+1,Y+1,X+SCW-2,Y+SRH-2,cBlk);
  End;
- DrawScroll(True,GX2-SB+1,GY1,GX2,GY2,SROWS,VR,TopR-1);
+ DrawScroll(True,GX2-SB+1,GY1,GX2,GY2,SROWS,VR,Dt_^.TopR-1);
 End;
 
-Procedure TSheet.Commit;
+Procedure ShtCommit(Wd_: PWindow);
+ Var Dt_: PSheet;
 Begin
- If Editing Then Begin
-  SetCell(SR,SC,EditBuf);
-  Editing:=False;
-  UpdateTitle;
+ Dt_:=Wd_^.Data;
+ If Dt_^.Editing Then Begin
+  ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,Dt_^.EditBuf);
+  Dt_^.Editing:=False;
+  ShtUpdateTitle(Wd_);
  End;
 End;
 
-Procedure TSheet.OnMouse(Var E: TEvent);
+Procedure ShtOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PSheet;
 Var GX1,GY1,GX2,GY2,R,C: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  If E.Kind<>EV_DOWN Then Exit;
- GridRect(GX1,GY1,GX2,GY2);
+ ShtGridRect(Wd_,GX1,GY1,GX2,GY2);
  If (E.X>=GX1+30) And (E.X<GX2-SB) And (E.Y>=GY1+SRH) And (E.Y<=GY2) Then Begin
-  Commit;
-  C:=LeftC+(E.X-GX1-30) Div SCW;R:=TopR+(E.Y-GY1-SRH) Div SRH;
+  ShtCommit(Wd_);
+  C:=Dt_^.LeftC+(E.X-GX1-30) Div SCW;R:=Dt_^.TopR+(E.Y-GY1-SRH) Div SRH;
   If (R>=1) And (R<=SROWS) And (C>=1) And (C<=SCOLS) Then Begin
-   SR:=R;SC:=C;
-   If E.Dbl Then Begin Editing:=True;EditBuf:=Get(SR,SC);End;
+   Dt_^.SR:=R;Dt_^.SC:=C;
+   If E.Dbl Then Begin Dt_^.Editing:=True;Dt_^.EditBuf:=ShtGet(Wd_,Dt_^.SR,Dt_^.SC);End;
   End;
  End Else If (E.X>=GX2-SB+1) And (E.Y>=GY1) Then Begin
-  If E.Y<GY1+SB Then Begin If TopR>1 Then Dec(TopR);End
-  Else If E.Y>GY2-SB Then Begin If TopR<SROWS Then Inc(TopR);End
-  Else If E.Y<(GY1+GY2) Div 2 Then TopR:=Max2(1,TopR-10) Else TopR:=Min2(SROWS,TopR+10);
+  If E.Y<GY1+SB Then Begin If Dt_^.TopR>1 Then Dec(Dt_^.TopR);End
+  Else If E.Y>GY2-SB Then Begin If Dt_^.TopR<SROWS Then Inc(Dt_^.TopR);End
+  Else If E.Y<(GY1+GY2) Div 2 Then Dt_^.TopR:=Max2(1,Dt_^.TopR-10) Else Dt_^.TopR:=Min2(SROWS,Dt_^.TopR+10);
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
 End;
 
-Procedure TSheet.OnKey(K: Word);
+Procedure ShtOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PSheet;
 Begin
- If Editing Then Begin
+ Dt_:=Wd_^.Data;
+ If Dt_^.Editing Then Begin
   Case K Of
-   K_ENTER: Begin Commit;If SR<SROWS Then Inc(SR);End;
-   K_TAB: Begin Commit;If SC<SCOLS Then Inc(SC);End;
-   K_ESC: Editing:=False;
-   K_BKSP: If EditBuf<>'' Then Delete(EditBuf,Length(EditBuf),1);
+   K_ENTER: Begin ShtCommit(Wd_);If Dt_^.SR<SROWS Then Inc(Dt_^.SR);End;
+   K_TAB: Begin ShtCommit(Wd_);If Dt_^.SC<SCOLS Then Inc(Dt_^.SC);End;
+   K_ESC: Dt_^.Editing:=False;
+   K_BKSP: If Dt_^.EditBuf<>'' Then Delete(Dt_^.EditBuf,Length(Dt_^.EditBuf),1);
   Else
-   If (K>=32) And (K<256) And (Length(EditBuf)<190) Then EditBuf:=EditBuf+Chr(K);
+   If (K>=32) And (K<256) And (Length(Dt_^.EditBuf)<190) Then Dt_^.EditBuf:=Dt_^.EditBuf+Chr(K);
   End;
  End Else Begin
   Case K Of
-   K_UP: If SR>1 Then Dec(SR);
-   K_DOWN: If SR<SROWS Then Inc(SR);
-   K_LEFT: If SC>1 Then Dec(SC);
-   K_RIGHT: If SC<SCOLS Then Inc(SC);
-   K_TAB: If SC<SCOLS Then Inc(SC);
-   K_PGUP: SR:=Max2(1,SR-10);
-   K_PGDN: SR:=Min2(SROWS,SR+10);
-   K_HOME: SC:=1;
-   K_DEL: Begin SetCell(SR,SC,'');UpdateTitle;End;
-   K_F2,K_ENTER: Begin Editing:=True;EditBuf:=Get(SR,SC);End;
-   K_CTRLC: ClipCell:=Get(SR,SC);
-   K_CTRLV: Begin SetCell(SR,SC,ClipCell);UpdateTitle;End;
+   K_UP: If Dt_^.SR>1 Then Dec(Dt_^.SR);
+   K_DOWN: If Dt_^.SR<SROWS Then Inc(Dt_^.SR);
+   K_LEFT: If Dt_^.SC>1 Then Dec(Dt_^.SC);
+   K_RIGHT: If Dt_^.SC<SCOLS Then Inc(Dt_^.SC);
+   K_TAB: If Dt_^.SC<SCOLS Then Inc(Dt_^.SC);
+   K_PGUP: Dt_^.SR:=Max2(1,Dt_^.SR-10);
+   K_PGDN: Dt_^.SR:=Min2(SROWS,Dt_^.SR+10);
+   K_HOME: Dt_^.SC:=1;
+   K_DEL: Begin ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,'');ShtUpdateTitle(Wd_);End;
+   K_F2,K_ENTER: Begin Dt_^.Editing:=True;Dt_^.EditBuf:=ShtGet(Wd_,Dt_^.SR,Dt_^.SC);End;
+   K_CTRLC: ClipCell:=ShtGet(Wd_,Dt_^.SR,Dt_^.SC);
+   K_CTRLV: Begin ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,ClipCell);ShtUpdateTitle(Wd_);End;
   Else
-   If (K>=32) And (K<256) Then Begin Editing:=True;EditBuf:=Chr(K);End;
+   If (K>=32) And (K<256) Then Begin Dt_^.Editing:=True;Dt_^.EditBuf:=Chr(K);End;
   End;
  End;
- Reveal;
- Invalidate(@Self);
+ ShtReveal(Wd_);
+ Invalidate(Wd_);
 End;
 
-Procedure TSheet.SaveFile(Const P: String);
+Procedure ShtSaveFile(Wd_: PWindow; Const P: String);
+ Var Dt_: PSheet;
 Var F: Text; R,C: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,P);
  Rewrite(F);
  WriteLn(F,'GEOCALC1');
  For R:=1 To SROWS Do
   For C:=1 To SCOLS Do
-   If Cells[R,C]<>Nil Then WriteLn(F,Chr(64+C),R,#9,Cells[R,C]^);
+   If Dt_^.Cells[R,C]<>Nil Then WriteLn(F,Chr(64+C),R,#9,Dt_^.Cells[R,C]^);
  Close(F);
  {$I+}
  If IOResult<>0 Then Info(T3('Error','Erreur','Fehler'),T3('Cannot save file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'))
- Else Modified:=False;
+ Else Dt_^.Modified:=False;
 End;
 
-Procedure TSheet.LoadFile(Const P: String);
+Procedure ShtLoadFile(Wd_: PWindow; Const P: String);
+ Var Dt_: PSheet;
 Var F: Text; S,N: String; R,C,T: Integer;
 Begin
+ Dt_:=Wd_^.Data;
  {$I-}
  Assign(F,P);
  Reset(F);
  {$I+}
  If IOResult<>0 Then Begin Info(T3('Error','Erreur','Fehler'),T3('Cannot open|','Impossible d''ouvrir|','Kann nicht '#148'ffnen|')+P);Exit;End;
- For R:=1 To SROWS Do For C:=1 To SCOLS Do FreeStr(Cells[R,C]);
+ For R:=1 To SROWS Do For C:=1 To SCOLS Do FreeStr(Dt_^.Cells[R,C]);
  {$I-}
  ReadLn(F,S);
  While Not Eof(F) Do Begin
@@ -9091,64 +9468,68 @@ Begin
   If T>2 Then Begin
    N:=Copy(S,1,T-1);
    C:=Ord(UpCase(N[1]))-64;R:=StrVal(Copy(N,2,5),0);
-   If (R>=1) And (R<=SROWS) And (C>=1) And (C<=SCOLS) Then Cells[R,C]:=NewStr(Copy(S,T+1,200));
+   If (R>=1) And (R<=SROWS) And (C>=1) And (C<=SCOLS) Then Dt_^.Cells[R,C]:=NewStr(Copy(S,T+1,200));
   End;
  End;
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
- Modified:=False;
+ Dt_^.Modified:=False;
 End;
 
-Function TSheet.CanClose: Boolean;
+Function ShtCanClose(Wd_: PWindow): Boolean;
+ Var Dt_: PSheet;
 Var R: Integer;
 Begin
- CanClose:=True;
- If Modified Then Begin
+ Dt_:=Wd_^.Data;
+ ShtCanClose:=True;
+ If Dt_^.Modified Then Begin
   R:=MsgBox(T3('Close','Fermer','Schlie'#225'en'),T3('Save changes?','Enregistrer les modifications ?',#142'nderungen speichern?'),
      T3('Yes|No|Cancel','Oui|Non|Annuler','Ja|Nein|Abbruch'),2);
-  If R=3 Then CanClose:=False
-  Else If R=1 Then Begin OnCommand(CM_SSAVE);CanClose:=Not Modified;End;
+  If R=3 Then ShtCanClose:=False
+  Else If R=1 Then Begin ShtOnCommand(Wd_,CM_SSAVE);ShtCanClose:=Not Dt_^.Modified;End;
  End;
 End;
 
-Procedure TSheet.OnCommand(Cmd: Integer);
+Procedure ShtOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PSheet;
 Var P,S: String; R,C: Integer; V: Real; Er: Boolean;
 Begin
- Commit;
+ Dt_:=Wd_^.Data;
+ ShtCommit(Wd_);
  Case Cmd Of
   CM_SNEW: Begin
-            If Not CanClose Then Exit;
-            For R:=1 To SROWS Do For C:=1 To SCOLS Do FreeStr(Cells[R,C]);
-            FName:='';Modified:=False;SR:=1;SC:=1;TopR:=1;LeftC:=1;
+            If Not ShtCanClose(Wd_) Then Exit;
+            For R:=1 To SROWS Do For C:=1 To SCOLS Do FreeStr(Dt_^.Cells[R,C]);
+            Dt_^.FName:='';Dt_^.Modified:=False;Dt_^.SR:=1;Dt_^.SC:=1;Dt_^.TopR:=1;Dt_^.LeftC:=1;
            End;
   CM_SOPEN: Begin
              P:=CurDirStr;
-             If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.GCL',P,False) Then Begin LoadFile(P);FName:=P;End;
+             If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.GCL',P,False) Then Begin ShtLoadFile(Wd_,P);Dt_^.FName:=P;End;
             End;
   CM_SSAVE,CM_SSAVEAS: Begin
-             P:=FName;
+             P:=Dt_^.FName;
              If (P='') Or (Cmd=CM_SSAVEAS) Then Begin
               If P='' Then P:=JoinPath(CurDirStr,'SHEET.GCL');
-              If Not FileDlg(T3('Save As','Enregistrer sous','Speichern unter'),'*.GCL',P,True) Then Begin UpdateTitle;Exit;End;
+              If Not FileDlg(T3('Save As','Enregistrer sous','Speichern unter'),'*.GCL',P,True) Then Begin ShtUpdateTitle(Wd_);Exit;End;
              End;
-             SaveFile(P);FName:=P;
+             ShtSaveFile(Wd_,P);Dt_^.FName:=P;
             End;
-  CM_SCLR: SetCell(SR,SC,'');
-  CM_SCOPY: ClipCell:=Get(SR,SC);
-  CM_SCUT: Begin ClipCell:=Get(SR,SC);SetCell(SR,SC,'');End;
-  CM_SPASTE: SetCell(SR,SC,ClipCell);
-  CM_SFILLD: If SR<SROWS Then SetCell(SR+1,SC,Get(SR,SC));
+  CM_SCLR: ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,'');
+  CM_SCOPY: ClipCell:=ShtGet(Wd_,Dt_^.SR,Dt_^.SC);
+  CM_SCUT: Begin ClipCell:=ShtGet(Wd_,Dt_^.SR,Dt_^.SC);ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,'');End;
+  CM_SPASTE: ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,ClipCell);
+  CM_SFILLD: If Dt_^.SR<SROWS Then ShtSetCell(Wd_,Dt_^.SR+1,Dt_^.SC,ShtGet(Wd_,Dt_^.SR,Dt_^.SC));
   CM_SSUM: Begin
-            R:=SR-1;
-            While (R>=1) And (Get(R,SC)<>'') Do Dec(R);
-            S:='=SUM('+Chr(64+SC)+IntStr(R+1)+':'+Chr(64+SC)+IntStr(SR-1)+')';
-            If SR>1 Then SetCell(SR,SC,S);
+            R:=Dt_^.SR-1;
+            While (R>=1) And (ShtGet(Wd_,R,Dt_^.SC)<>'') Do Dec(R);
+            S:='=SUM('+Chr(64+Dt_^.SC)+IntStr(R+1)+':'+Chr(64+Dt_^.SC)+IntStr(Dt_^.SR-1)+')';
+            If Dt_^.SR>1 Then ShtSetCell(Wd_,Dt_^.SR,Dt_^.SC,S);
            End;
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- UpdateTitle;
- Invalidate(@Self);
+ ShtUpdateTitle(Wd_);
+ Invalidate(Wd_);
 End;
 
 { ====================================================================== }
@@ -9271,101 +9652,108 @@ End;
 
 Type
  PGeodeWin = ^TGeodeWin;
- TGeodeWin = Object(TWindow)
+ TGeodeWin = Record
   G      : TGeode;
   Ln     : Array[1..MAXGLN] Of PString;
   NL     : Integer;
   Top    : Integer;
   Drag   : Boolean;
   Grab   : LongInt;
-  Constructor Init(AX,AY: Integer; Const APath: String);
-  Destructor Done; Virtual;
-  Procedure Add(Const S: String);
-  Procedure ClearLines;
-  Procedure Report;
-  Procedure Emulate;
-  Procedure DrawClient; Virtual;
-  Procedure OnMouse(Var E: TEvent); Virtual;
-  Procedure OnKey(K: Word); Virtual;
-  Procedure OnCommand(Cmd: Integer); Virtual;
  End;
+
+Procedure GwAdd(Wd_: PWindow; Const S: String); Forward;
+Procedure GwClearLines(Wd_: PWindow); Forward;
+Procedure GwReport(Wd_: PWindow); Forward;
+Function GwNew(AX,AY: Integer; Const APath: String): PWindow; Forward;
+Procedure GwDone(Wd_: PWindow); Forward;
+Procedure GwEmulate(Wd_: PWindow); Forward;
+Procedure GwDrawClient(Wd_: PWindow); Forward;
+Procedure GwOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure GwOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure GwOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
 
 Function Hx(W: Word): String;
 Begin
  Hx:='0x'+HexW(W);
 End;
 
-Procedure TGeodeWin.Add(Const S: String);
+Procedure GwAdd(Wd_: PWindow; Const S: String);
+ Var Dt_: PGeodeWin;
 Begin
- If NL<MAXGLN Then Begin Inc(NL);Ln[NL]:=NewStr(S);End;
+ Dt_:=Wd_^.Data;
+ If Dt_^.NL<MAXGLN Then Begin Inc(Dt_^.NL);Dt_^.Ln[Dt_^.NL]:=NewStr(S);End;
 End;
 
-Procedure TGeodeWin.ClearLines;
+Procedure GwClearLines(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
 Var I: Integer;
 Begin
- For I:=1 To NL Do FreeStr(Ln[I]);
- NL:=0;Top:=1;
+ Dt_:=Wd_^.Data;
+ For I:=1 To Dt_^.NL Do FreeStr(Dt_^.Ln[I]);
+ Dt_^.NL:=0;Dt_^.Top:=1;
 End;
 
-Procedure TGeodeWin.Report;
+Procedure GwReport(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
 Var I,J: Integer; S: String; Tot: LongInt;
 Begin
- ClearLines;
- Add(T3('Geode: ','Geode : ','Geode: ')+ShortName(G.Path));
- If Not G.Valid Then Begin
-  If G.Info.Valid Then Begin
-   Add(T3('GEOS name: ','Nom GEOS : ','GEOS-Name: ')+G.Info.LongName);
-   Add(T3('Token: ','Jeton : ','Token: ')+G.Info.Tok+'  '+T3('Creator: ','Cr'#130'ateur : ','Ersteller: ')+G.Info.Creator);
-   If G.Info.IsExe Then Add(T3('This executable has an unsupported layout.','Cet ex'#130'cutable a une structure non prise en charge.','Dieses Programm hat ein nicht unterst'#129'tztes Format.'))
-   Else Add(T3('Type: GEOS data file (VM) PC/GEOS ','Type : fichier de donn'#130'es GEOS (VM) PC/GEOS ','Typ: GEOS-Datendatei (VM) PC/GEOS ')+IntStr(G.Info.Ver)+'.x');
-   Add(T3('Release ','Version ','Version ')+IntStr(G.Info.Release shr 8)+'.'+IntStr(G.Info.Release and 255)+
-       '   '+T3('Protocol ','Protocole ','Protokoll ')+IntStr(G.Info.Protocol shr 8)+'.'+IntStr(G.Info.Protocol and 255));
-   If G.Info.Notes<>'' Then Add(T3('Notes: ','Notes : ','Notizen: ')+G.Info.Notes);
-   Add('');
-   Add(T3('Open it with the application that created it.','Ouvrez-le avec l''application qui l''a cr'#130#130'.','Mit der erzeugenden Anwendung '#148'ffnen.'));
-  End Else Add(T3('This is not a PC/GEOS file.','Ce n''est pas un fichier PC/GEOS.','Dies ist keine PC/GEOS-Datei.'));
+ Dt_:=Wd_^.Data;
+ GwClearLines(Wd_);
+ GwAdd(Wd_,T3('Geode: ','Geode : ','Geode: ')+ShortName(Dt_^.G.Path));
+ If Not Dt_^.G.Valid Then Begin
+  If Dt_^.G.Info.Valid Then Begin
+   GwAdd(Wd_,T3('GEOS name: ','Nom GEOS : ','GEOS-Name: ')+Dt_^.G.Info.LongName);
+   GwAdd(Wd_,T3('Token: ','Jeton : ','Token: ')+Dt_^.G.Info.Tok+'  '+T3('Creator: ','Cr'#130'ateur : ','Ersteller: ')+Dt_^.G.Info.Creator);
+   If Dt_^.G.Info.IsExe Then GwAdd(Wd_,T3('This executable has an unsupported layout.','Cet ex'#130'cutable a une structure non prise en charge.','Dieses Programm hat ein nicht unterst'#129'tztes Format.'))
+   Else GwAdd(Wd_,T3('Type: GEOS data file (VM) PC/GEOS ','Type : fichier de donn'#130'es GEOS (VM) PC/GEOS ','Typ: GEOS-Datendatei (VM) PC/GEOS ')+IntStr(Dt_^.G.Info.Ver)+'.x');
+   GwAdd(Wd_,T3('Release ','Version ','Version ')+IntStr(Dt_^.G.Info.Release shr 8)+'.'+IntStr(Dt_^.G.Info.Release and 255)+
+       '   '+T3('Protocol ','Protocole ','Protokoll ')+IntStr(Dt_^.G.Info.Protocol shr 8)+'.'+IntStr(Dt_^.G.Info.Protocol and 255));
+   If Dt_^.G.Info.Notes<>'' Then GwAdd(Wd_,T3('Notes: ','Notes : ','Notizen: ')+Dt_^.G.Info.Notes);
+   GwAdd(Wd_,'');
+   GwAdd(Wd_,T3('Open it with the application that created it.','Ouvrez-le avec l''application qui l''a cr'#130#130'.','Mit der erzeugenden Anwendung '#148'ffnen.'));
+  End Else GwAdd(Wd_,T3('This is not a PC/GEOS file.','Ce n''est pas un fichier PC/GEOS.','Dies ist keine PC/GEOS-Datei.'));
   Exit;
  End;
- Add(T3('GEOS name: ','Nom GEOS : ','GEOS-Name: ')+G.Info.LongName);
- Add(T3('Permanent name: ','Nom permanent : ','Dauerhafter Name: ')+G.Name+G.Ext);
- Add(T3('Type: ','Type : ','Typ: ')+GKindName(G.AType)+'  (PC/GEOS '+IntStr(G.Info.Ver)+'.x)');
- Add(T3('Token: ','Jeton : ','Token: ')+G.Info.Tok+'   '+T3('Release ','Version ','Version ')+IntStr(G.Info.Release shr 8)+'.'+IntStr(G.Info.Release and 255)+
-     '   '+T3('Protocol ','Protocole ','Protokoll ')+IntStr(G.Info.Protocol shr 8)+'.'+IntStr(G.Info.Protocol and 255));
- Add(T3('Attributes: ','Attributs : ','Attribute: ')+Hx(G.Attr)+'   '+T3('Stack: ','Pile : ','Stapel: ')+IntStr(G.Stack)+T3(' bytes',' octets',' Bytes'));
- Add(T3('File size: ','Taille du fichier : ','Dateigr'#148#225'e: ')+NumFmt(G.FileLen)+T3(' bytes',' octets',' Bytes'));
- If G.Info.Notes<>'' Then Add(T3('Notes: ','Notes : ','Notizen: ')+G.Info.Notes);
- Add('');
- Add(T3('Libraries used:','Biblioth'#138'ques utilis'#130'es :','Verwendete Bibliotheken:'));
- For I:=0 To G.NL-1 Do Begin
-  S:='  '+IntStr(I)+': '+G.Libs[I].Name;
-  If G.Libs[I].Typ=$2000 Then S:=S+'  [driver]' Else If G.Libs[I].Typ=$4000 Then S:=S+'  [library]';
-  S:=S+'  protocol '+IntStr(G.Libs[I].Proto shr 8)+'.'+IntStr(G.Libs[I].Proto and 255);
-  Add(S);
+ GwAdd(Wd_,T3('GEOS name: ','Nom GEOS : ','GEOS-Name: ')+Dt_^.G.Info.LongName);
+ GwAdd(Wd_,T3('Permanent name: ','Nom permanent : ','Dauerhafter Name: ')+Dt_^.G.Name+Dt_^.G.Ext);
+ GwAdd(Wd_,T3('Type: ','Type : ','Typ: ')+GKindName(Dt_^.G.AType)+'  (PC/GEOS '+IntStr(Dt_^.G.Info.Ver)+'.x)');
+ GwAdd(Wd_,T3('Token: ','Jeton : ','Token: ')+Dt_^.G.Info.Tok+'   '+T3('Release ','Version ','Version ')+IntStr(Dt_^.G.Info.Release shr 8)+'.'+IntStr(Dt_^.G.Info.Release and 255)+
+     '   '+T3('Protocol ','Protocole ','Protokoll ')+IntStr(Dt_^.G.Info.Protocol shr 8)+'.'+IntStr(Dt_^.G.Info.Protocol and 255));
+ GwAdd(Wd_,T3('Attributes: ','Attributs : ','Attribute: ')+Hx(Dt_^.G.Attr)+'   '+T3('Stack: ','Pile : ','Stapel: ')+IntStr(Dt_^.G.Stack)+T3(' bytes',' octets',' Bytes'));
+ GwAdd(Wd_,T3('File size: ','Taille du fichier : ','Dateigr'#148#225'e: ')+NumFmt(Dt_^.G.FileLen)+T3(' bytes',' octets',' Bytes'));
+ If Dt_^.G.Info.Notes<>'' Then GwAdd(Wd_,T3('Notes: ','Notes : ','Notizen: ')+Dt_^.G.Info.Notes);
+ GwAdd(Wd_,'');
+ GwAdd(Wd_,T3('Libraries used:','Biblioth'#138'ques utilis'#130'es :','Verwendete Bibliotheken:'));
+ For I:=0 To Dt_^.G.NL-1 Do Begin
+  S:='  '+IntStr(I)+': '+Dt_^.G.Libs[I].Name;
+  If Dt_^.G.Libs[I].Typ=$2000 Then S:=S+'  [driver]' Else If Dt_^.G.Libs[I].Typ=$4000 Then S:=S+'  [library]';
+  S:=S+'  protocol '+IntStr(Dt_^.G.Libs[I].Proto shr 8)+'.'+IntStr(Dt_^.G.Libs[I].Proto and 255);
+  GwAdd(Wd_,S);
  End;
- Add('');
- If (G.Attr And $8000)<>0 Then Add(T3('Process class: ','Classe processus : ','Prozessklasse: ')+'res '+IntStr(G.ProcRes)+' : '+Hx(G.ProcOfs));
- If (G.Attr And $8000)<>0 Then Add(T3('Application object: ','Objet application : ','Anwendungsobjekt: ')+'res '+IntStr(G.AppRes)+' : '+Hx(G.AppOfs));
- If (G.Attr And $4000)<>0 Then Add(T3('Library entry: ','Entr'#130'e de biblioth'#138'que : ','Bibliothekseintritt: ')+'res '+IntStr(G.EntRes)+' : '+Hx(G.EntOfs));
- If (G.Attr And $2000)<>0 Then Add(T3('Driver table: ','Table du pilote : ','Treibertabelle: ')+'res '+IntStr(G.DrvRes)+' : '+Hx(G.DrvOfs));
- Add(T3('Exported routines: ','Routines export'#130'es : ','Exportierte Routinen: ')+IntStr(G.NE));
- For I:=0 To Min2(G.NE-1,11) Do Add('  '+IntStr(I)+' = res '+IntStr(G.Exp[I].Res)+' : '+Hx(G.Exp[I].Ofs));
- If G.NE>12 Then Add('  ...');
- Add('');
- Add(T3('Resources: ','Ressources : ','Ressourcen: ')+IntStr(G.NS));
+ GwAdd(Wd_,'');
+ If (Dt_^.G.Attr And $8000)<>0 Then GwAdd(Wd_,T3('Process class: ','Classe processus : ','Prozessklasse: ')+'res '+IntStr(Dt_^.G.ProcRes)+' : '+Hx(Dt_^.G.ProcOfs));
+ If (Dt_^.G.Attr And $8000)<>0 Then GwAdd(Wd_,T3('Application object: ','Objet application : ','Anwendungsobjekt: ')+'res '+IntStr(Dt_^.G.AppRes)+' : '+Hx(Dt_^.G.AppOfs));
+ If (Dt_^.G.Attr And $4000)<>0 Then GwAdd(Wd_,T3('Library entry: ','Entr'#130'e de biblioth'#138'que : ','Bibliothekseintritt: ')+'res '+IntStr(Dt_^.G.EntRes)+' : '+Hx(Dt_^.G.EntOfs));
+ If (Dt_^.G.Attr And $2000)<>0 Then GwAdd(Wd_,T3('Driver table: ','Table du pilote : ','Treibertabelle: ')+'res '+IntStr(Dt_^.G.DrvRes)+' : '+Hx(Dt_^.G.DrvOfs));
+ GwAdd(Wd_,T3('Exported routines: ','Routines export'#130'es : ','Exportierte Routinen: ')+IntStr(Dt_^.G.NE));
+ For I:=0 To Min2(Dt_^.G.NE-1,11) Do GwAdd(Wd_,'  '+IntStr(I)+' = res '+IntStr(Dt_^.G.Exp[I].Res)+' : '+Hx(Dt_^.G.Exp[I].Ofs));
+ If Dt_^.G.NE>12 Then GwAdd(Wd_,'  ...');
+ GwAdd(Wd_,'');
+ GwAdd(Wd_,T3('Resources: ','Ressources : ','Ressourcen: ')+IntStr(Dt_^.G.NS));
  Tot:=0;
- For I:=0 To G.NS-1 Do Begin
-  S:='  '+IntStr(I)+': '+IntStr(G.Seg[I].Len)+T3(' bytes',' octets',' Bytes')+'  '+IntStr(G.Seg[I].Fix Div 4)+' '+T3('relocations','relogements','Relokationen')+
-     '  flags '+Hx(G.Seg[I].Flg);
-  If (G.Seg[I].Flg And 8)<>0 Then S:=S+' lmem';
-  Add(S);
-  Tot:=Tot+G.Seg[I].Len;
+ For I:=0 To Dt_^.G.NS-1 Do Begin
+  S:='  '+IntStr(I)+': '+IntStr(Dt_^.G.Seg[I].Len)+T3(' bytes',' octets',' Bytes')+'  '+IntStr(Dt_^.G.Seg[I].Fix Div 4)+' '+T3('relocations','relogements','Relokationen')+
+     '  flags '+Hx(Dt_^.G.Seg[I].Flg);
+  If (Dt_^.G.Seg[I].Flg And 8)<>0 Then S:=S+' lmem';
+  GwAdd(Wd_,S);
+  Tot:=Tot+Dt_^.G.Seg[I].Len;
  End;
- Add(T3('Total code and data: ','Total code et donn'#130'es : ','Code und Daten gesamt: ')+NumFmt(Tot)+T3(' bytes',' octets',' Bytes'));
- Add('');
+ GwAdd(Wd_,T3('Total code and data: ','Total code et donn'#130'es : ','Code und Daten gesamt: ')+NumFmt(Tot)+T3(' bytes',' octets',' Bytes'));
+ GwAdd(Wd_,'');
  {$IFDEF FPC}
- Add(T3('Menu Emulator > Run executes the geode entry point.','Menu '#144'mulateur > Ex'#130'cuter lance le point d''entr'#130'e.','Men'#129' Emulator > Ausf'#129'hren startet den Einsprungpunkt.'));
+ GwAdd(Wd_,T3('Menu Emulator > Run executes the geode entry point.','Menu '#144'mulateur > Ex'#130'cuter lance le point d''entr'#130'e.','Men'#129' Emulator > Ausf'#129'hren startet den Einsprungpunkt.'));
  {$ELSE}
- Add(T3('The CPU emulator needs the Free Pascal build.','L''='#130'mulateur CPU n'#130'cessite la version Free Pascal.','Der CPU-Emulator ben'#148'tigt die Free-Pascal-Version.'));
+ GwAdd(Wd_,T3('The CPU emulator needs the Free Pascal build.','L''='#130'mulateur CPU n'#130'cessite la version Free Pascal.','Der CPU-Emulator ben'#148'tigt die Free-Pascal-Version.'));
  {$ENDIF}
 End;
 
@@ -9399,7 +9787,7 @@ Var
  EAs,EAo: Word;
  EIsReg : Boolean;
  ETrap  : Integer;
- ELog   : PGeodeWin;
+ ELog   : PWindow;
  SegPara: Array[0..MAXGSEG-1] Of Word;
 
 Function Lin(S,O: Word): LongInt;
@@ -9610,7 +9998,7 @@ End;
 
 Procedure ELogLine(Const S: String);
 Begin
- If ELog<>Nil Then ELog^.Add(S);
+ If ELog<>Nil Then GwAdd(ELog,S);
 End;
 
 Procedure RetFar;
@@ -9623,7 +10011,7 @@ End;
 Procedure TrapCall(Lib: Integer; Ord_: Word);
 Var Nm: String;
 Begin
- If Lib<0 Then Nm:='geos' Else If Lib<MAXGLIB Then Nm:=ELog^.G.Libs[Lib].Name Else Nm:='lib'+IntStr(Lib);
+ If Lib<0 Then Nm:='geos' Else If Lib<MAXGLIB Then Nm:=PGeodeWin(ELog^.Data)^.G.Libs[Lib].Name Else Nm:='lib'+IntStr(Lib);
  ELogLine('  CALL '+Nm+'.'+IntStr(Ord_)+'  AX='+HexW(Reg[0])+' BX='+HexW(Reg[3])+' CX='+HexW(Reg[1])+' DX='+HexW(Reg[2]));
  Reg[0]:=0;
  EFl:=EFl And (Not FL_CF);
@@ -9912,63 +10300,70 @@ Begin
 End;
 {$ENDIF}
 
-Constructor TGeodeWin.Init(AX,AY: Integer; Const APath: String);
+Function GwNew(AX,AY: Integer; Const APath: String): PWindow;
+ Var Wd_: PWindow; Dt_: PGeodeWin;
 Begin
- TWindow.Init(A_GEODE,AX,AY,580,390,'Geode');
- IconId:=IC_GEOS;MinW:=300;MinH:=200;
- NL:=0;Top:=1;Drag:=False;
- AddMenu('File~Fichier~Datei');
- AddItem('Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
- AddMenu('Emulator~'#144'mulateur~Emulator');
- AddItem('Run~Ex'#130'cuter~Ausf'#129'hren',CM_GRUN,'F9');
- AddItem('Reset~R'#130'initialiser~Zur'#129'cksetzen',CM_GRESET,'');
- AddItem('Show Information~Afficher les informations~Informationen anzeigen',CM_GREPORT,'');
- AddMenu('Window~Fen'#136'tre~Fenster');
- AddItem('Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
- AddItem('Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
- If ParseGeode(APath,G) Then Title:='Geode - '+G.Info.LongName
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_GEODE,AX,AY,580,390,'Geode');
+ Wd_^.IconId:=IC_GEOS;Wd_^.MinW:=300;Wd_^.MinH:=200;
+ Dt_^.NL:=0;Dt_^.Top:=1;Dt_^.Drag:=False;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'Emulator~'#144'mulateur~Emulator');
+ WinAddItem(Wd_,'Run~Ex'#130'cuter~Ausf'#129'hren',CM_GRUN,'F9');
+ WinAddItem(Wd_,'Reset~R'#130'initialiser~Zur'#129'cksetzen',CM_GRESET,'');
+ WinAddItem(Wd_,'Show Information~Afficher les informations~Informationen anzeigen',CM_GREPORT,'');
+ WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
+ WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
+ WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
+ If ParseGeode(APath,Dt_^.G) Then Wd_^.Title:='Geode - '+Dt_^.G.Info.LongName
  Else Begin
-  G.Path:=APath;
-  ReadGeosHeader(APath,G.Info);
-  Title:='GEOS - '+ShortName(APath);
+  Dt_^.G.Path:=APath;
+  ReadGeosHeader(APath,Dt_^.G.Info);
+  Wd_^.Title:='GEOS - '+ShortName(APath);
  End;
- Report;
+ GwReport(Wd_);
+ GwNew:=Wd_;
 End;
 
-Destructor TGeodeWin.Done;
+Procedure GwDone(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
 Begin
- ClearLines;
+ Dt_:=Wd_^.Data;
+ GwClearLines(Wd_);
 End;
 
 {$IFDEF FPC}
-Procedure TGeodeWin.Emulate;
+Procedure GwEmulate(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
 Var F: File; I,J,K,Cnt,Fx,Typ,Lb,Cn: Integer; Nx: LongInt; Ofs,Cur,Tmp: Word; Buf: Pointer;
     Rel: Array[0..255] Of Word; N: Word; Cnts: Array[0..15] Of Integer; RelPos,P: LongInt;
     EntR,EntO: Word; Ok: Boolean; Steps: LongInt;
 Begin
- If Not G.Valid Then Begin Add('No loadable geode.');Exit;End;
- Add('');
- Add('---------------- '+T3('PC/GEOS EMULATION','EMULATION PC/GEOS','PC/GEOS-EMULATION')+' ----------------');
+ Dt_:=Wd_^.Data;
+ If Not Dt_^.G.Valid Then Begin GwAdd(Wd_,'No loadable geode.');Exit;End;
+ GwAdd(Wd_,'');
+ GwAdd(Wd_,'---------------- '+T3('PC/GEOS EMULATION','EMULATION PC/GEOS','PC/GEOS-EMULATION')+' ----------------');
  If EMem=Nil Then GetMem(EMem,SizeOf(TEMem));
  FillChar(EMem^,SizeOf(TEMem),0);
  FillChar(Cnts,SizeOf(Cnts),0);
  Nx:=$0200;
- For I:=0 To G.NS-1 Do Begin
+ For I:=0 To Dt_^.G.NS-1 Do Begin
   SegPara[I]:=Nx;
-  Nx:=Nx+((LongInt(G.Seg[I].Len)+15) Shr 4)+1;
-  If Nx>$8F00 Then Begin Add(T3('Out of emulated memory.','M'#130'moire '#130'mul'#130'e insuffisante.','Emulierter Speicher voll.'));Exit;End;
+  Nx:=Nx+((LongInt(Dt_^.G.Seg[I].Len)+15) Shr 4)+1;
+  If Nx>$8F00 Then Begin GwAdd(Wd_,T3('Out of emulated memory.','M'#130'moire '#130'mul'#130'e insuffisante.','Emulierter Speicher voll.'));Exit;End;
  End;
  {$I-}
- Assign(F,G.Path);FileMode:=0;Reset(F,1);
+ Assign(F,Dt_^.G.Path);FileMode:=0;Reset(F,1);
  {$I+}
- If IOResult<>0 Then Begin Add('Cannot open file.');Exit;End;
+ If IOResult<>0 Then Begin GwAdd(Wd_,'Cannot open file.');Exit;End;
  GetMem(Buf,4096);
- For I:=0 To G.NS-1 Do Begin
+ For I:=0 To Dt_^.G.NS-1 Do Begin
   {$I-}
-  Seek(F,G.Seg[I].Pos);
+  Seek(F,Dt_^.G.Seg[I].Pos);
   K:=0;
-  While K<G.Seg[I].Len Do Begin
-   Cnt:=Min2(4096,G.Seg[I].Len-K);
+  While K<Dt_^.G.Seg[I].Len Do Begin
+   Cnt:=Min2(4096,Dt_^.G.Seg[I].Len-K);
    BlockRead(F,Buf^,Cnt,N);
    For J:=0 To N-1 Do EMem^[Lin(SegPara[I],K+J)]:=PByteArr(Buf)^[J];
    Inc(K,Cnt);
@@ -9977,12 +10372,12 @@ Begin
   If IOResult<>0 Then Begin End;
  End;
  { relogements }
- For I:=0 To G.NS-1 Do Begin
-  RelPos:=G.Seg[I].Pos+((LongInt(G.Seg[I].Len)+15) And LongInt($FFFFFFF0));
+ For I:=0 To Dt_^.G.NS-1 Do Begin
+  RelPos:=Dt_^.G.Seg[I].Pos+((LongInt(Dt_^.G.Seg[I].Len)+15) And LongInt($FFFFFFF0));
   {$I-}
   Seek(F,RelPos);
   {$I+}
-  Cn:=G.Seg[I].Fix Div 4;
+  Cn:=Dt_^.G.Seg[I].Fix Div 4;
   For J:=0 To Cn-1 Do Begin
    {$I-}
    BlockRead(F,Rel,4,N);
@@ -9996,121 +10391,299 @@ Begin
     $12: Begin W16(SegPara[I],Ofs,TRAP_LIB+Lb);Inc(Cnts[2]);End;
     $13: Begin W16(SegPara[I],Ofs,$0100+Lb);Inc(Cnts[3]);End;
     $14: Begin W16(SegPara[I],Word(Ofs+2),TRAP_LIB+Lb);Inc(Cnts[4]);End;
-    $22: Begin If Cur<G.NS Then W16(SegPara[I],Ofs,SegPara[Cur]);Inc(Cnts[5]);End;
+    $22: Begin If Cur<Dt_^.G.NS Then W16(SegPara[I],Ofs,SegPara[Cur]);Inc(Cnts[5]);End;
     $23: Begin W16(SegPara[I],Ofs,$0200+Cur);Inc(Cnts[6]);End;
-    $24: Begin If Cur<G.NS Then W16(SegPara[I],Ofs,SegPara[Cur]);Inc(Cnts[7]);End;
+    $24: Begin If Cur<Dt_^.G.NS Then W16(SegPara[I],Ofs,SegPara[Cur]);Inc(Cnts[7]);End;
    Else Inc(Cnts[8]);
    End;
   End;
  End;
  Close(F);
  FreeMem(Buf,4096);
- Add(T3('Resources loaded: ','Ressources charg'#130'es : ','Ressourcen geladen: ')+IntStr(G.NS)+
+ GwAdd(Wd_,T3('Resources loaded: ','Ressources charg'#130'es : ','Ressourcen geladen: ')+IntStr(Dt_^.G.NS)+
      '   '+T3('relocations: kernel ','relogements : noyau ','Relokationen: Kernel ')+IntStr(Cnts[0])+
      ', lib '+IntStr(Cnts[1]+Cnts[2]+Cnts[4])+', seg '+IntStr(Cnts[5]+Cnts[7])+', '+T3('other ','autres ','andere ')+IntStr(Cnts[3]+Cnts[6]+Cnts[8]));
- For I:=0 To Min2(G.NS-1,5) Do Add('  res '+IntStr(I)+' @ '+HexW(SegPara[I])+':0000  ('+IntStr(G.Seg[I].Len)+')');
+ For I:=0 To Min2(Dt_^.G.NS-1,5) Do GwAdd(Wd_,'  res '+IntStr(I)+' @ '+HexW(SegPara[I])+':0000  ('+IntStr(Dt_^.G.Seg[I].Len)+')');
  { point d'entree }
  Ok:=False;EntR:=0;EntO:=0;
- If (G.Attr And $4000)<>0 Then Begin EntR:=G.EntRes;EntO:=G.EntOfs;Ok:=True;Add(T3('Entry: library entry point','Entr'#130'e : point d''entr'#130'e de biblioth'#138'que','Einsprung: Bibliothekseintritt'));End
- Else If G.NE>0 Then Begin EntR:=G.Exp[0].Res;EntO:=G.Exp[0].Ofs;Ok:=True;Add(T3('Entry: exported routine 0','Entr'#130'e : routine export'#130'e 0','Einsprung: exportierte Routine 0'));End;
- If (Not Ok) Or (EntR>=G.NS) Then Begin
-  Add(T3('This geode has no directly executable entry point (its code is','Ce geode n''a pas de point d''entr'#130'e ex'#130'cutable directement (son code est','Dieses Geode hat keinen direkt ausf'#129'hrbaren Einsprung (Code wird'));
-  Add(T3('reached through the object system of the GEOS kernel).','atteint via le syst'#138'me d''objets du noyau GEOS).',''#129'ber das Objektsystem des GEOS-Kernels erreicht).'));
+ If (Dt_^.G.Attr And $4000)<>0 Then Begin EntR:=Dt_^.G.EntRes;EntO:=Dt_^.G.EntOfs;Ok:=True;GwAdd(Wd_,T3('Entry: library entry point','Entr'#130'e : point d''entr'#130'e de biblioth'#138'que','Einsprung: Bibliothekseintritt'));End
+ Else If Dt_^.G.NE>0 Then Begin EntR:=Dt_^.G.Exp[0].Res;EntO:=Dt_^.G.Exp[0].Ofs;Ok:=True;GwAdd(Wd_,T3('Entry: exported routine 0','Entr'#130'e : routine export'#130'e 0','Einsprung: exportierte Routine 0'));End;
+ If (Not Ok) Or (EntR>=Dt_^.G.NS) Then Begin
+  GwAdd(Wd_,T3('This geode has no directly executable entry point (its code is','Ce geode n''a pas de point d''entr'#130'e ex'#130'cutable directement (son code est','Dieses Geode hat keinen direkt ausf'#129'hrbaren Einsprung (Code wird'));
+  GwAdd(Wd_,T3('reached through the object system of the GEOS kernel).','atteint via le syst'#138'me d''objets du noyau GEOS).',''#129'ber das Objektsystem des GEOS-Kernels erreicht).'));
   Exit;
  End;
  FillChar(Reg,SizeOf(Reg),0);
- SegR[0]:=SegPara[Min2(1,G.NS-1)];SegR[3]:=SegPara[Min2(1,G.NS-1)];SegR[2]:=$9000;SegR[1]:=SegPara[EntR];
+ SegR[0]:=SegPara[Min2(1,Dt_^.G.NS-1)];SegR[3]:=SegPara[Min2(1,Dt_^.G.NS-1)];SegR[2]:=$9000;SegR[1]:=SegPara[EntR];
  Reg[4]:=$FFF0;Reg[5]:=0;EIP:=EntO;EFl:=$0202;
  Push16(TRAP_EXIT);Push16(0);
- EHalt:=False;EReason:='';ICount:=0;ELog:=@Self;
- Add(T3('Running at ','Ex'#130'cution en ','Ausf'#129'hrung bei ')+HexW(SegR[1])+':'+HexW(EIP)+' ...');
+ EHalt:=False;EReason:='';ICount:=0;ELog:=Wd_;
+ GwAdd(Wd_,T3('Running at ','Ex'#130'cution en ','Ausf'#129'hrung bei ')+HexW(SegR[1])+':'+HexW(EIP)+' ...');
  Steps:=0;
  While (Not EHalt) And (ICount<400000) Do Begin
   ExecOne;
  End;
  If Not EHalt Then EReason:=T3('instruction limit reached','limite d''instructions atteinte','Befehlslimit erreicht');
- Add(T3('Stopped: ','Arr'#136't : ','Angehalten: ')+EReason);
- Add(T3('Instructions executed: ','Instructions ex'#130'cut'#130'es : ','Ausgef'#129'hrte Befehle: ')+NumFmt(ICount));
- Add('AX='+HexW(Reg[0])+' BX='+HexW(Reg[3])+' CX='+HexW(Reg[1])+' DX='+HexW(Reg[2])+' SI='+HexW(Reg[6])+
+ GwAdd(Wd_,T3('Stopped: ','Arr'#136't : ','Angehalten: ')+EReason);
+ GwAdd(Wd_,T3('Instructions executed: ','Instructions ex'#130'cut'#130'es : ','Ausgef'#129'hrte Befehle: ')+NumFmt(ICount));
+ GwAdd(Wd_,'AX='+HexW(Reg[0])+' BX='+HexW(Reg[3])+' CX='+HexW(Reg[1])+' DX='+HexW(Reg[2])+' SI='+HexW(Reg[6])+
      ' DI='+HexW(Reg[7])+' BP='+HexW(Reg[5])+' SP='+HexW(Reg[4]));
- Add('CS:IP='+HexW(SegR[1])+':'+HexW(EIP)+' DS='+HexW(SegR[3])+' ES='+HexW(SegR[0])+' SS='+HexW(SegR[2])+' FL='+HexW(EFl));
- Top:=Max2(1,NL-14);
+ GwAdd(Wd_,'CS:IP='+HexW(SegR[1])+':'+HexW(EIP)+' DS='+HexW(SegR[3])+' ES='+HexW(SegR[0])+' SS='+HexW(SegR[2])+' FL='+HexW(EFl));
+ Dt_^.Top:=Max2(1,Dt_^.NL-14);
 End;
 {$ELSE}
-Procedure TGeodeWin.Emulate;
+Procedure GwEmulate(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
 Begin
- Add('');
- Add(T3('The CPU emulator is available in the Free Pascal build.','L''='#130'mulateur CPU est disponible dans la version Free Pascal.','Der CPU-Emulator ist in der Free-Pascal-Version verf'#129'gbar.'));
+ Dt_:=Wd_^.Data;
+ GwAdd(Wd_,'');
+ GwAdd(Wd_,T3('The CPU emulator is available in the Free Pascal build.','L''='#130'mulateur CPU est disponible dans la version Free Pascal.','Der CPU-Emulator ist in der Free-Pascal-Version verf'#129'gbar.'));
 End;
 {$ENDIF}
 
-Procedure TGeodeWin.DrawClient;
+Procedure GwDrawClient(Wd_: PWindow);
+ Var Dt_: PGeodeWin;
 Var X1,Y1,X2,Y2,I,VR,Y: Integer; S: String;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  GBar(X1,Y1,X2,Y2,cLGr);
  Sunken(X1+4,Y1+4,X2-4,Y2-4,cBlk);
  VR:=(Y2-Y1-12) Div 10;
- For I:=Top To Top+VR-1 Do
-  If I<=NL Then Begin
-   Y:=Y1+8+(I-Top)*10;
-   S:=Copy(Ln[I]^,1,(X2-X1-SB-20) Div 8);
-   If Copy(Ln[I]^,1,6)='  CALL' Then GText(X1+10,Y,S,cLCy)
-   Else If Copy(Ln[I]^,1,3)='---' Then GText(X1+10,Y,S,cYel)
+ For I:=Dt_^.Top To Dt_^.Top+VR-1 Do
+  If I<=Dt_^.NL Then Begin
+   Y:=Y1+8+(I-Dt_^.Top)*10;
+   S:=Copy(Dt_^.Ln[I]^,1,(X2-X1-SB-20) Div 8);
+   If Copy(Dt_^.Ln[I]^,1,6)='  CALL' Then GText(X1+10,Y,S,cLCy)
+   Else If Copy(Dt_^.Ln[I]^,1,3)='---' Then GText(X1+10,Y,S,cYel)
    Else GText(X1+10,Y,S,cLGn);
   End;
- DrawScroll(True,X2-SB-3,Y1+6,X2-6,Y2-6,NL,VR,Top-1);
+ DrawScroll(True,X2-SB-3,Y1+6,X2-6,Y2-6,Dt_^.NL,VR,Dt_^.Top-1);
 End;
 
-Procedure TGeodeWin.OnMouse(Var E: TEvent);
+Procedure GwOnMouse(Wd_: PWindow; Var E: TEvent);
+ Var Dt_: PGeodeWin;
 Var X1,Y1,X2,Y2,VR,P,A,B: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  VR:=(Y2-Y1-12) Div 10;
  If E.Kind=EV_DOWN Then Begin
-  Drag:=False;
+  Dt_^.Drag:=False;
   If InBox(E.X,E.Y,X2-SB-3,Y1+6,X2-6,Y2-6) Then Begin
-   P:=ScrollPart(True,X2-SB-3,Y1+6,X2-6,Y2-6,NL,VR,Top-1,E.X,E.Y);
+   P:=ScrollPart(True,X2-SB-3,Y1+6,X2-6,Y2-6,Dt_^.NL,VR,Dt_^.Top-1,E.X,E.Y);
    Case P Of
-    1: If Top>1 Then Dec(Top);
-    2: If Top<NL Then Inc(Top);
-    3: Top:=Max2(1,Top-VR);
-    4: Top:=Min2(Max2(1,NL-VR+1),Top+VR);
-    5: Begin Drag:=True;ScrollThumb(Y1+6+SB,Y2-6-SB,NL,VR,Top-1,A,B);Grab:=E.Y-A;End;
+    1: If Dt_^.Top>1 Then Dec(Dt_^.Top);
+    2: If Dt_^.Top<Dt_^.NL Then Inc(Dt_^.Top);
+    3: Dt_^.Top:=Max2(1,Dt_^.Top-VR);
+    4: Dt_^.Top:=Min2(Max2(1,Dt_^.NL-VR+1),Dt_^.Top+VR);
+    5: Begin Dt_^.Drag:=True;ScrollThumb(Y1+6+SB,Y2-6-SB,Dt_^.NL,VR,Dt_^.Top-1,A,B);Dt_^.Grab:=E.Y-A;End;
    End;
-   Invalidate(@Self);
+   Invalidate(Wd_);
   End;
- End Else If (E.Kind=EV_MOVE) And Drag Then Begin
-  Top:=1+ScrollDrag(True,X2-SB-3,Y1+6,X2-6,Y2-6,NL,VR,E.Y,Grab);
-  Invalidate(@Self);
- End Else If E.Kind=EV_UP Then Drag:=False;
+ End Else If (E.Kind=EV_MOVE) And Dt_^.Drag Then Begin
+  Dt_^.Top:=1+ScrollDrag(True,X2-SB-3,Y1+6,X2-6,Y2-6,Dt_^.NL,VR,E.Y,Dt_^.Grab);
+  Invalidate(Wd_);
+ End Else If E.Kind=EV_UP Then Dt_^.Drag:=False;
 End;
 
-Procedure TGeodeWin.OnKey(K: Word);
+Procedure GwOnKey(Wd_: PWindow; K: Word);
+ Var Dt_: PGeodeWin;
 Var X1,Y1,X2,Y2,VR: Integer;
 Begin
- ClientRect(X1,Y1,X2,Y2);
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
  VR:=(Y2-Y1-12) Div 10;
  Case K Of
-  K_UP: If Top>1 Then Dec(Top);
-  K_DOWN: If Top<NL Then Inc(Top);
-  K_PGUP: Top:=Max2(1,Top-VR);
-  K_PGDN: Top:=Min2(Max2(1,NL-VR+1),Top+VR);
-  K_HOME: Top:=1;
-  K_END: Top:=Max2(1,NL-VR+1);
+  K_UP: If Dt_^.Top>1 Then Dec(Dt_^.Top);
+  K_DOWN: If Dt_^.Top<Dt_^.NL Then Inc(Dt_^.Top);
+  K_PGUP: Dt_^.Top:=Max2(1,Dt_^.Top-VR);
+  K_PGDN: Dt_^.Top:=Min2(Max2(1,Dt_^.NL-VR+1),Dt_^.Top+VR);
+  K_HOME: Dt_^.Top:=1;
+  K_END: Dt_^.Top:=Max2(1,Dt_^.NL-VR+1);
  End;
- If K=323 Then OnCommand(CM_GRUN);
- Invalidate(@Self);
+ If K=323 Then GwOnCommand(Wd_,CM_GRUN);
+ Invalidate(Wd_);
 End;
 
-Procedure TGeodeWin.OnCommand(Cmd: Integer);
+Procedure GwOnCommand(Wd_: PWindow; Cmd: Integer);
+ Var Dt_: PGeodeWin;
 Begin
+ Dt_:=Wd_^.Data;
  Case Cmd Of
-  CM_GRUN: Begin Emulate;End;
-  CM_GRESET,CM_GREPORT: Report;
- Else Begin CommonCmd(@Self,Cmd);Exit;End;
+  CM_GRUN: Begin GwEmulate(Wd_);End;
+  CM_GRESET,CM_GREPORT: GwReport(Wd_);
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
- Invalidate(@Self);
+ Invalidate(Wd_);
+End;
+
+{ ====================================================================== }
+{      REPARTITION DES TRAITEMENTS SELON LE GENRE DE FENETRE (A_xxx)     }
+{ ====================================================================== }
+
+Procedure WinDraw(W: PWindow);
+Var X1,Y1,X2,Y2: Integer;
+Begin
+ Case W^.Kind Of
+  A_MANAGER: MgrDrawClient(W);
+  A_NOTEPAD,A_TEXTED,A_WRITE: EdwDrawClient(W);
+  A_CALC: CalcDrawClient(W);
+  A_CLOCK: ClkDrawClient(W);
+  A_TETRIS: TetDrawClient(W);
+  A_SOLIT: SolDrawClient(W);
+  A_PREFS: PrefDrawClient(W);
+  A_BANNER: BanDrawClient(W);
+  A_SCRAP: ScrDrawClient(W);
+  A_COMM: CommDrawClient(W);
+  A_AOL: AolDrawClient(W);
+  A_PERF: PerfDrawClient(W);
+  A_BOUNCE: BncDrawClient(W);
+  A_PLANNER: PlnDrawClient(W);
+  A_DEX: DexDrawClient(W);
+  A_DRAW: DrwDrawClient(W);
+  A_GEOCALC,A_GEOFILE: ShtDrawClient(W);
+  A_GEODE: GwDrawClient(W);
+ Else Begin
+  WinClientRect(W,X1,Y1,X2,Y2);
+  GBar(X1,Y1,X2,Y2,cLGr);
+ End;
+ End;
+End;
+
+Procedure WinMouse(W: PWindow; Var E: TEvent);
+Begin
+ Case W^.Kind Of
+  A_MANAGER: MgrOnMouse(W,E);
+  A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnMouse(W,E);
+  A_CALC: CalcOnMouse(W,E);
+  A_SOLIT: SolOnMouse(W,E);
+  A_PREFS: PrefOnMouse(W,E);
+  A_SCRAP: ScrOnMouse(W,E);
+  A_AOL: AolOnMouse(W,E);
+  A_PLANNER: PlnOnMouse(W,E);
+  A_DEX: DexOnMouse(W,E);
+  A_DRAW: DrwOnMouse(W,E);
+  A_GEOCALC,A_GEOFILE: ShtOnMouse(W,E);
+  A_GEODE: GwOnMouse(W,E);
+ Else Begin End;
+ End;
+End;
+
+Procedure WinKey(W: PWindow; K: Word);
+Begin
+ Case W^.Kind Of
+  A_MANAGER: MgrOnKey(W,K);
+  A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnKey(W,K);
+  A_CALC: CalcOnKey(W,K);
+  A_TETRIS: TetOnKey(W,K);
+  A_SOLIT: SolOnKey(W,K);
+  A_PREFS: PrefOnKey(W,K);
+  A_BANNER: BanOnKey(W,K);
+  A_SCRAP: ScrOnKey(W,K);
+  A_COMM: CommOnKey(W,K);
+  A_PLANNER: PlnOnKey(W,K);
+  A_DEX: DexOnKey(W,K);
+  A_DRAW: DrwOnKey(W,K);
+  A_GEOCALC,A_GEOFILE: ShtOnKey(W,K);
+  A_GEODE: GwOnKey(W,K);
+ Else Begin End;
+ End;
+End;
+
+Procedure WinCommand(W: PWindow; Cmd: Integer);
+Begin
+ Case W^.Kind Of
+  A_MANAGER: MgrOnCommand(W,Cmd);
+  A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnCommand(W,Cmd);
+  A_CALC: CalcOnCommand(W,Cmd);
+  A_CLOCK: ClkOnCommand(W,Cmd);
+  A_TETRIS: TetOnCommand(W,Cmd);
+  A_SOLIT: SolOnCommand(W,Cmd);
+  A_PREFS: PrefOnCommand(W,Cmd);
+  A_BANNER: BanOnCommand(W,Cmd);
+  A_SCRAP: ScrOnCommand(W,Cmd);
+  A_COMM: CommOnCommand(W,Cmd);
+  A_PLANNER: PlnOnCommand(W,Cmd);
+  A_DEX: DexOnCommand(W,Cmd);
+  A_DRAW: DrwOnCommand(W,Cmd);
+  A_GEOCALC,A_GEOFILE: ShtOnCommand(W,Cmd);
+  A_GEODE: GwOnCommand(W,Cmd);
+ Else CommonCmd(W,Cmd);
+ End;
+End;
+
+Procedure WinPrepare(W: PWindow);
+Begin
+ Case W^.Kind Of
+  A_MANAGER: MgrPrepareMenus(W);
+  A_NOTEPAD,A_TEXTED,A_WRITE: EdwPrepareMenus(W);
+  A_CALC: CalcPrepareMenus(W);
+  A_CLOCK: ClkPrepareMenus(W);
+  A_TETRIS: TetPrepareMenus(W);
+  A_SOLIT: SolPrepareMenus(W);
+  A_BANNER: BanPrepareMenus(W);
+  A_DRAW: DrwPrepareMenus(W);
+ Else Begin End;
+ End;
+End;
+
+Function WinIdle(W: PWindow): Boolean;
+Begin
+ Case W^.Kind Of
+  A_NOTEPAD,A_TEXTED,A_WRITE: WinIdle:=EdwIdle(W);
+  A_CLOCK: WinIdle:=ClkIdle(W);
+  A_TETRIS: WinIdle:=TetIdle(W);
+  A_SOLIT: WinIdle:=SolIdle(W);
+  A_PERF: WinIdle:=PerfIdle(W);
+  A_BOUNCE: WinIdle:=BncIdle(W);
+ Else WinIdle:=False;
+ End;
+End;
+
+Procedure WinResize(W: PWindow);
+Begin
+ Case W^.Kind Of
+  A_MANAGER: MgrOnResize(W);
+ Else Begin End;
+ End;
+End;
+
+Function WinCanClose(W: PWindow): Boolean;
+Begin
+ Case W^.Kind Of
+  A_NOTEPAD,A_TEXTED,A_WRITE: WinCanClose:=EdwCanClose(W);
+  A_PLANNER: WinCanClose:=PlnCanClose(W);
+  A_DEX: WinCanClose:=DexCanClose(W);
+  A_DRAW: WinCanClose:=DrwCanClose(W);
+  A_GEOCALC,A_GEOFILE: WinCanClose:=ShtCanClose(W);
+ Else WinCanClose:=True;
+ End;
+End;
+
+Procedure WinFree(W: PWindow);
+Begin
+ Case W^.Kind Of
+  A_MANAGER: Begin MgrDone(W);Dispose(PManager(W^.Data)) End;
+  A_NOTEPAD,A_TEXTED,A_WRITE: Begin EdwDone(W);Dispose(PEditWin(W^.Data)) End;
+  A_CALC: Begin Dispose(PCalcWin(W^.Data)) End;
+  A_CLOCK: Begin Dispose(PClockWin(W^.Data)) End;
+  A_TETRIS: Begin Dispose(PTetris(W^.Data)) End;
+  A_SOLIT: Begin Dispose(PSolit(W^.Data)) End;
+  A_PREFS: Begin Dispose(PPrefs(W^.Data)) End;
+  A_BANNER: Begin Dispose(PBanner(W^.Data)) End;
+  A_SCRAP: Begin Dispose(PScrap(W^.Data)) End;
+  A_COMM: Begin CommDone(W);Dispose(PComm(W^.Data)) End;
+  A_AOL: Begin Dispose(PAol(W^.Data)) End;
+  A_PERF: Begin Dispose(PPerf(W^.Data)) End;
+  A_BOUNCE: Begin Dispose(PBounce(W^.Data)) End;
+  A_PLANNER: Begin Dispose(PPlanner(W^.Data)) End;
+  A_DEX: Begin Dispose(PDex(W^.Data)) End;
+  A_DRAW: Begin Dispose(PDraw(W^.Data)) End;
+  A_GEOCALC,A_GEOFILE: Begin ShtDone(W);Dispose(PSheet(W^.Data)) End;
+  A_GEODE: Begin GwDone(W);Dispose(PGeodeWin(W^.Data)) End;
+ End;
+ Dispose(W);
 End;
 
 { ====================================================================== }
@@ -10128,46 +10701,44 @@ Begin
 End;
 
 Procedure LaunchApp(AppId: Integer; Const Param: String);
-Var X,Y: Integer; M: PManager; W: PWindow; ED: PEditWin; CW_: PCalcWin; CK: PClockWin;
-    TT: PTetris; SL: PSolit; PF: PPrefs; BN: PBanner; SC: PScrap; CM: PComm; AO: PAol; PE: PPerf; BO: PBounce; PL: PPlanner; DX: PDex; DR: PDraw; SH: PSheet; GW: PGeodeWin;
+Var X,Y: Integer; W: PWindow;
 Begin
  NextWinPos(X,Y);
  If (AppId=A_MANAGER) And (NWins=0) Then Begin X:=0;Y:=0;End;
  W:=Nil;
  Case AppId Of
   A_MANAGER: Begin
-              New(M,Init(X,Y,584,408,'V:WORLD'));
-              If Param<>'' Then M^.GoPath(Param)
-              Else If WorldDir<>'' Then M^.GoPath(WorldDir);
-              W:=M;
+              W:=MgrNew(X,Y,584,408,'V:WORLD');
+              If Param<>'' Then MgrGoPath(W,Param)
+              Else If WorldDir<>'' Then MgrGoPath(W,WorldDir);
              End;
- A_CALC: Begin New(CW_,Init(X,Y));W:=CW_;End;
-  A_CLOCK: Begin New(CK,Init(X,Y));W:=CK;End;
-  A_NOTEPAD: Begin New(ED,Init(1,X,Y,Param));W:=ED;End;
-  A_TEXTED: Begin New(ED,Init(2,X,Y,Param));W:=ED;End;
-  A_WRITE: Begin New(ED,Init(3,X,Y,Param));W:=ED;End;
-  A_TETRIS: Begin New(TT,Init(X,Y));W:=TT;End;
-  A_SOLIT: Begin New(SL,Init(X,Y));W:=SL;End;
-  A_PREFS: Begin New(PF,Init(X,Y));W:=PF;End;
-  A_BANNER: Begin New(BN,Init(X,Y));W:=BN;End;
-  A_SCRAP: Begin New(SC,Init(X,Y));W:=SC;End;
-  A_COMM: Begin New(CM,Init(X,Y));W:=CM;End;
-  A_AOL: Begin New(AO,Init(X,Y));W:=AO;End;
-  A_PERF: Begin New(PE,Init(X,Y));W:=PE;End;
-  A_BOUNCE: Begin New(BO,Init(X,Y));W:=BO;End;
-  A_DRAW: Begin New(DR,Init(X,Y,Param));W:=DR;End;
-  A_GEOCALC: Begin New(SH,Init(X,Y,False,Param));W:=SH;End;
-  A_GEOFILE: Begin New(SH,Init(X,Y,True,Param));W:=SH;End;
-  A_GEODE: Begin New(GW,Init(X,Y,Param));W:=GW;End;
-  A_PLANNER: Begin New(PL,Init(X,Y));W:=PL;End;
-  A_DEX: Begin New(DX,Init(X,Y));W:=DX;End;
+  A_CALC: W:=CalcNew(X,Y);
+  A_CLOCK: W:=ClkNew(X,Y);
+  A_NOTEPAD: W:=EdwNew(1,X,Y,Param);
+  A_TEXTED: W:=EdwNew(2,X,Y,Param);
+  A_WRITE: W:=EdwNew(3,X,Y,Param);
+  A_TETRIS: W:=TetNew(X,Y);
+  A_SOLIT: W:=SolNew(X,Y);
+  A_PREFS: W:=PrefNew(X,Y);
+  A_BANNER: W:=BanNew(X,Y);
+  A_SCRAP: W:=ScrNew(X,Y);
+  A_COMM: W:=CommNew(X,Y);
+  A_AOL: W:=AolNew(X,Y);
+  A_PERF: W:=PerfNew(X,Y);
+  A_BOUNCE: W:=BncNew(X,Y);
+  A_DRAW: W:=DrwNew(X,Y,Param);
+  A_GEOCALC: W:=ShtNew(X,Y,False,Param);
+  A_GEOFILE: W:=ShtNew(X,Y,True,Param);
+  A_GEODE: W:=GwNew(X,Y,Param);
+  A_PLANNER: W:=PlnNew(X,Y);
+  A_DEX: W:=DexNew(X,Y);
  Else
   Info(AppTitle(AppId),T3('This application is not available yet.','Cette application n''est pas encore disponible.','Diese Anwendung ist noch nicht verf'#129'gbar.'));
  End;
  If W<>Nil Then Begin
   If W^.WinX+W^.WinW>SCR_W Then W^.WinX:=Max2(0,SCR_W-W^.WinW);
   If W^.WinY+W^.WinH>SCR_H Then W^.WinY:=Max2(0,SCR_H-W^.WinH);
-  W^.OnResize;
+  WinResize(W);
   AddWindow(W);
  End;
 End;
@@ -10233,7 +10804,7 @@ Var
  I,R,Choice,StartLvl: Integer;
  Arg,StartFile: String;
  NoWelcome: Boolean;
- M: PManager;
+ M: PWindow;
  RunApp,BgOpt: Integer;
 
 BEGIN
@@ -10307,8 +10878,8 @@ BEGIN
    If Choice<=3 Then Level:=Choice-1 Else Level:=1;
    NWins:=0;
    If Choice=4 Then Begin
-    New(M,Init(20,10,584,408,HomeDir));
-    M^.OnResize;AddWindow(M);
+    M:=MgrNew(20,10,584,408,HomeDir);
+    WinResize(M);AddWindow(M);
    End Else Begin
     LaunchApp(A_MANAGER,'');
     If (Level=0) And (NWins>0) Then MaximizeWin(Wins[1]);
