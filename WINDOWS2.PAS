@@ -255,6 +255,13 @@ Var
  PrinterName : String;
  PrintPort   : String;
  SpoolN      : Integer;
+ StepLeft    : LongInt;
+ Ring        : Array[0..1023] Of LongInt;
+ RingP       : Integer;
+ TraceOn     : Boolean;
+ TraceF      : Text;
+ TrApi       : LongInt;
+ DosV3       : Boolean;
  SelIcon     : Pointer;     { icone selectionnee }
  IniFile     : String;
  SpoolT0     : LongInt;
@@ -747,9 +754,59 @@ Begin
  End;
 End;
 
+Var
+ CurCur : Array[0..CUR_H-1] Of String[CUR_W];
+ CurKind: Integer;
+ CurHx,CurHy: Integer;
+
+{ forme du pointeur : 0 fleche, 1 I (texte), 2 <-> , 3 vertical, 4 diagonale \, 5 diagonale /, 6 quatre fleches }
+Procedure SetCurKind(K: Integer);
+Var Px: Array[0..CUR_H-1,0..CUR_W-1] Of Byte; I,J,A,B,Cx,Cy: Integer;
+ Procedure P(X,Y: Integer);
+ Begin
+  If (X>=0) And (X<CUR_W) And (Y>=0) And (Y<CUR_H) Then Px[Y,X]:=1;
+ End;
+Begin
+ If K=CurKind Then Exit;
+ CurKind:=K;
+ If K=0 Then Begin
+  For J:=0 To CUR_H-1 Do CurCur[J]:=CurShape[J];
+  CurHx:=0;CurHy:=0;Exit;
+ End;
+ FillChar(Px,SizeOf(Px),0);
+ Cx:=5;Cy:=8;CurHx:=5;CurHy:=8;
+ Case K Of
+  1: Begin For J:=2 To 14 Do P(5,J);For I:=3 To 7 Do Begin P(I,1);P(I,15);End;End;
+  2: Begin For I:=1 To 10 Do P(I,Cy);
+      For A:=1 To 3 Do Begin P(A,Cy-A);P(A,Cy+A);P(11-A,Cy-A);P(11-A,Cy+A);End;End;
+  3: Begin For J:=1 To 15 Do P(Cx,J);
+      For A:=1 To 3 Do Begin P(Cx-A,A+1);P(Cx+A,A+1);P(Cx-A,15-A);P(Cx+A,15-A);End;End;
+  4: Begin For A:=1 To 9 Do P(A,A+2);
+      For A:=0 To 3 Do Begin P(1+A,2);P(1,2+A);P(10-A,12);P(10,12-A);End;End;
+  5: Begin For A:=1 To 9 Do P(A,14-A);
+      For A:=0 To 3 Do Begin P(1+A,14);P(1,14-A);P(10-A,4);P(10,4+A);End;End;
+  6: Begin For I:=1 To 10 Do P(I,Cy);For J:=1 To 15 Do P(Cx,J);
+      For A:=1 To 2 Do Begin P(A,Cy-A);P(A,Cy+A);P(11-A,Cy-A);P(11-A,Cy+A);
+       P(Cx-A,A+1);P(Cx+A,A+1);P(Cx-A,15-A);P(Cx+A,15-A);End;End;
+ End;
+ For J:=0 To CUR_H-1 Do Begin
+  CurCur[J]:='';
+  For I:=0 To CUR_W-1 Do Begin
+   If Px[J,I]=1 Then CurCur[J]:=CurCur[J]+'#'
+   Else Begin
+    B:=0;
+    For A:=-1 To 1 Do For Cx:=-1 To 1 Do
+     If (I+Cx>=0) And (I+Cx<CUR_W) And (J+A>=0) And (J+A<CUR_H) Then If Px[J+A,I+Cx]=1 Then B:=1;
+    If B=1 Then CurCur[J]:=CurCur[J]+'.' Else CurCur[J]:=CurCur[J]+' ';
+   End;
+  End;
+ End;
+End;
+
 Procedure CursorDraw(X,Y: LongInt);
 Var I,J: Integer; C: Char;
 Begin
+ X:=X-CurHx;Y:=Y-CurHy;
  If X>SCR_W-CUR_W Then X:=SCR_W-CUR_W;
  If Y>SCR_H-CUR_H Then Y:=SCR_H-CUR_H;
  If X<0 Then X:=0;
@@ -760,7 +817,7 @@ Begin
  CurX:=X;CurY:=Y;CurSaved:=True;
  For J:=0 To CUR_H-1 Do
   For I:=1 To CUR_W Do Begin
-   C:=CurShape[J][I];
+   C:=CurCur[J][I];
    If C='#' Then PutPixel(X+I-1,Y+J,cWht)
    Else If C='.' Then PutPixel(X+I-1,Y+J,cBlk);
   End;
@@ -782,7 +839,7 @@ Procedure InitCursor;
 Begin
  CurSz:=ImageSize(0,0,CUR_W-1,CUR_H-1);
  GetMem(CurBuf,CurSz);
- CurSaved:=False;CurShown:=False;
+ CurSaved:=False;CurShown:=False;CurKind:=-1;SetCurKind(0);
 End;
 
 { ====================================================================== }
@@ -2866,12 +2923,13 @@ End;
   Kb : pilotage au clavier }
 Procedure OutlineOp(W: PWindow; Mode: Integer; Kb: Boolean);
 Var Sc: TScreenSave; E: TEvent; X,Y,WW,HH,GX,GY,OX,OY,OW,OH: Integer; Done,Ok: Boolean;
-    MinW,MinH,Step: Integer;
+    MinW,MinH,Step,SaveCursorKind: Integer;
 Begin
  MinW:=120;MinH:=70;
  OX:=W^.X;OY:=W^.Y;OW:=W^.W;OH:=W^.H;
  X:=OX;Y:=OY;WW:=OW;HH:=OH;
  HideMouse;
+ SaveCursorKind:=CurKind;SetCurKind(6);
  SaveScreen(Sc);
  GX:=MX-X;GY:=MY-Y;
  If Kb Then Begin MX:=X+WW Div 2;MY:=Y+HH Div 2;End;
@@ -2882,6 +2940,7 @@ Begin
   PollEvent(E);
   If E.Kind=EV_MOVE Then Begin
    If Mode=0 Then Begin X:=E.X-GX;Y:=E.Y-GY;End
+   Else If Mode<0 Then Begin End
    Else Begin
     If (Mode And 1)<>0 Then Begin X:=Min2(E.X,OX+OW-MinW);WW:=OX+OW-X;End;
     If (Mode And 2)<>0 Then WW:=Max2(MinW,E.X-OX+1);
@@ -2892,6 +2951,37 @@ Begin
   End;
   If E.Kind=EV_KEY Then Begin
    Step:=8;
+   If (Mode=-1) Or (Mode>0) And Kb Then Begin
+    { redimensionnement clavier : la premiere fleche choisit le bord, la seconde (perpendiculaire) le coin }
+    Case E.Key Of
+     K_ESC: Done:=True;
+     K_ENTER: Begin Done:=True;Ok:=True;End;
+     K_LEFT: Begin
+       If Mode<=0 Then Mode:=1
+       Else If (Mode And 3)=0 Then Mode:=Mode Or 1;
+       If (Mode And 1)<>0 Then Begin If WW<OW+400 Then Begin Dec(X,Step);Inc(WW,Step);End;End
+       Else If (Mode And 2)<>0 Then Begin If WW>MinW Then Dec(WW,Step);End;
+      End;
+     K_RIGHT: Begin
+       If Mode<=0 Then Mode:=2
+       Else If (Mode And 3)=0 Then Mode:=Mode Or 2;
+       If (Mode And 2)<>0 Then Inc(WW,Step)
+       Else If (Mode And 1)<>0 Then Begin If WW>MinW Then Begin Inc(X,Step);Dec(WW,Step);End;End;
+      End;
+     K_UP: Begin
+       If Mode<=0 Then Mode:=4
+       Else If (Mode And 12)=0 Then Mode:=Mode Or 4;
+       If (Mode And 4)<>0 Then Begin If HH<OH+400 Then Begin Dec(Y,Step);Inc(HH,Step);End;End
+       Else If (Mode And 8)<>0 Then Begin If HH>MinH Then Dec(HH,Step);End;
+      End;
+     K_DOWN: Begin
+       If Mode<=0 Then Mode:=8
+       Else If (Mode And 12)=0 Then Mode:=Mode Or 8;
+       If (Mode And 8)<>0 Then Inc(HH,Step)
+       Else If (Mode And 4)<>0 Then Begin If HH>MinH Then Begin Inc(Y,Step);Dec(HH,Step);End;End;
+      End;
+    End;
+   End Else
    Case E.Key Of
     K_ESC: Done:=True;
     K_ENTER: Begin Done:=True;Ok:=True;End;
@@ -2907,6 +2997,7 @@ Begin
  HideMouse;
  PutScreen(Sc);
  FreeScreen(Sc);
+ SetCurKind(SaveCursorKind);
  ShowMouse;
  If Ok Then Begin
   W^.X:=X;W^.Y:=Y;
@@ -2929,7 +3020,7 @@ Begin
  Case Cmd Of
   CM_RESTORE: RestoreWin(W);
   CM_MOVE: If W^.State=0 Then OutlineOp(W,0,True) Else If W^.State=1 Then Begin MX:=W^.IconX+ICON_W Div 2;MY:=W^.IconY+ICON_H Div 2;IconDrag(W);End;
-  CM_SIZE: If W^.Sizable And (W^.State=0) Then OutlineOp(W,10,True);
+  CM_SIZE: If W^.Sizable And (W^.State=0) Then OutlineOp(W,-1,True);
   CM_MINIMIZE: MinimizeWin(W);
   CM_MAXIMIZE: MaximizeWin(W);
   CM_CLOSE: CloseWindow(W);
@@ -3154,6 +3245,30 @@ Begin
  W16Pump;
 End;
 
+{ forme du pointeur selon la zone survolee }
+Procedure UpdateCursorKind;
+Var W: PWindow; Part,Md,K: Integer;
+Begin
+ K:=0;
+ W:=WinAt(MX,MY,Part);
+ If (W<>Nil) And (Capture=Nil) Then Begin
+  Case Part Of
+   HT_SIZE: Begin
+     Md:=SizeMode(W,MX,MY);
+     If ((Md And 3)<>0) And ((Md And 12)=0) Then K:=2
+     Else If ((Md And 12)<>0) And ((Md And 3)=0) Then K:=3
+     Else If ((Md=5) Or (Md=10)) Then K:=4
+     Else K:=5;
+    End;
+   HT_CLIENT: If (W^.App=A_NOTE) Or (W^.App=A_WRITE) Or (W^.App=A_TERM) Then K:=1;
+  End;
+ End;
+ If K<>CurKind Then Begin
+  SetCurKind(K);
+  If CurSaved Then CursorDraw(MX,MY);
+ End;
+End;
+
 Procedure DesktopLoop;
 Var E: TEvent; HitW: PWindow; HitP: Integer;
 Begin
@@ -3167,6 +3282,7 @@ Begin
    DirtyTop:=False;
   End;
   PollEvent(E);
+  UpdateCursorKind;
   DesktopTick;
   Case E.Kind Of
    EV_DOWN: HandleDown(E);
@@ -10244,6 +10360,7 @@ Begin
  End;
  Parent:=V^.PSP;
  ProgName:=VPath;
+ DosV3:=(Pos('EXCEL',Upper(BaseName(VPath)))=1) Or (Upper(BaseName(VPath))='WIN.COM') Or (Upper(BaseName(VPath))='WIN200.BIN');
  EnvSeg:=ArenaAlloc(V,32,$FFFE);
  If EnvSeg=0 Then Begin Close(F);LoadProgram:=LD_NOMEM;Exit;End;
  BuildEnv(V,EnvSeg,ProgName);
@@ -10714,7 +10831,7 @@ End;
 Procedure Int21;
 Var AH,AL,B: Byte; K: Word; S: String; H,I,Slot: Integer; Cnt: Word; A: LongInt; Err: Word; Mx: Word;
     Y,M,D,Dw: Word; Hh,Mm,Ss,Cs: Word; Df: LongInt; Sg_: Word; Pth,Dir,Pat: String; Tail: String;
-    P: Integer; Pos_: LongInt; Fs: LongInt; Ent: Boolean; Tm: LongInt; Dt: DateTime;
+    P: Integer; Pos_: LongInt; Fs: LongInt; Ent: Boolean; Tm: LongInt; Dt: DateTime; B2: LongInt;
 Begin
  AH:=Rg[R_AX] Shr 8;AL:=Rg[R_AX] And 255;
  fCF:=False;
@@ -10774,7 +10891,7 @@ Begin
   $2D: SetR8(0,0);
   $2E: ;
   $2F: Begin Sg[SG_ES]:=CV^.DTA Shr 4;Rg[R_BX]:=CV^.DTA And $F;End;
-  $30: Begin If AL=1 Then Rg[R_AX]:=$0005 Else Rg[R_AX]:=$0005;Rg[R_BX]:=$FF00;Rg[R_CX]:=0;End;
+  $30: Begin If DosV3 Then Rg[R_AX]:=$0A03 Else Rg[R_AX]:=$0005;Rg[R_BX]:=$FF00;Rg[R_CX]:=0;End;
   $31: Begin DosTerminate(AL);End;
   $33: Case AL Of
      0: Rg[R_DX]:=Rg[R_DX] And $FF00;
@@ -10917,6 +11034,26 @@ Begin
       If Not FindNextMatch(CV,Slot,False,'') Then Begin DosSetErr(18);CV^.Finds[Slot].Used:=False;End;
      End;
     End;
+  $52: Begin   { liste des listes (SYSVARS) simulee dans la ROM }
+      If TraceOn Then StepLeft:=3000;
+      A:=Lin(ROMSEG,$0F02);                    { A = ES:BX }
+      For I:=-2 To $50 Do WrB(A+I,0);
+      WrW(A-2,CV^.Blk[1].Seg-1);               { premier MCB }
+      WrW(A,$FFFF);WrW(A+2,$FFFF);             { DPB : aucun }
+      WrW(A+4,$4000);WrW(A+6,ROMSEG);          { SFT }
+      B2:=Lin(ROMSEG,$4000);
+      For I:=0 To 64*$35+6 Do WrB(B2+I,0);
+      WrW(B2,$FFFF);WrW(B2+2,$FFFF);WrW(B2+4,64);
+      WrW(A+$10,512);                          { taille de secteur max }
+      WrW(A+$12,$FFFF);WrW(A+$14,$FFFF);       { tampons }
+      WrW(A+$16,$FFFF);WrW(A+$18,$FFFF);       { CDS }
+      WrW(A+$1A,$FFFF);WrW(A+$1C,$FFFF);       { FCB }
+      WrB(A+$20,3);WrB(A+$21,5);               { unites, LASTDRIVE }
+      WrW(A+$22,$FFFF);WrW(A+$24,$FFFF);       { en-tete NUL : suivant }
+      WrW(A+$26,$8004);
+      For I:=0 To 7 Do WrB(A+$2A+I,Ord('NUL     '[I+1]));
+      Sg[SG_ES]:=ROMSEG;Rg[R_BX]:=$0F02;
+     End;
   $50: CV^.PSP:=Rg[R_BX];
   $51,$62: Rg[R_BX]:=CV^.PSP;
   $54: SetR8(0,0);
@@ -10961,11 +11098,13 @@ End;
 
 { ---------------- repartition des interruptions ---------------- }
 
-Var TraceOn: Boolean; TraceF: Text; TrApi: LongInt;
+
+Var RingDumped: Boolean;
 
 Procedure HleInt(N: Integer);
 Var Cnt: Integer;
 Begin
+ If TraceOn And (N<>$21) Then Begin WriteLn(TraceF,'INT',HexStr(N,2),' AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4),' CS:IP=',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4));Flush(TraceF);End;
  Case N Of
   $08,$09,$1C,$23,$24,$1B,$28,$2A: ;
   $10: Int10;
@@ -10989,9 +11128,27 @@ Begin
       If TraceOn Then Begin
        Write(TraceF,'INT21 AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),
          ' DX=',HexStr(Rg[R_DX],4),' DS=',HexStr(Sg[SG_DS],4));
+       If (Rg[R_AX] Shr 8) In [$39,$3A,$3B,$3C,$3D,$41,$43,$4B,$4E,$56,$5B] Then Write(TraceF,' [',RdZ(Sg[SG_DS],Rg[R_DX]),']');
+      End;
+      If TraceOn And ((Rg[R_AX] Shr 8)=$40) And (Rg[R_BX]=1) And Not RingDumped Then Begin
+       RingDumped:=True;
+       For Cnt:=0 To $17F Do Begin
+        If (Cnt And 15)=0 Then Write(TraceF,'MEM2B00 ',HexStr(Cnt,4),': ');
+        Write(TraceF,HexStr(Mem^[Lin($0671,$8E00+Cnt)],2),' ');
+        If (Cnt And 15)=15 Then WriteLn(TraceF);
+       End;
+       For Cnt:=0 To $7F Do Begin
+        If (Cnt And 15)=0 Then Write(TraceF,'MEM6300 ',HexStr(Cnt,4),': ');
+        Write(TraceF,HexStr(Mem^[Lin($0671,$6300+Cnt)],2),' ');
+        If (Cnt And 15)=15 Then WriteLn(TraceF);
+       End;
+       Write(TraceF,'STACK ',HexStr(Sg[SG_SS],4),':',HexStr(Rg[R_SP],4),' BP=',HexStr(Rg[R_BP],4),' :');
+       For Cnt:=0 To 47 Do Write(TraceF,' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+Cnt*2)),4));
+       WriteLn(TraceF);
+       For Cnt:=1023 Downto 0 Do WriteLn(TraceF,'RING ',HexStr(Ring[(RingP-Cnt) And 1023] Shr 16,4),':',HexStr(Ring[(RingP-Cnt) And 1023] And $FFFF,4));
       End;
       Int21;
-      If TraceOn Then WriteLn(TraceF,' -> AX=',HexStr(Rg[R_AX],4),' CF=',Ord(fCF));
+      If TraceOn Then Begin WriteLn(TraceF,' -> AX=',HexStr(Rg[R_AX],4),' CF=',Ord(fCF));Flush(TraceF);End;
      End;
   $27: DosTerminate(0);
   $29: ConPut(Rg[R_AX] And 255);
@@ -11513,6 +11670,9 @@ Begin
  N:=Steps;
  While N>0 Do Begin
   CpuBlock:=False;
+  If TraceOn And (Sg[SG_CS]=$0671) And (IPr=$8E5E) Then WriteLn(TraceF,'WATCH 8E5E AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4));
+  If TraceOn Then Begin RingP:=(RingP+1) And 1023;Ring[RingP]:=LongInt(Sg[SG_CS])*65536+IPr;End;
+  If TraceOn And (StepLeft>0) Then Begin Dec(StepLeft);WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4),' DS=',HexStr(Sg[SG_DS],4),' SP=',HexStr(Rg[R_SP],4));End;
   If TraceOn And (TrApi>=-5) And (TrApi<=-5) Then WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' SP=',HexStr(Rg[R_SP],4));
   CpuStep;
   Inc(InstCnt);
