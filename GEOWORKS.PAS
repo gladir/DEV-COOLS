@@ -37,8 +37,6 @@ Uses {$IFDEF FPC}
 
 Const
  VERSION_TEXT = '1.00';
- SCR_W        = 640;
- SCR_H        = 480;
 
  { Couleurs VGA (palette GEOS = palette VGA standard) }
  cBlk = 0;  cBlu = 1;  cGrn = 2;  cCyn = 3;  cRed = 4;  cMag = 5;
@@ -147,6 +145,8 @@ Type
 { ====================================================================== }
 
 Var
+ SCR_W,SCR_H : Integer;     { definition d'affichage (640x480 ou -maxscreen) }
+ MaxScreen : Boolean;      { parametre -maxscreen (Free Pascal) }
  Lang      : Integer;      { 0 anglais, 1 francais, 2 allemand }
  Level     : Integer;      { 0 debutant, 1 intermediaire, 2 avance }
  QuitFlag  : Boolean;
@@ -3445,10 +3445,18 @@ Procedure InitializeGraphics;
 Var
  Driver, Mode: Integer;
  ErrCode: Integer;
+ {$IFDEF FPC}
+ LoMode,HiMode: SmallInt;
+ {$ENDIF}
 Begin
  {$IFDEF FPC}
   Driver:=VGA;
   Mode:=VGAHi;
+  { -maxscreen : definition maximale du pilote 16 couleurs (D4bit) }
+  If MaxScreen Then Begin
+   GetModeRange(D4bit,LoMode,HiMode);
+   If HiMode>=LoMode Then Begin Driver:=D4bit;Mode:=HiMode;End;
+  End;
  {$ELSE}
   Driver:=Detect;
   Mode:=VGAHi;
@@ -3458,6 +3466,7 @@ Begin
  If ErrCode=grOk Then Begin
   SetColor(White);
   SetLineStyle(0,0,1);
+  SCR_W:=GetMaxX+1;SCR_H:=GetMaxY+1;
   GfxOn:=True;
  End
   Else
@@ -6286,11 +6295,15 @@ Begin
  GText(X2-30,Y1+8,'TM',cYel);
 End;
 
+Var
+ WDX,WDY : Integer;    { centrage du contenu en definition > 640x480 }
+
 Procedure DrawWelcome(Sel: Integer);
 Var I,X1,X2,Y1,Y2: Integer; Y,M,D,W,H,Mi,S,C: Word; Nm: String;
     PX: Array[1..3] Of Integer;
 Begin
- PX[1]:=67;PX[2]:=243;PX[3]:=419;
+ WDX:=(SCR_W-640) Div 2;WDY:=(SCR_H-480) Div 2;
+ PX[1]:=67+WDX;PX[2]:=243+WDX;PX[3]:=419+WDX;
  ClipFull;
  GBar(0,0,SCR_W-1,SCR_H-1,cLGr);
  { barre de titre }
@@ -6310,7 +6323,7 @@ Begin
  VecText(SCR_W-44,8,9,15,'HELP',cLCy,2);
  { images }
  For I:=1 To 3 Do Begin
-  X1:=PX[I];X2:=X1+155;Y1:=55;Y2:=190;
+  X1:=PX[I];X2:=X1+155;Y1:=55+WDY;Y2:=190+WDY;
   Sunken(X1,Y1,X2,Y2,cLGr);
   If I=1 Then PicBeginner(X1+3,Y1+3);
   If I=2 Then PicIntermediate(X1+3,Y1+3);
@@ -6327,26 +6340,26 @@ Begin
   If I=Sel Then GDotRect(X1-3,Y1-3,X2+3,Y2+3,cBlk);
  End;
  { DOS Programs }
- Button(272,198,367,214,T3('DOS Programs','Progr. DOS','DOS-Programme'),False,
-     Sel=4,True);
- If Sel=4 Then GDotRect(268,194,371,218,cBlk);
+ Button(272+WDX,198+WDY,367+WDX,214+WDY,T3('DOS Programs','Progr. DOS',
+     'DOS-Programme'),False,Sel=4,True);
+ If Sel=4 Then GDotRect(268+WDX,194+WDY,371+WDX,218+WDY,cBlk);
  { date et heure }
  GetDate(Y,M,D,W);GetTime(H,Mi,S,C);
- GTextB(45,236,LongDateStr(Y,M,D,W),cBlk);
+ GTextB(45+WDX,236+WDY,LongDateStr(Y,M,D,W),cBlk);
  Nm:=TimeStr(H,Mi);
- GTextB(578-TextW(Nm),236,Nm,cBlk);
+ GTextB(578+WDX-TextW(Nm),236+WDY,Nm,cBlk);
  { logo }
- WelcomeLogo(146,273,489,358);
+ WelcomeLogo(146+WDX,273+WDY,489+WDX,358+WDY);
  { copyright }
  Nm:='Version 1.2 Copyright (c) GeoWorks 1991, 1990. All Rights Reserved.';
  If Lang=1 Then Nm:='Version 1.2 Copyright (c) GeoWorks '+
      '1991, 1990. Tous droits r'#130'serv'#130's.';
  If Lang=2 Then Nm:='Version 1.2 Copyright (c) GeoWorks '+
      '1991, 1990. Alle Rechte vorbehalten.';
- GTextB((SCR_W-TextW(Nm)) Div 2,413,Nm,cBlk);
+ GTextB((SCR_W-TextW(Nm)) Div 2,413+WDY,Nm,cBlk);
  Nm:=T3('Serial #','N'#167' de s'#130'rie #',
      'Seriennr. #')+'2101-0011-0207-0026';
- GTextB((SCR_W-TextW(Nm)) Div 2,448,Nm,cBlk);
+ GTextB((SCR_W-TextW(Nm)) Div 2,448+WDY,Nm,cBlk);
 End;
 
 { Retourne 0 quitter, 1 debutant, 2 intermediaire, 3 avance, 4 programmes DOS }
@@ -6354,7 +6367,8 @@ Function WelcomeScreen: Integer;
 Var E: TEvent; Sel,I,R,LastMin: Integer; Done: Boolean; H,Mi,S,C: Word;
 PX: Array[1..3] Of Integer;
 Begin
- PX[1]:=67;PX[2]:=243;PX[3]:=419;
+ WDX:=(SCR_W-640) Div 2;WDY:=(SCR_H-480) Div 2;
+ PX[1]:=67+WDX;PX[2]:=243+WDX;PX[3]:=419+WDX;
  HideMouse;
  Sel:=2;
  DrawWelcome(Sel);
@@ -6379,8 +6393,8 @@ Begin
    End;
   End Else If E.Kind=EV_UP Then Begin
    For I:=1 To 3 Do
-    If InBox(E.X,E.Y,PX[I],55,PX[I]+155,190) Then R:=I;
-   If InBox(E.X,E.Y,272,198,367,214) Then R:=4;
+    If InBox(E.X,E.Y,PX[I],55+WDY,PX[I]+155,190+WDY) Then R:=I;
+   If InBox(E.X,E.Y,272+WDX,198+WDY,367+WDX,214+WDY) Then R:=4;
    If InBox(E.X,E.Y,0,0,47,31) Then R:=0;
    If InBox(E.X,E.Y,SCR_W-49,0,SCR_W-1,31) Then Begin
     Info('Help',T3('Choose a level: Beginner, Intermediate or Advanced.',
@@ -29893,6 +29907,8 @@ Begin
  WriteLn('  /E                   Ouvre '+
      'le fichier .GEO donne dans l''emulateur '+'de geodes');
  WriteLn('  /NOWELCOME           Demarre directement sur le bureau');
+ WriteLn('  -maxscreen           Definition '+
+     'd''affichage maximale (Free Pascal, '+'16 couleurs)');
  WriteLn('  /R:application       Lance '+'une application au demarrage (CALC, '+
      'CLOCK, TETRIS,');
  WriteLn('                       SOLITAIRE, '+'WRITE, DRAW, PLANNER, GEODEX, '+
@@ -29950,13 +29966,15 @@ Var
  ForceEmu: Boolean;
 
 BEGIN
+ SCR_W:=640;SCR_H:=480;MaxScreen:=False;
  Lang:=DetectLanguage;
  StartFile:='';RunParam:='';NoWelcome:=False;StartLvl:=2;RunApp:=0;BgOpt:=0;
  ForceEmu:=False;
  DetectWorld;
  For I:=1 To ParamCount Do Begin
   Arg:=ParamStr(I);
-  If FileExists(Arg) Then StartFile:=Arg
+  If (Upper(Arg)='-MAXSCREEN') Or (Upper(Arg)='/MAXSCREEN') Then MaxScreen:=True
+  Else If FileExists(Arg) Then StartFile:=Arg
   Else If (Arg='/?') Or (Arg='-?') Or (Upper(Arg)='/H') Or (Upper(Arg)='-H') Or
      (Upper(Arg)='--HELP') Or (Upper(Arg)='/HELP') Then Begin
    ShowHelp;
