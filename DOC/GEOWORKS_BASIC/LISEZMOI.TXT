@@ -1,0 +1,23 @@
+GeoBASIC dans GEOWORKS.PAS
+==========================
+
+Lancement :  GEOWORKS /R:GEOBASIC           (environnement de developpement)
+             GEOWORKS /BAS:FICHIER.BAS      (execution directe d'un programme)
+
+Un programme MENUS.BAS charge automatiquement les ressources MENUS.GBR
+(menus, listes d'icones, boites de dialogue et bitmaps crees avec le menu
+Utilities : Menu, Icon List, Dialog Box, Bitmap).
+
+Exemples fournis :
+  GRAPHIC.BAS  ecran texte 40x25, graphiques 320x200 (RECT, FRECT, LINE ... TO,
+               SETCOL, PATTERN, POINT, TESTPT), DEF FN, WHILE..LOOP,
+               REPEAT..UNTIL, ONERR, SYSINFO
+  MENUS.BAS    MENU, ICON, BITMAP, DIALOG, PROCESS, BUTTON, MAINLOOP
+  BALL.BAS     animation par PROCESS
+
+Le langage suit le manuel geoBASIC (geobasic-manual-quag.pdf) : etiquettes
+@NOM, WHILE..LOOP, REPEAT..UNTIL, DEF FN, ONERR, MAINLOOP, MENU / ICON /
+DIALOG / BITMAP, PROCESS / DELPROC, BUTTON, REDRAW, SYSINFO, MOUSE*, fichiers
+(OPEN, CREATE, WRITE, DREAD, RDBYTE, DBFILE) et imprimante (PRNTER, PRASCII).
+Les sprites (SPRITE/SPRT/SPRCOL), les polices (FONT) et les commandes memoire
+(PEEK/POKE/USR) sont acceptes mais sans effet.

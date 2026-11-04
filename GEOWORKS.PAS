@@ -12985,7 +12985,6 @@ Begin
  End;
  Invalidate(Wd_);
 End;
-
 { ====================================================================== }
 {   GEOBASIC : interpreteur BASIC (noyau) et fenetre d'execution         }
 {   Instructions du manuel geoBASIC (chap. 5), instructions graphiques   }
@@ -12998,10 +12997,7 @@ Const
  BMAXFOR = 24;
  BMAXGS  = 48;
  BMAXDAT = 600;
- BMAXCON = 120;                { lignes de console }
- BMAXGR  = 600;                { primitives graphiques memorisees }
- BCOLS   = 64;
- CM_BRSTOP=1500; CM_BRCLS=1501; CM_BRRESTART=1502;
+ CM_BRSTOP=1500; CM_BRCLS=1501; CM_BRRESTART=1502; CM_BRSTEP=1504; CM_BRVARS=1505; CM_BRPAUSE=1506;
 
 Type
  TBVal = Record
@@ -13027,11 +13023,31 @@ Type
   Ln,Ps    : Integer;
  End;
 
- TBGr = Record
-  K        : Byte;            { 1 point 2 ligne 3 cadre 4 cadre plein 5 cercle 6 texte 7 disque }
-  X1,Y1,X2,Y2,C : Integer;
-  T        : String[60];
+ { ressources geoBASIC (creees par les utilitaires Menu, Icon, Dialog et Bitmap) }
+ TRMItem = Record Txt: String[24]; Tg: String[14]; End;
+ TRMenu = Record
+  Name : String[6];
+  NSub : Integer;
+  SubT : Array[1..8] Of String[12];
+  NIt  : Array[1..8] Of Integer;
+  It   : Array[1..8,1..12] Of TRMItem;
  End;
+ TRIcon = Record X,Y: Integer; Bmp: String[6]; Tg: String[14]; End;
+ TRIconL = Record Name: String[6]; N: Integer; Ic: Array[1..31] Of TRIcon; End;
+ { K : 1 texte, 2 expression, 3 icone (bitmap), 4 OK, 5 Cancel, 6 Disk }
+ TRDItem = Record K: Byte; X,Y: Integer; Txt: String[40]; End;
+ TRDlg = Record Name: String[6]; N: Integer; It: Array[1..12] Of TRDItem; End;
+ TRBmp = Record Name: String[6]; W,H: Integer; D: Array[0..23,0..23] Of Byte; End;
+ TRes = Record
+  NM,NI,ND,NB: Integer;
+  M : Array[1..8] Of TRMenu;
+  I : Array[1..8] Of TRIconL;
+  D : Array[1..8] Of TRDlg;
+  B : Array[1..12] Of TRBmp;
+ End;
+ TBLp = Record K: Byte; L,P: Integer; End;
+ TBFn = Record Nm,Par: String[10]; Ex: String[100]; End;
+ TBProc = Record L: Integer; Iv,Last: LongInt; End;
 
  PBas = ^TBas;
  TBas = Record
@@ -13044,10 +13060,8 @@ Type
   NF       : Integer;
   GsL,GsP  : Array[1..BMAXGS] Of Integer;
   NG       : Integer;
-  WhL      : Array[1..BMAXGS] Of Integer;
-  NW       : Integer;
-  DoL      : Array[1..BMAXGS] Of Integer;
-  NDo      : Integer;
+  Lp       : Array[1..BMAXGS] Of TBLp;      { boucles WHILE / DO / REPEAT }
+  NLp      : Integer;
   Dat      : Array[1..BMAXDAT] Of String[60];
   NDat,DPos: Integer;
   { position d'execution }
@@ -13056,13 +13070,29 @@ Type
   Running,Done,WaitIn,WaitKey: Boolean;
   Err      : String;
   Steps    : LongInt;
-  { sorties }
-  Con      : Array[1..BMAXCON] Of PString;
-  NCon     : Integer;
-  Cur      : String;           { ligne courante de la console }
-  Fg       : Integer;
-  Gr       : Array[1..BMAXGR] Of TBGr;
-  NGr      : Integer;
+  { ecran graphique 320x200 (255 = fond) et ecran texte 40x25 }
+  Scr      : Array[0..199,0..319] Of Byte;
+  Tx       : Array[0..24,0..39] Of Char;
+  TxK      : Array[0..24,0..39] Of Byte;
+  CurR,CurC,WX1,WY1,WX2,WY2 : Integer;
+  Pen,ColV,Pat : Integer;
+  PromptOn : Boolean;
+  CurMenu,CurIcons,MenuOpen : Integer;
+  InMain,WaitMain : Boolean;
+  MainL,MainP,IntBase : Integer;
+  Pnd      : Array[1..8] Of Integer;
+  NPnd     : Integer;
+  BtnL,RedrawL,OnErrL,ErrNo : Integer;
+  ErrJump,MouseOn : Boolean;
+  Procs    : Array[1..8] Of TBProc;
+  Fns      : Array[1..16] Of TBFn;
+  NFn      : Integer;
+  MX,MY    : Integer;
+  Dbg      : Boolean;
+  StmtP    : Integer;
+  Jmp      : LongInt;
+  StepOne  : Boolean;
+  Voice    : Array[0..3] Of Integer;
   InBuf    : String;
   InVar    : Integer;
   InIdx1,InIdx2 : Integer;
@@ -13070,9 +13100,6 @@ Type
   LastKey  : String;
   SoundMs  : Integer;
   DlgText  : String;
-  MenuN    : Integer;
-  MenuT    : Array[1..16] Of String[24];
-  MenuL    : Array[1..16] Of Integer;
   Rnd      : LongInt;
   Subs     : Array[1..40] Of String[24];
   SubL     : Array[1..40] Of Integer;
@@ -13085,6 +13112,16 @@ Type
 
 Var
  CB : PBas;
+ GbRes : TRes;
+ BFile : Text;
+ BFileOpen,BFileWr,BPrn : Boolean;
+ BHdrType: Integer;
+ BHdrName: String;
+
+Const
+ { palette C64 -> palette EGA du clone }
+ C64Pal : Array[0..15] Of Byte = (0,15,4,3,5,2,1,14,6,6,12,8,7,10,9,7);
+ CLRBG  = 255;
 
 Function BNum(Const V: TBVal): Double; Forward;
 Function BEval(Var R: TBVal): Boolean; Forward;
@@ -13093,16 +13130,37 @@ Procedure BStmts; Forward;
 
 { ---------------------- utilitaires ---------------------- }
 
+Function BErrNum(Const S: String): Integer;
+Begin
+ BErrNum:=1;
+ If (Pos('llegal',S)>0) Or (Pos('gale',S)>0) Or (Pos('ltige',S)>0) Then BErrNum:=17
+ Else If Pos('RETURN',S)=1 Then BErrNum:=15
+ Else If Pos('NEXT',S)=1 Then BErrNum:=14
+ Else If (Pos('DATA',S)>0) And ((Pos('Out',S)=1) Or (Pos('Plus',S)=1) Or (Pos('Keine',S)=1)) Then BErrNum:=16
+ Else If (Pos('not found',S)>0) Or (Pos('introuvable',S)>0) Or (Pos('nicht gefunden',S)>0) Then BErrNum:=6
+ Else If (Pos('nopened',S)>0) Or (Pos('non ouvert',S)>0) Then BErrNum:=8;
+End;
+
 Procedure BFail(Const S: String);
 Begin
- If CB^.Err='' Then CB^.Err:=S+' '+T3('in line ','dans la ligne ','in Zeile ')+IntStr(CB^.Ln);
+ If CB^.Err='' Then Begin
+  CB^.ErrNo:=BErrNum(S);
+  If (CB^.OnErrL>0) And (Not CB^.ErrJump) Then Begin
+   CB^.ErrJump:=True;CB^.Running:=False;CB^.Done:=True;Exit;
+  End;
+  If (CB^.Ln>=1) And (CB^.Ln<=CB^.NL) And (CB^.LNo[CB^.Ln]>=0) Then CB^.Err:=S+' '+T3('in line ','dans la ligne ','in Zeile ')+IntStr(CB^.LNo[CB^.Ln])
+  Else CB^.Err:=S+' '+T3('in line ','dans la ligne ','in Zeile ')+IntStr(CB^.Ln);
+ End;
  CB^.Running:=False;CB^.Done:=True;
 End;
 
 Function BNewBas: PBas;
 Var B: PBas;
 Begin
- New(B);FillChar(B^,SizeOf(B^),0);B^.Fg:=cBlk;B^.Rnd:=12345;
+ New(B);FillChar(B^,SizeOf(B^),0);B^.Rnd:=12345;
+ FillChar(B^.Scr,SizeOf(B^.Scr),CLRBG);
+ FillChar(B^.Tx,SizeOf(B^.Tx),' ');
+ B^.WX2:=39;B^.WY2:=24;B^.ColV:=1;B^.MouseOn:=True;B^.PromptOn:=True;
  BNewBas:=B;
 End;
 
@@ -13122,7 +13180,6 @@ Procedure BFree(B: PBas);
 Var I: Integer;
 Begin
  For I:=1 To B^.NL Do FreeStr(B^.Src[I]);
- For I:=1 To B^.NCon Do FreeStr(B^.Con[I]);
  BFreeVars(B);
  Dispose(B);
 End;
@@ -13134,54 +13191,137 @@ Begin
  If BRnd>=1 Then BRnd:=0.999999;
 End;
 
-{ ---------------------- console ---------------------- }
+{ ---------------------- ecran texte 40x25 et ecran graphique 320x200 ---------------------- }
 
-Procedure BConNew;
-Var I: Integer;
+Procedure BScroll;
+Var R,C: Integer;
 Begin
- If CB^.NCon>=BMAXCON Then Begin
-  FreeStr(CB^.Con[1]);
-  For I:=1 To BMAXCON-1 Do CB^.Con[I]:=CB^.Con[I+1];
-  CB^.NCon:=BMAXCON-1;
- End;
- Inc(CB^.NCon);CB^.Con[CB^.NCon]:=NewStr('');
+ For R:=CB^.WY1 To CB^.WY2-1 Do
+  For C:=CB^.WX1 To CB^.WX2 Do Begin
+   CB^.Tx[R,C]:=CB^.Tx[R+1,C];CB^.TxK[R,C]:=CB^.TxK[R+1,C];
+  End;
+ For C:=CB^.WX1 To CB^.WX2 Do CB^.Tx[CB^.WY2,C]:=' ';
 End;
 
-Procedure BFlushCur;
+Procedure BNewLine;
 Begin
- If CB^.NCon=0 Then BConNew;
- FreeStr(CB^.Con[CB^.NCon]);
- CB^.Con[CB^.NCon]:=NewStr(CB^.Cur);
+ CB^.CurC:=CB^.WX1;
+ If CB^.CurR>=CB^.WY2 Then BScroll Else Inc(CB^.CurR);
 End;
 
 Procedure BPutS(Const S: String);
 Var I: Integer;
 Begin
- If CB^.NCon=0 Then BConNew;
  For I:=1 To Length(S) Do Begin
-  If S[I]=#13 Then Begin BFlushCur;BConNew;CB^.Cur:='';End
+  If S[I]=#13 Then BNewLine
   Else Begin
-   CB^.Cur:=CB^.Cur+S[I];
-   If Length(CB^.Cur)>=BCOLS Then Begin BFlushCur;BConNew;CB^.Cur:='';End;
+   If CB^.CurC>CB^.WX2 Then BNewLine;
+   CB^.Tx[CB^.CurR,CB^.CurC]:=S[I];CB^.TxK[CB^.CurR,CB^.CurC]:=CB^.Pen;
+   Inc(CB^.CurC);
   End;
  End;
- BFlushCur;
 End;
 
 Procedure BCls;
-Var I: Integer;
 Begin
- For I:=1 To CB^.NCon Do FreeStr(CB^.Con[I]);
- CB^.NCon:=0;CB^.Cur:='';CB^.NGr:=0;
- BConNew;
+ FillChar(CB^.Scr,SizeOf(CB^.Scr),CLRBG);
+ FillChar(CB^.Tx,SizeOf(CB^.Tx),' ');
+ FillChar(CB^.TxK,SizeOf(CB^.TxK),0);
+ CB^.CurR:=CB^.WY1;CB^.CurC:=CB^.WX1;
 End;
 
-Procedure BAddGr(K: Byte; X1,Y1,X2,Y2,C: Integer; Const T: String);
+{ efface le texte des cellules couvertes par un rectangle (en pixels) }
+Procedure BTxErase(X1,Y1,X2,Y2: Integer);
+Var R,C: Integer;
 Begin
- If CB^.NGr>=BMAXGR Then Exit;
- Inc(CB^.NGr);
- CB^.Gr[CB^.NGr].K:=K;CB^.Gr[CB^.NGr].X1:=X1;CB^.Gr[CB^.NGr].Y1:=Y1;
- CB^.Gr[CB^.NGr].X2:=X2;CB^.Gr[CB^.NGr].Y2:=Y2;CB^.Gr[CB^.NGr].C:=C;CB^.Gr[CB^.NGr].T:=Copy(T,1,60);
+ For R:=Max2(0,Y1 Div 8) To Min2(24,Y2 Div 8) Do
+  For C:=Max2(0,X1 Div 8) To Min2(39,X2 Div 8) Do CB^.Tx[R,C]:=' ';
+End;
+
+Procedure BPix(X,Y,C: Integer);
+Begin
+ If (X>=0) And (X<=319) And (Y>=0) And (Y<=199) Then CB^.Scr[Y,X]:=C;
+End;
+
+{ couleur d'avant-plan (SETCOL) : quartet haut, 0 -> noir }
+Function BFgCol: Integer;
+Begin
+ BFgCol:=C64Pal[(CB^.ColV Shr 4) And 15];
+End;
+
+Function BBgCol: Integer;
+Begin
+ BBgCol:=C64Pal[CB^.ColV And 15];
+End;
+
+Procedure BLineS(X1,Y1,X2,Y2,C: Integer);
+Var DX,DY,SX,SY,E,E2: Integer;
+Begin
+ DX:=Abs(X2-X1);DY:=-Abs(Y2-Y1);
+ If X1<X2 Then SX:=1 Else SX:=-1;
+ If Y1<Y2 Then SY:=1 Else SY:=-1;
+ E:=DX+DY;
+ Repeat
+  BPix(X1,Y1,C);
+  If (X1=X2) And (Y1=Y2) Then Break;
+  E2:=2*E;
+  If E2>=DY Then Begin E:=E+DY;X1:=X1+SX;End;
+  If E2<=DX Then Begin E:=E+DX;Y1:=Y1+SY;End;
+ Until False;
+End;
+
+Const
+ BBayer : Array[0..3,0..3] Of Byte = ((0,8,2,10),(12,4,14,6),(3,11,1,9),(15,7,13,5));
+
+{ rectangle plein avec la trame PATTERN (0 = plein, 1..31 = de plus en plus clair) }
+Procedure BFillR(X1,Y1,X2,Y2,C: Integer);
+Var X,Y,T,Z: Integer;
+Begin
+ If X1>X2 Then Begin Z:=X1;X1:=X2;X2:=Z;End;
+ If Y1>Y2 Then Begin Z:=Y1;Y1:=Y2;Y2:=Z;End;
+ T:=16-(CB^.Pat*16) Div 32;
+ For Y:=Max2(0,Y1) To Min2(199,Y2) Do
+  For X:=Max2(0,X1) To Min2(319,X2) Do
+   If (CB^.Pat=0) Or (BBayer[Y And 3,X And 3]<T) Then CB^.Scr[Y,X]:=C;
+ BTxErase(X1,Y1,X2,Y2);
+End;
+
+{ rectangle trame : la trame est donnee par SETCOL (8 bits) ; sans bits hauts : trait plein }
+Procedure BFrameR(X1,Y1,X2,Y2: Integer);
+Var Pt,K,X,Y: Integer; C: Integer;
+ Procedure Dot(PX,PY: Integer);
+ Begin
+  If (Pt And (1 Shl (K And 7)))<>0 Then BPix(PX,PY,C);
+  Inc(K);
+ End;
+Begin
+ If CB^.ColV<16 Then Pt:=255 Else Pt:=CB^.ColV And 255;
+ C:=BFgCol;K:=0;
+ For X:=X1 To X2 Do Dot(X,Y1);
+ For Y:=Y1+1 To Y2 Do Dot(X2,Y);
+ For X:=X2-1 DownTo X1 Do Dot(X,Y2);
+ For Y:=Y2-1 DownTo Y1+1 Do Dot(X1,Y);
+End;
+
+Procedure BCircleS(CX,CY,R,C: Integer; Fill: Boolean);
+Var X,Y,D: Integer;
+ Procedure Pts;
+ Begin
+  If Fill Then Begin
+   BLineS(CX-X,CY+Y,CX+X,CY+Y,C);BLineS(CX-X,CY-Y,CX+X,CY-Y,C);
+   BLineS(CX-Y,CY+X,CX+Y,CY+X,C);BLineS(CX-Y,CY-X,CX+Y,CY-X,C);
+  End Else Begin
+   BPix(CX+X,CY+Y,C);BPix(CX-X,CY+Y,C);BPix(CX+X,CY-Y,C);BPix(CX-X,CY-Y,C);
+   BPix(CX+Y,CY+X,C);BPix(CX-Y,CY+X,C);BPix(CX+Y,CY-X,C);BPix(CX-Y,CY-X,C);
+  End;
+ End;
+Begin
+ X:=0;Y:=R;D:=3-2*R;
+ While X<=Y Do Begin
+  Pts;
+  If D<0 Then D:=D+4*X+6 Else Begin D:=D+4*(X-Y)+10;Dec(Y);End;
+  Inc(X);
+ End;
 End;
 
 { ---------------------- variables ---------------------- }
@@ -13282,18 +13422,34 @@ End;
 { ---------------------- fonctions ---------------------- }
 
 Function BCallFn(Const Nm: String; Var R: TBVal): Boolean;
-Var A,B,C: TBVal; U: String; N: Integer; D: Double; S: String;
+Var A,B,C,D4: TBVal; U: String; N: Integer; D: Double; S: String; I,J: Integer; Sv: String; SvP: Integer; PV: PBVal; OldV: TBVal;
 Begin
  BCallFn:=True;
  R.IsS:=False;R.N:=0;R.T:='';
  U:=Upper(Nm);
+ { fonction utilisateur : DEF FNnom(x) = expression }
+ If (Copy(U,1,2)='FN') And (Length(U)>2) Then Begin
+  I:=0;For J:=1 To CB^.NFn Do If CB^.Fns[J].Nm=Copy(U,3,10) Then I:=J;
+  If I=0 Then Begin BFail(T3('Undefined function ','Fonction non d'#130'finie ','Funktion nicht definiert ')+U);BCallFn:=False;Exit;End;
+  BExpect('(');If Not BExpr(A) Then Begin BCallFn:=False;Exit;End;BExpect(')');
+  If CB^.Done Then Begin BCallFn:=False;Exit;End;
+  J:=BFindVar(CB^.Fns[I].Par,True,0,0,0);
+  If J=0 Then Begin BCallFn:=False;Exit;End;
+  PV:=@CB^.Var_[J].P^[0];OldV:=PV^;
+  PV^.IsS:=A.IsS;PV^.N:=A.N;PV^.T:=A.T;
+  Sv:=CB^.Ln_;SvP:=CB^.Ps;CB^.Ln_:=CB^.Fns[I].Ex;CB^.Ps:=1;
+  BCallFn:=BExpr(R);
+  CB^.Ln_:=Sv;CB^.Ps:=SvP;PV^:=OldV;
+  Exit;
+ End;
  BExpect('(');
  If CB^.Done Then Begin BCallFn:=False;Exit;End;
  If U='RND' Then Begin If Not BExpr(A) Then Begin BCallFn:=False;Exit;End;R.N:=BRnd;BExpect(')');Exit;End;
  If Not BExpr(A) Then Begin BCallFn:=False;Exit;End;
- B.N:=0;B.T:='';B.IsS:=False;C.N:=0;C.T:='';C.IsS:=False;
+ B.N:=0;B.T:='';B.IsS:=False;C.N:=0;C.T:='';C.IsS:=False;D4.N:=0;D4.T:='';D4.IsS:=False;
  If BCh(',') Then Begin If Not BExpr(B) Then Begin BCallFn:=False;Exit;End;
-  If BCh(',') Then If Not BExpr(C) Then Begin BCallFn:=False;Exit;End;End;
+  If BCh(',') Then Begin If Not BExpr(C) Then Begin BCallFn:=False;Exit;End;
+   If BCh(',') Then If Not BExpr(D4) Then Begin BCallFn:=False;Exit;End;End;End;
  BExpect(')');
  If CB^.Done Then Begin BCallFn:=False;Exit;End;
  If U='ABS' Then R.N:=Abs(BNum(A))
@@ -13336,9 +13492,25 @@ Begin
  Else If U='INSTR' Then Begin
   If A.IsS Then R.N:=Pos(B.T,A.T) Else R.N:=Pos(C.T,B.T);
  End
- Else If U='PEEK' Then R.N:=0
- Else If U='TAB' Then Begin R.IsS:=True;S:='';For N:=1 To Trunc(BNum(A)) Do S:=S+' ';R.T:=S;End
- Else If U='POS' Then R.N:=Length(CB^.Cur)
+ Else If (U='PEEK') Or (U='DPEEK') Then R.N:=0
+ Else If (U='TAB') Or (U='SPC') Then Begin R.IsS:=True;S:='';For N:=1 To Trunc(BNum(A)) Do S:=S+' ';R.T:=S;End
+ Else If U='POS' Then R.N:=CB^.CurC-CB^.WX1
+ Else If U='XPOS' Then R.N:=CB^.CurC*8
+ Else If U='YPOS' Then R.N:=CB^.CurR*8
+ Else If U='MOUSEX' Then R.N:=CB^.MX
+ Else If U='MOUSEY' Then R.N:=CB^.MY
+ Else If U='MOUSEIN' Then Begin
+  If (CB^.MX>=BNum(A)) And (CB^.MX<=BNum(C)) And (CB^.MY>=BNum(B)) And (CB^.MY<=BNum(D4)) Then R.N:=-1 Else R.N:=0;
+ End
+ Else If U='TESTPT' Then Begin
+  I:=Trunc(BNum(A));J:=Trunc(BNum(B));
+  If (I<0) Or (I>319) Or (J<0) Or (J>199) Then BFail(T3('Illegal quantity','Quantit'#130' ill'#130'gale','Ung'#129'ltige Menge'))
+  Else If CB^.Scr[J,I]<>CLRBG Then R.N:=-1 Else R.N:=0;
+ End
+ Else If U='FRE' Then R.N:=38911
+ Else If U='EOF' Then Begin If BFileOpen Then Begin If Eof(BFile) Then R.N:=-1 Else R.N:=0;End Else R.N:=-1;End
+ Else If U='USR' Then R.N:=0
+ Else If U='BITS' Then R.N:=0
  Else Begin BFail(T3('Unknown function ','Fonction inconnue ','Unbekannte Funktion ')+U);BCallFn:=False;End;
 End;
 
@@ -13349,6 +13521,7 @@ Begin
 End;
 
 Function BExtVar(Const Nm: String; Var R: TBVal): Boolean; Forward;
+Function BFindLine(Const Tg: String): Integer; Forward;
 
 { lit une primaire : nombre, chaine, variable, fonction, parentheses }
 Function BPrimary(Var R: TBVal): Boolean;
@@ -13385,6 +13558,13 @@ Begin
   Val(S,D,N);
   If N<>0 Then Begin BFail(T3('Syntax error','Erreur de syntaxe','Syntaxfehler'));Exit;End;
   R.N:=D;BPrimary:=True;Exit;
+ End;
+ If C='@' Then Begin
+  Inc(CB^.Ps);S:='@'+BWord(True);
+  I1:=BFindLine(S);
+  If I1=0 Then Begin BFail(T3('Undefined label ','Etiquette non d'#130'finie ','Marke nicht definiert ')+S);Exit;End;
+  If CB^.LNo[I1]>=0 Then R.N:=CB^.LNo[I1] Else R.N:=I1;
+  BPrimary:=True;Exit;
  End;
  If C='-' Then Begin Inc(CB^.Ps);If Not BPrimary(R) Then Exit;R.N:=-BNum(R);R.IsS:=False;BPrimary:=True;Exit;End;
  If C='+' Then Begin Inc(CB^.Ps);BPrimary:=BPrimary(R);Exit;End;
@@ -13566,7 +13746,7 @@ End;
 { ---------------------- saut vers une ligne ---------------------- }
 
 Function BFindLine(Const Tg: String): Integer;
-Var I,P: Integer; N: LongInt; U,L: String;
+Var I,P,K: Integer; N: LongInt; U,L: String;
 Begin
  BFindLine:=0;
  U:=Upper(TrimStr(Tg));
@@ -13574,9 +13754,14 @@ Begin
   N:=StrVal(U,-1);
   For I:=1 To CB^.NL Do If CB^.LNo[I]=N Then Begin BFindLine:=I;Exit;End;
  End Else Begin
+  If (U<>'') And (U[1]='@') Then Delete(U,1,1);
+  U:=Copy(U,1,6);
   For I:=1 To CB^.NL Do Begin
    L:=Upper(TrimStr(CB^.Src[I]^));
-   If (Length(L)>Length(U)) And (Copy(L,1,Length(U))=U) And (L[Length(U)+1]=':') Then Begin BFindLine:=I;Exit;End;
+   If CB^.LNo[I]>=0 Then Begin P:=1;While (P<=Length(L)) And (L[P] In ['0'..'9',' ']) Do Inc(P);L:=Copy(L,P,255);End;
+   If (L<>'') And (L[1]='@') Then Delete(L,1,1);
+   K:=0;While (K<Length(L)) And BIsId(L[K+1]) And (K<6) Do Inc(K);
+   If (K>0) And (Copy(L,1,K)=U) And ((K=Length(L)) Or (L[K+1] In [':',' '])) Then Begin BFindLine:=I;Exit;End;
   End;
  End;
 End;
@@ -13584,7 +13769,7 @@ End;
 Procedure BGotoLine(L: Integer);
 Begin
  If L<=0 Then Begin BFail(T3('Undefined line','Ligne non d'#130'finie','Zeile nicht definiert'));Exit;End;
- CB^.Ln:=L;CB^.Ln_:=CB^.Src[L]^;CB^.Ps:=1;
+ CB^.Ln:=L;CB^.Ln_:=CB^.Src[L]^;CB^.Ps:=1;Inc(CB^.Jmp);
  { passe le numero de ligne ou l'etiquette }
  If CB^.LNo[L]>=0 Then Begin
   BSkip;
@@ -13597,8 +13782,22 @@ Var S: String; P: Integer;
 Begin
  BSkip;
  S:='';
+ If (CB^.Ps<=Length(CB^.Ln_)) And (CB^.Ln_[CB^.Ps]='@') Then Begin S:='@';Inc(CB^.Ps);End;
  While (CB^.Ps<=Length(CB^.Ln_)) And BIsId(CB^.Ln_[CB^.Ps]) Do Begin S:=S+CB^.Ln_[CB^.Ps];Inc(CB^.Ps);End;
  BTarget:=S;
+End;
+
+{ cible d'un saut : numero, @etiquette, nom ou expression -> indice de ligne }
+Function BLineTarget: Integer;
+Var R: TBVal; N: LongInt; I: Integer;
+Begin
+ BLineTarget:=0;
+ BSkip;
+ If BPeek In ['A'..'Z','a'..'z','_'] Then Begin BLineTarget:=BFindLine(BTarget);Exit;End;
+ If Not BExpr(R) Then Exit;
+ N:=Trunc(BNum(R));
+ For I:=1 To CB^.NL Do If CB^.LNo[I]=N Then Begin BLineTarget:=I;Exit;End;
+ If (N>=1) And (N<=CB^.NL) And (CB^.LNo[N]<0) Then BLineTarget:=N;
 End;
 
 { ---------------------- affectation ---------------------- }
@@ -13657,6 +13856,55 @@ Begin
     If Copy(U,Length(U)-3,4)='THEN' Then Inc(Dep);
    End Else Inc(Dep);
   End;
+ End;
+End;
+
+Procedure BPushLp(K: Byte; L,P: Integer);
+Begin
+ If CB^.NLp>=BMAXGS Then Begin BFail(T3('Stack overflow','D'#130'passement de pile','Stapel'#129'berlauf'));Exit;End;
+ Inc(CB^.NLp);CB^.Lp[CB^.NLp].K:=K;CB^.Lp[CB^.NLp].L:=L;CB^.Lp[CB^.NLp].P:=P;
+End;
+
+{ ferme-boucle (LOOP, WEND, UNTIL) sur la ligne courante apres Ps : retourne la position qui suit, ou 0 }
+Function BLoopEndSameLine: Integer;
+Var P,Q,Dep: Integer; W: String;
+Begin
+ BLoopEndSameLine:=0;
+ Dep:=0;P:=CB^.Ps;
+ While P<=Length(CB^.Ln_) Do Begin
+  If CB^.Ln_[P]='"' Then Begin
+   Inc(P);While (P<=Length(CB^.Ln_)) And (CB^.Ln_[P]<>'"') Do Inc(P);
+   Inc(P);
+  End Else If CB^.Ln_[P] In ['A'..'Z','a'..'z','_'] Then Begin
+   Q:=P;W:='';
+   While (Q<=Length(CB^.Ln_)) And BIsId(CB^.Ln_[Q]) Do Begin W:=W+CB^.Ln_[Q];Inc(Q);End;
+   W:=Upper(W);
+   If (W='WEND') Or (W='LOOP') Or (W='UNTIL') Then Begin
+    If Dep=0 Then Begin BLoopEndSameLine:=Q;Exit;End;
+    Dec(Dep);
+   End Else If (W='WHILE') Or (W='DO') Or (W='REPEAT') Then Inc(Dep);
+   P:=Q;
+  End Else Inc(P);
+ End;
+End;
+
+{ ligne de fermeture (WEND, LOOP ou UNTIL) correspondant a une ouverture, avec imbrication }
+Function BLoopEnd(From: Integer): Integer;
+Var I,Dep: Integer; U: String; P: Integer;
+ Function Starts(Const W: String): Boolean;
+ Begin
+  Starts:=(Copy(U,1,Length(W))=W) And ((Length(U)=Length(W)) Or Not (U[Length(W)+1] In ['A'..'Z','0'..'9','_']));
+ End;
+Begin
+ Dep:=0;BLoopEnd:=0;
+ For I:=From To CB^.NL Do Begin
+  U:=Upper(TrimStr(CB^.Src[I]^));
+  If CB^.LNo[I]>=0 Then Begin P:=1;While (P<=Length(U)) And (U[P] In ['0'..'9',' ']) Do Inc(P);U:=Copy(U,P,255);End;
+  If (U<>'') And (U[1]='@') Then Begin P:=Pos(':',U);If P>0 Then U:=TrimStr(Copy(U,P+1,255));End;
+  If Starts('WEND') Or Starts('LOOP') Or Starts('UNTIL') Then Begin
+   If Dep=0 Then Begin BLoopEnd:=I;Exit;End;
+   Dec(Dep);
+  End Else If Starts('WHILE') Or Starts('DO') Or Starts('REPEAT') Then Inc(Dep);
  End;
 End;
 
@@ -13773,6 +14021,16 @@ Begin
  Until (Not BCh(',')) Or CB^.Done;
 End;
 
+Procedure BPrnPut(Const S: String);
+Var T: Text; I: Integer;
+Begin
+ Assign(T,'PRINTER.TXT');
+ {$I-}Append(T);If IOResult<>0 Then Rewrite(T);{$I+}
+ If IOResult<>0 Then Exit;
+ For I:=1 To Length(S) Do If S[I]=#13 Then WriteLn(T) Else Write(T,S[I]);
+ Close(T);
+End;
+
 Procedure BDoPrint;
 Var R: TBVal; S: String; NL: Boolean; C: Char;
 Begin
@@ -13785,15 +14043,16 @@ Begin
   If BAtEnd Then Break;
   If Not BExpr(R) Then Exit;
   If R.IsS Then S:=R.T Else Begin S:=FmtReal(R.N);If R.N>=0 Then S:=' '+S;S:=S+' ';End;
-  BPutS(S);NL:=True;
+  If BPrn Then Begin BPrnPut(S);End Else BPutS(S);
+  NL:=True;
   C:=BPeek;
   If C=';' Then Begin Inc(CB^.Ps);NL:=False;End
   Else If C=',' Then Begin
    Inc(CB^.Ps);NL:=False;
-   While (Length(CB^.Cur) Mod 14)<>0 Do BPutS(' ');
+   Repeat BPutS(' ');Until ((CB^.CurC-CB^.WX1) Mod 10)=0;
   End Else Break;
  End;
- If NL Then BPutS(#13);
+ If NL Then Begin If BPrn Then BPrnPut(#13) Else BPutS(#13);End;
 End;
 
 Procedure BDoInput;
@@ -13826,7 +14085,7 @@ Begin
  If P=Nil Then Exit;
  If CB^.Var_[CB^.InVar].IsS Then BSetV(P,True,0,CB^.InBuf)
  Else Begin Val(TrimStr(CB^.InBuf),D,N);If N<>0 Then D:=0;BSetV(P,False,D,'');End;
- BPutS(#13);
+ BPutS(CB^.InBuf+#13);
  CB^.WaitIn:=False;
 End;
 
@@ -13896,11 +14155,530 @@ End;
 
 { ---------------------- instructions ---------------------- }
 
+{ ---------------------- instructions du manuel geoBASIC ---------------------- }
+
+Type
+ TBA4 = Array[1..4] Of Integer;
+
+Procedure BIll;
+Begin
+ BFail(T3('Illegal quantity','Quantit'#130' ill'#130'gale','Ung'#129'ltige Menge'));
+End;
+
+{ lit N expressions numeriques separees par des virgules }
+Function BInts(N: Integer; Var V: TBA4): Boolean;
+Var I: Integer; R: TBVal;
+Begin
+ BInts:=False;
+ For I:=1 To N Do Begin
+  If I>1 Then BExpect(',');
+  If CB^.Done Then Exit;
+  If Not BExpr(R) Then Exit;
+  V[I]:=Trunc(BNum(R));
+ End;
+ BInts:=Not CB^.Done;
+End;
+
+Function BStrArg(Var S: String): Boolean;
+Var R: TBVal;
+Begin
+ BStrArg:=False;
+ If Not BExpr(R) Then Exit;
+ If R.IsS Then S:=R.T Else S:=FmtReal(R.N);
+ BStrArg:=True;
+End;
+
+Procedure BPost(L: Integer);
+Begin
+ If L<=0 Then Exit;
+ If CB^.NPnd<8 Then Begin Inc(CB^.NPnd);CB^.Pnd[CB^.NPnd]:=L;End;
+End;
+
+{ ressources : recherche par nom }
+Function BResMenu(Const Nm: String): Integer;
+Var I: Integer;
+Begin
+ BResMenu:=0;
+ For I:=1 To GbRes.NM Do If Upper(GbRes.M[I].Name)=Upper(Nm) Then BResMenu:=I;
+End;
+
+Function BResIcons(Const Nm: String): Integer;
+Var I: Integer;
+Begin
+ BResIcons:=0;
+ For I:=1 To GbRes.NI Do If Upper(GbRes.I[I].Name)=Upper(Nm) Then BResIcons:=I;
+End;
+
+Function BResDlg(Const Nm: String): Integer;
+Var I: Integer;
+Begin
+ BResDlg:=0;
+ For I:=1 To GbRes.ND Do If Upper(GbRes.D[I].Name)=Upper(Nm) Then BResDlg:=I;
+End;
+
+Function BResBmp(Const Nm: String): Integer;
+Var I: Integer;
+Begin
+ BResBmp:=0;
+ For I:=1 To GbRes.NB Do If Upper(GbRes.B[I].Name)=Upper(Nm) Then BResBmp:=I;
+End;
+
+Procedure BNoRes(Const K,Nm: String);
+Begin
+ BFail(K+' '+Nm+' '+T3('not found','introuvable','nicht gefunden'));
+End;
+
+{ evalue un texte d'expression (boite de dialogue) }
+Function BEvalText(Const Ex: String; Var R: TBVal): Boolean;
+Var Sv: String; SvP: Integer;
+Begin
+ Sv:=CB^.Ln_;SvP:=CB^.Ps;
+ CB^.Ln_:=Ex;CB^.Ps:=1;
+ BEvalText:=BExpr(R);
+ CB^.Ln_:=Sv;CB^.Ps:=SvP;
+End;
+
+{ boite de dialogue creee avec l'editeur : DIALOG "nom"[,variable] }
+Procedure BDoDialog;
+Var Nm,TT,BT,Lb: String; D,I,NB,Ret,V,Pk: Integer; R: TBVal; W: String; Num: Array[1..4] Of Integer;
+Begin
+ If Not BStrArg(Nm) Then Exit;
+ V:=0;
+ If BCh(',') Then Begin
+  W:=BWord(True);
+  If W<>'' Then V:=BFindVar(W,True,0,0,0);
+ End;
+ D:=BResDlg(Nm);
+ If D=0 Then Begin BNoRes('Dialog',Nm);Exit;End;
+ TT:='';BT:='';NB:=0;
+ For I:=1 To GbRes.D[D].N Do Begin
+  Case GbRes.D[D].It[I].K Of
+   1: Begin If TT<>'' Then TT:=TT+'|';TT:=TT+GbRes.D[D].It[I].Txt;End;
+   2: Begin
+       If BEvalText(GbRes.D[D].It[I].Txt,R) Then Begin
+        If TT<>'' Then TT:=TT+'|';
+        If R.IsS Then TT:=TT+R.T Else TT:=TT+FmtReal(R.N);
+       End;
+      End;
+   3,4,5,6: If NB<4 Then Begin
+       Inc(NB);
+       Case GbRes.D[D].It[I].K Of
+        4: Begin Lb:='OK';Num[NB]:=1;End;
+        5: Begin Lb:=T3('Cancel','Annuler','Abbrechen');Num[NB]:=2;End;
+        6: Begin Lb:='Disk';Num[NB]:=3;End;
+       Else Begin Lb:=GbRes.D[D].It[I].Txt;Num[NB]:=3+NB;End;
+       End;
+       If BT<>'' Then BT:=BT+'|';BT:=BT+Lb;
+      End;
+  End;
+ End;
+ If NB=0 Then Begin BT:='OK';Num[1]:=1;NB:=1;End;
+ Pk:=MsgBox('GeoBASIC',TT,BT,0);
+ If (Pk<1) Or (Pk>NB) Then Pk:=1;
+ Ret:=Num[Pk];
+ If V<>0 Then BSetV(@CB^.Var_[V].P^[0],False,Ret,'');
+End;
+
+Procedure BDoBitmap;
+Var Nm: String; V: TBA4; B,X,Y: Integer;
+Begin
+ BExpect('(');If Not BStrArg(Nm) Then Exit;BExpect(')');
+ BExpect(',');If Not BInts(2,V) Then Exit;
+ B:=BResBmp(Nm);
+ If B=0 Then Begin BNoRes('Bitmap',Nm);Exit;End;
+ If (V[1]<0) Or (V[1]>39) Or (V[2]<0) Or (V[2]>199) Then Begin BIll;Exit;End;
+ For Y:=0 To GbRes.B[B].H-1 Do
+  For X:=0 To GbRes.B[B].W-1 Do
+   If GbRes.B[B].D[Y,X]<>0 Then BPix(V[1]*8+X,V[2]+Y,BFgCol);
+End;
+
+Procedure BDoSysinfo;
+Var V: TBA4; R: TBVal; W: String; Vi: Integer; Y,M,D,Wd,H,Mi,S,C: Word; T: String; IsS: Boolean;
+Begin
+ If Not BInts(1,V) Then Exit;
+ BCh(',');
+ W:=BWord(True);
+ If W='' Then Begin BFail(T3('Syntax error','Erreur de syntaxe','Syntaxfehler'));Exit;End;
+ Vi:=BFindVar(W,True,0,0,0);
+ If Vi=0 Then Exit;
+ GetDate(Y,M,D,Wd);GetTime(H,Mi,S,C);
+ T:='';R.N:=0;IsS:=False;
+ Case V[1] Of
+  0: R.N:=0;
+  1: R.N:=2;
+  2: Begin R.N:=0;If Lang=1 Then R.N:=1 Else If Lang=2 Then R.N:=2;End;
+  3: R.N:=8;
+  4: R.N:=319;
+  5: R.N:=199;
+  6: R.N:=CB^.ErrNo;
+  7: R.N:=H;
+  8: R.N:=Mi;
+  9: R.N:=S;
+  10: R.N:=M;
+  11: R.N:=D;
+  12: R.N:=Y;
+  13: R.N:=0;
+  14: Begin IsS:=True;T:='';End;
+  15: Begin IsS:=True;T:=Pad2(H)+':'+Pad2(Mi)+':'+Pad2(S);End;
+  16: Begin IsS:=True;T:=IntStr(M)+'/'+IntStr(D)+'/'+IntStr(Y);End;
+ Else Begin BIll;Exit;End;
+ End;
+ If CB^.Var_[Vi].IsS Then Begin
+  If Not IsS Then T:=FmtReal(R.N);
+  BSetV(@CB^.Var_[Vi].P^[0],True,0,T);
+ End Else BSetV(@CB^.Var_[Vi].P^[0],False,R.N,'');
+End;
+
+{ DEF FNnom(x)=expression }
+Procedure BDoDef;
+Var W,Nm,Par: String; I,P,N: Integer;
+Begin
+ W:=Upper(BWord(True));
+ If Copy(W,1,2)<>'FN' Then Begin BFail(T3('Syntax error','Erreur de syntaxe','Syntaxfehler'));Exit;End;
+ Nm:=Copy(W,3,10);
+ BExpect('(');Par:=BWord(True);BExpect(')');BExpect('=');
+ If CB^.Done Then Exit;
+ I:=0;For P:=1 To CB^.NFn Do If CB^.Fns[P].Nm=Nm Then I:=P;
+ If I=0 Then Begin
+  If CB^.NFn>=16 Then Begin BFail(T3('Too many functions','Trop de fonctions','Zu viele Funktionen'));Exit;End;
+  Inc(CB^.NFn);I:=CB^.NFn;
+ End;
+ CB^.Fns[I].Nm:=Nm;CB^.Fns[I].Par:=Upper(Par);
+ P:=CB^.Ps;N:=0;
+ While P<=Length(CB^.Ln_) Do Begin
+  If CB^.Ln_[P]='"' Then Begin Inc(P);While (P<=Length(CB^.Ln_)) And (CB^.Ln_[P]<>'"') Do Inc(P);End
+  Else If CB^.Ln_[P]='(' Then Inc(N)
+  Else If CB^.Ln_[P]=')' Then Dec(N)
+  Else If (CB^.Ln_[P]=':') And (N<=0) Then Break;
+  Inc(P);
+ End;
+ CB^.Fns[I].Ex:=Copy(CB^.Ln_,CB^.Ps,Min2(100,P-CB^.Ps));
+ CB^.Ps:=P;
+End;
+
+{ fichiers : OPEN, CREATE, WRITE, DREAD, RDBYTE ... (fichier texte) }
+Procedure BFileClose;
+Begin
+ If BFileOpen Then Begin {$I-}Close(BFile);{$I+}If IOResult<>0 Then Begin End;End;
+ BFileOpen:=False;
+End;
+
+Procedure BDoOpen(Create: Boolean);
+Var Nm: String; V: TBA4;
+Begin
+ If Not BStrArg(Nm) Then Exit;
+ If BCh(',') Then BInts(1,V);
+ BFileClose;
+ Assign(BFile,Nm);
+ {$I-}
+ If Create Then Rewrite(BFile) Else Reset(BFile);
+ {$I+}
+ If IOResult<>0 Then Begin
+  BFail(T3('File not found','Fichier introuvable','Datei nicht gefunden'));Exit;
+ End;
+ BFileOpen:=True;BFileWr:=Create;
+End;
+
+Procedure BDoWrite;
+Var R: TBVal; S,Ln: String;
+Begin
+ If Not BFileOpen Then Begin BFail(T3('Unopened file','Fichier non ouvert','Datei nicht ge'#148'ffnet'));Exit;End;
+ Ln:='';
+ Repeat
+  If Not BExpr(R) Then Exit;
+  If R.IsS Then S:='"'+R.T+'"' Else S:=FmtReal(R.N);
+  If Ln<>'' Then Ln:=Ln+',';
+  Ln:=Ln+S;
+ Until (Not BCh(',')) Or CB^.Done;
+ {$I-}
+ If BFileWr Then WriteLn(BFile,Ln);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure BDoDread;
+Var W,Ln,Item: String; V,I1,I2,P: Integer; Q: Boolean; D: Double; N: Integer; A: TBVal; PE: PBVal;
+Begin
+ If Not BFileOpen Then Begin BFail(T3('Unopened file','Fichier non ouvert','Datei nicht ge'#148'ffnet'));Exit;End;
+ Ln:='';
+ {$I-}
+ If Not Eof(BFile) Then ReadLn(BFile,Ln);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ P:=1;
+ Repeat
+  W:=BWord(True);
+  I1:=0;I2:=0;
+  V:=BFindVar(W,False,0,0,0);
+  If BPeek='(' Then Begin
+   Inc(CB^.Ps);If Not BExpr(A) Then Exit;I1:=Trunc(BNum(A));
+   If BCh(',') Then Begin If Not BExpr(A) Then Exit;I2:=Trunc(BNum(A));End;
+   BExpect(')');
+   If V=0 Then V:=BFindVar(W,True,10,10,2);
+  End Else If V=0 Then V:=BFindVar(W,True,0,0,0);
+  Item:='';Q:=False;
+  While (P<=Length(Ln)) And ((Ln[P]<>',') Or Q) Do Begin
+   If Ln[P]='"' Then Q:=Not Q Else Item:=Item+Ln[P];
+   Inc(P);
+  End;
+  Inc(P);
+  PE:=BElem(V,I1,I2);
+  If PE=Nil Then Exit;
+  If CB^.Var_[V].IsS Then BSetV(PE,True,0,Item)
+  Else Begin Val(TrimStr(Item),D,N);If N<>0 Then D:=0;BSetV(PE,False,D,'');End;
+ Until (Not BCh(',')) Or CB^.Done;
+End;
+
+Procedure BDoRdbyte;
+Var W: String; V: Integer; C: Char; PE: PBVal;
+Begin
+ If Not BFileOpen Then Begin BFail(T3('Unopened file','Fichier non ouvert','Datei nicht ge'#148'ffnet'));Exit;End;
+ Repeat
+  W:=BWord(True);
+  V:=BFindVar(W,True,0,0,0);
+  If V=0 Then Exit;
+  C:=#0;
+  {$I-}
+  If Not Eof(BFile) Then Begin
+   If Eoln(BFile) Then Begin ReadLn(BFile);C:=#13;End Else Read(BFile,C);
+  End Else Begin BFail(T3('Buffer overflow','D'#130'passement de tampon','Pufferuberlauf'));Exit;End;
+  {$I+}
+  If IOResult<>0 Then Begin End;
+  PE:=@CB^.Var_[V].P^[0];
+  If CB^.Var_[V].IsS Then BSetV(PE,True,0,C) Else BSetV(PE,False,Ord(C),'');
+ Until (Not BCh(',')) Or CB^.Done;
+End;
+
+Procedure BDoDbfile;
+Var W,S: String; V: Integer;
+Begin
+ W:=BWord(True);
+ V:=BFindVar(W,True,0,0,0);
+ S:='';
+ If Not InputBox('DBFILE',T3('File name:','Nom du fichier :','Dateiname:'),S,40) Then S:='';
+ If V<>0 Then BSetV(@CB^.Var_[V].P^[0],True,0,S);
+ If S<>'' Then Begin
+  BFileClose;Assign(BFile,S);
+  {$I-}Reset(BFile);{$I+}
+  If IOResult=0 Then Begin BFileOpen:=True;BFileWr:=False;End;
+ End;
+End;
+
+Procedure BDoGet;
+Var W: String; V: Integer;
+Begin
+ Repeat
+  W:=BWord(True);
+  If W='' Then Exit;
+  V:=BFindVar(W,True,0,0,0);
+  If V=0 Then Exit;
+  If CB^.Var_[V].IsS Then BSetV(@CB^.Var_[V].P^[0],True,0,CB^.LastKey)
+  Else Begin
+   If CB^.LastKey='' Then BSetV(@CB^.Var_[V].P^[0],False,0,'') Else BSetV(@CB^.Var_[V].P^[0],False,Ord(CB^.LastKey[1]),'');
+  End;
+  CB^.LastKey:='';
+ Until (Not BCh(',')) Or CB^.Done;
+End;
+
+Procedure BDoPrascii;
+Var R: TBVal; S: String; NL: Boolean;
+Begin
+ NL:=True;
+ While Not BAtEnd Do Begin
+  If BPeek=':' Then Break;
+  If Not BExpr(R) Then Exit;
+  If R.IsS Then S:=R.T Else Begin S:=FmtReal(R.N);If R.N>=0 Then S:=' '+S;S:=S+' ';End;
+  BPrnPut(S);NL:=True;
+  If BPeek=';' Then Begin Inc(CB^.Ps);NL:=False;End
+  Else If BPeek=',' Then Begin Inc(CB^.Ps);NL:=False;BPrnPut(#9);End Else Break;
+ End;
+ If NL Then BPrnPut(#13);
+End;
+
+Procedure BCmdGb(Const U: String; Var H: Boolean);
+Var V: TBA4; R,R2: TBVal; I,J,N,L,X,Y,Sv: Integer; T,W: String;
+Begin
+ H:=True;
+ If U='SETCOL' Then Begin If BExpr(R) Then CB^.ColV:=Trunc(BNum(R)) And 255;Exit;End;
+ If U='SETPOS' Then Begin
+  If Not BInts(2,V) Then Exit;
+  If (V[1]<0) Or (V[1]>319) Or (V[2]<0) Or (V[2]>199) Then Begin BIll;Exit;End;
+  CB^.CurC:=Max2(CB^.WX1,Min2(CB^.WX2,V[1] Div 8));CB^.CurR:=Max2(CB^.WY1,Min2(CB^.WY2,V[2] Div 8));Exit;
+ End;
+ If U='PATTERN' Then Begin
+  If BExpr(R) Then Begin
+   N:=Trunc(BNum(R));
+   If (N<0) Or (N>31) Then BIll Else CB^.Pat:=N;
+  End;
+  Exit;
+ End;
+ If U='POINT' Then Begin
+  If Not BInts(2,V) Then Exit;
+  If (V[1]<0) Or (V[1]>319) Or (V[2]<0) Or (V[2]>199) Then Begin BIll;Exit;End;
+  BPix(V[1],V[2],BFgCol);Exit;
+ End;
+ If (U='RECT') Or (U='FRECT') Or (U='INVRECT') Then Begin
+  If Not BInts(4,V) Then Exit;
+  If (V[1]<0) Or (V[3]>319) Or (V[2]<0) Or (V[4]>199) Or (V[3]<V[1]) Or (V[4]<V[2]) Then Begin BIll;Exit;End;
+  If U='RECT' Then BFillR(V[1],V[2],V[3],V[4],BFgCol)
+  Else If U='FRECT' Then BFrameR(V[1],V[2],V[3],V[4])
+  Else Begin
+   For Y:=V[2] To V[4] Do For X:=V[1] To V[3] Do
+    If CB^.Scr[Y,X]=CLRBG Then CB^.Scr[Y,X]:=0 Else CB^.Scr[Y,X]:=CLRBG;
+  End;
+  Exit;
+ End;
+ If U='COLRECT' Then Begin
+  If Not BInts(4,V) Then Exit;
+  If (V[1]<0) Or (V[3]>39) Or (V[2]<0) Or (V[4]>24) Or (V[3]<V[1]) Or (V[4]<V[2]) Then Begin BIll;Exit;End;
+  Sv:=CB^.Pat;CB^.Pat:=0;
+  BFillR(V[1]*8,V[2]*8,V[3]*8+7,V[4]*8+7,BBgCol);
+  CB^.Pat:=Sv;Exit;
+ End;
+ If U='LINE' Then Begin
+  If BPeek='(' Then Begin
+   { forme etendue : LINE (x,y)-(x,y)[,couleur[,B|BF]] }
+   BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
+   BExpect('-');BExpect('(');
+   V[1]:=Trunc(BNum(R));V[2]:=Trunc(BNum(R2));
+   If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
+   V[3]:=Trunc(BNum(R));V[4]:=Trunc(BNum(R2));
+   N:=CB^.Pen;If BCh(',') Then If BExpr(R) Then N:=Trunc(BNum(R)) And 15;
+   L:=2;
+   If BCh(',') Then Begin T:=Upper(BWord(True));If T='B' Then L:=3 Else If T='BF' Then L:=4;End;
+   Case L Of
+    2: BLineS(V[1],V[2],V[3],V[4],N);
+    3: Begin BLineS(V[1],V[2],V[3],V[2],N);BLineS(V[3],V[2],V[3],V[4],N);BLineS(V[3],V[4],V[1],V[4],N);BLineS(V[1],V[4],V[1],V[2],N);End;
+    4: Begin
+        For Y:=Min2(V[2],V[4]) To Max2(V[2],V[4]) Do BLineS(V[1],Y,V[3],Y,N);
+       End;
+   End;
+   Exit;
+  End;
+  If Not BExpr(R) Then Exit;V[1]:=Trunc(BNum(R));
+  BExpect(',');If Not BExpr(R) Then Exit;V[2]:=Trunc(BNum(R));
+  If Not BAccept('TO') Then BExpect(',');
+  If Not BExpr(R) Then Exit;V[3]:=Trunc(BNum(R));
+  BExpect(',');If Not BExpr(R) Then Exit;V[4]:=Trunc(BNum(R));
+  If (V[1]<0) Or (V[1]>319) Or (V[3]<0) Or (V[3]>319) Or (V[2]<0) Or (V[2]>199) Or (V[4]<0) Or (V[4]>199) Then Begin BIll;Exit;End;
+  If CB^.ColV=0 Then BLineS(V[1],V[2],V[3],V[4],BBgCol) Else BLineS(V[1],V[2],V[3],V[4],BFgCol);
+  Exit;
+ End;
+ If U='PSET' Then Begin
+  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
+  BPix(Trunc(BNum(R)),Trunc(BNum(R2)),CB^.Pen);Exit;
+ End;
+ If (U='CIRCLE') Or (U='DISC') Then Begin
+  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
+  V[1]:=Trunc(BNum(R));V[2]:=Trunc(BNum(R2));
+  BExpect(',');If Not BExpr(R) Then Exit;
+  N:=CB^.Pen;If BCh(',') Then If BExpr(R2) Then N:=Trunc(BNum(R2)) And 15;
+  BCircleS(V[1],V[2],Trunc(BNum(R)),N,U='DISC');Exit;
+ End;
+ If U='TEXT' Then Begin
+  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
+  X:=Trunc(BNum(R)) Div 8;Y:=Trunc(BNum(R2)) Div 8;
+  BExpect(',');If Not BExpr(R) Then Exit;
+  If R.IsS Then T:=R.T Else T:=FmtReal(R.N);
+  For I:=1 To Length(T) Do If (X+I-1>=0) And (X+I-1<=39) And (Y>=0) And (Y<=24) Then Begin
+   CB^.Tx[Y,X+I-1]:=T[I];CB^.TxK[Y,X+I-1]:=CB^.Pen;
+  End;
+  Exit;
+ End;
+ If U='MENU' Then Begin
+  If Not BStrArg(T) Then Exit;
+  N:=BResMenu(T);
+  If N=0 Then Begin BNoRes('Menu',T);Exit;End;
+  CB^.CurMenu:=N;CB^.MenuOpen:=0;Exit;
+ End;
+ If U='ICON' Then Begin
+  If Not BStrArg(T) Then Exit;
+  N:=BResIcons(T);
+  If N=0 Then Begin BNoRes('Icon',T);Exit;End;
+  CB^.CurIcons:=N;Exit;
+ End;
+ If U='DIALOG' Then Begin BDoDialog;Exit;End;
+ If U='BITMAP' Then Begin BDoBitmap;Exit;End;
+ If U='MAINLOOP' Then Begin
+  CB^.WaitMain:=True;CB^.InMain:=True;CB^.IntBase:=0;CB^.MainL:=CB^.Ln;CB^.MainP:=CB^.StmtP;Exit;
+ End;
+ If U='BUTTON' Then Begin CB^.BtnL:=BLineTarget;Exit;End;
+ If U='REDRAW' Then Begin CB^.RedrawL:=BLineTarget;Exit;End;
+ If U='ONERR' Then Begin CB^.OnErrL:=BLineTarget;Exit;End;
+ If U='PROCESS' Then Begin
+  L:=BLineTarget;BExpect(',');If Not BExpr(R) Then Exit;
+  N:=0;For I:=1 To 8 Do If CB^.Procs[I].L=L Then N:=I;
+  If N=0 Then For I:=8 DownTo 1 Do If CB^.Procs[I].L=0 Then N:=I;
+  If N=0 Then Begin BFail(T3('Too many processes','Trop de processus','Zu viele Prozesse'));Exit;End;
+  CB^.Procs[N].L:=L;CB^.Procs[N].Iv:=Trunc(BNum(R))*100 Div 60;
+  If CB^.Procs[N].Iv<1 Then CB^.Procs[N].Iv:=1;
+  CB^.Procs[N].Last:=NowCs;Exit;
+ End;
+ If U='DELPROC' Then Begin
+  L:=BLineTarget;
+  For I:=1 To 8 Do If CB^.Procs[I].L=L Then CB^.Procs[I].L:=0;Exit;
+ End;
+ If U='MOUSE' Then Begin If BExpr(R) Then CB^.MouseOn:=BNum(R)<>0;Exit;End;
+ If U='WINDOW' Then Begin
+  If Not BInts(4,V) Then Exit;
+  If (V[1]<0) Or (V[1]>312) Or (V[3]<0) Or (V[3]>319) Or (V[2]<0) Or (V[4]>199) Then Begin BIll;Exit;End;
+  CB^.WX1:=V[1] Div 8;CB^.WY1:=V[2] Div 8;CB^.WX2:=Min2(39,V[3] Div 8);CB^.WY2:=Min2(24,V[4] Div 8);
+  If CB^.WX2<CB^.WX1 Then CB^.WX2:=CB^.WX1;
+  If CB^.WY2<CB^.WY1 Then CB^.WY2:=CB^.WY1;
+  CB^.CurC:=CB^.WX1;CB^.CurR:=CB^.WY1;Exit;
+ End;
+ If U='PROMPT' Then Begin
+  If Not BInts(3,V) Then Exit;
+  CB^.PromptOn:=V[1]<>0;Exit;
+ End;
+ If U='HEADER' Then Begin
+  If BExpr(R) Then BHdrType:=Trunc(BNum(R));
+  If BCh(',') Then BStrArg(BHdrName);
+  If BCh(',') Then BExpr(R);
+  Exit;
+ End;
+ If U='DEF' Then Begin BDoDef;Exit;End;
+ If U='SYSINFO' Then Begin BDoSysinfo;Exit;End;
+ If U='VOICE' Then Begin
+  If Not BInts(2,V) Then Exit;
+  If (V[1]>=0) And (V[1]<=3) Then CB^.Voice[V[1]]:=V[2];Exit;
+ End;
+ If (U='FONT') Or (U='SPRITE') Then Begin BStrArg(T);If BCh(',') Then BExpr(R);Exit;End;
+ If (U='SPRT') Or (U='SPRCOL') Or (U='POKE') Or (U='DPOKE') Or (U='LOAD') Or (U='SAVE') Or (U='PRSCREEN') Or (U='PTREC') Or (U='APPEND') Or (U='INSERT') Or (U='DELETE') Then Begin
+  { arguments evalues et ignores }
+  If Not BAtEnd Then Begin
+   If BPeek<>':' Then Repeat
+    If (U='LOAD') Or (U='SAVE') Then Begin BExpr(R);End Else BExpr(R);
+   Until (Not BCh(',')) Or CB^.Done;
+  End;
+  Exit;
+ End;
+ If (U='NEWPAGE') Then Exit;
+ If U='PRNTER' Then Begin If BExpr(R) Then BPrn:=BNum(R)<>0;Exit;End;
+ If U='PRASCII' Then Begin BDoPrascii;Exit;End;
+ If U='OPEN' Then Begin BDoOpen(False);Exit;End;
+ If U='CREATE' Then Begin BDoOpen(True);Exit;End;
+ If U='CLOSE' Then Begin BFileClose;Exit;End;
+ If U='WRITE' Then Begin BDoWrite;Exit;End;
+ If U='DREAD' Then Begin BDoDread;Exit;End;
+ If U='RDBYTE' Then Begin BDoRdbyte;Exit;End;
+ If U='DBFILE' Then Begin BDoDbfile;Exit;End;
+ If U='GET' Then Begin BDoGet;Exit;End;
+ H:=False;
+End;
+
+
 Procedure BStmt;
-Var W,U,T: String; R,R2,R3,R4,R5: TBVal; L,N,I: Integer; H: Boolean; C: Integer;
+Var W,U,T: String; R,R2,R3,R4,R5: TBVal; L,N,I: Integer; H: Boolean; C: Integer; P0: Integer;
 Begin
  BSkip;
  If BAtEnd Then Exit;
+ P0:=CB^.Ps;CB^.StmtP:=P0;
+ { etiquette @nom }
+ If CB^.Ln_[CB^.Ps]='@' Then Begin
+  Inc(CB^.Ps);While (CB^.Ps<=Length(CB^.Ln_)) And BIsId(CB^.Ln_[CB^.Ps]) Do Inc(CB^.Ps);
+  Exit;
+ End;
  If BPeek=''''  Then Begin CB^.Ps:=Length(CB^.Ln_)+1;Exit;End;
  W:=BWord(False);
  If W='' Then Begin
@@ -13910,7 +14688,8 @@ Begin
  U:=Upper(W);
  { etiquette ? }
  If (CB^.Ps+Length(W)<=Length(CB^.Ln_)) And (CB^.Ln_[CB^.Ps+Length(W)]=':') And (BFindVar(W,False,0,0,0)=0) And
-    (U<>'REM') And (U<>'ELSE') And (BFindLine(W)=CB^.Ln) Then Begin
+    (U<>'REM') And (U<>'ELSE') And (U<>'REPEAT') And (U<>'DO') And (U<>'LOOP') And (U<>'WEND') And (U<>'NEXT') And (U<>'RETURN') And
+    (U<>'END') And (U<>'STOP') And (U<>'CLS') And (U<>'BEEP') And (U<>'MAINLOOP') And (U<>'RESTORE') And (U<>'CLOSE') And (BFindLine(W)=CB^.Ln) Then Begin
   BWord(True);Inc(CB^.Ps);Exit;
  End;
  BWord(True);
@@ -13945,9 +14724,10 @@ Begin
  If (U='STOP') Then Begin BPutS(T3('Break in line ','Arr'#136't dans la ligne ','Halt in Zeile ')+IntStr(CB^.Ln)+#13);CB^.Running:=False;CB^.Done:=True;Exit;End;
  If U='FOR' Then Begin BDoFor;Exit;End;
  If U='NEXT' Then Begin BDoNext;Exit;End;
- If U='GOTO' Then Begin T:=BTarget;BGotoLine(BFindLine(T));Exit;End;
+ If U='GOTO' Then Begin L:=BLineTarget;BGotoLine(L);Exit;End;
  If U='GOSUB' Then Begin
-  T:=BTarget;L:=BFindLine(T);
+  L:=BLineTarget;
+  If L=0 Then Begin BGotoLine(0);Exit;End;
   If CB^.NG>=BMAXGS Then Begin BFail(T3('Stack overflow','D'#130'passement de pile','Stapel'#129'berlauf'));Exit;End;
   Inc(CB^.NG);CB^.GsL[CB^.NG]:=CB^.Ln;CB^.GsP[CB^.NG]:=CB^.Ps;
   BGotoLine(L);Exit;
@@ -13969,67 +14749,84 @@ Begin
  If U='RETURN' Then Begin
   If CB^.NG=0 Then Begin BFail(T3('RETURN without GOSUB','RETURN sans GOSUB','RETURN ohne GOSUB'));Exit;End;
   If CB^.GsL[CB^.NG]=0 Then Begin Dec(CB^.NG);CB^.Running:=False;CB^.Done:=True;Exit;End;
-  CB^.Ln:=CB^.GsL[CB^.NG];CB^.Ln_:=CB^.Src[CB^.Ln]^;CB^.Ps:=CB^.GsP[CB^.NG];Dec(CB^.NG);Exit;
+  CB^.Ln:=CB^.GsL[CB^.NG];CB^.Ln_:=CB^.Src[CB^.Ln]^;CB^.Ps:=CB^.GsP[CB^.NG];Dec(CB^.NG);
+  If CB^.NG<CB^.IntBase Then CB^.IntBase:=0;
+  Inc(CB^.Jmp);
+  Exit;
  End;
  If U='ON' Then Begin
   If Not BExpr(R) Then Exit;
   T:=Upper(BWord(True));N:=Trunc(BNum(R));
   I:=0;L:=0;
   Repeat
-   Inc(I);W:=BTarget;
-   If I=N Then L:=BFindLine(W);
+   Inc(I);
+   If I=N Then L:=BLineTarget Else BLineTarget;
   Until (Not BCh(',')) Or CB^.Done;
+  If CB^.Done Then Exit;
+  If N<0 Then Begin BIll;Exit;End;
   If L<>0 Then Begin
    If T='GOSUB' Then Begin Inc(CB^.NG);CB^.GsL[CB^.NG]:=CB^.Ln;CB^.GsP[CB^.NG]:=CB^.Ps;End;
    BGotoLine(L);
   End;
   Exit;
  End;
+ { boucles : WHILE..LOOP/WEND, DO..LOOP, REPEAT..UNTIL }
  If U='WHILE' Then Begin
-  I:=CB^.Ps;
   If Not BExpr(R) Then Exit;
   If BNum(R)=0 Then Begin
-   L:=BScan(CB^.Ln+1,'WHILE','WEND','');
-   If L=0 Then Begin BFail(T3('WHILE without WEND','WHILE sans WEND','WHILE ohne WEND'));Exit;End;
+   N:=BLoopEndSameLine;
+   If N>0 Then Begin CB^.Ps:=N;Exit;End;
+   L:=BLoopEnd(CB^.Ln+1);
+   If L=0 Then Begin BFail(T3('WHILE without LOOP','WHILE sans LOOP','WHILE ohne LOOP'));Exit;End;
    BGotoLine(L);CB^.Ps:=Length(CB^.Ln_)+1;
   End Else Begin
-   If CB^.NW>=BMAXGS Then Begin BFail(T3('Stack overflow','D'#130'passement de pile','Stapel'#129'berlauf'));Exit;End;
-   If (CB^.NW=0) Or (CB^.WhL[CB^.NW]<>CB^.Ln) Then Begin Inc(CB^.NW);CB^.WhL[CB^.NW]:=CB^.Ln;End;
+   If CB^.NLp>=BMAXGS Then Begin BFail(T3('Stack overflow','D'#130'passement de pile','Stapel'#129'berlauf'));Exit;End;
+   If (CB^.NLp=0) Or (CB^.Lp[CB^.NLp].L<>CB^.Ln) Or (CB^.Lp[CB^.NLp].K<>1) Then BPushLp(1,CB^.Ln,P0);
   End;
   Exit;
  End;
- If U='WEND' Then Begin
-  If CB^.NW=0 Then Begin BFail(T3('WEND without WHILE','WEND sans WHILE','WEND ohne WHILE'));Exit;End;
-  L:=CB^.WhL[CB^.NW];Dec(CB^.NW);
-  CB^.Ln:=L;CB^.Ln_:=CB^.Src[L]^;CB^.Ps:=1;
-  If CB^.LNo[L]>=0 Then Begin While (CB^.Ps<=Length(CB^.Ln_)) And (CB^.Ln_[CB^.Ps] In ['0'..'9',' ']) Do Inc(CB^.Ps);End;
-  Exit;
- End;
  If U='DO' Then Begin
-  If CB^.NDo>=BMAXGS Then Begin BFail(T3('Stack overflow','D'#130'passement de pile','Stapel'#129'berlauf'));Exit;End;
   T:=Upper(BWord(False));
   If (T='WHILE') Or (T='UNTIL') Then Begin
    BWord(True);If Not BExpr(R) Then Exit;
    If ((T='WHILE') And (BNum(R)=0)) Or ((T='UNTIL') And (BNum(R)<>0)) Then Begin
-    L:=BScan(CB^.Ln+1,'DO','LOOP','');
+    N:=BLoopEndSameLine;
+    If N>0 Then Begin CB^.Ps:=N;Exit;End;
+    L:=BLoopEnd(CB^.Ln+1);
     If L=0 Then Begin BFail(T3('DO without LOOP','DO sans LOOP','DO ohne LOOP'));Exit;End;
     BGotoLine(L);CB^.Ps:=Length(CB^.Ln_)+1;Exit;
    End;
   End;
-  If (CB^.NDo=0) Or (CB^.DoL[CB^.NDo]<>CB^.Ln) Then Begin Inc(CB^.NDo);CB^.DoL[CB^.NDo]:=CB^.Ln;End;
+  If (CB^.NLp=0) Or (CB^.Lp[CB^.NLp].L<>CB^.Ln) Or (CB^.Lp[CB^.NLp].K<>2) Then BPushLp(2,CB^.Ln,P0);
   Exit;
  End;
- If U='LOOP' Then Begin
-  If CB^.NDo=0 Then Begin BFail(T3('LOOP without DO','LOOP sans DO','LOOP ohne DO'));Exit;End;
+ If (U='LOOP') Or (U='WEND') Then Begin
+  If CB^.NLp=0 Then Begin BFail(T3('LOOP without DO','LOOP sans DO','LOOP ohne DO'));Exit;End;
+  If CB^.Lp[CB^.NLp].K=1 Then Begin
+   { WHILE ... LOOP : retour au test }
+   CB^.Ln:=CB^.Lp[CB^.NLp].L;CB^.Ln_:=CB^.Src[CB^.Ln]^;CB^.Ps:=CB^.Lp[CB^.NLp].P;Inc(CB^.Jmp);Dec(CB^.NLp);Exit;
+  End;
+  If CB^.Lp[CB^.NLp].K=3 Then Begin BFail(T3('LOOP without DO','LOOP sans DO','LOOP ohne DO'));Exit;End;
   T:=Upper(BWord(False));H:=True;
   If (T='WHILE') Or (T='UNTIL') Then Begin
    BWord(True);If Not BExpr(R) Then Exit;
    If ((T='WHILE') And (BNum(R)=0)) Or ((T='UNTIL') And (BNum(R)<>0)) Then H:=False;
   End;
   If H Then Begin
-   L:=CB^.DoL[CB^.NDo];CB^.Ln:=L;CB^.Ln_:=CB^.Src[L]^;CB^.Ps:=1;
-   If CB^.LNo[L]>=0 Then Begin While (CB^.Ps<=Length(CB^.Ln_)) And (CB^.Ln_[CB^.Ps] In ['0'..'9',' ']) Do Inc(CB^.Ps);End;
-  End Else Dec(CB^.NDo);
+   CB^.Ln:=CB^.Lp[CB^.NLp].L;CB^.Ln_:=CB^.Src[CB^.Ln]^;CB^.Ps:=CB^.Lp[CB^.NLp].P;Inc(CB^.Jmp);
+  End Else Dec(CB^.NLp);
+  Exit;
+ End;
+ If U='REPEAT' Then Begin
+  If CB^.NLp>=BMAXGS Then Begin BFail(T3('Stack overflow','D'#130'passement de pile','Stapel'#129'berlauf'));Exit;End;
+  BPushLp(3,CB^.Ln,CB^.Ps);Exit;
+ End;
+ If U='UNTIL' Then Begin
+  If (CB^.NLp=0) Or (CB^.Lp[CB^.NLp].K<>3) Then Begin BFail(T3('UNTIL without REPEAT','UNTIL sans REPEAT','UNTIL ohne REPEAT'));Exit;End;
+  If Not BExpr(R) Then Exit;
+  If BNum(R)=0 Then Begin
+   CB^.Ln:=CB^.Lp[CB^.NLp].L;CB^.Ln_:=CB^.Src[CB^.Ln]^;CB^.Ps:=CB^.Lp[CB^.NLp].P;Inc(CB^.Jmp);
+  End Else Dec(CB^.NLp);
   Exit;
  End;
  If U='DIM' Then Begin BDoDim;Exit;End;
@@ -14042,37 +14839,10 @@ Begin
   Exit;
  End;
  If U='BEEP' Then Begin Beep;Exit;End;
- If U='COLOR' Then Begin If BExpr(R) Then CB^.Fg:=Trunc(BNum(R)) And 15;Exit;End;
- If U='PSET' Then Begin
-  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
-  BAddGr(1,Trunc(BNum(R)),Trunc(BNum(R2)),0,0,CB^.Fg,'');Exit;
- End;
- If U='LINE' Then Begin
-  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
-  BExpect('-');BExpect('(');If Not BExpr(R3) Then Exit;BExpect(',');If Not BExpr(R4) Then Exit;BExpect(')');
-  C:=CB^.Fg;
-  If BCh(',') Then If BExpr(R5) Then C:=Trunc(BNum(R5)) And 15;
-  N:=2;
-  If BCh(',') Then Begin T:=Upper(BWord(True));If T='B' Then N:=3 Else If T='BF' Then N:=4;End;
-  BAddGr(N,Trunc(BNum(R)),Trunc(BNum(R2)),Trunc(BNum(R3)),Trunc(BNum(R4)),C,'');Exit;
- End;
- If U='CIRCLE' Then Begin
-  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
-  BExpect(',');If Not BExpr(R3) Then Exit;C:=CB^.Fg;
-  If BCh(',') Then If BExpr(R5) Then C:=Trunc(BNum(R5)) And 15;
-  BAddGr(5,Trunc(BNum(R)),Trunc(BNum(R2)),Trunc(BNum(R3)),0,C,'');Exit;
- End;
- If U='DISC' Then Begin
-  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
-  BExpect(',');If Not BExpr(R3) Then Exit;
-  BAddGr(7,Trunc(BNum(R)),Trunc(BNum(R2)),Trunc(BNum(R3)),0,CB^.Fg,'');Exit;
- End;
- If U='TEXT' Then Begin
-  BExpect('(');If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;BExpect(')');
-  BExpect(',');If Not BExpr(R3) Then Exit;
-  If R3.IsS Then T:=R3.T Else T:=FmtReal(R3.N);
-  BAddGr(6,Trunc(BNum(R)),Trunc(BNum(R2)),0,0,CB^.Fg,T);Exit;
- End;
+ If U='COLOR' Then Begin If BExpr(R) Then CB^.Pen:=Trunc(BNum(R)) And 15;Exit;End;
+ H:=False;
+ BCmdGb(U,H);
+ If H Then Exit;
  If U='SLEEP' Then Begin If BExpr(R) Then Begin Delay(Trunc(BNum(R)*10));End;Exit;End;
  If U='SOUND' Then Begin
   If Not BExpr(R) Then Exit;BExpect(',');If Not BExpr(R2) Then Exit;
@@ -14100,10 +14870,13 @@ Begin
 End;
 
 Procedure BStmts;
+Var J0: LongInt;
 Begin
  Repeat
+  J0:=CB^.Jmp;
   BStmt;
-  If CB^.Done Or CB^.WaitIn Or CB^.WaitKey Then Exit;
+  If CB^.Done Or CB^.WaitIn Or CB^.WaitKey Or CB^.WaitMain Then Exit;
+  If CB^.Jmp<>J0 Then Exit;
   BSkip;
   If (CB^.Ps<=Length(CB^.Ln_)) And (CB^.Ln_[CB^.Ps]=':') Then Inc(CB^.Ps)
   Else If BAtEnd Then Exit
@@ -14427,6 +15200,8 @@ Type
   InSub   : Boolean;
   FormH   : Integer;
   Dragging: Integer;
+  CvX,CvY : Integer;
+  Stepping,StepOnce: Boolean;
  End;
 
 Function BrNew(AX,AY: Integer; Bas: PBas; Form: PForm; Const Title: String): PWindow; Forward;
@@ -14460,7 +15235,7 @@ Procedure BrBegin(R: PBRun);
 Begin
  CB:=R^.Bas;
  BCollectData;BCollectSubs;
- CB^.Err:='';CB^.Running:=True;CB^.Done:=False;CB^.NG:=0;CB^.NF:=0;CB^.NW:=0;CB^.NDo:=0;
+ CB^.Err:='';CB^.Running:=True;CB^.Done:=False;CB^.NG:=0;CB^.NF:=0;CB^.NLp:=0;CB^.NPnd:=0;CB^.IntBase:=0;CB^.WaitMain:=False;CB^.ErrJump:=False;
  If CB^.NL>0 Then BGotoLine(1);
 End;
 
@@ -14469,18 +15244,20 @@ Function BrNew(AX,AY: Integer; Bas: PBas; Form: PForm; Const Title: String): PWi
 Begin
  New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
  Dt_^.Bas:=Bas;Dt_^.Form:=Form;Dt_^.Alive:=Form<>Nil;
- WinInit(Wd_,A_BASRUN,AX,AY,500,380,Title);
+ WinInit(Wd_,A_BASRUN,AX,AY,350,200+6+66,Title);
  Wd_^.IconId:=IC_NOTE;Wd_^.MinW:=300;Wd_^.MinH:=200;
  WinAddMenu(Wd_,'Program~Programme~Programm');
  WinAddItem(Wd_,'Restart~Red'#130'marrer~Neu starten',CM_BRRESTART,'');
  WinAddItem(Wd_,'Stop~Arr'#136'ter~Anhalten',CM_BRSTOP,'');
+ WinAddItem(Wd_,'Pause / Continue~Pause / Reprendre~Pause / Weiter',CM_BRPAUSE,'F8');
+ WinAddItem(Wd_,'Step~Pas '#133' pas~Einzelschritt',CM_BRSTEP,'F10');
+ WinAddItem(Wd_,'Variables...~Variables...~Variablen...',CM_BRVARS,'');
  WinAddItem(Wd_,'Clear Screen~Effacer l'''#130'cran~Bildschirm l'#148'schen',CM_BRCLS,'');
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  CB:=Bas;
- If Bas^.NCon=0 Then Begin BConNew;End;
  If Form<>Nil Then Begin
   FmLayout(Form,1,8,8,W,H);Dt_^.FormH:=H+16;
-  Wd_^.WinW:=Max2(300,W+30);
+  Wd_^.WinW:=Max2(350,W+30);Wd_^.WinH:=Wd_^.WinH+Dt_^.FormH;
  End;
  BrBegin(Dt_);
  BrNew:=Wd_;
@@ -14492,9 +15269,90 @@ Begin
  If PBRun(Wd_^.Data)^.Form<>Nil Then Dispose(PBRun(Wd_^.Data)^.Form);
 End;
 
+{ position (x) du titre de sous-menu Sub (0 = GEOS) dans la barre de menus }
+Function BrMenuX(M,Sub: Integer): Integer;
+Var I,X: Integer;
+Begin
+ X:=4;
+ If Sub>=1 Then Begin
+  X:=X+4*8+12;
+  For I:=1 To Sub-1 Do X:=X+Length(GbRes.M[M].SubT[I])*8+12;
+ End;
+ BrMenuX:=X;
+End;
+
+Function BrMenuW(M,Sub: Integer): Integer;
+Var I,W: Integer;
+Begin
+ W:=0;
+ For I:=1 To GbRes.M[M].NIt[Sub] Do If Length(GbRes.M[M].It[Sub,I].Txt)*8>W Then W:=Length(GbRes.M[M].It[Sub,I].Txt)*8;
+ BrMenuW:=W+16;
+End;
+
+Procedure BrDrawIcon(CX,CY,X,Y: Integer; Const Nm: String);
+Var B,PX,PY: Integer;
+Begin
+ B:=BResBmp(Nm);
+ If B=0 Then Begin
+  GRect(CX+X,CY+Y,CX+X+15,CY+Y+15,cBlk);GText(CX+X+4,CY+Y+4,Copy(Nm,1,1),cBlk);Exit;
+ End;
+ For PY:=0 To GbRes.B[B].H-1 Do
+  For PX:=0 To GbRes.B[B].W-1 Do
+   If GbRes.B[B].D[PY,PX]<>0 Then GBar(CX+X+PX,CY+Y+PY,CX+X+PX,CY+Y+PY,cBlk);
+End;
+
+{ dessine l'ecran geoBASIC (graphiques, texte, menu, icones) a partir de (CX,CY) }
+Procedure BrPaintScreen(CX,CY: Integer);
+Var Y,X,X0,R,C,I,M,S,W: Integer; Cl: Byte; T: String;
+Begin
+ GBar(CX,CY,CX+319,CY+199,cWht);
+ For Y:=0 To 199 Do Begin
+  X:=0;
+  While X<=319 Do Begin
+   Cl:=CB^.Scr[Y,X];
+   If Cl=CLRBG Then Inc(X)
+   Else Begin
+    X0:=X;
+    While (X<=319) And (CB^.Scr[Y,X]=Cl) Do Inc(X);
+    GBar(CX+X0,CY+Y,CX+X-1,CY+Y,Cl);
+   End;
+  End;
+ End;
+ For R:=0 To 24 Do
+  For C:=0 To 39 Do
+   If CB^.Tx[R,C]<>' ' Then GText(CX+C*8,CY+R*8,CB^.Tx[R,C],CB^.TxK[R,C]);
+ If CB^.WaitIn Or CB^.WaitKey Then Begin
+  T:=CB^.InBuf;If CB^.PromptOn Then T:=T+'_';
+  GBar(CX+CB^.CurC*8,CY+CB^.CurR*8,CX+319,CY+CB^.CurR*8+7,cWht);
+  GText(CX+CB^.CurC*8,CY+CB^.CurR*8,T,cBlu);
+ End;
+ { icones }
+ If CB^.CurIcons>0 Then
+  For I:=1 To GbRes.I[CB^.CurIcons].N Do
+   BrDrawIcon(CX,CY,GbRes.I[CB^.CurIcons].Ic[I].X,GbRes.I[CB^.CurIcons].Ic[I].Y,GbRes.I[CB^.CurIcons].Ic[I].Bmp);
+ { menu }
+ If CB^.CurMenu>0 Then Begin
+  M:=CB^.CurMenu;
+  GBar(CX,CY,CX+319,CY+11,cWht);GLine(CX,CY+11,CX+319,CY+11,cBlk);
+  GText(CX+4,CY+2,'GEOS',cBlk);
+  For S:=1 To GbRes.M[M].NSub Do Begin
+   X:=BrMenuX(M,S);
+   If CB^.MenuOpen=S Then GBar(CX+X-4,CY,CX+X+Length(GbRes.M[M].SubT[S])*8+4,CY+10,cBlk);
+   If CB^.MenuOpen=S Then GText(CX+X,CY+2,GbRes.M[M].SubT[S],cWht) Else GText(CX+X,CY+2,GbRes.M[M].SubT[S],cBlk);
+  End;
+  If CB^.MenuOpen>0 Then Begin
+   S:=CB^.MenuOpen;X:=BrMenuX(M,S);W:=BrMenuW(M,S);
+   GBar(CX+X-4,CY+12,CX+X-4+W,CY+12+GbRes.M[M].NIt[S]*11+2,cWht);
+   GRect(CX+X-4,CY+12,CX+X-4+W,CY+12+GbRes.M[M].NIt[S]*11+2,cBlk);
+   For I:=1 To GbRes.M[M].NIt[S] Do GText(CX+X,CY+14+(I-1)*11,GbRes.M[M].It[S,I].Txt,cBlk);
+  End;
+ End;
+ Cl:=0;
+End;
+
 Procedure BrDrawClient(Wd_: PWindow);
  Var Dt_: PBRun;
-Var X1,Y1,X2,Y2,I,CY,Rows,K,TopLine,W,H,CX: Integer; S: String;
+Var X1,Y1,X2,Y2,CY,W,H,CX: Integer;
 Begin
  Dt_:=Wd_^.Data;CB:=Dt_^.Bas;
  WinClientRect(Wd_,X1,Y1,X2,Y2);
@@ -14509,33 +15367,17 @@ Begin
   ClipFull;
   CY:=Y1+Dt_^.FormH;
  End;
- { console + graphiques }
- Sunken(X1+2,CY+2,X2-2,Y2-2,cWht);
- SetClip(Max2(CX1,X1+3),Max2(CY1,CY+3),Min2(CX2,X2-3),Min2(CY2,Y2-3));
- CX:=X1+3;
- For I:=1 To CB^.NGr Do Begin
-  Case CB^.Gr[I].K Of
-   1: GBar(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CB^.Gr[I].C);
-   2: GLine(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CX+CB^.Gr[I].X2,CY+3+CB^.Gr[I].Y2,CB^.Gr[I].C);
-   3: GRect(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CX+CB^.Gr[I].X2,CY+3+CB^.Gr[I].Y2,CB^.Gr[I].C);
-   4: GBar(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CX+CB^.Gr[I].X2,CY+3+CB^.Gr[I].Y2,CB^.Gr[I].C);
-   5: GEllipse(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CB^.Gr[I].X2,CB^.Gr[I].X2,CB^.Gr[I].C);
-   7: GFillEllipse(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CB^.Gr[I].X2,CB^.Gr[I].X2,CB^.Gr[I].C);
-   6: GText(CX+CB^.Gr[I].X1,CY+3+CB^.Gr[I].Y1,CB^.Gr[I].T,CB^.Gr[I].C);
-  End;
- End;
- Rows:=(Y2-3-(CY+3)) Div 10;
- If Rows<1 Then Rows:=1;
- TopLine:=Max2(1,CB^.NCon-Rows+1);
- For I:=TopLine To CB^.NCon Do Begin
-  S:=CB^.Con[I]^;
-  GText(CX+2,CY+5+(I-TopLine)*10,S,cBlk);
- End;
- If CB^.WaitIn Or CB^.WaitKey Then Begin
-  S:=CB^.InBuf;
-  GText(CX+2+Length(CB^.Cur)*8,CY+5+(CB^.NCon-TopLine)*10,S+'_',cBlu);
- End;
+ CX:=X1+Max2(4,((X2-X1)-320) Div 2);
+ CY:=CY+4;
+ Dt_^.CvX:=CX;Dt_^.CvY:=CY;
+ SetClip(Max2(CX1,CX),Max2(CY1,CY),Min2(CX2,CX+319),Min2(CY2,CY+199));
+ BrPaintScreen(CX,CY);
  ClipFull;
+ GRect(CX-1,CY-1,CX+320,CY+200,cBlk);
+ If Dt_^.Stepping And (CB^.Err='') Then Begin
+  GBar(X1+4,Y2-14,X2-4,Y2-3,cYel);
+  GText(X1+8,Y2-12,Copy(IntStr(CB^.Ln)+': '+TrimStr(CB^.Src[Max2(1,Min2(CB^.NL,CB^.Ln))]^),1,(X2-X1-16) Div 8),cBlk);
+ End;
  If CB^.Err<>'' Then Begin
   GBar(X1+4,Y2-14,X2-4,Y2-3,cRed);
   GText(X1+8,Y2-12,Copy(CB^.Err,1,(X2-X1-16) Div 8),cWht);
@@ -14578,10 +15420,58 @@ Begin
  Invalidate(Wd_);
 End;
 
+{ clics sur le menu, les icones et BUTTON ; retourne True si le clic est consomme }
+Function BrCanvasMouse(Dt_: PBRun; Var E: TEvent): Boolean;
+Var MX,MY,M,S,I,X,W,T,Hh: Integer; Tg: String;
+Begin
+ BrCanvasMouse:=False;
+ CB:=Dt_^.Bas;
+ MX:=E.X-Dt_^.CvX;MY:=E.Y-Dt_^.CvY;
+ If (MX>=0) And (MX<=319) And (MY>=0) And (MY<=199) Then Begin CB^.MX:=MX;CB^.MY:=MY;End;
+ If E.Kind<>EV_DOWN Then Exit;
+ If Not CB^.Running Then Exit;
+ If (MX<0) Or (MX>319) Or (MY<0) Or (MY>199) Then Begin CB^.MenuOpen:=0;Exit;End;
+ If CB^.BtnL>0 Then BPost(CB^.BtnL);
+ M:=CB^.CurMenu;
+ If M>0 Then Begin
+  If CB^.MenuOpen>0 Then Begin
+   S:=CB^.MenuOpen;X:=BrMenuX(M,S);W:=BrMenuW(M,S);
+   If (MX>=X-4) And (MX<=X-4+W) And (MY>=12) And (MY<12+GbRes.M[M].NIt[S]*11+2) Then Begin
+    I:=(MY-13) Div 11+1;
+    If (I>=1) And (I<=GbRes.M[M].NIt[S]) Then Begin
+     Tg:=GbRes.M[M].It[S,I].Tg;
+     If Tg<>'' Then BPost(BFindLine(Tg));
+    End;
+    CB^.MenuOpen:=0;BrCanvasMouse:=True;Exit;
+   End;
+   CB^.MenuOpen:=0;
+  End;
+  If MY<=11 Then Begin
+   For S:=1 To GbRes.M[M].NSub Do Begin
+    X:=BrMenuX(M,S);
+    If (MX>=X-4) And (MX<=X+Length(GbRes.M[M].SubT[S])*8+4) Then CB^.MenuOpen:=S;
+   End;
+   BrCanvasMouse:=True;Exit;
+  End;
+ End;
+ If CB^.CurIcons>0 Then
+  For I:=1 To GbRes.I[CB^.CurIcons].N Do
+   With GbRes.I[CB^.CurIcons].Ic[I] Do Begin
+    T:=BResBmp(Bmp);
+    If T>0 Then Begin W:=GbRes.B[T].W;Hh:=GbRes.B[T].H;End Else Begin W:=16;Hh:=16;End;
+    If (MX>=X) And (MX<=X+W-1) And (MY>=Y) And (MY<=Y+Hh-1) Then Begin
+     If Tg<>'' Then BPost(BFindLine(Tg));
+     BrCanvasMouse:=True;Exit;
+    End;
+   End;
+End;
+
 Procedure BrOnMouse(Wd_: PWindow; Var E: TEvent);
  Var Dt_: PBRun; F: PForm; X1,Y1,X2,Y2,I,P: Integer;
 Begin
  Dt_:=Wd_^.Data;CB:=Dt_^.Bas;F:=Dt_^.Form;
+ If BrCanvasMouse(Dt_,E) Then Begin Invalidate(Wd_);Exit;End;
+ If CB^.MenuOpen>0 Then Invalidate(Wd_);
  If F=Nil Then Exit;
  WinClientRect(Wd_,X1,Y1,X2,Y2);
  If (E.Kind=EV_MOVE) And (Dt_^.Dragging>0) Then Begin
@@ -14615,22 +15505,54 @@ Begin
  Invalidate(Wd_);
 End;
 
+{ lance le sous-programme d'une interruption (menu, icone, BUTTON, PROCESS) }
+Procedure BDispatch;
+Var L,I: Integer;
+Begin
+ L:=CB^.Pnd[1];
+ For I:=1 To CB^.NPnd-1 Do CB^.Pnd[I]:=CB^.Pnd[I+1];
+ Dec(CB^.NPnd);
+ If CB^.NG>=BMAXGS Then Exit;
+ Inc(CB^.NG);
+ If CB^.WaitMain Then Begin CB^.GsL[CB^.NG]:=CB^.MainL;CB^.GsP[CB^.NG]:=CB^.MainP;CB^.WaitMain:=False;End
+ Else Begin CB^.GsL[CB^.NG]:=CB^.Ln;CB^.GsP[CB^.NG]:=CB^.Ps;End;
+ CB^.IntBase:=CB^.NG;
+ BGotoLine(L);
+End;
+
 Function BrIdle(Wd_: PWindow): Boolean;
- Var Dt_: PBRun; N: Integer;
+ Var Dt_: PBRun; N,I: Integer; Moved: Boolean; L: Integer;
 Begin
  Dt_:=Wd_^.Data;CB:=Dt_^.Bas;
  BrIdle:=False;
  If CB^.WaitIn Or CB^.WaitKey Then Begin BrIdle:=True;Exit;End;
+ { processus periodiques }
+ If CB^.Running Then
+  For I:=1 To 8 Do
+   If (CB^.Procs[I].L>0) And (NowCs-CB^.Procs[I].Last>=CB^.Procs[I].Iv) Then Begin
+    CB^.Procs[I].Last:=NowCs;BPost(CB^.Procs[I].L);
+   End;
  If CB^.Running Then Begin
-  N:=0;
+  N:=0;Moved:=False;
+  If Dt_^.Stepping And (Not Dt_^.StepOnce) Then Exit;
   While CB^.Running And (Not CB^.WaitIn) And (Not CB^.WaitKey) And (N<400) Do Begin
+   If (CB^.NPnd>0) And (CB^.IntBase=0) Then Begin BDispatch;Moved:=True;End;
+   If CB^.WaitMain Then Break;
    If CB^.Ps>Length(CB^.Ln_) Then BNextLine
    Else BStmts;
-   If (CB^.Ps>Length(CB^.Ln_)) And CB^.Running And (Not CB^.WaitIn) And (Not CB^.WaitKey) Then BNextLine;
-   Inc(N);
+   If (CB^.Ps>Length(CB^.Ln_)) And CB^.Running And (Not CB^.WaitIn) And (Not CB^.WaitKey) And (Not CB^.WaitMain) Then BNextLine;
+   Inc(N);Moved:=True;
+   If Dt_^.Stepping Then Begin Dt_^.StepOnce:=False;Break;End;
+  End;
+  { ONERR : saut vers le gestionnaire d'erreur }
+  If CB^.ErrJump Then Begin
+   CB^.ErrJump:=False;L:=CB^.OnErrL;CB^.OnErrL:=0;
+   CB^.NG:=0;CB^.NLp:=0;CB^.NF:=0;CB^.IntBase:=0;CB^.WaitMain:=False;CB^.NPnd:=0;
+   CB^.Done:=False;CB^.Running:=True;CB^.Err:='';
+   BGotoLine(L);Moved:=True;
   End;
   If CB^.Err<>'' Then Begin CB^.Running:=False;End;
-  BrIdle:=True;
+  BrIdle:=Moved Or CB^.WaitIn Or CB^.WaitKey;
   If (Not CB^.Running) And Dt_^.InSub Then Dt_^.InSub:=False;
   Exit;
  End;
@@ -14643,21 +15565,178 @@ Begin
  End;
 End;
 
+Procedure BrShowVars;
+Var I,N: Integer; L,V: String;
+Begin
+ L:='';N:=0;
+ For I:=1 To CB^.NV Do Begin
+  If N>=12 Then Break;
+  If CB^.Var_[I].Dims=0 Then Begin
+   If CB^.Var_[I].IsS Then V:='"'+CB^.Var_[I].P^[0].T+'"' Else V:=FmtReal(CB^.Var_[I].P^[0].N);
+  End Else V:='('+IntStr(CB^.Var_[I].D1)+','+IntStr(CB^.Var_[I].D2)+')';
+  If L<>'' Then L:=L+'|';
+  L:=L+CB^.Var_[I].Name+' = '+V;Inc(N);
+ End;
+ If L='' Then L:=T3('(no variables)','(aucune variable)','(keine Variablen)');
+ L:=T3('Line ','Ligne ','Zeile ')+IntStr(CB^.Ln)+'|'+L;
+ Info(T3('Variables','Variables','Variablen'),L);
+End;
+
 Procedure BrOnCommand(Wd_: PWindow; Cmd: Integer);
  Var Dt_: PBRun;
 Begin
  Dt_:=Wd_^.Data;CB:=Dt_^.Bas;
  Case Cmd Of
-  CM_BRSTOP: Begin CB^.Running:=False;CB^.WaitIn:=False;CB^.WaitKey:=False;Dt_^.Alive:=False;BPutS(T3('*** Stopped ***','*** Arr'#136't ***','*** Angehalten ***')+#13);End;
+  CM_BRSTOP: Begin CB^.Running:=False;CB^.WaitIn:=False;CB^.WaitKey:=False;CB^.WaitMain:=False;Dt_^.Alive:=False;BPutS(T3('*** Stopped ***','*** Arr'#136't ***','*** Angehalten ***')+#13);End;
   CM_BRCLS: BCls;
+  CM_BRPAUSE: Begin Dt_^.Stepping:=Not Dt_^.Stepping;Dt_^.StepOnce:=False;End;
+  CM_BRSTEP: Begin Dt_^.Stepping:=True;Dt_^.StepOnce:=True;End;
+  CM_BRVARS: BrShowVars;
   CM_BRRESTART: Begin
-    BCls;BFreeVars(CB);CB^.Err:='';CB^.NF:=0;CB^.NG:=0;CB^.WaitIn:=False;CB^.WaitKey:=False;
+    BCls;BFreeVars(CB);CB^.Err:='';CB^.NF:=0;CB^.NG:=0;CB^.WaitIn:=False;CB^.WaitKey:=False;CB^.CurMenu:=0;CB^.CurIcons:=0;CB^.MenuOpen:=0;CB^.BtnL:=0;CB^.OnErrL:=0;
+    FillChar(CB^.Procs,SizeOf(CB^.Procs),0);CB^.NFn:=0;CB^.CurR:=0;CB^.CurC:=0;
+    CB^.WX1:=0;CB^.WY1:=0;CB^.WX2:=39;CB^.WY2:=24;
     Dt_^.Alive:=Dt_^.Form<>Nil;Dt_^.NQ:=0;
     BrBegin(Dt_);
    End;
  Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
  Invalidate(Wd_);
+End;
+
+
+{ ====================================================================== }
+{   RESSOURCES (.GBR) : menus, listes d'icones, boites de dialogue,       }
+{   bitmaps crees avec les utilitaires de geoBASIC                       }
+{ ====================================================================== }
+
+Procedure ResClear;
+Begin
+ FillChar(GbRes,SizeOf(GbRes),0);
+End;
+
+Procedure ResSave(Const Path: String);
+Var T: Text; I,J,K,Y,X: Integer; S: String;
+Begin
+ Assign(T,Path);
+ {$I-}Rewrite(T);{$I+}
+ If IOResult<>0 Then Exit;
+ WriteLn(T,'GBRES1');
+ For I:=1 To GbRes.NM Do Begin
+  WriteLn(T,'MENU|',GbRes.M[I].Name,'|',GbRes.M[I].NSub);
+  For J:=1 To GbRes.M[I].NSub Do Begin
+   WriteLn(T,'SUB|',GbRes.M[I].SubT[J],'|',GbRes.M[I].NIt[J]);
+   For K:=1 To GbRes.M[I].NIt[J] Do WriteLn(T,'ITEM|',GbRes.M[I].It[J,K].Txt,'|',GbRes.M[I].It[J,K].Tg);
+  End;
+ End;
+ For I:=1 To GbRes.NI Do Begin
+  WriteLn(T,'ICONS|',GbRes.I[I].Name,'|',GbRes.I[I].N);
+  For J:=1 To GbRes.I[I].N Do
+   WriteLn(T,'ICON|',GbRes.I[I].Ic[J].X,'|',GbRes.I[I].Ic[J].Y,'|',GbRes.I[I].Ic[J].Bmp,'|',GbRes.I[I].Ic[J].Tg);
+ End;
+ For I:=1 To GbRes.ND Do Begin
+  WriteLn(T,'DLG|',GbRes.D[I].Name,'|',GbRes.D[I].N);
+  For J:=1 To GbRes.D[I].N Do
+   WriteLn(T,'DITEM|',GbRes.D[I].It[J].K,'|',GbRes.D[I].It[J].X,'|',GbRes.D[I].It[J].Y,'|',GbRes.D[I].It[J].Txt);
+ End;
+ For I:=1 To GbRes.NB Do Begin
+  WriteLn(T,'BMP|',GbRes.B[I].Name,'|',GbRes.B[I].W,'|',GbRes.B[I].H);
+  For Y:=0 To GbRes.B[I].H-1 Do Begin
+   S:='';For X:=0 To GbRes.B[I].W-1 Do S:=S+Chr(48+GbRes.B[I].D[Y,X]);
+   WriteLn(T,'ROW|',S);
+  End;
+ End;
+ WriteLn(T,'END');
+ Close(T);
+End;
+
+Function ResPart(Var S: String): String;
+Var P: Integer;
+Begin
+ P:=Pos('|',S);
+ If P=0 Then Begin ResPart:=S;S:='';End
+ Else Begin ResPart:=Copy(S,1,P-1);Delete(S,1,P);End;
+End;
+
+Function ResLoad(Const Path: String): Boolean;
+Var T: Text; S,K: String; M,SB,Ic,Dl,Bm,Row,I: Integer;
+Begin
+ ResLoad:=False;
+ If Not FileExists(Path) Then Exit;
+ Assign(T,Path);
+ {$I-}Reset(T);{$I+}
+ If IOResult<>0 Then Exit;
+ ReadLn(T,S);
+ If S<>'GBRES1' Then Begin Close(T);Exit;End;
+ ResClear;M:=0;SB:=0;Ic:=0;Dl:=0;Bm:=0;Row:=0;
+ While Not Eof(T) Do Begin
+  ReadLn(T,S);K:=ResPart(S);
+  If K='MENU' Then Begin
+   If GbRes.NM<8 Then Begin Inc(GbRes.NM);M:=GbRes.NM;GbRes.M[M].Name:=Copy(ResPart(S),1,6);GbRes.M[M].NSub:=Min2(8,StrVal(ResPart(S),0));SB:=0;End;
+  End Else If K='SUB' Then Begin
+   If (M>0) And (SB<8) Then Begin Inc(SB);GbRes.M[M].SubT[SB]:=Copy(ResPart(S),1,12);GbRes.M[M].NIt[SB]:=Min2(12,StrVal(ResPart(S),0));I:=0;End;
+  End Else If K='ITEM' Then Begin
+   If (M>0) And (SB>0) And (I<12) Then Begin Inc(I);GbRes.M[M].It[SB,I].Txt:=Copy(ResPart(S),1,24);GbRes.M[M].It[SB,I].Tg:=Copy(ResPart(S),1,14);End;
+  End Else If K='ICONS' Then Begin
+   If GbRes.NI<8 Then Begin Inc(GbRes.NI);Ic:=GbRes.NI;GbRes.I[Ic].Name:=Copy(ResPart(S),1,6);GbRes.I[Ic].N:=0;End;
+  End Else If K='ICON' Then Begin
+   If (Ic>0) And (GbRes.I[Ic].N<31) Then Begin
+    Inc(GbRes.I[Ic].N);
+    GbRes.I[Ic].Ic[GbRes.I[Ic].N].X:=StrVal(ResPart(S),0);GbRes.I[Ic].Ic[GbRes.I[Ic].N].Y:=StrVal(ResPart(S),0);
+    GbRes.I[Ic].Ic[GbRes.I[Ic].N].Bmp:=Copy(ResPart(S),1,6);GbRes.I[Ic].Ic[GbRes.I[Ic].N].Tg:=Copy(ResPart(S),1,14);
+   End;
+  End Else If K='DLG' Then Begin
+   If GbRes.ND<8 Then Begin Inc(GbRes.ND);Dl:=GbRes.ND;GbRes.D[Dl].Name:=Copy(ResPart(S),1,6);GbRes.D[Dl].N:=0;End;
+  End Else If K='DITEM' Then Begin
+   If (Dl>0) And (GbRes.D[Dl].N<12) Then Begin
+    Inc(GbRes.D[Dl].N);
+    GbRes.D[Dl].It[GbRes.D[Dl].N].K:=StrVal(ResPart(S),1);GbRes.D[Dl].It[GbRes.D[Dl].N].X:=StrVal(ResPart(S),0);
+    GbRes.D[Dl].It[GbRes.D[Dl].N].Y:=StrVal(ResPart(S),0);GbRes.D[Dl].It[GbRes.D[Dl].N].Txt:=Copy(S,1,40);
+   End;
+  End Else If K='BMP' Then Begin
+   If GbRes.NB<12 Then Begin
+    Inc(GbRes.NB);Bm:=GbRes.NB;GbRes.B[Bm].Name:=Copy(ResPart(S),1,6);
+    GbRes.B[Bm].W:=Min2(24,StrVal(ResPart(S),8));GbRes.B[Bm].H:=Min2(24,StrVal(ResPart(S),8));Row:=0;
+   End;
+  End Else If K='ROW' Then Begin
+   If (Bm>0) And (Row<GbRes.B[Bm].H) Then Begin
+    For I:=1 To Min2(24,Length(S)) Do GbRes.B[Bm].D[Row,I-1]:=Ord(S[I])-48;
+    Inc(Row);
+   End;
+  End;
+ End;
+ Close(T);
+ ResLoad:=True;
+End;
+
+{ numero de ligne BASIC en tete d'une ligne de source (-1 si absent) }
+Function BLineNo(Const S: String): LongInt;
+Var P: Integer; N: LongInt;
+Begin
+ P:=1;While (P<=Length(S)) And (S[P]=' ') Do Inc(P);
+ If (P>Length(S)) Or Not (S[P] In ['0'..'9']) Then Begin BLineNo:=-1;Exit;End;
+ N:=0;
+ While (P<=Length(S)) And (S[P] In ['0'..'9']) And (N<100000) Do Begin N:=N*10+Ord(S[P])-48;Inc(P);End;
+ BLineNo:=N;
+End;
+
+{ charge un programme .BAS (texte) dans une structure TBas }
+Function BasLoad(Const Path: String): PBas;
+Var T: Text; B: PBas; S: String; P: Integer;
+Begin
+ BasLoad:=Nil;
+ Assign(T,Path);
+ {$I-}Reset(T);{$I+}
+ If IOResult<>0 Then Exit;
+ B:=BNewBas;
+ While (Not Eof(T)) And (B^.NL<BMAXL) Do Begin
+  ReadLn(T,S);
+  Inc(B^.NL);B^.Src[B^.NL]:=NewStr(S);
+  B^.LNo[B^.NL]:=BLineNo(S);
+ End;
+ Close(T);
+ If B^.NL=0 Then Begin Inc(B^.NL);B^.Src[1]:=NewStr('REM');B^.LNo[1]:=-1;End;
+ BasLoad:=B;
 End;
 
 { ====================================================================== }
@@ -14960,12 +16039,15 @@ End;
 { ====================================================================== }
 
 Procedure NextWinPos(Var X,Y: Integer); Forward;
+Procedure GbResEdit(Kind: Integer); Forward;
 
 Const
  CM_GBNEW=1520; CM_GBOPEN=1521; CM_GBSAVE=1522; CM_GBSAVEAS=1523; CM_GBOPENP=1524;
  CM_GBADD=1525; CM_GBPROP=1526; CM_GBCODE=1527; CM_GBRUN=1528; CM_GBDEL=1529;
  CM_GBUP=1530; CM_GBDOWN=1531; CM_GBFORM=1532; CM_GBDUP=1533; CM_GBABOUT=1534;
  CM_GBADDK=1540;      { +1..12 : ajout d'un objet }
+ CM_GBUTIL=1550;      { +1..5 : utilitaires Menu, Icon, Dialog, Bitmap, Sprite }
+ CM_GBRLOAD=1556; CM_GBRSAVE=1557; CM_GBLOADBAS=1558; CM_GBSAVEBAS=1559;
 
 Type
  PGbProj = ^TGbProj;
@@ -14976,6 +16058,7 @@ Type
   Hover   : Integer;
   Msg     : String;
   PropOpen: Integer;
+  ResPath : String;
  End;
 
  TGbW = Record Dummy: Integer; End;
@@ -14983,6 +16066,7 @@ Type
 
 Var
  GbProj : PGbProj;
+ GbBasPath : String;
 
 Const
  GbTip : Array[1..7] Of String[44] = (
@@ -15146,8 +16230,7 @@ Begin
    If B^.NL<BMAXL Then Begin
     Inc(B^.NL);S:=EdLine(Ed^.E,I);
     B^.Src[B^.NL]:=NewStr(S);
-    P:=1;While (P<=Length(S)) And (S[P]=' ') Do Inc(P);
-    If (P<=Length(S)) And (S[P] In ['0'..'9']) Then B^.LNo[B^.NL]:=StrVal(Copy(S,P,8),0) Else B^.LNo[B^.NL]:=-1;
+    B^.LNo[B^.NL]:=BLineNo(S);
    End;
  End;
  If B^.NL=0 Then Begin
@@ -15161,17 +16244,34 @@ Begin
  AddWindow(W);
 End;
 
+{ execute directement un programme .BAS (avec ses ressources .GBR) }
+Function BasRunFile(AX,AY: Integer; Const Path: String): PWindow;
+Var B: PBas; R: String; P: Integer;
+Begin
+ BasRunFile:=Nil;
+ B:=BasLoad(Path);
+ If B=Nil Then Begin Info('GeoBASIC',T3('File not found','Fichier introuvable','Datei nicht gefunden'));Exit;End;
+ R:=Path;P:=Length(R);
+ While (P>0) And (R[P]<>'.') And (R[P]<>'/') And (R[P]<>'\') Do Dec(P);
+ If (P>0) And (R[P]='.') Then R:=Copy(R,1,P-1);
+ If Not ResLoad(R+'.GBR') Then ResLoad(R+'.gbr');
+ BasRunFile:=BrNew(AX,AY,B,Nil,'GeoBASIC - '+ShortName(Path));
+End;
+
 Procedure GbOpenCode;
 Var Ed: PEditWin; W: PWindow;
 Begin
  If GbAlive(GbProj^.CodeW) Then Begin Invalidate(GbProj^.CodeW);Exit;End;
- W:=EdwNew(2,30,120,'');
+ W:=EdwNew(2,30,120,GbBasPath);
  W^.WinH:=340;W^.WinW:=540;W^.WinY:=118;
  W^.Title:='GeoBasic - Code';
  Ed:=W^.Data;
- EdInsText(Ed^.E,'REM GeoBASIC '+T3('demo|Handlers are named Object_Click, Object_Change...|','d'#130'mo|Les gestionnaires s''appellent Objet_Click, Objet_Change...|','Demo|'));
- EdInsText(Ed^.E,'PRINT "Hello from GeoBASIC"|END|');
- Ed^.E.CX:=0;Ed^.E.CY:=1;Ed^.E.Modified:=False;
+ If GbBasPath='' Then Begin
+  EdInsText(Ed^.E,'REM GeoBASIC '+T3('demo|REM Handlers are named Object_Click, Object_Change...|','d'#130'mo|REM Les gestionnaires s''appellent Objet_Click, Objet_Change...|','Demo|'));
+  EdInsText(Ed^.E,'PRINT "Hello from GeoBASIC"|END|');
+  Ed^.E.CX:=0;Ed^.E.CY:=1;Ed^.E.Modified:=False;
+ End;
+ GbBasPath:='';
  GbProj^.CodeW:=W;
  AddWindow(W);
 End;
@@ -15220,6 +16320,10 @@ Begin
  WinAddItem(Wd_,'Save Form~Enregistrer le formulaire~Formular speichern',CM_GBSAVE,'');
  WinAddItem(Wd_,'Save Form As...~Enregistrer sous...~Speichern unter...',CM_GBSAVEAS,'');
  WinAddSep(Wd_);
+ WinAddItem(Wd_,'Open Resources...~Ouvrir les ressources...~Ressourcen '#148'ffnen...',CM_GBRLOAD,'');
+ WinAddItem(Wd_,'Save Resources...~Enregistrer les ressources...~Ressourcen speichern...',CM_GBRSAVE,'');
+ WinAddItem(Wd_,'Save Program...~Enregistrer le programme...~Programm speichern...',CM_GBSAVEBAS,'');
+ WinAddSep(Wd_);
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
  WinAddItem(Wd_,'Delete Object~Supprimer l''objet~Objekt l'#148'schen',CM_GBDEL,'Del');
@@ -15233,6 +16337,12 @@ Begin
  WinAddItem(Wd_,'Program Code~Code du programme~Programmcode',CM_GBCODE,'');
  WinAddSep(Wd_);
  WinAddItem(Wd_,'Run~Ex'#130'cuter~Ausf'#129'hren',CM_GBRUN,'F9');
+ WinAddMenu(Wd_,'Utilities~Utilitaires~Dienstprogramme');
+ WinAddItem(Wd_,'Menu~Menu~Men'#129,CM_GBUTIL+1,'');
+ WinAddItem(Wd_,'Icon List~Liste d''ic'#147'nes~Symbolliste',CM_GBUTIL+2,'');
+ WinAddItem(Wd_,'Dialog Box~Bo'#140'te de dialogue~Dialogbox',CM_GBUTIL+3,'');
+ WinAddItem(Wd_,'Bitmap~Bitmap~Bitmap',CM_GBUTIL+4,'');
+ WinAddItem(Wd_,'Sprite~Sprite~Sprite',CM_GBUTIL+5,'');
  WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
  WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
  WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
@@ -15300,6 +16410,22 @@ Begin
   CM_GBPROP: GbIdeAction(Wd_,2);
   CM_GBCODE: GbIdeAction(Wd_,3);
   CM_GBRUN: GbRun;
+  CM_GBUTIL+1..CM_GBUTIL+5: GbResEdit(Cmd-CM_GBUTIL);
+  CM_GBRLOAD: Begin
+    P:='';
+    If FileDlg(T3('Open Resources','Ouvrir les ressources','Ressourcen '#148'ffnen'),'*.GBR',P,False) Then Begin
+     If ResLoad(P) Then Begin GbProj^.ResPath:=P;GbProj^.Msg:=T3('Resources loaded','Ressources charg'#130'es','Ressourcen geladen');End
+     Else Info('GeoBASIC',T3('Not a resource file.','Ce n''est pas un fichier de ressources.','Keine Ressourcendatei.'));
+    End;
+   End;
+  CM_GBRSAVE: Begin
+    P:=GbProj^.ResPath;
+    If P='' Then P:=JoinPath(CurDirStr,'PROGRAM.GBR');
+    If FileDlg(T3('Save Resources','Enregistrer les ressources','Ressourcen speichern'),'*.GBR',P,True) Then Begin
+     ResSave(P);GbProj^.ResPath:=P;GbProj^.Msg:=T3('Saved ','Enregistr'#130' : ','Gespeichert: ')+ShortName(P);
+    End;
+   End;
+  CM_GBSAVEBAS: If GbAlive(GbProj^.CodeW) Then WinCommand(GbProj^.CodeW,CM_SAVE) Else GbOpenCode;
   CM_GBDEL: GbDeleteSel;
   CM_GBDUP: GbDupSel;
   CM_GBUP: GbMove(-1);
@@ -15507,6 +16633,274 @@ Procedure GbFormKey(Wd_: PWindow; K: Word);
 Begin
  If K=K_DEL Then GbDeleteSel;
  If K=323 Then GbRun;
+End;
+
+{ ====================================================================== }
+{   GEOBASIC : utilitaires (Menu, Icon List, Dialog Box, Bitmap)         }
+{   Les ressources creees ici sont utilisees par les commandes MENU,     }
+{   ICON, DIALOG et BITMAP des programmes (voir manuel, chapitre 7).     }
+{ ====================================================================== }
+
+{ liste : retourne l'indice choisi, 0 si annule }
+Function GbPick(Const Title,Prompt,Items: String): Integer;
+Begin
+ GbPick:=ChoiceBox(Title,Prompt,Items,1);
+End;
+
+Function GbAsk(Const Title,Prompt: String; Var S: String; Max: Integer): Boolean;
+Begin
+ GbAsk:=InputBox(Title,Prompt,S,Max);
+End;
+
+{ choisit (ou cree) une ressource de la categorie K (1 menu, 2 icones, 3 dialogue, 4 bitmap) ;
+  retourne l'indice dans GbRes, 0 si annule }
+Function GbSelectRes(K: Integer): Integer;
+Var L,Nm: String; N,I,R: Integer; Names: String; Max: Integer;
+Begin
+ GbSelectRes:=0;
+ Case K Of
+  1: Begin N:=GbRes.NM;Max:=8;End;
+  2: Begin N:=GbRes.NI;Max:=8;End;
+  3: Begin N:=GbRes.ND;Max:=8;End;
+ Else Begin N:=GbRes.NB;Max:=12;End;
+ End;
+ L:='';
+ For I:=1 To N Do Begin
+  Case K Of
+   1: Nm:=GbRes.M[I].Name;
+   2: Nm:=GbRes.I[I].Name;
+   3: Nm:=GbRes.D[I].Name;
+  Else Nm:=GbRes.B[I].Name;
+  End;
+  L:=L+Nm+'|';
+ End;
+ L:=L+T3('<New>','<Nouveau>','<Neu>');
+ R:=GbPick('GeoBASIC',T3('Create or edit an item - Name:','Cr'#130'er ou modifier un '#130'l'#130'ment :','Element erstellen oder bearbeiten:'),L);
+ If R=0 Then Exit;
+ If R<=N Then Begin GbSelectRes:=R;Exit;End;
+ If N>=Max Then Begin Info('GeoBASIC',T3('Too many items.','Trop d'''#130'l'#130'ments.','Zu viele Elemente.'));Exit;End;
+ Nm:='';
+ If Not GbAsk('GeoBASIC',T3('Name (5 letters maximum):','Nom (5 lettres maximum) :','Name (h'#148'chstens 5 Buchstaben):'),Nm,5) Then Exit;
+ If Nm='' Then Exit;
+ Nm:=Upper(Nm);
+ Case K Of
+  1: Begin
+      Inc(GbRes.NM);FillChar(GbRes.M[GbRes.NM],SizeOf(GbRes.M[1]),0);
+      GbRes.M[GbRes.NM].Name:=Nm;GbRes.M[GbRes.NM].NSub:=4;
+      For I:=1 To 4 Do Begin
+       GbRes.M[GbRes.NM].SubT[I]:='menu'+IntStr(I);GbRes.M[GbRes.NM].NIt[I]:=4;
+       For R:=1 To 4 Do Begin GbRes.M[GbRes.NM].It[I,R].Txt:='action'+IntStr(R);GbRes.M[GbRes.NM].It[I,R].Tg:='';End;
+      End;
+      GbSelectRes:=GbRes.NM;
+     End;
+  2: Begin Inc(GbRes.NI);FillChar(GbRes.I[GbRes.NI],SizeOf(GbRes.I[1]),0);GbRes.I[GbRes.NI].Name:=Nm;GbRes.I[GbRes.NI].N:=1;
+      GbRes.I[GbRes.NI].Ic[1].X:=8;GbRes.I[GbRes.NI].Ic[1].Y:=40;GbSelectRes:=GbRes.NI;End;
+  3: Begin Inc(GbRes.ND);FillChar(GbRes.D[GbRes.ND],SizeOf(GbRes.D[1]),0);GbRes.D[GbRes.ND].Name:=Nm;
+      GbRes.D[GbRes.ND].N:=1;GbRes.D[GbRes.ND].It[1].K:=4;GbSelectRes:=GbRes.ND;End;
+ Else Begin Inc(GbRes.NB);FillChar(GbRes.B[GbRes.NB],SizeOf(GbRes.B[1]),0);GbRes.B[GbRes.NB].Name:=Nm;
+      GbRes.B[GbRes.NB].W:=16;GbRes.B[GbRes.NB].H:=16;GbSelectRes:=GbRes.NB;End;
+ End;
+End;
+
+{ ---------------------- editeur de menus ---------------------- }
+
+Procedure GbEdSub(M,S: Integer);
+Var L,V: String; I,R,N: Integer;
+Begin
+ Repeat
+  L:=T3('Title: ','Titre : ','Titel: ')+GbRes.M[M].SubT[S]+'|';
+  For I:=1 To GbRes.M[M].NIt[S] Do L:=L+IntStr(I)+'. '+GbRes.M[M].It[S,I].Txt+' -> '+GbRes.M[M].It[S,I].Tg+'|';
+  L:=L+T3('+ Add item','+ Ajouter un '#130'l'#130'ment','+ Eintrag hinzuf'#129'gen')+'|'+T3('- Remove last item','- Supprimer le dernier','- Letzten entfernen')+'|'+T3('Back','Retour','Zur'#129'ck');
+  R:=GbPick(T3('Menu editor','Editeur de menus','Men'#129'-Editor'),T3('Submenu ','Sous-menu ','Untermen'#129' ')+IntStr(S),L);
+  N:=GbRes.M[M].NIt[S];
+  If R=1 Then Begin V:=GbRes.M[M].SubT[S];If GbAsk('Menu',T3('Submenu text:','Texte du sous-menu :','Text:'),V,12) Then GbRes.M[M].SubT[S]:=V;End
+  Else If (R>=2) And (R<=N+1) Then Begin
+   I:=R-1;
+   V:=GbRes.M[M].It[S,I].Txt;If GbAsk('Menu',T3('Item text:','Texte de l'''#130'l'#130'ment :','Text:'),V,24) Then GbRes.M[M].It[S,I].Txt:=V;
+   V:=GbRes.M[M].It[S,I].Tg;If GbAsk('Menu',T3('Gosub where (line or @label):','Gosub o'#151' (ligne ou @'#130'tiquette) :','Gosub wohin:'),V,14) Then GbRes.M[M].It[S,I].Tg:=V;
+  End Else If R=N+2 Then Begin
+   If N<12 Then Begin Inc(GbRes.M[M].NIt[S]);GbRes.M[M].It[S,N+1].Txt:='action'+IntStr(N+1);GbRes.M[M].It[S,N+1].Tg:='';End;
+  End Else If R=N+3 Then Begin If N>1 Then Dec(GbRes.M[M].NIt[S]);End;
+ Until (R=0) Or (R=N+4) Or (R=GbRes.M[M].NIt[S]+4);
+End;
+
+Procedure GbEdMenu(M: Integer);
+Var L: String; I,R,N: Integer;
+Begin
+ Repeat
+  N:=GbRes.M[M].NSub;
+  L:='';
+  For I:=1 To N Do L:=L+IntStr(I)+'. '+GbRes.M[M].SubT[I]+' ('+IntStr(GbRes.M[M].NIt[I])+')|';
+  L:=L+T3('+ Add submenu','+ Ajouter un sous-menu','+ Untermen'#129' hinzuf'#129'gen')+'|'+T3('- Remove last submenu','- Supprimer le dernier','- Letzten entfernen')+'|'+T3('Done','Termin'#130,'Fertig');
+  R:=GbPick(T3('Menu editor - ','Editeur de menus - ','Men'#129'-Editor - ')+GbRes.M[M].Name,T3('Number of submenus: ','Nombre de sous-menus : ','Anzahl Untermen'#129's: ')+IntStr(N),L);
+  If (R>=1) And (R<=N) Then GbEdSub(M,R)
+  Else If R=N+1 Then Begin
+   If N<6 Then Begin Inc(GbRes.M[M].NSub);GbRes.M[M].SubT[N+1]:='menu'+IntStr(N+1);GbRes.M[M].NIt[N+1]:=4;
+    For I:=1 To 4 Do Begin GbRes.M[M].It[N+1,I].Txt:='action'+IntStr(I);GbRes.M[M].It[N+1,I].Tg:='';End;End;
+  End Else If R=N+2 Then Begin If N>1 Then Dec(GbRes.M[M].NSub);End;
+ Until (R=0) Or (R=N+3);
+End;
+
+{ ---------------------- editeur de listes d'icones ---------------------- }
+
+Procedure GbEdIcons(K: Integer);
+Var L,V: String; I,R,N,X: Integer;
+Begin
+ Repeat
+  N:=GbRes.I[K].N;
+  L:='';
+  For I:=1 To N Do L:=L+IntStr(I)+'. '+GbRes.I[K].Ic[I].Bmp+' ('+IntStr(GbRes.I[K].Ic[I].X)+','+IntStr(GbRes.I[K].Ic[I].Y)+') -> '+GbRes.I[K].Ic[I].Tg+'|';
+  L:=L+T3('+ Add icon','+ Ajouter une ic'#147'ne','+ Symbol hinzuf'#129'gen')+'|'+T3('- Remove last icon','- Supprimer la derni'#138're','- Letztes entfernen')+'|'+T3('Done','Termin'#130,'Fertig');
+  R:=GbPick(T3('Icon list - ','Liste d''ic'#147'nes - ','Symbolliste - ')+GbRes.I[K].Name,T3('Number of icons: ','Nombre d''ic'#147'nes : ','Anzahl Symbole: ')+IntStr(N),L);
+  If (R>=1) And (R<=N) Then Begin
+   V:=GbRes.I[K].Ic[R].Bmp;If GbAsk('Icon',T3('Bitmap name:','Nom du bitmap :','Bitmap-Name:'),V,6) Then GbRes.I[K].Ic[R].Bmp:=Upper(V);
+   V:=IntStr(GbRes.I[K].Ic[R].X);If GbAsk('Icon',T3('X position (0-312, multiple of 8):','Position X (0-312, multiple de 8) :','X-Position (0-312):'),V,3) Then Begin
+    X:=Clamp(StrVal(V,0),0,312);GbRes.I[K].Ic[R].X:=X-(X Mod 8);End;
+   V:=IntStr(GbRes.I[K].Ic[R].Y);If GbAsk('Icon',T3('Y position (0-199):','Position Y (0-199) :','Y-Position (0-199):'),V,3) Then GbRes.I[K].Ic[R].Y:=Clamp(StrVal(V,0),0,199);
+   V:=GbRes.I[K].Ic[R].Tg;If GbAsk('Icon',T3('Place to go (line or @label):','Aller '#133' (ligne ou @'#130'tiquette) :','Ziel (Zeile oder @Marke):'),V,14) Then GbRes.I[K].Ic[R].Tg:=V;
+  End Else If R=N+1 Then Begin
+   If N<31 Then Begin Inc(GbRes.I[K].N);GbRes.I[K].Ic[N+1].X:=8+(N Mod 10)*32;GbRes.I[K].Ic[N+1].Y:=40;GbRes.I[K].Ic[N+1].Bmp:='';GbRes.I[K].Ic[N+1].Tg:='';End;
+  End Else If R=N+2 Then Begin If N>1 Then Dec(GbRes.I[K].N);End;
+ Until (R=0) Or (R=N+3);
+End;
+
+{ ---------------------- editeur de boites de dialogue ---------------------- }
+
+Function GbDlgKind(K: Integer): String;
+Begin
+ Case K Of
+  1: GbDlgKind:=T3('Text','Texte','Text');
+  2: GbDlgKind:=T3('Expression','Expression','Ausdruck');
+  3: GbDlgKind:=T3('Icon','Ic'#147'ne','Symbol');
+  4: GbDlgKind:='OK';
+  5: GbDlgKind:=T3('Cancel','Annuler','Abbruch');
+  6: GbDlgKind:='Disk';
+ Else GbDlgKind:='?';
+ End;
+End;
+
+Procedure GbEdDialog(K: Integer);
+Var L,V: String; I,R,N,T: Integer;
+Begin
+ Repeat
+  N:=GbRes.D[K].N;
+  L:='';
+  For I:=1 To N Do Begin
+   L:=L+IntStr(I)+'. '+GbDlgKind(GbRes.D[K].It[I].K);
+   If GbRes.D[K].It[I].K<=3 Then L:=L+': '+GbRes.D[K].It[I].Txt;
+   L:=L+'|';
+  End;
+  L:=L+T3('+ Add object','+ Ajouter un objet','+ Objekt hinzuf'#129'gen')+'|'+T3('- Remove last object','- Supprimer le dernier','- Letztes entfernen')+'|'+T3('Done','Termin'#130,'Fertig');
+  R:=GbPick(T3('Dialog box - ','Bo'#140'te de dialogue - ','Dialogbox - ')+GbRes.D[K].Name,T3('Objects: ','Objets : ','Objekte: ')+IntStr(N),L);
+  If (R>=1) And (R<=N) Then Begin
+   If GbRes.D[K].It[R].K<=3 Then Begin
+    V:=GbRes.D[K].It[R].Txt;
+    If GbAsk('Dialog',T3('Text, expression or bitmap name:','Texte, expression ou nom de bitmap :','Text, Ausdruck oder Bitmap:'),V,40) Then GbRes.D[K].It[R].Txt:=V;
+   End;
+  End Else If R=N+1 Then Begin
+   If N<12 Then Begin
+    T:=GbPick('Dialog',T3('Object type','Type d''objet','Objekttyp'),T3('Text|Expression|Icon|OK|Cancel|Disk','Texte|Expression|Ic'#147'ne|OK|Annuler|Disk','Text|Ausdruck|Symbol|OK|Abbruch|Disk'));
+    If T>0 Then Begin
+     Inc(GbRes.D[K].N);GbRes.D[K].It[N+1].K:=T;GbRes.D[K].It[N+1].X:=8;GbRes.D[K].It[N+1].Y:=8+N*12;GbRes.D[K].It[N+1].Txt:='';
+     If T<=3 Then Begin
+      V:='';If GbAsk('Dialog',T3('Text, expression or bitmap name:','Texte, expression ou nom de bitmap :','Text, Ausdruck oder Bitmap:'),V,40) Then GbRes.D[K].It[N+1].Txt:=V;
+     End;
+    End;
+   End;
+  End Else If R=N+2 Then Begin If N>1 Then Dec(GbRes.D[K].N);End;
+ Until (R=0) Or (R=N+3);
+End;
+
+{ ---------------------- editeur de bitmaps ---------------------- }
+
+Procedure GbEdBitmap(K: Integer);
+Const CS=9;
+Var W,H,X1,Y1,GX,GY,I,X,Y,PV,BY,BX: Integer; E: TEvent; Done,Ok,Dn: Boolean; Sv: TSave; Tmp: TRBmp; V: String;
+ Procedure Draw;
+ Var PX,PY: Integer;
+ Begin
+  HideMouse;ClipFull;
+  GBar(GX-1,GY-1,GX+24*CS,GY+24*CS,cWht);
+  For PY:=0 To 23 Do For PX:=0 To 23 Do Begin
+   If (PX<GbRes.B[K].W) And (PY<GbRes.B[K].H) Then Begin
+    If GbRes.B[K].D[PY,PX]<>0 Then GBar(GX+PX*CS+1,GY+PY*CS+1,GX+PX*CS+CS-1,GY+PY*CS+CS-1,cBlk)
+    Else GBar(GX+PX*CS+1,GY+PY*CS+1,GX+PX*CS+CS-1,GY+PY*CS+CS-1,cWht);
+   End Else GBar(GX+PX*CS,GY+PY*CS,GX+PX*CS+CS-1,GY+PY*CS+CS-1,cLGr);
+  End;
+  For PX:=0 To GbRes.B[K].W Do GLine(GX+PX*CS,GY,GX+PX*CS,GY+GbRes.B[K].H*CS,cDGr);
+  For PY:=0 To GbRes.B[K].H Do GLine(GX,GY+PY*CS,GX+GbRes.B[K].W*CS,GY+PY*CS,cDGr);
+  { apercu en taille reelle }
+  BX:=GX+24*CS+16;
+  GBar(BX,GY,BX+39,GY+39,cWht);GRect(BX-1,GY-1,BX+40,GY+40,cBlk);
+  For PY:=0 To GbRes.B[K].H-1 Do For PX:=0 To GbRes.B[K].W-1 Do
+   If (GbRes.B[K].D[PY,PX]<>0) And (PX<40) And (PY<40) Then GBar(BX+PX,GY+PY,BX+PX,GY+PY,cBlk);
+  GText(BX,GY+46,IntStr(GbRes.B[K].W)+'x'+IntStr(GbRes.B[K].H),cBlk);
+  ShowMouse;
+ End;
+Begin
+ Tmp:=GbRes.B[K];
+ W:=540;H:=24*CS+TITLE_H+BORDER*2+70;
+ DlgBegin(Sv,W,H,T3('Bitmap editor - ','Editeur de bitmaps - ','Bitmap-Editor - ')+GbRes.B[K].Name,X1,Y1);
+ GX:=X1+BORDER+14;GY:=Y1+BORDER+TITLE_H+12;
+ BY:=Y1+H-BORDER-32;
+ HideMouse;ClipFull;
+ Button(X1+14,BY,X1+104,BY+22,'OK',True,False,True);
+ Button(X1+114,BY,X1+204,BY+22,T3('Cancel','Annuler','Abbruch'),False,False,True);
+ Button(X1+214,BY,X1+304,BY+22,T3('Clear','Effacer','L'#148'schen'),False,False,True);
+ Button(X1+314,BY,X1+404,BY+22,T3('Invert','Inverser','Umkehren'),False,False,True);
+ Button(X1+414,BY,X1+504,BY+22,T3('Size...','Taille...','Gr'#148#225'e...'),False,False,True);
+ ShowMouse;
+ Draw;
+ Done:=False;Ok:=False;Dn:=False;PV:=1;
+ Repeat
+  PollEvent(E);
+  If E.Kind=EV_KEY Then Begin
+   If E.Key=K_ENTER Then Begin Ok:=True;Done:=True;End;
+   If E.Key=K_ESC Then Done:=True;
+  End Else If (E.Kind=EV_DOWN) Or ((E.Kind=EV_MOVE) And Dn) Then Begin
+   X:=(E.X-GX) Div CS;Y:=(E.Y-GY) Div CS;
+   If (E.X>=GX) And (E.Y>=GY) And (X>=0) And (X<GbRes.B[K].W) And (Y>=0) And (Y<GbRes.B[K].H) Then Begin
+    If E.Kind=EV_DOWN Then Begin Dn:=True;PV:=1-GbRes.B[K].D[Y,X];End;
+    GbRes.B[K].D[Y,X]:=PV;Draw;
+   End Else If E.Kind=EV_DOWN Then Begin
+    If InBox(E.X,E.Y,X1+14,BY,X1+104,BY+22) Then Begin Ok:=True;Done:=True;End
+    Else If InBox(E.X,E.Y,X1+114,BY,X1+204,BY+22) Then Done:=True
+    Else If InBox(E.X,E.Y,X1+214,BY,X1+304,BY+22) Then Begin FillChar(GbRes.B[K].D,SizeOf(GbRes.B[K].D),0);Draw;End
+    Else If InBox(E.X,E.Y,X1+314,BY,X1+404,BY+22) Then Begin
+     For Y:=0 To GbRes.B[K].H-1 Do For X:=0 To GbRes.B[K].W-1 Do GbRes.B[K].D[Y,X]:=1-GbRes.B[K].D[Y,X];
+     Draw;
+    End Else If InBox(E.X,E.Y,X1+414,BY,X1+504,BY+22) Then Begin
+     V:=IntStr(GbRes.B[K].W);
+     If GbAsk('Bitmap',T3('Width (1-24):','Largeur (1-24) :','Breite (1-24):'),V,2) Then GbRes.B[K].W:=Clamp(StrVal(V,16),1,24);
+     V:=IntStr(GbRes.B[K].H);
+     If GbAsk('Bitmap',T3('Height (1-24):','Hauteur (1-24) :','H'#148'he (1-24):'),V,2) Then GbRes.B[K].H:=Clamp(StrVal(V,16),1,24);
+     Draw;
+    End;
+   End;
+  End Else If E.Kind=EV_UP Then Dn:=False;
+ Until Done;
+ If Not Ok Then GbRes.B[K]:=Tmp;
+ DlgEnd(Sv);
+End;
+
+{ point d'entree : 1 menu, 2 icones, 3 dialogue, 4 bitmap, 5 sprite }
+Procedure GbResEdit(Kind: Integer);
+Var K: Integer;
+Begin
+ If Kind=5 Then Begin
+  Info('Sprite',T3('The sprite editor is not available in this version.|Use TEXT, DISC and BITMAP to animate shapes.',
+   'L'#130'diteur de sprites n''est pas disponible dans cette version.|Utilisez TEXT, DISC et BITMAP pour animer des formes.',
+   'Der Sprite-Editor ist in dieser Version nicht verf'#129'gbar.'));
+  Exit;
+ End;
+ K:=GbSelectRes(Kind);
+ If K=0 Then Exit;
+ Case Kind Of
+  1: GbEdMenu(K);
+  2: GbEdIcons(K);
+  3: GbEdDialog(K);
+  4: GbEdBitmap(K);
+ End;
 End;
 
 { ====================================================================== }
@@ -20151,7 +21545,14 @@ Begin
   A_TREE: W:=TreeNew(X,Y,Param);
   A_DUMP: W:=DumpNew(X,Y);
   A_WK1: W:=WkNew(X,Y,Param);
-  A_GEOBASIC: Begin W:=GbIdeNew(X,Y);If (Param<>'') And FmLoad(GbProj^.Form,Param) Then GbProj^.Path:=Param;End;
+  A_BASRUN: W:=BasRunFile(X,Y,Param);
+  A_GEOBASIC: Begin
+    W:=GbIdeNew(X,Y);
+    If Param<>'' Then Begin
+     If Upper(Copy(Param,Length(Param)-3,4))='.BAS' Then GbBasPath:=Param
+     Else If FmLoad(GbProj^.Form,Param) Then GbProj^.Path:=Param;
+    End;
+   End;
  Else
   Info(AppTitle(AppId),T3('This application is not available yet.','Cette application n''est pas encore disponible.','Diese Anwendung ist noch nicht verf'#129'gbar.'));
  End;
@@ -20185,6 +21586,7 @@ Begin
  WriteLn('  /NOWELCOME           Demarre directement sur le bureau');
  WriteLn('  /R:application       Lance une application au demarrage (CALC, CLOCK, TETRIS,');
  WriteLn('                       SOLITAIRE, WRITE, DRAW, PLANNER, GEODEX, ...)');
+ WriteLn('  /BAS:fichier.BAS     Execute un programme GeoBASIC (ressources FICHIER.GBR)');
  WriteLn('  fichier              Fichier .GEO, .000, texte... a ouvrir au demarrage');
  WriteLn;
  WriteLn('Variable d''environnement LANGUAGE : EN = anglais, GR (ou DE) = allemand,');
@@ -20224,7 +21626,7 @@ End;
 
 Var
  I,R,Choice,StartLvl: Integer;
- Arg,StartFile: String;
+ Arg,StartFile,RunParam: String;
  NoWelcome: Boolean;
  M: PWindow;
  RunApp,BgOpt,A: Integer;
@@ -20232,7 +21634,7 @@ Var
 
 BEGIN
  Lang:=DetectLanguage;
- StartFile:='';NoWelcome:=False;StartLvl:=2;RunApp:=0;BgOpt:=0;ForceEmu:=False;
+ StartFile:='';RunParam:='';NoWelcome:=False;StartLvl:=2;RunApp:=0;BgOpt:=0;ForceEmu:=False;
  DetectWorld;
  For I:=1 To ParamCount Do Begin
   Arg:=ParamStr(I);
@@ -20271,6 +21673,8 @@ BEGIN
    If (Arg='DEX') Or (Arg='GEODEX') Then RunApp:=A_DEX;
    If (Arg='BANNER') Then RunApp:=A_BANNER;
    If (Arg='PREFS') Or (Arg='PREFERENCES') Then RunApp:=A_PREFS;
+  End Else If Upper(Copy(Arg,1,5))='/BAS:' Then Begin
+   RunApp:=A_BASRUN;RunParam:=Copy(Arg,6,200);
   End Else If Upper(Copy(Arg,1,3))='/F:' Then Begin
    BgOpt:=StrVal(Copy(Arg,4,3),0);
   End Else If Upper(Arg)='/E' Then ForceEmu:=True
@@ -20331,7 +21735,7 @@ BEGIN
     If ForceEmu Then LaunchApp(A_GEODE,StartFile) Else LaunchFile(StartFile);
     StartFile:='';
    End;
-   If RunApp<>0 Then Begin LaunchApp(RunApp,'');RunApp:=0;End;
+   If RunApp<>0 Then Begin LaunchApp(RunApp,RunParam);RunApp:=0;End;
    R:=DesktopLoop;
    While NWins>0 Do RemoveWindow(Wins[NWins]);
   End;
