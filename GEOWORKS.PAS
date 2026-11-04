@@ -103,7 +103,8 @@ Const
  A_PREFS   = 13; A_GEOCALC = 14; A_COMM    = 15; A_AOL     = 16;
  A_TEXTED  = 17; A_GEOFILE = 18; A_PERF    = 19; A_BOUNCE  = 20;
  A_GEODE   = 21; A_ABOUT   = 22; A_DOSPRG  = 23; A_HELP    = 24;
- NAPPS     = 24;
+ A_GRAPH   = 25;
+ NAPPS     = 25;
 
 { ====================================================================== }
 {                                TYPES                                   }
@@ -3828,7 +3829,7 @@ Const
  AppIconTab : Array[1..NAPPS] Of Integer = (
   IC_GEOMGR,IC_CALC,IC_PERF,IC_NOTE,IC_TETRIS,IC_SOLI,IC_WRITE,IC_DRAW,
   IC_PLAN,IC_DEX,IC_BANNER,IC_SCRAP,IC_PREF,IC_CALC,IC_COMM,IC_AOL,
-  IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP);
+  IC_NOTE,IC_DEXDOC,IC_PERF,IC_UNKNOWN,IC_GEOS,IC_GEOWORKS,IC_DOSPROG,IC_HELP,IC_GEOS);
 
  AppNameTab : Array[1..NAPPS] Of String[44] = (
   'GeoManager','Calculator~Calculatrice~Rechner','Clock~Horloge~Uhr',
@@ -3837,7 +3838,7 @@ Const
   'Preferences~Pr'#130'f'#130'rences~Einstellungen','GeoCalc','GeoComm',
   'America Online','Text File Editor~'#201'diteur de texte~Texteditor',
   'GeoFile','Perf','Bounce','Geode','About~A propos~'#154'ber',
-  'DOS Programs~Programmes DOS~DOS-Programme','Help~Aide~Hilfe');
+  'DOS Programs~Programmes DOS~DOS-Programme','Help~Aide~Hilfe','Graph');
 
 Function AppTitle(A: Integer): String;
 Begin
@@ -3868,6 +3869,7 @@ Begin
  Else If T='TERM' Then TokenToApp:=A_COMM
  Else If T='AMOL' Then TokenToApp:=A_AOL
  Else If T='PERF' Then TokenToApp:=A_PERF
+ Else If T='GRAF' Then TokenToApp:=A_GRAPH
  Else If T='BONC' Then TokenToApp:=A_BOUNCE
  Else If T='GCLK' Then TokenToApp:=A_CLOCK
  Else If T='GCAL' Then TokenToApp:=A_GEOCALC
@@ -4058,7 +4060,7 @@ Const
  CM_SELALL  = 109;
  CM_UP      = 120; CM_ROOT    = 121; CM_WORLD   = 122; CM_DOCDIR  = 123;
  CM_REFRESH = 125; CM_HOMEDIR = 124;
- CM_VLARGE  = 136; CM_VICON   = 130; CM_VNAME   = 131; CM_VDET    = 132;
+ CM_OPENEMU = 137; CM_VLARGE  = 136; CM_VICON   = 130; CM_VNAME   = 131; CM_VDET    = 132;
  CM_SNAME   = 133; CM_STYPE   = 134; CM_SSIZE   = 135;
  CM_HIDDEN  = 140; CM_CONFIRM = 141;
  CM_DINFO   = 150; CM_FORMAT  = 151; CM_DCOPY   = 152;
@@ -4220,6 +4222,7 @@ Begin
  Wd_^.NMenu:=0;
  WinAddMenu(Wd_,'File~Fichier~Datei');
  WinAddItem(Wd_,'Open~Ouvrir~'#142'ffnen',CM_OPEN,'Enter');
+ WinAddItem(Wd_,'Open in Emulator~Ouvrir dans l''emulateur~Im Emulator '#148'ffnen',CM_OPENEMU,'');
  WinAddItem(Wd_,'Get Info...~Informations...~Informationen...',CM_INFO,'');
  WinAddItem(Wd_,'Rename...~Renommer...~Umbenennen...',CM_RENAME,'F2');
  WinAddItem(Wd_,'Duplicate...~Dupliquer...~Duplizieren...',CM_DUP,'');
@@ -4945,6 +4948,7 @@ Begin
  End;
  Case Cmd Of
   CM_OPEN: MgrOpenItem(Wd_,Dt_^.Cur);
+  CM_OPENEMU: If (Dt_^.Cur>=0) And Not MgrIsVirtual(Wd_) Then LaunchApp(A_GEODE,MgrFullPath(Wd_,Dt_^.Cur));
   CM_INFO: MgrDoInfo(Wd_);
   CM_RENAME: MgrDoRename(Wd_);
   CM_DUP: MgrDoCopyMove(Wd_,False,True);
@@ -9533,6 +9537,541 @@ Begin
 End;
 
 { ====================================================================== }
+{   GRAPH : outil pedagogique d'algorithmes de graphes (GRAPH.GEO, jeton  }
+{   GRAF) - equivalent natif de l'application GEOS de Blue Marsh Softworks }
+{ ====================================================================== }
+
+Const
+ MAXGV = 40;
+ MAXGE = 200;
+ CM_GVADD=1000; CM_GVREM=1001; CM_GVRND=1002; CM_GVSEL=1003; CM_GVUNS=1004;
+ CM_GEADD=1010; CM_GEREM=1011; CM_GERND=1012; CM_GESEL=1013; CM_GEUNS=1014;
+ CM_GKRU=1020; CM_GPRIM=1021; CM_GBOTHM=1022;
+ CM_GBFS=1030; CM_GDFS=1031; CM_GBOTHS=1032;
+ CM_GSHORT=1040; CM_GCOMP=1041; CM_GREDRAW=1042; CM_GCLEAR=1043;
+ CM_GRSAVE=1044; CM_GROPEN=1045;
+ GVR = 10;                      { rayon d'un sommet }
+
+Type
+ PGraph = ^TGraph;
+ TGraph = Record
+  NV    : Integer;
+  VX,VY : Array[1..MAXGV] Of Integer;
+  VSel  : Array[1..MAXGV] Of Boolean;
+  NE    : Integer;
+  EA,EB : Array[1..MAXGE] Of Integer;
+  EDir  : Array[1..MAXGE] Of Boolean;
+  ESel  : Array[1..MAXGE] Of Boolean;
+  ECol  : Array[1..MAXGE] Of Integer;     { couleur donnee par un algorithme (0 = aucune) }
+  NStep : Integer;
+  StepE : Array[1..2*MAXGE] Of Integer;
+  StepC : Array[1..2*MAXGE] Of Integer;
+  StepP : Integer;                         { etapes deja montrees }
+  AlgoName : String[30];
+  Drag  : Integer;
+  CurX,CurY : Integer;
+  Msg   : String[80];
+  Visited : Array[1..MAXGV] Of Boolean;
+ End;
+
+Function GrNew(AX,AY: Integer): PWindow; Forward;
+Procedure GrDone(Wd_: PWindow); Forward;
+Procedure GrDrawClient(Wd_: PWindow); Forward;
+Procedure GrOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
+Procedure GrOnKey(Wd_: PWindow; K: Word); Forward;
+Procedure GrOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+Procedure GrPrepareMenus(Wd_: PWindow); Forward;
+
+Function GrWeight(G: PGraph; E: Integer): Integer;
+Var DX,DY: LongInt;
+Begin
+ DX:=G^.VX[G^.EA[E]]-G^.VX[G^.EB[E]];DY:=G^.VY[G^.EA[E]]-G^.VY[G^.EB[E]];
+ GrWeight:=Round(Sqrt(DX*DX+DY*DY)/8)+1;
+End;
+
+Function GrVertexAt(G: PGraph; X,Y: Integer): Integer;
+Var I: Integer;
+Begin
+ GrVertexAt:=0;
+ For I:=G^.NV DownTo 1 Do
+  If (Abs(X-G^.VX[I])<=GVR) And (Abs(Y-G^.VY[I])<=GVR) Then Begin GrVertexAt:=I;Exit;End;
+End;
+
+Function GrEdgeBetween(G: PGraph; A,B: Integer): Integer;
+Var I: Integer;
+Begin
+ GrEdgeBetween:=0;
+ For I:=1 To G^.NE Do
+  If ((G^.EA[I]=A) And (G^.EB[I]=B)) Or ((G^.EA[I]=B) And (G^.EB[I]=A)) Then Begin GrEdgeBetween:=I;Exit;End;
+End;
+
+Procedure GrClearAlgo(G: PGraph);
+Var I: Integer;
+Begin
+ For I:=1 To G^.NE Do G^.ECol[I]:=0;
+ G^.NStep:=0;G^.StepP:=0;G^.AlgoName:='';
+End;
+
+Procedure GrAddEdge(G: PGraph; A,B: Integer; Dir: Boolean);
+Begin
+ If (G^.NE>=MAXGE) Or (A=B) Or (GrEdgeBetween(G,A,B)<>0) Then Exit;
+ Inc(G^.NE);
+ G^.EA[G^.NE]:=A;G^.EB[G^.NE]:=B;G^.EDir[G^.NE]:=Dir;G^.ESel[G^.NE]:=False;G^.ECol[G^.NE]:=0;
+End;
+
+Procedure GrDelEdge(G: PGraph; E: Integer);
+Var K: Integer;
+Begin
+ For K:=E To G^.NE-1 Do Begin
+  G^.EA[K]:=G^.EA[K+1];G^.EB[K]:=G^.EB[K+1];G^.EDir[K]:=G^.EDir[K+1];
+  G^.ESel[K]:=G^.ESel[K+1];G^.ECol[K]:=G^.ECol[K+1];
+ End;
+ Dec(G^.NE);
+End;
+
+Procedure GrDelVertex(G: PGraph; V: Integer);
+Var K,E: Integer;
+Begin
+ E:=1;
+ While E<=G^.NE Do
+  If (G^.EA[E]=V) Or (G^.EB[E]=V) Then GrDelEdge(G,E) Else Inc(E);
+ For K:=V To G^.NV-1 Do Begin G^.VX[K]:=G^.VX[K+1];G^.VY[K]:=G^.VY[K+1];G^.VSel[K]:=G^.VSel[K+1];End;
+ Dec(G^.NV);
+ For E:=1 To G^.NE Do Begin
+  If G^.EA[E]>V Then Dec(G^.EA[E]);
+  If G^.EB[E]>V Then Dec(G^.EB[E]);
+ End;
+End;
+
+Procedure GrStep(G: PGraph; E,C: Integer);
+Begin
+ If G^.NStep<2*MAXGE Then Begin Inc(G^.NStep);G^.StepE[G^.NStep]:=E;G^.StepC[G^.NStep]:=C;End;
+End;
+
+{ Premier sommet selectionne (ou 1) }
+Function GrStart(G: PGraph; Nth: Integer): Integer;
+Var I,K: Integer;
+Begin
+ K:=0;GrStart:=0;
+ For I:=1 To G^.NV Do
+  If G^.VSel[I] Then Begin
+   Inc(K);
+   If K=Nth Then Begin GrStart:=I;Exit;End;
+  End;
+End;
+
+Procedure GrPrim(G: PGraph);
+Var InT: Array[1..MAXGV] Of Boolean; S,I,N,Best,BW,W: Integer;
+Begin
+ If G^.NV=0 Then Exit;
+ FillChar(InT,SizeOf(InT),0);
+ S:=GrStart(G,1);If S=0 Then S:=1;
+ InT[S]:=True;
+ For N:=1 To G^.NV-1 Do Begin
+  Best:=0;BW:=32000;
+  For I:=1 To G^.NE Do
+   If InT[G^.EA[I]]<>InT[G^.EB[I]] Then Begin
+    W:=GrWeight(G,I);
+    If W<BW Then Begin BW:=W;Best:=I;End;
+   End;
+  If Best=0 Then Exit;
+  InT[G^.EA[Best]]:=True;InT[G^.EB[Best]]:=True;
+  GrStep(G,Best,cLBl);
+ End;
+End;
+
+Procedure GrKruskal(G: PGraph);
+Var Ord_: Array[1..MAXGE] Of Integer; Par: Array[1..MAXGV] Of Integer; I,J,T,A,B: Integer;
+ Function Find(X: Integer): Integer;
+ Begin
+  While Par[X]<>X Do X:=Par[X];
+  Find:=X;
+ End;
+Begin
+ For I:=1 To G^.NE Do Ord_[I]:=I;
+ For I:=1 To G^.NE-1 Do
+  For J:=I+1 To G^.NE Do
+   If GrWeight(G,Ord_[J])<GrWeight(G,Ord_[I]) Then Begin T:=Ord_[I];Ord_[I]:=Ord_[J];Ord_[J]:=T;End;
+ For I:=1 To G^.NV Do Par[I]:=I;
+ For I:=1 To G^.NE Do Begin
+  A:=Find(G^.EA[Ord_[I]]);B:=Find(G^.EB[Ord_[I]]);
+  If A<>B Then Begin Par[A]:=B;GrStep(G,Ord_[I],cLRd);End;
+ End;
+End;
+
+Procedure GrBfs(G: PGraph);
+Var Q: Array[1..MAXGV] Of Integer; H,T,U,E,V,S: Integer;
+Begin
+ If G^.NV=0 Then Exit;
+ FillChar(G^.Visited,SizeOf(G^.Visited),0);
+ S:=GrStart(G,1);If S=0 Then S:=1;
+ H:=1;T:=1;Q[1]:=S;G^.Visited[S]:=True;
+ While H<=T Do Begin
+  U:=Q[H];Inc(H);
+  For E:=1 To G^.NE Do Begin
+   V:=0;
+   If G^.EA[E]=U Then V:=G^.EB[E]
+   Else If (G^.EB[E]=U) And Not G^.EDir[E] Then V:=G^.EA[E];
+   If (V>0) And Not G^.Visited[V] Then Begin
+    G^.Visited[V]:=True;Inc(T);Q[T]:=V;GrStep(G,E,cBrn);
+   End;
+  End;
+ End;
+End;
+
+Procedure GrDfsRec(G: PGraph; U: Integer);
+Var E,V: Integer;
+Begin
+ G^.Visited[U]:=True;
+ For E:=1 To G^.NE Do Begin
+  V:=0;
+  If G^.EA[E]=U Then V:=G^.EB[E]
+  Else If (G^.EB[E]=U) And Not G^.EDir[E] Then V:=G^.EA[E];
+  If (V>0) And Not G^.Visited[V] Then Begin GrStep(G,E,cMag);GrDfsRec(G,V);End;
+ End;
+End;
+
+Procedure GrDfs(G: PGraph);
+Var S: Integer;
+Begin
+ If G^.NV=0 Then Exit;
+ FillChar(G^.Visited,SizeOf(G^.Visited),0);
+ S:=GrStart(G,1);If S=0 Then S:=1;
+ GrDfsRec(G,S);
+End;
+
+Procedure GrShortest(G: PGraph);
+Var Dist: Array[1..MAXGV] Of LongInt; PrevE: Array[1..MAXGV] Of Integer; Done: Array[1..MAXGV] Of Boolean;
+    S,T,I,U,E,V,W,K: Integer; Path: Array[1..MAXGV] Of Integer; NP: Integer;
+Begin
+ If G^.NV<2 Then Exit;
+ S:=GrStart(G,1);If S=0 Then S:=1;
+ T:=GrStart(G,2);If T=0 Then T:=G^.NV;
+ For I:=1 To G^.NV Do Begin Dist[I]:=1000000;PrevE[I]:=0;Done[I]:=False;End;
+ Dist[S]:=0;
+ K:=0;
+ While K<G^.NV Do Begin
+  Inc(K);
+  U:=0;
+  For I:=1 To G^.NV Do If Not Done[I] And ((U=0) Or (Dist[I]<Dist[U])) Then U:=I;
+  If (U=0) Or (Dist[U]>=1000000) Then K:=G^.NV
+  Else Begin
+   Done[U]:=True;
+   For E:=1 To G^.NE Do Begin
+    V:=0;
+    If G^.EA[E]=U Then V:=G^.EB[E]
+    Else If (G^.EB[E]=U) And Not G^.EDir[E] Then V:=G^.EA[E];
+    If V>0 Then Begin
+     W:=GrWeight(G,E);
+     If Dist[U]+W<Dist[V] Then Begin Dist[V]:=Dist[U]+W;PrevE[V]:=E;End;
+    End;
+   End;
+  End;
+ End;
+ If PrevE[T]=0 Then Begin G^.Msg:='No path';Exit;End;
+ NP:=0;V:=T;
+ While V<>S Do Begin
+  Inc(NP);Path[NP]:=PrevE[V];
+  E:=PrevE[V];
+  If G^.EB[E]=V Then V:=G^.EA[E] Else V:=G^.EB[E];
+ End;
+ For I:=NP DownTo 1 Do GrStep(G,Path[I],cLGn);
+End;
+
+Procedure GrRun(G: PGraph; Which: Integer);
+Begin
+ GrClearAlgo(G);
+ G^.Msg:='';
+ Case Which Of
+  1: Begin G^.AlgoName:='Prim';GrPrim(G);End;
+  2: Begin G^.AlgoName:='Kruskal';GrKruskal(G);End;
+  3: Begin G^.AlgoName:='Prim + Kruskal';GrPrim(G);GrKruskal(G);End;
+  4: Begin G^.AlgoName:='BFS';GrBfs(G);End;
+  5: Begin G^.AlgoName:='DFS';GrDfs(G);End;
+  6: Begin G^.AlgoName:='BFS + DFS';GrBfs(G);GrDfs(G);End;
+  7: Begin G^.AlgoName:='Shortest Path';GrShortest(G);End;
+ End;
+ If G^.NStep=0 Then G^.AlgoName:='';
+ If G^.AlgoName<>'' Then G^.Msg:=G^.AlgoName+' - '+T3('press a key for each step','appuyez sur une touche pour chaque '#130'tape','Taste f'#129'r jeden Schritt');
+End;
+
+Function GrNew(AX,AY: Integer): PWindow;
+Var Wd_: PWindow; Dt_: PGraph;
+Begin
+ New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
+ WinInit(Wd_,A_GRAPH,AX,AY,560,400,'Graph');
+ Wd_^.IconId:=IC_GEOS;Wd_^.MinW:=300;Wd_^.MinH:=220;
+ WinAddMenu(Wd_,'File~Fichier~Datei');
+ WinAddItem(Wd_,'Open...~Ouvrir...~'#142'ffnen...',CM_GROPEN,'');
+ WinAddItem(Wd_,'Save...~Enregistrer...~Speichern...',CM_GRSAVE,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'About~A propos~Info',CM_ABOUT,'');
+ WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
+ WinAddMenu(Wd_,'View~Affichage~Ansicht');
+ WinAddItem(Wd_,'Redraw~R'#130'afficher~Neu zeichnen',CM_GREDRAW,'');
+ WinAddItem(Wd_,'Clear All~Tout effacer~Alles l'#148'schen',CM_GCLEAR,'');
+ WinAddMenu(Wd_,'Vertex~Sommet~Knoten');
+ WinAddItem(Wd_,'Add...~Ajouter...~Hinzuf'#129'gen...',CM_GVADD,'');
+ WinAddItem(Wd_,'Remove~Supprimer~Entfernen',CM_GVREM,'');
+ WinAddItem(Wd_,'Random Generation...~G'#130'n'#130'ration al'#130'atoire...~Zufallserzeugung...',CM_GVRND,'');
+ WinAddItem(Wd_,'Select All~Tout s'#130'lectionner~Alle w'#132'hlen',CM_GVSEL,'');
+ WinAddItem(Wd_,'Unselect All~Tout d'#130's'#130'lectionner~Auswahl aufheben',CM_GVUNS,'');
+ WinAddMenu(Wd_,'Edge~Ar'#136'te~Kante');
+ WinAddItem(Wd_,'Add~Ajouter~Hinzuf'#129'gen',CM_GEADD,'');
+ WinAddItem(Wd_,'Remove~Supprimer~Entfernen',CM_GEREM,'');
+ WinAddItem(Wd_,'Random Generation...~G'#130'n'#130'ration al'#130'atoire...~Zufallserzeugung...',CM_GERND,'');
+ WinAddItem(Wd_,'Select All~Tout s'#130'lectionner~Alle w'#132'hlen',CM_GESEL,'');
+ WinAddItem(Wd_,'Unselect All~Tout d'#130's'#130'lectionner~Auswahl aufheben',CM_GEUNS,'');
+ WinAddMenu(Wd_,'MST~MST~MST');
+ WinAddItem(Wd_,'Kruskal''s~Kruskal~Kruskal',CM_GKRU,'');
+ WinAddItem(Wd_,'Prim''s~Prim~Prim',CM_GPRIM,'');
+ WinAddItem(Wd_,'Both Methods~Les deux m'#130'thodes~Beide Methoden',CM_GBOTHM,'');
+ WinAddMenu(Wd_,'Search~Recherche~Suche');
+ WinAddItem(Wd_,'Breadth First~En largeur~Breitensuche',CM_GBFS,'');
+ WinAddItem(Wd_,'Depth First~En profondeur~Tiefensuche',CM_GDFS,'');
+ WinAddItem(Wd_,'Both Searches~Les deux recherches~Beide Suchen',CM_GBOTHS,'');
+ WinAddMenu(Wd_,'Other~Autre~Weitere');
+ WinAddItem(Wd_,'Shortest Path~Plus court chemin~K'#129'rzester Weg',CM_GSHORT,'');
+ WinAddItem(Wd_,'Make Complete Graph~Graphe complet~Vollst'#132'ndiger Graph',CM_GCOMP,'');
+ Dt_^.Msg:=T3('Click to add a vertex; drag from vertex to vertex for an edge.','Cliquez pour ajouter un sommet ; glissez d''un sommet '#133' un autre pour une ar'#136'te.','Klick: Knoten; von Knoten zu Knoten ziehen: Kante.');
+ GrNew:=Wd_;
+End;
+
+Procedure GrDone(Wd_: PWindow);
+Begin
+End;
+
+Procedure GrArrow(X1,Y1,X2,Y2,C: Integer);
+Var DX,DY: Real; L: Real; AX,AY,BX,BY: Integer; Ux,Uy: Real;
+Begin
+ DX:=X2-X1;DY:=Y2-Y1;L:=Sqrt(DX*DX+DY*DY);
+ If L<1 Then Exit;
+ Ux:=DX/L;Uy:=DY/L;
+ AX:=X2-Round(Ux*GVR);AY:=Y2-Round(Uy*GVR);
+ BX:=AX-Round(Ux*9-Uy*5);BY:=AY-Round(Uy*9+Ux*5);
+ GLine(AX,AY,BX,BY,C);
+ BX:=AX-Round(Ux*9+Uy*5);BY:=AY-Round(Uy*9-Ux*5);
+ GLine(AX,AY,BX,BY,C);
+End;
+
+Procedure GrDrawClient(Wd_: PWindow);
+Var Dt_: PGraph; X1,Y1,X2,Y2,I,OX,OY,A,B,C: Integer; S: String;
+ Procedure SetOrigin; Begin End;
+Begin
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ GBar(X1,Y1,X2,Y2-16,cWht);
+ { aretes }
+ For I:=1 To Dt_^.NE Do Begin
+  A:=Dt_^.EA[I];B:=Dt_^.EB[I];
+  C:=cBlk;
+  If Dt_^.ECol[I]<>0 Then C:=Dt_^.ECol[I];
+  If Dt_^.ESel[I] Then Begin
+   GThickLine(X1+Dt_^.VX[A],Y1+Dt_^.VY[A],X1+Dt_^.VX[B],Y1+Dt_^.VY[B],cYel,3);
+  End Else If Dt_^.ECol[I]<>0 Then
+   GThickLine(X1+Dt_^.VX[A],Y1+Dt_^.VY[A],X1+Dt_^.VX[B],Y1+Dt_^.VY[B],C,3)
+  Else GLine(X1+Dt_^.VX[A],Y1+Dt_^.VY[A],X1+Dt_^.VX[B],Y1+Dt_^.VY[B],C);
+  If Dt_^.EDir[I] Then GrArrow(X1+Dt_^.VX[A],Y1+Dt_^.VY[A],X1+Dt_^.VX[B],Y1+Dt_^.VY[B],cBlk);
+  S:=IntStr(GrWeight(Dt_,I));
+  GText((X1+Dt_^.VX[A]+X1+Dt_^.VX[B]) Div 2-TextW(S) Div 2,(Y1+Dt_^.VY[A]+Y1+Dt_^.VY[B]) Div 2-4,S,cDGr);
+ End;
+ { sommets }
+ For I:=1 To Dt_^.NV Do Begin
+  OX:=X1+Dt_^.VX[I];OY:=Y1+Dt_^.VY[I];
+  If Dt_^.VSel[I] Then GFillEllipse(OX,OY,GVR,GVR,cYel) Else GFillEllipse(OX,OY,GVR,GVR,cLCy);
+  GEllipse(OX,OY,GVR,GVR,cBlk);
+  S:=IntStr(I);
+  GText(OX-TextW(S) Div 2,OY-4,S,cBlk);
+ End;
+ { arete en cours de creation }
+ If Dt_^.Drag>0 Then GLine(X1+Dt_^.VX[Dt_^.Drag],Y1+Dt_^.VY[Dt_^.Drag],X1+Dt_^.CurX,Y1+Dt_^.CurY,cDGr);
+ { barre d'etat }
+ GBar(X1,Y2-15,X2,Y2,cLGr);
+ GHLine(X1,X2,Y2-15,cWht);
+ S:=T3('V:','S:','K:')+IntStr(Dt_^.NV)+T3(' E:',' A:',' E:')+IntStr(Dt_^.NE);
+ If Dt_^.NStep>0 Then S:=S+'  '+IntStr(Dt_^.StepP)+'/'+IntStr(Dt_^.NStep);
+ S:=S+'  '+Dt_^.Msg;
+ GText(X1+4,Y2-11,Copy(S,1,(X2-X1-8) Div 8),cBlk);
+End;
+
+Procedure GrOnMouse(Wd_: PWindow; Var E: TEvent);
+Var Dt_: PGraph; X1,Y1,X2,Y2,V,T,Ed: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ If E.Kind=EV_DOWN Then Begin
+  If E.Y>Y2-16 Then Exit;
+  V:=GrVertexAt(Dt_,E.X-X1,E.Y-Y1);
+  If V>0 Then Begin Dt_^.Drag:=V;Dt_^.CurX:=E.X-X1;Dt_^.CurY:=E.Y-Y1;End
+  Else If Dt_^.NV<MAXGV Then Begin
+   Inc(Dt_^.NV);Dt_^.VX[Dt_^.NV]:=E.X-X1;Dt_^.VY[Dt_^.NV]:=E.Y-Y1;Dt_^.VSel[Dt_^.NV]:=False;
+   GrClearAlgo(Dt_);
+  End;
+  Invalidate(Wd_);
+ End Else If E.Kind=EV_MOVE Then Begin
+  If Dt_^.Drag>0 Then Begin Dt_^.CurX:=E.X-X1;Dt_^.CurY:=E.Y-Y1;Invalidate(Wd_);End;
+ End Else If E.Kind=EV_UP Then Begin
+  If Dt_^.Drag>0 Then Begin
+   T:=GrVertexAt(Dt_,E.X-X1,E.Y-Y1);
+   If T=Dt_^.Drag Then Dt_^.VSel[T]:=Not Dt_^.VSel[T]
+   Else If T>0 Then Begin
+    Ed:=GrEdgeBetween(Dt_,Dt_^.Drag,T);
+    If Ed>0 Then Dt_^.ESel[Ed]:=Not Dt_^.ESel[Ed]
+    Else Begin GrAddEdge(Dt_,Dt_^.Drag,T,True);GrClearAlgo(Dt_);End;
+   End;
+   Dt_^.Drag:=0;
+   Invalidate(Wd_);
+  End;
+ End;
+End;
+
+Procedure GrOnKey(Wd_: PWindow; K: Word);
+Var Dt_: PGraph; E: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ If ((K>=Ord('0')) And (K<=Ord('9'))) Or ((K>=Ord('A')) And (K<=Ord('Z'))) Or
+    ((K>=Ord('a')) And (K<=Ord('z'))) Or (K=K_SPACE) Or (K=K_ENTER) Then Begin
+  If Dt_^.StepP<Dt_^.NStep Then Begin
+   Inc(Dt_^.StepP);
+   E:=Dt_^.StepE[Dt_^.StepP];
+   Dt_^.ECol[E]:=Dt_^.StepC[Dt_^.StepP];
+   If Dt_^.StepP=Dt_^.NStep Then Dt_^.Msg:=Dt_^.AlgoName+' - '+T3('done','termin'#130,'fertig');
+  End Else If Dt_^.NStep>0 Then Dt_^.Msg:=Dt_^.AlgoName+' - '+T3('done','termin'#130,'fertig');
+  Invalidate(Wd_);
+ End Else If K=K_DEL Then GrOnCommand(Wd_,CM_GEREM);
+End;
+
+Procedure GrPrepareMenus(Wd_: PWindow);
+Begin
+End;
+
+Procedure GrSave(Dt_: PGraph; Const P: String);
+Var F: Text; I: Integer;
+Begin
+ {$I-}
+ Assign(F,P);Rewrite(F);
+ WriteLn(F,'GRAPH1');
+ For I:=1 To Dt_^.NV Do WriteLn(F,'V ',Dt_^.VX[I],' ',Dt_^.VY[I]);
+ For I:=1 To Dt_^.NE Do WriteLn(F,'E ',Dt_^.EA[I],' ',Dt_^.EB[I],' ',Ord(Dt_^.EDir[I]));
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Info('Graph',T3('Cannot save file.','Impossible d''enregistrer.','Speichern nicht m'#148'glich.'));
+End;
+
+Procedure GrLoad(Dt_: PGraph; Const P: String);
+Var F: Text; S: String; A,B,C: Integer;
+ Function NextI: Integer;
+ Var Q,V,Cd: Integer; T: String;
+ Begin
+  While (S<>'') And (S[1]=' ') Do Delete(S,1,1);
+  Q:=Pos(' ',S);
+  If Q=0 Then Begin T:=S;S:='';End Else Begin T:=Copy(S,1,Q-1);Delete(S,1,Q);End;
+  Val(T,V,Cd);NextI:=V;
+ End;
+Begin
+ {$I-}
+ Assign(F,P);Reset(F);
+ {$I+}
+ If IOResult<>0 Then Begin Info('Graph',T3('Cannot open file.','Impossible d''ouvrir.','Datei nicht ladbar.'));Exit;End;
+ Dt_^.NV:=0;Dt_^.NE:=0;GrClearAlgo(Dt_);
+ {$I-}
+ ReadLn(F,S);
+ While Not Eof(F) Do Begin
+  ReadLn(F,S);
+  If (S<>'') And (S[1]='V') Then Begin
+   Delete(S,1,2);
+   If Dt_^.NV<MAXGV Then Begin Inc(Dt_^.NV);Dt_^.VX[Dt_^.NV]:=NextI;Dt_^.VY[Dt_^.NV]:=NextI;Dt_^.VSel[Dt_^.NV]:=False;End;
+  End Else If (S<>'') And (S[1]='E') Then Begin
+   Delete(S,1,2);A:=NextI;B:=NextI;C:=NextI;
+   If (A>=1) And (A<=Dt_^.NV) And (B>=1) And (B<=Dt_^.NV) Then GrAddEdge(Dt_,A,B,C<>0);
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure GrOnCommand(Wd_: PWindow; Cmd: Integer);
+Var Dt_: PGraph; I,J,N,X1,Y1,X2,Y2: Integer; S,S2: String; Ok: Boolean;
+Begin
+ Dt_:=Wd_^.Data;
+ WinClientRect(Wd_,X1,Y1,X2,Y2);
+ Case Cmd Of
+  CM_GVADD: Begin
+     S:='50';S2:='50';
+     If InputBox('Add Vertex',T3('New vertex X position:','Position X du sommet :','X-Position:'),S,5) Then
+      If InputBox('Add Vertex',T3('New vertex Y position:','Position Y du sommet :','Y-Position:'),S2,5) Then
+       If Dt_^.NV<MAXGV Then Begin
+        Inc(Dt_^.NV);Dt_^.VX[Dt_^.NV]:=Clamp(StrVal(S,50),GVR,X2-X1-GVR);
+        Dt_^.VY[Dt_^.NV]:=Clamp(StrVal(S2,50),GVR,Y2-Y1-30);Dt_^.VSel[Dt_^.NV]:=False;GrClearAlgo(Dt_);
+       End;
+    End;
+  CM_GVREM: Begin
+     I:=Dt_^.NV;
+     While I>=1 Do Begin If Dt_^.VSel[I] Then GrDelVertex(Dt_,I);Dec(I);End;
+     GrClearAlgo(Dt_);
+    End;
+  CM_GVRND: Begin
+     S:='5';
+     If InputBox('Enter N',T3('Number to create:','Nombre '#133' cr'#130'er :','Anzahl:'),S,3) Then Begin
+      N:=Clamp(StrVal(S,5),1,MAXGV);
+      For I:=1 To N Do If Dt_^.NV<MAXGV Then Begin
+       Inc(Dt_^.NV);Dt_^.VX[Dt_^.NV]:=GVR+Random(Max2(20,X2-X1-2*GVR));
+       Dt_^.VY[Dt_^.NV]:=GVR+Random(Max2(20,Y2-Y1-30-2*GVR));Dt_^.VSel[Dt_^.NV]:=False;
+      End;
+      GrClearAlgo(Dt_);
+     End;
+    End;
+  CM_GVSEL: For I:=1 To Dt_^.NV Do Dt_^.VSel[I]:=True;
+  CM_GVUNS: For I:=1 To Dt_^.NV Do Dt_^.VSel[I]:=False;
+  CM_GEADD: Begin
+     For I:=1 To Dt_^.NV-1 Do
+      For J:=I+1 To Dt_^.NV Do
+       If Dt_^.VSel[I] And Dt_^.VSel[J] Then GrAddEdge(Dt_,I,J,False);
+     GrClearAlgo(Dt_);
+    End;
+  CM_GEREM: Begin
+     I:=Dt_^.NE;
+     While I>=1 Do Begin If Dt_^.ESel[I] Then GrDelEdge(Dt_,I);Dec(I);End;
+     GrClearAlgo(Dt_);
+    End;
+  CM_GERND: Begin
+     S:='5';
+     If InputBox('Enter N',T3('Number to create:','Nombre '#133' cr'#130'er :','Anzahl:'),S,3) Then Begin
+      N:=Clamp(StrVal(S,5),1,MAXGE);
+      If Dt_^.NV>=2 Then For I:=1 To N Do GrAddEdge(Dt_,Random(Dt_^.NV)+1,Random(Dt_^.NV)+1,False);
+      GrClearAlgo(Dt_);
+     End;
+    End;
+  CM_GESEL: For I:=1 To Dt_^.NE Do Dt_^.ESel[I]:=True;
+  CM_GEUNS: For I:=1 To Dt_^.NE Do Dt_^.ESel[I]:=False;
+  CM_GKRU: GrRun(Dt_,2);
+  CM_GPRIM: GrRun(Dt_,1);
+  CM_GBOTHM: GrRun(Dt_,3);
+  CM_GBFS: GrRun(Dt_,4);
+  CM_GDFS: GrRun(Dt_,5);
+  CM_GBOTHS: GrRun(Dt_,6);
+  CM_GSHORT: GrRun(Dt_,7);
+  CM_GCOMP: Begin
+     For I:=1 To Dt_^.NV-1 Do For J:=I+1 To Dt_^.NV Do GrAddEdge(Dt_,I,J,False);
+     GrClearAlgo(Dt_);
+    End;
+  CM_GREDRAW: ;
+  CM_GCLEAR: Begin Dt_^.NV:=0;Dt_^.NE:=0;GrClearAlgo(Dt_);End;
+  CM_GRSAVE: Begin
+     S:=JoinPath(CurDirStr,'GRAPH.GRF');
+     If FileDlg(T3('Save','Enregistrer','Speichern'),'*.GRF',S,True) Then GrSave(Dt_,S);
+    End;
+  CM_GROPEN: Begin
+     S:=CurDirStr;
+     If FileDlg(T3('Open','Ouvrir',#142'ffnen'),'*.GRF',S,False) Then GrLoad(Dt_,S);
+    End;
+ Else Begin CommonCmd(Wd_,Cmd);Exit;End;
+ End;
+ Invalidate(Wd_);
+End;
+
+{ ====================================================================== }
 {       CHARGEUR DE GEODES PC/GEOS (.GEO) ET EMULATEUR x86 MINIMAL       }
 { (analyse d'en-tete d'apres GEODUMP ; execution : FPC uniquement)       }
 { ====================================================================== }
@@ -10221,6 +10760,7 @@ Begin
      If (Reg[1]<>0) And ((Op=$E2) Or ((Op=$E1) And ((EFl And FL_ZF)<>0)) Or ((Op=$E0) And ((EFl And FL_ZF)=0))) Then EIP:=Word(EIP+D);
     End;
   $E3: Begin D:=SignB(F8);If Reg[1]=0 Then EIP:=Word(EIP+D);End;
+  $D8..$DF: Begin ModRM;End;
   $E4..$E7: F8;
   $E8: Begin D:=SignW(F16);Push16(EIP);EIP:=Word(EIP+D);End;
   $E9: Begin D:=SignW(F16);EIP:=Word(EIP+D);End;
@@ -10526,6 +11066,7 @@ Procedure WinDraw(W: PWindow);
 Var X1,Y1,X2,Y2: Integer;
 Begin
  Case W^.Kind Of
+  A_GRAPH: GrDrawClient(W);
   A_MANAGER: MgrDrawClient(W);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwDrawClient(W);
   A_CALC: CalcDrawClient(W);
@@ -10554,6 +11095,7 @@ End;
 Procedure WinMouse(W: PWindow; Var E: TEvent);
 Begin
  Case W^.Kind Of
+  A_GRAPH: GrOnMouse(W,E);
   A_MANAGER: MgrOnMouse(W,E);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnMouse(W,E);
   A_CALC: CalcOnMouse(W,E);
@@ -10573,6 +11115,7 @@ End;
 Procedure WinKey(W: PWindow; K: Word);
 Begin
  Case W^.Kind Of
+  A_GRAPH: GrOnKey(W,K);
   A_MANAGER: MgrOnKey(W,K);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnKey(W,K);
   A_CALC: CalcOnKey(W,K);
@@ -10594,6 +11137,7 @@ End;
 Procedure WinCommand(W: PWindow; Cmd: Integer);
 Begin
  Case W^.Kind Of
+  A_GRAPH: GrOnCommand(W,Cmd);
   A_MANAGER: MgrOnCommand(W,Cmd);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwOnCommand(W,Cmd);
   A_CALC: CalcOnCommand(W,Cmd);
@@ -10616,6 +11160,7 @@ End;
 Procedure WinPrepare(W: PWindow);
 Begin
  Case W^.Kind Of
+  A_GRAPH: GrPrepareMenus(W);
   A_MANAGER: MgrPrepareMenus(W);
   A_NOTEPAD,A_TEXTED,A_WRITE: EdwPrepareMenus(W);
   A_CALC: CalcPrepareMenus(W);
@@ -10664,6 +11209,7 @@ End;
 Procedure WinFree(W: PWindow);
 Begin
  Case W^.Kind Of
+  A_GRAPH: Begin GrDone(W);Dispose(PGraph(W^.Data)) End;
   A_MANAGER: Begin MgrDone(W);Dispose(PManager(W^.Data)) End;
   A_NOTEPAD,A_TEXTED,A_WRITE: Begin EdwDone(W);Dispose(PEditWin(W^.Data)) End;
   A_CALC: Begin Dispose(PCalcWin(W^.Data)) End;
@@ -10732,6 +11278,7 @@ Begin
   A_GEODE: W:=GwNew(X,Y,Param);
   A_PLANNER: W:=PlnNew(X,Y);
   A_DEX: W:=DexNew(X,Y);
+  A_GRAPH: W:=GrNew(X,Y);
  Else
   Info(AppTitle(AppId),T3('This application is not available yet.','Cette application n''est pas encore disponible.','Diese Anwendung ist noch nicht verf'#129'gbar.'));
  End;
@@ -10760,6 +11307,7 @@ Begin
  WriteLn('  /B:niveau            Niveau : 1 debutant, 2 intermediaire, 3 avance');
  WriteLn('  /F:n                 Fond d''ecran : 0 uni, 1 Bricks, 2 Chocolate, 3 Cubes, 4 Pebble,');
  WriteLn('                       5 Pipes, 6 Tiles, 7 Vines, 8 Weave, 9 Logo');
+ WriteLn('  /E                   Ouvre le fichier .GEO donne dans l''emulateur de geodes');
  WriteLn('  /NOWELCOME           Demarre directement sur le bureau');
  WriteLn('  /R:application       Lance une application au demarrage (CALC, CLOCK, TETRIS,');
  WriteLn('                       SOLITAIRE, WRITE, DRAW, PLANNER, GEODEX, ...)');
@@ -10806,10 +11354,11 @@ Var
  NoWelcome: Boolean;
  M: PWindow;
  RunApp,BgOpt: Integer;
+ ForceEmu: Boolean;
 
 BEGIN
  Lang:=DetectLanguage;
- StartFile:='';NoWelcome:=False;StartLvl:=2;RunApp:=0;BgOpt:=0;
+ StartFile:='';NoWelcome:=False;StartLvl:=2;RunApp:=0;BgOpt:=0;ForceEmu:=False;
  DetectWorld;
  For I:=1 To ParamCount Do Begin
   Arg:=ParamStr(I);
@@ -10847,7 +11396,8 @@ BEGIN
    If (Arg='PREFS') Or (Arg='PREFERENCES') Then RunApp:=A_PREFS;
   End Else If Upper(Copy(Arg,1,3))='/F:' Then Begin
    BgOpt:=StrVal(Copy(Arg,4,3),0);
-  End Else If Upper(Arg)='/NOWELCOME' Then NoWelcome:=True
+  End Else If Upper(Arg)='/E' Then ForceEmu:=True
+  Else If Upper(Arg)='/NOWELCOME' Then NoWelcome:=True
   Else If (Arg<>'') And FileExists(Arg) Then StartFile:=Arg;
  End;
  GetDir(0,HomeDir);
@@ -10884,7 +11434,10 @@ BEGIN
     LaunchApp(A_MANAGER,'');
     If (Level=0) And (NWins>0) Then MaximizeWin(Wins[1]);
    End;
-   If StartFile<>'' Then Begin LaunchFile(StartFile);StartFile:='';End;
+   If StartFile<>'' Then Begin
+    If ForceEmu Then LaunchApp(A_GEODE,StartFile) Else LaunchFile(StartFile);
+    StartFile:='';
+   End;
    If RunApp<>0 Then Begin LaunchApp(RunApp,'');RunApp:=0;End;
    R:=DesktopLoop;
    While NWins>0 Do RemoveWindow(Wins[NWins]);
