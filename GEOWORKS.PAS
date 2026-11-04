@@ -159,6 +159,11 @@ Var
  ShowAnim  : Boolean;
  SoundOn   : Boolean;
  DateFmt   : Integer;
+ ShortFmt  : Integer;      { format de date courte 0..4 }
+ NumSep,DecSep: Integer;   { separateur de milliers 0..3, decimal 0..1 }
+ Metric    : Boolean;
+ CurSym    : String[4];
+ CurAfter  : Boolean;
  Clock24   : Boolean;
  DblCs     : LongInt;      { delai du double-clic (centiemes) }
  ClipIconId: Integer;      { icone copiee depuis le Scrapbook }
@@ -280,6 +285,16 @@ Begin
  HexW:=HexB(W Shr 8)+HexB(W And 255);
 End;
 
+{ Valeurs internationales par defaut selon la langue }
+Procedure IntlDefaults;
+Begin
+ Case Lang Of
+  0: Begin ShortFmt:=0;NumSep:=0;DecSep:=0;Metric:=False;CurSym:='$';CurAfter:=False;End;
+  2: Begin ShortFmt:=3;NumSep:=1;DecSep:=1;Metric:=True;CurSym:='DM';CurAfter:=True;End;
+ Else Begin ShortFmt:=1;NumSep:=2;DecSep:=1;Metric:=True;CurSym:='F';CurAfter:=True;End;
+ End;
+End;
+
 { Nombre avec separateur de milliers selon la langue }
 Function NumFmt(N: LongInt): String;
 Var S,R: String; I,K: Integer; Sep: Char; Neg: Boolean;
@@ -287,16 +302,17 @@ Begin
  Neg:=N<0;
  If Neg Then N:=-N;
  Str(N,S);
- Case Lang Of
+ Case NumSep Of
   0: Sep:=',';
-  2: Sep:='.';
- Else Sep:=' ';
+  1: Sep:='.';
+  2: Sep:=' ';
+ Else Sep:=#0;
  End;
  R:='';K:=0;
  For I:=Length(S) DownTo 1 Do Begin
   R:=S[I]+R;
   Inc(K);
-  If (K=3) And (I>1) Then Begin R:=Sep+R;K:=0;End;
+  If (K=3) And (I>1) And (Sep<>#0) Then Begin R:=Sep+R;K:=0;End;
  End;
  If Neg Then R:='-'+R;
  NumFmt:=R;
@@ -440,6 +456,21 @@ Begin
  End;
 End;
 
+{ Montant en centimes avec le symbole monetaire }
+Function MoneyFmt(Cents: LongInt): String;
+Var S,F: String; Neg: Boolean;
+Begin
+ Neg:=Cents<0;
+ If Neg Then Cents:=-Cents;
+ S:=NumFmt(Cents Div 100);
+ F:=IntStr(Cents Mod 100);
+ If Length(F)<2 Then F:='0'+F;
+ If DecSep=0 Then S:=S+'.'+F Else S:=S+','+F;
+ If CurAfter Then S:=S+' '+CurSym Else S:=CurSym+S;
+ If Neg Then S:='-'+S;
+ MoneyFmt:=S;
+End;
+
 Function LongDateStr(Y,M,D,W: Word): String;
 Begin
  Case Lang Of
@@ -465,10 +496,12 @@ End;
 
 Function ShortDateStr(Y,M,D: Word): String;
 Begin
- Case Lang Of
+ Case ShortFmt Of
   0: ShortDateStr:=IntStr(M)+'/'+IntStr(D)+'/'+IntStr(Y);
-  2: ShortDateStr:=Pad2(D)+'.'+Pad2(M)+'.'+IntStr(Y);
- Else ShortDateStr:=Pad2(D)+'/'+Pad2(M)+'/'+IntStr(Y);
+  1: ShortDateStr:=Pad2(D)+'/'+Pad2(M)+'/'+IntStr(Y);
+  2: ShortDateStr:=IntStr(Y)+'-'+Pad2(M)+'-'+Pad2(D);
+  3: ShortDateStr:=Pad2(D)+'.'+Pad2(M)+'.'+IntStr(Y);
+ Else ShortDateStr:=IntStr(Y)+'/'+Pad2(M)+'/'+Pad2(D);
  End;
 End;
 
@@ -7755,6 +7788,150 @@ Begin
  End;
 End;
 
+
+{ ---- persistance dans GEOWORKS.INI ---- }
+Function IniPath: String;
+Begin
+ IniPath:=JoinPath(HomeDir,'GEOWORKS.INI');
+End;
+
+Procedure PrefsSave;
+Var F: Text;
+Begin
+ {$I-}
+ Assign(F,IniPath);Rewrite(F);
+ WriteLn(F,'[GEOWORKS]');
+ WriteLn(F,'Clock24=',Ord(Clock24));
+ WriteLn(F,'ShortDate=',ShortFmt);
+ WriteLn(F,'ThousandSep=',NumSep);
+ WriteLn(F,'DecimalSep=',DecSep);
+ WriteLn(F,'Metric=',Ord(Metric));
+ WriteLn(F,'Currency=',CurSym);
+ WriteLn(F,'CurrencyAfter=',Ord(CurAfter));
+ WriteLn(F,'DoubleClick=',DblCs);
+ WriteLn(F,'Sound=',Ord(SoundOn));
+ WriteLn(F,'Background=',DeskBack);
+ WriteLn(F,'BackInk=',DeskInk);
+ WriteLn(F,'BackPaper=',DeskPaper);
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure PrefsLoad;
+Var F: Text; S,K,V: String; P: Integer;
+Begin
+ {$I-}
+ Assign(F,IniPath);Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}
+ While Not Eof(F) Do Begin
+  ReadLn(F,S);
+  P:=Pos('=',S);
+  If P>0 Then Begin
+   K:=Upper(Copy(S,1,P-1));V:=Copy(S,P+1,40);
+   If K='CLOCK24' Then Clock24:=StrVal(V,0)<>0
+   Else If K='SHORTDATE' Then ShortFmt:=StrVal(V,ShortFmt)
+   Else If K='THOUSANDSEP' Then NumSep:=StrVal(V,NumSep)
+   Else If K='DECIMALSEP' Then DecSep:=StrVal(V,DecSep)
+   Else If K='METRIC' Then Metric:=StrVal(V,0)<>0
+   Else If K='CURRENCY' Then CurSym:=Copy(V,1,4)
+   Else If K='CURRENCYAFTER' Then CurAfter:=StrVal(V,0)<>0
+   Else If K='DOUBLECLICK' Then DblCs:=StrVal(V,DblCs)
+   Else If K='SOUND' Then SoundOn:=StrVal(V,1)<>0
+   Else If K='BACKGROUND' Then DeskBack:=StrVal(V,DeskBack)
+   Else If K='BACKINK' Then DeskInk:=StrVal(V,DeskInk)
+   Else If K='BACKPAPER' Then DeskPaper:=StrVal(V,DeskPaper);
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ If ShortFmt<0 Then ShortFmt:=0;If ShortFmt>4 Then ShortFmt:=0;
+ If NumSep<0 Then NumSep:=0;If NumSep>3 Then NumSep:=0;
+ If DecSep<0 Then DecSep:=0;If DecSep>1 Then DecSep:=0;
+ If (DblCs<10) Or (DblCs>100) Then DblCs:=40;
+End;
+
+Procedure PrefIntl;
+Var R,K: Integer; S: String; Y,M,D,W: Word; Done: Boolean;
+Begin
+ Done:=False;
+ While Not Done Do Begin
+  GetDate(Y,M,D,W);
+  R:=ChoiceBox(T3('International','International','International'),
+     ShortDateStr(Y,M,D)+'   '+NumFmt(1234567)+'   '+MoneyFmt(123456),
+     T3('Language|Short date|Time|Numbers|Currency|Measurement|Defaults for language|OK',
+        'Langue|Date courte|Heure|Nombres|Monnaie|Mesure|Valeurs par d'#130'faut|OK',
+        'Sprache|Kurzdatum|Zeit|Zahlen|W'#132'hrung|Ma'#225'system|Standardwerte|OK'),8);
+  Case R Of
+   1: Begin
+       K:=ChoiceBox(T3('International','International','International'),T3('Language:','Langue :','Sprache:'),'English|Fran'#135'ais|Deutsch',Lang+1);
+       If K>0 Then Begin Lang:=K-1;IntlDefaults;Clock24:=Lang<>0;NeedFull:=True;End;
+      End;
+   2: Begin
+       K:=ChoiceBox(T3('Short date','Date courte','Kurzdatum'),T3('Format:','Format :','Format:'),
+          'M/D/YYYY|DD/MM/YYYY|YYYY-MM-DD|DD.MM.YYYY|YYYY/MM/DD',ShortFmt+1);
+       If K>0 Then ShortFmt:=K-1;
+      End;
+   3: Begin
+       K:=ChoiceBox(T3('Time','Heure','Zeit'),T3('Format:','Format :','Format:'),
+          T3('12 hours (AM/PM)|24 hours','12 heures (AM/PM)|24 heures','12 Stunden (AM/PM)|24 Stunden'),Ord(Clock24)+1);
+       If K>0 Then Clock24:=K=2;
+      End;
+   4: Begin
+       K:=ChoiceBox(T3('Numbers','Nombres','Zahlen'),T3('Thousands separator:','S'#130'parateur de milliers :','Tausendertrennzeichen:'),
+          T3('Comma (,)|Period (.)|Space|None','Virgule (,)|Point (.)|Espace|Aucun','Komma (,)|Punkt (.)|Leerzeichen|Keines'),NumSep+1);
+       If K>0 Then NumSep:=K-1;
+       K:=ChoiceBox(T3('Numbers','Nombres','Zahlen'),T3('Decimal separator:','S'#130'parateur d'#130'cimal :','Dezimaltrennzeichen:'),
+          T3('Period (.)|Comma (,)','Point (.)|Virgule (,)','Punkt (.)|Komma (,)'),DecSep+1);
+       If K>0 Then DecSep:=K-1;
+      End;
+   5: Begin
+       S:=CurSym;
+       If InputBox(T3('Currency','Monnaie','W'#132'hrung'),T3('Currency symbol:','Symbole mon'#130'taire :','W'#132'hrungssymbol:'),S,4) Then CurSym:=S;
+       K:=ChoiceBox(T3('Currency','Monnaie','W'#132'hrung'),T3('Symbol position:','Position du symbole :','Position des Symbols:'),
+          T3('Before the amount|After the amount','Avant le montant|Apr'#138's le montant','Vor dem Betrag|Nach dem Betrag'),Ord(CurAfter)+1);
+       If K>0 Then CurAfter:=K=2;
+      End;
+   6: Begin
+       K:=ChoiceBox(T3('Measurement','Mesure','Ma'#225'system'),T3('System:','Syst'#138'me :','System:'),
+          T3('US (inches, miles)|Metric (cm, km)','US (pouces, milles)|M'#130'trique (cm, km)','US (Zoll, Meilen)|Metrisch (cm, km)'),Ord(Metric)+1);
+       If K>0 Then Metric:=K=2;
+      End;
+   7: Begin IntlDefaults;Clock24:=Lang<>0;End;
+  Else Done:=True;
+  End;
+ End;
+ PrefsSave;
+ NeedFull:=True;
+End;
+
+Procedure PrefDateTime;
+Var S: String; Y,M,D,W,H,Mi,Sc,C: Word; V1,V2,V3: LongInt; R: Integer;
+Begin
+ GetDate(Y,M,D,W);GetTime(H,Mi,Sc,C);
+ R:=ChoiceBox(T3('Date & Time','Date et heure','Datum & Zeit'),LongDateStr(Y,M,D,W)+'  '+TimeStr(H,Mi),
+    T3('Set date...|Set time...|Close','R'#130'gler la date...|R'#130'gler l''heure...|Fermer','Datum einstellen...|Zeit einstellen...|Schlie'#225'en'),3);
+ If R=1 Then Begin
+  S:=IntStr(Y)+'-'+Pad2(M)+'-'+Pad2(D);
+  If InputBox(T3('Date','Date','Datum'),'YYYY-MM-DD',S,10) And (Length(S)=10) Then Begin
+   V1:=StrVal(Copy(S,1,4),Y);V2:=StrVal(Copy(S,6,2),M);V3:=StrVal(Copy(S,9,2),D);
+   If (V2>=1) And (V2<=12) And (V3>=1) And (V3<=DaysInMonth(V1,V2)) Then SetDate(V1,V2,V3)
+   Else Info(T3('Date','Date','Datum'),T3('Invalid date.','Date invalide.','Ung'#129'ltiges Datum.'));
+  End;
+ End Else If R=2 Then Begin
+  S:=Pad2(H)+':'+Pad2(Mi);
+  If InputBox(T3('Time','Heure','Zeit'),'HH:MM',S,5) And (Length(S)=5) Then Begin
+   V1:=StrVal(Copy(S,1,2),H);V2:=StrVal(Copy(S,4,2),Mi);
+   If (V1>=0) And (V1<24) And (V2>=0) And (V2<60) Then SetTime(V1,V2,0,0)
+   Else Info(T3('Time','Heure','Zeit'),T3('Invalid time.','Heure invalide.','Ung'#129'ltige Zeit.'));
+  End;
+ End;
+End;
+
+
 Procedure PrefModule(Wd_: PWindow; I: Integer);
  Var Dt_: PPrefs;
 Var R,K: Integer; S: String; Y,M,D,W,H,Mi,Sc,C: Word;
@@ -7771,25 +7948,17 @@ Begin
         Else Begin
          If K-1=cBlk Then SetDesktopBack(R-2,cWht,cBlk) Else SetDesktopBack(R-2,cBlk,K-1);
         End;
-        NeedFull:=True;
+        NeedFull:=True;PrefsSave;
        End;
       End;
      End;
-  1: Begin
-      R:=ChoiceBox(T3('International','International','International'),T3('Language:','Langue :','Sprache:'),'English|Fran'#135'ais|Deutsch',Lang+1);
-      If R>0 Then Begin Lang:=R-1;Clock24:=Lang<>0;NeedFull:=True;End;
-     End;
-  8: Begin
-      GetDate(Y,M,D,W);GetTime(H,Mi,Sc,C);
-      Info(T3('Date & Time','Date et heure','Datum & Zeit'),LongDateStr(Y,M,D,W)+'|'+TimeStr(H,Mi)+'|'+
-        T3('Set the date and time with the DOS commands DATE and TIME.',
-           'R'#130'glez la date et l''heure avec les commandes DOS DATE et TIME.',
-           'Datum und Uhrzeit mit den DOS-Befehlen DATE und TIME einstellen.'));
-     End;
+  1: PrefIntl;
+  8: PrefDateTime;
   3: Begin
       R:=ChoiceBox(T3('Mouse','Souris','Maus'),T3('Double-click speed:','Vitesse du double-clic :','Doppelklick-Geschwindigkeit:'),
         T3('Fast|Medium|Slow','Rapide|Moyenne|Lente','Schnell|Mittel|Langsam'),3-Ord(DblCs<=25)-Ord(DblCs>=55)*2+1);
       Case R Of 1: DblCs:=25; 2: DblCs:=40; 3: DblCs:=60; End;
+      PrefsSave;
      End;
   7: Begin
       Info(T3('Computer','Ordinateur','Computer'),
@@ -7801,7 +7970,7 @@ Begin
   14: Begin
        SoundOn:=Not SoundOn;
        If SoundOn Then S:=T3('Sound is on.','Le son est activ'#130'.','Ton ist an.') Else S:=T3('Sound is off.','Le son est d'#130'sactiv'#130'.','Ton ist aus.');
-       Info(T3('Sound','Son','Ton'),S);
+       PrefsSave;Info(T3('Sound','Son','Ton'),S);
       End;
   13: Begin
        R:=ChoiceBox(T3('Look & Feel','Aspect','Aussehen'),T3('User level:','Niveau utilisateur :','Benutzerstufe:'),
@@ -12233,7 +12402,7 @@ BEGIN
  Level:=StartLvl-1;
  NWins:=0;NextId:=1;NewWinCount:=0;Capture:=Nil;
  DeskBack:=-1;DeskInk:=cBlk;DeskPaper:=cDGr;
- Clock24:=Lang<>0;DblCs:=40;ClipIconId:=-1;SoundOn:=True;Randomize;
+ IntlDefaults;Clock24:=Lang<>0;DblCs:=40;ClipIconId:=-1;SoundOn:=True;Randomize;
  If Not MouseDriverFound Then Begin
   WriteLn('Pilote de souris non trouve.');
   Halt(1);
@@ -12243,6 +12412,8 @@ BEGIN
  LoadIcons;
  LoadBackgrounds;
  SetDesktopBack(-1,cBlk,cDGr);
+ PrefsLoad;
+ SetDesktopBack(DeskBack,DeskInk,DeskPaper);
  If (BgOpt>=1) And (BgOpt<=NBACK) Then Begin
   If BgOpt=7 Then SetDesktopBack(BgOpt-1,cBlk,cGrn) Else SetDesktopBack(BgOpt-1,cBlk,cLGr);
  End;
