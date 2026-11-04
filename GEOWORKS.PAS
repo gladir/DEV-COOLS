@@ -8924,7 +8924,6 @@ Begin
  GFillEllipse(X1+Dt_^.BX,Y1+Dt_^.BY,10,10,cLRd);
  GEllipse(X1+Dt_^.BX,Y1+Dt_^.BY,10,10,cWht);
 End;
-
 { ====================================================================== }
 {                    GEOPLANNER ET GEODEX (DONNEES)                      }
 { ====================================================================== }
@@ -8939,6 +8938,8 @@ Type
   Y,M,D : Integer;
   Tm    : String[5];
   Txt   : String[60];
+  Rep   : Integer;      { 0 aucune, 1 jour, 2 semaine, 3 mois, 4 an }
+  Alm   : Integer;      { alarme : minutes avant (0 = aucune) }
  End;
 
  PPlanner = ^TPlanner;
@@ -8948,12 +8949,15 @@ Type
   CY,CM_,CD : Integer;     { date selectionnee }
   TY,TM,TD  : Integer;     { aujourd'hui }
   SelAp  : Integer;
+  Fired  : Array[1..MAXAP] Of Integer;   { jour ou l'alarme a sonne }
+  IdleN  : Integer;
  End;
 
 Function PlnNew(AX,AY: Integer): PWindow; Forward;
 Procedure PlnLoadData(Wd_: PWindow); Forward;
 Procedure PlnSaveData(Wd_: PWindow); Forward;
 Function PlnCanClose(Wd_: PWindow): Boolean; Forward;
+Function PlnIdle(Wd_: PWindow): Boolean; Forward;
 Function PlnCountDay(Wd_: PWindow; Y,M,D: Integer): Integer; Forward;
 Function PlnNthOfDay(Wd_: PWindow; Y,M,D,N: Integer): Integer; Forward;
 Procedure PlnDayRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer); Forward;
@@ -8999,7 +9003,7 @@ End;
 
 Procedure PlnLoadData(Wd_: PWindow);
  Var Dt_: PPlanner;
-Var F: Text; S: String; A: TAppt; Cde: Integer;
+Var F: Text; S: String; A: TAppt; Cde,Q: Integer;
 Begin
  Dt_:=Wd_^.Data;
  {$I-}
@@ -9012,8 +9016,14 @@ Begin
   ReadLn(F,S);
   If Length(S)>=18 Then Begin
    Val(Copy(S,1,4),A.Y,Cde);Val(Copy(S,6,2),A.M,Cde);Val(Copy(S,9,2),A.D,Cde);
-   A.Tm:=Copy(S,12,5);A.Txt:=Copy(S,18,60);
-   Inc(Dt_^.NAp);Dt_^.Ap[Dt_^.NAp]:=A;
+   A.Tm:=Copy(S,12,5);A.Rep:=0;A.Alm:=0;
+   If S[17]='|' Then Begin
+    A.Rep:=StrVal(Copy(S,18,1),0);
+    Q:=Pos('|',Copy(S,20,10));
+    A.Alm:=StrVal(Copy(S,20,Q-1),0);
+    A.Txt:=Copy(S,20+Q,60);
+   End Else A.Txt:=Copy(S,18,60);
+   Inc(Dt_^.NAp);Dt_^.Ap[Dt_^.NAp]:=A;Dt_^.Fired[Dt_^.NAp]:=0;
   End;
  End;
  Close(F);
@@ -9030,7 +9040,8 @@ Begin
  Assign(F,JoinPath(HomeDir,'PLANNER.DAT'));
  Rewrite(F);
  For I:=1 To Dt_^.NAp Do
-  WriteLn(F,IntStr(Dt_^.Ap[I].Y),'-',Pad2(Dt_^.Ap[I].M),'-',Pad2(Dt_^.Ap[I].D),' ',Dt_^.Ap[I].Tm,' ',Dt_^.Ap[I].Txt);
+  WriteLn(F,IntStr(Dt_^.Ap[I].Y),'-',Pad2(Dt_^.Ap[I].M),'-',Pad2(Dt_^.Ap[I].D),' ',Dt_^.Ap[I].Tm,'|',
+          Dt_^.Ap[I].Rep,'|',Dt_^.Ap[I].Alm,'|',Dt_^.Ap[I].Txt);
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
@@ -9044,27 +9055,54 @@ Begin
  PlnCanClose:=True;
 End;
 
+{ Numero de jour (comparable) }
+Function PlnSerial(Y,M,D: Integer): LongInt;
+Begin
+ PlnSerial:=LongInt(Y)*400+M*32+D;
+End;
+
+{ L'evenement I a-t-il lieu le jour Y/M/D (repetitions incluses) ? }
+Function PlnOccurs(Dt_: PPlanner; I,Y,M,D: Integer): Boolean;
+Var Ok: Boolean;
+Begin
+ Ok:=False;
+ If (Dt_^.Ap[I].Y=Y) And (Dt_^.Ap[I].M=M) And (Dt_^.Ap[I].D=D) Then Ok:=True
+ Else If PlnSerial(Y,M,D)>PlnSerial(Dt_^.Ap[I].Y,Dt_^.Ap[I].M,Dt_^.Ap[I].D) Then
+  Case Dt_^.Ap[I].Rep Of
+   1: Ok:=True;
+   2: Ok:=DayOfWeek(Y,M,D)=DayOfWeek(Dt_^.Ap[I].Y,Dt_^.Ap[I].M,Dt_^.Ap[I].D);
+   3: Ok:=(D=Dt_^.Ap[I].D) Or ((Dt_^.Ap[I].D>DaysInMonth(Y,M)) And (D=DaysInMonth(Y,M)));
+   4: Ok:=(M=Dt_^.Ap[I].M) And (D=Dt_^.Ap[I].D);
+  End;
+ PlnOccurs:=Ok;
+End;
+
 Function PlnCountDay(Wd_: PWindow; Y,M,D: Integer): Integer;
  Var Dt_: PPlanner;
 Var I,N: Integer;
 Begin
  Dt_:=Wd_^.Data;
  N:=0;
- For I:=1 To Dt_^.NAp Do If (Dt_^.Ap[I].Y=Y) And (Dt_^.Ap[I].M=M) And (Dt_^.Ap[I].D=D) Then Inc(N);
+ For I:=1 To Dt_^.NAp Do If PlnOccurs(Dt_,I,Y,M,D) Then Inc(N);
  PlnCountDay:=N;
 End;
 
+{ N-ieme evenement du jour, trie par heure }
 Function PlnNthOfDay(Wd_: PWindow; Y,M,D,N: Integer): Integer;
  Var Dt_: PPlanner;
-Var I,K: Integer;
+Var I,K,J,T: Integer; L: Array[1..MAXAP] Of Integer;
 Begin
  Dt_:=Wd_^.Data;
  K:=0;PlnNthOfDay:=0;
  For I:=1 To Dt_^.NAp Do
-  If (Dt_^.Ap[I].Y=Y) And (Dt_^.Ap[I].M=M) And (Dt_^.Ap[I].D=D) Then Begin
-   Inc(K);
-   If K=N Then Begin PlnNthOfDay:=I;Exit;End;
-  End;
+  If PlnOccurs(Dt_,I,Y,M,D) Then Begin Inc(K);L[K]:=I;End;
+ If (N<1) Or (N>K) Then Exit;
+ For I:=2 To K Do Begin
+  T:=L[I];J:=I-1;
+  While (J>=1) And (Dt_^.Ap[L[J]].Tm>Dt_^.Ap[T].Tm) Do Begin L[J+1]:=L[J];Dec(J);End;
+  L[J+1]:=T;
+ End;
+ PlnNthOfDay:=L[N];
 End;
 
 Procedure PlnDayRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -9114,8 +9152,12 @@ Begin
  For I:=1 To Min2(K,14) Do Begin
   A:=PlnNthOfDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD,I);
   If I=Dt_^.SelAp Then GBar(PX+3,Y1+31+(I-1)*14,X2-11,Y1+43+(I-1)*14,cBlk);
-  If I=Dt_^.SelAp Then GText(PX+6,Y1+34+(I-1)*14,Dt_^.Ap[A].Tm+' '+Dt_^.Ap[A].Txt,cWht)
-  Else GText(PX+6,Y1+34+(I-1)*14,Dt_^.Ap[A].Tm+' '+Dt_^.Ap[A].Txt,cBlk);
+  S:=Dt_^.Ap[A].Tm+' ';
+  If Dt_^.Ap[A].Alm<>0 Then S:=S+#14 Else S:=S+' ';
+  If Dt_^.Ap[A].Rep>0 Then S:=S+'R ' Else S:=S+'  ';
+  S:=Copy(S+Dt_^.Ap[A].Txt,1,(X2-PX-24) Div 8);
+  If I=Dt_^.SelAp Then GText(PX+6,Y1+34+(I-1)*14,S,cWht)
+  Else GText(PX+6,Y1+34+(I-1)*14,S,cBlk);
  End;
  Button(PX,Y2-36,PX+60,Y2-12,T3('New','Nouveau','Neu'),False,False,True);
  Button(PX+66,Y2-36,PX+126,Y2-12,T3('Edit','Modifier','Edit.'),False,False,K>0);
@@ -9133,35 +9175,85 @@ Begin
  Dt_^.SelAp:=0;
 End;
 
+Function PlnAlmVal(R: Integer): Integer;
+Begin
+ Case R Of
+  2: PlnAlmVal:=-1;
+  3: PlnAlmVal:=5;
+  4: PlnAlmVal:=15;
+  5: PlnAlmVal:=30;
+  6: PlnAlmVal:=60;
+ Else PlnAlmVal:=0;
+ End;
+End;
+
+Function PlnAlmIdx(V: Integer): Integer;
+Begin
+ Case V Of
+  -1: PlnAlmIdx:=2;
+  5: PlnAlmIdx:=3;
+  15: PlnAlmIdx:=4;
+  30: PlnAlmIdx:=5;
+  60: PlnAlmIdx:=6;
+ Else PlnAlmIdx:=1;
+ End;
+End;
+
+{ Dialogue d'evenement : heure, description, repetition, alarme }
+Function PlnEventDlg(Var A: TAppt; Const Title: String): Boolean;
+ Var T,S: String; R: Integer; V,K: LongInt;
+Begin
+ PlnEventDlg:=False;
+ T:=A.Tm;
+ If Not InputBox(Title,T3('Time (HH:MM):','Heure (HH:MM) :','Zeit (HH:MM):'),T,5) Then Exit;
+ V:=StrVal(Copy(T,1,2),-1);K:=StrVal(Copy(T,4,2),-1);
+ If (Length(T)<>5) Or (T[3]<>':') Or (V<0) Or (V>23) Or (K<0) Or (K>59) Then Begin
+  Info(Title,T3('Invalid time. Use HH:MM.','Heure invalide. Utilisez HH:MM.','Ung'#129'ltige Zeit. HH:MM verwenden.'));Exit;
+ End;
+ S:=A.Txt;
+ If Not InputBox(Title,T3('Description:','Description :','Beschreibung:'),S,58) Then Exit;
+ R:=ChoiceBox(Title,T3('Repeat:','R'#130'p'#130'ter :','Wiederholen:'),
+    T3('Never|Daily|Weekly|Monthly|Yearly','Jamais|Chaque jour|Chaque semaine|Chaque mois|Chaque ann'#130'e',
+       'Nie|T'#132'glich|W'#148'chentlich|Monatlich|J'#132'hrlich'),A.Rep+1);
+ If R=0 Then Exit;
+ A.Rep:=R-1;
+ R:=ChoiceBox(Title,T3('Alarm:','Alarme :','Alarm:'),
+    T3('None|At event time|5 minutes before|15 minutes before|30 minutes before|1 hour before',
+       'Aucune|'#133' l''heure|5 minutes avant|15 minutes avant|30 minutes avant|1 heure avant',
+       'Keiner|Zur Terminzeit|5 Minuten vorher|15 Minuten vorher|30 Minuten vorher|1 Stunde vorher'),
+    PlnAlmIdx(A.Alm));
+ If R=0 Then Exit;
+ A.Alm:=PlnAlmVal(R);
+ A.Tm:=T;A.Txt:=S;
+ PlnEventDlg:=True;
+End;
+
 Procedure PlnAddAp(Wd_: PWindow);
  Var Dt_: PPlanner;
-Var T,S: String; A: TAppt;
+Var A: TAppt;
 Begin
  Dt_:=Wd_^.Data;
  If Dt_^.NAp>=MAXAP Then Exit;
- T:='09:00';
- If Not InputBox(T3('New Event','Nouvel '#130'v'#130'nement','Neuer Termin'),T3('Time (HH:MM):','Heure (HH:MM) :','Zeit (HH:MM):'),T,5) Then Exit;
- S:='';
- If Not InputBox(T3('New Event','Nouvel '#130'v'#130'nement','Neuer Termin'),T3('Description:','Description :','Beschreibung:'),S,58) Then Exit;
- A.Y:=Dt_^.CY;A.M:=Dt_^.CM_;A.D:=Dt_^.CD;A.Tm:=T;A.Txt:=S;
- Inc(Dt_^.NAp);Dt_^.Ap[Dt_^.NAp]:=A;
+ FillChar(A,SizeOf(A),0);
+ A.Y:=Dt_^.CY;A.M:=Dt_^.CM_;A.D:=Dt_^.CD;A.Tm:='09:00';
+ If Not PlnEventDlg(A,T3('New Event','Nouvel '#130'v'#130'nement','Neuer Termin')) Then Exit;
+ Inc(Dt_^.NAp);Dt_^.Ap[Dt_^.NAp]:=A;Dt_^.Fired[Dt_^.NAp]:=0;
  PlnSaveData(Wd_);
  Invalidate(Wd_);
 End;
 
 Procedure PlnEditAp(Wd_: PWindow);
  Var Dt_: PPlanner;
-Var I: Integer; T,S: String;
+Var I: Integer; A: TAppt;
 Begin
  Dt_:=Wd_^.Data;
  If Dt_^.SelAp=0 Then Exit;
  I:=PlnNthOfDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD,Dt_^.SelAp);
  If I=0 Then Exit;
- T:=Dt_^.Ap[I].Tm;S:=Dt_^.Ap[I].Txt;
- If InputBox(T3('Edit Event','Modifier','Termin '#132'ndern'),T3('Time (HH:MM):','Heure (HH:MM) :','Zeit (HH:MM):'),T,5) Then
-  If InputBox(T3('Edit Event','Modifier','Termin '#132'ndern'),T3('Description:','Description :','Beschreibung:'),S,58) Then Begin
-   Dt_^.Ap[I].Tm:=T;Dt_^.Ap[I].Txt:=S;PlnSaveData(Wd_);
-  End;
+ A:=Dt_^.Ap[I];
+ If PlnEventDlg(A,T3('Edit Event','Modifier','Termin '#132'ndern')) Then Begin
+  Dt_^.Ap[I]:=A;Dt_^.Fired[I]:=0;PlnSaveData(Wd_);
+ End;
  Invalidate(Wd_);
 End;
 
@@ -9173,7 +9265,7 @@ Begin
  If Dt_^.SelAp=0 Then Exit;
  I:=PlnNthOfDay(Wd_,Dt_^.CY,Dt_^.CM_,Dt_^.CD,Dt_^.SelAp);
  If I=0 Then Exit;
- For K:=I To Dt_^.NAp-1 Do Dt_^.Ap[K]:=Dt_^.Ap[K+1];
+ For K:=I To Dt_^.NAp-1 Do Begin Dt_^.Ap[K]:=Dt_^.Ap[K+1];Dt_^.Fired[K]:=Dt_^.Fired[K+1];End;
  Dec(Dt_^.NAp);Dt_^.SelAp:=0;PlnSaveData(Wd_);
  Invalidate(Wd_);
 End;
@@ -9243,6 +9335,31 @@ Begin
  Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
  Invalidate(Wd_);
+End;
+
+{ Alarmes : verifie les evenements du jour environ chaque seconde }
+Function PlnIdle(Wd_: PWindow): Boolean;
+ Var Dt_: PPlanner;
+Var I,Now,Ev,Al: Integer; H,M,S,C,Y,Mo,D,W: Word; Today: LongInt; Msg: String;
+Begin
+ Dt_:=Wd_^.Data;
+ PlnIdle:=False;
+ Inc(Dt_^.IdleN);
+ If Dt_^.IdleN<10 Then Exit;
+ Dt_^.IdleN:=0;
+ GetTime(H,M,S,C);GetDate(Y,Mo,D,W);
+ Now:=H*60+M;Today:=PlnSerial(Y,Mo,D);
+ For I:=1 To Dt_^.NAp Do
+  If (Dt_^.Ap[I].Alm<>0) And (Dt_^.Fired[I]<>Today) And PlnOccurs(Dt_,I,Y,Mo,D) Then Begin
+   Ev:=StrVal(Copy(Dt_^.Ap[I].Tm,1,2),0)*60+StrVal(Copy(Dt_^.Ap[I].Tm,4,2),0);
+   If Dt_^.Ap[I].Alm<0 Then Al:=0 Else Al:=Dt_^.Ap[I].Alm;
+   If (Now>=Ev-Al) And (Now<=Ev+5) Then Begin
+    Dt_^.Fired[I]:=Today;
+    Msg:=Dt_^.Ap[I].Tm+'  '+Dt_^.Ap[I].Txt;
+    Info(T3('GeoPlanner alarm','Alarme GeoPlanner','GeoPlanner-Alarm'),Msg);
+    PlnIdle:=True;
+   End;
+  End;
 End;
 
 { ---------------------------------------------------------------------- }
@@ -9530,6 +9647,7 @@ Begin
  End;
  Invalidate(Wd_);
 End;
+
 
 { ====================================================================== }
 {                              GEODRAW                                   }
@@ -12875,6 +12993,7 @@ Begin
  Case W^.Kind Of
   A_NOTEPAD,A_TEXTED,A_WRITE: WinIdle:=EdwIdle(W);
   A_CLOCK: WinIdle:=ClkIdle(W);
+  A_PLANNER: WinIdle:=PlnIdle(W);
   A_TETRIS: WinIdle:=TetIdle(W);
   A_SOLIT: WinIdle:=SolIdle(W);
   A_PERF: WinIdle:=PerfIdle(W);
