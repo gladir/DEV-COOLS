@@ -6879,6 +6879,7 @@ End;
 
 Const
  CM_TAPE=300; CM_CLRTAPE=301; CM_COPYV=302; CM_PASTEV=303;
+ CM_CSTD=330; CM_CRPN=331; CM_CDEC=332;
  CM_CONV1=310; CM_CONV2=311; CM_CONV3=312; CM_CONV4=313; CM_CONV5=314; CM_CONV6=315;
  { segments : a=1 b=2 c=4 d=8 e=16 f=32 g=64 }
  Seg7 : Array[0..9] Of Byte = ($3F,$06,$5B,$4F,$66,$6D,$7D,$07,$7F,$6F);
@@ -6895,6 +6896,9 @@ Type
   NTape      : Integer;
   ShowTape   : Boolean;
   Down       : Integer;
+  Rpn        : Boolean;
+  Lift       : Boolean;
+  Stk        : Array[1..4] Of Real;
  End;
 
 Function CalcNew(AX,AY: Integer): PWindow; Forward;
@@ -6917,9 +6921,18 @@ Const
   ('1','2','3','+','%','RCL'),
   ('0','.','+/-','=','M-','M+'));
 
+Var
+ CalcDecPl : Integer;      { decimales fixes (-1 = flottant) }
+
 Function FmtReal(R: Real): String;
 Var S: String; I: Integer;
 Begin
+ If (CalcDecPl>=0) And (Abs(R)<1E12) Then Begin
+  Str(R:0:CalcDecPl,S);
+  S:=TrimStr(S);
+  If S='-0' Then S:='0';
+  FmtReal:=S;Exit;
+ End;
  If (Abs(R)>=1E12) Or ((R<>0) And (Abs(R)<1E-7)) Then Begin
   Str(R:0,S);
   S:=TrimStr(S);
@@ -7029,6 +7042,10 @@ Begin
  WinAddItem(Wd_,'Clear Tape~Effacer la bande~Band l'#148'schen',CM_CLRTAPE,'');
  WinAddMenu(Wd_,'Options~Options~Optionen');
  WinAddItem(Wd_,'Show Tape~Afficher la bande~Band anzeigen',CM_TAPE,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Standard~Standard~Standard',CM_CSTD,'');
+ WinAddItem(Wd_,'RPN (Reverse Polish)~RPN (notation polonaise inverse)~RPN (umgekehrt polnisch)',CM_CRPN,'');
+ WinAddItem(Wd_,'Decimal Places...~D'#130'cimales...~Dezimalstellen...',CM_CDEC,'');
  WinAddMenu(Wd_,'Convert~Convertir~Umrechnen');
  WinAddItem(Wd_,'Miles -> Km',CM_CONV1,'');
  WinAddItem(Wd_,'Km -> Miles',CM_CONV2,'');
@@ -7073,11 +7090,103 @@ Begin
  If Length(Dt_^.Entry)>16 Then Dt_^.Entry:=Copy(Dt_^.Entry,1,16);
 End;
 
+{ Mode RPN : pile X (Stk[1]), Y, Z, T }
+Procedure CalcPressRpn(Wd_: PWindow; Const B: String);
+ Var Dt_: PCalcWin;
+Var V: Real; Ch: Char; I: Integer; Bin,Un: Boolean;
+
+ Procedure Commit;
+ Begin
+  If Dt_^.Entry<>'' Then Begin Dt_^.Stk[1]:=CalcCur(Wd_);Dt_^.Entry:='';End;
+ End;
+
+ Procedure Push;
+ Var K: Integer;
+ Begin
+  For K:=4 DownTo 2 Do Dt_^.Stk[K]:=Dt_^.Stk[K-1];
+ End;
+
+ Procedure Drop;
+ Var K: Integer;
+ Begin
+  For K:=2 To 3 Do Dt_^.Stk[K]:=Dt_^.Stk[K+1];
+ End;
+
+Begin
+ Dt_:=Wd_^.Data;
+ If Dt_^.Err And (B<>'C/CE') Then Exit;
+ Ch:=B[1];
+ Bin:=(B='+') Or (B='-') Or (B='*') Or (B='/');
+ Un:=(B='1/x') Or (B='x2') Or (B='sqr') Or (B='%');
+ If (Length(B)=1) And (Ch In ['0'..'9']) Then Begin
+  If (Dt_^.Entry='') And Dt_^.Lift Then Begin Push;Dt_^.Lift:=False;End;
+  If Length(Dt_^.Entry)<15 Then Begin
+   If Dt_^.Entry='0' Then Dt_^.Entry:=Ch Else Dt_^.Entry:=Dt_^.Entry+Ch;
+  End;
+ End Else If B='.' Then Begin
+  If (Dt_^.Entry='') And Dt_^.Lift Then Begin Push;Dt_^.Lift:=False;End;
+  If Pos('.',Dt_^.Entry)=0 Then Begin If Dt_^.Entry='' Then Dt_^.Entry:='0';Dt_^.Entry:=Dt_^.Entry+'.';End;
+ End Else If B='+/-' Then Begin
+  If Dt_^.Entry='' Then Dt_^.Stk[1]:=-Dt_^.Stk[1]
+  Else If Dt_^.Entry[1]='-' Then Delete(Dt_^.Entry,1,1) Else Dt_^.Entry:='-'+Dt_^.Entry;
+ End Else If B='EE' Then Begin
+  If (Dt_^.Entry<>'') And (Pos('E',Dt_^.Entry)=0) Then Dt_^.Entry:=Dt_^.Entry+'E';
+ End Else If B='=' Then Begin
+  { ENTER : duplique X dans Y }
+  Commit;Push;Dt_^.Lift:=False;
+  CalcTapeAdd(Wd_,FmtReal(Dt_^.Stk[1])+' ENTER');
+ End Else If Bin Then Begin
+  Commit;
+  Case Ch Of
+   '+': V:=Dt_^.Stk[2]+Dt_^.Stk[1];
+   '-': V:=Dt_^.Stk[2]-Dt_^.Stk[1];
+   '*': V:=Dt_^.Stk[2]*Dt_^.Stk[1];
+  Else Begin
+   If Dt_^.Stk[1]=0 Then Begin Dt_^.Err:=True;V:=0;End Else V:=Dt_^.Stk[2]/Dt_^.Stk[1];
+  End;
+  End;
+  If Not Dt_^.Err Then Begin
+   CalcTapeAdd(Wd_,FmtReal(Dt_^.Stk[2])+' '+B+' '+FmtReal(Dt_^.Stk[1]));
+   Dt_^.Stk[1]:=V;Drop;Dt_^.Lift:=True;
+   CalcTapeAdd(Wd_,'= '+FmtReal(V));
+  End;
+ End Else If Un Then Begin
+  Commit;
+  V:=Dt_^.Stk[1];
+  If B='1/x' Then Begin If V=0 Then Dt_^.Err:=True Else V:=1/V;End
+  Else If B='x2' Then V:=V*V
+  Else If B='sqr' Then Begin If V<0 Then Dt_^.Err:=True Else V:=Sqrt(V);End
+  Else V:=Dt_^.Stk[2]*V/100;
+  If Not Dt_^.Err Then Begin Dt_^.Stk[1]:=V;Dt_^.Lift:=True;CalcTapeAdd(Wd_,B+' = '+FmtReal(V));End;
+ End Else If B='(' Then Begin
+  { echange X et Y }
+  Commit;V:=Dt_^.Stk[1];Dt_^.Stk[1]:=Dt_^.Stk[2];Dt_^.Stk[2]:=V;Dt_^.Lift:=True;
+ End Else If B=')' Then Begin
+  { rotation de la pile vers le bas }
+  Commit;V:=Dt_^.Stk[1];
+  For I:=1 To 3 Do Dt_^.Stk[I]:=Dt_^.Stk[I+1];
+  Dt_^.Stk[4]:=V;Dt_^.Lift:=True;
+ End Else If B='C/CE' Then Begin
+  If Dt_^.Err Then Dt_^.Err:=False;
+  If Dt_^.Entry<>'' Then Dt_^.Entry:=''
+  Else Begin For I:=1 To 4 Do Dt_^.Stk[I]:=0;Dt_^.Lift:=False;End;
+ End Else If B='<-' Then Begin
+  If Dt_^.Entry<>'' Then Delete(Dt_^.Entry,Length(Dt_^.Entry),1);
+ End Else If B='STO' Then Begin Commit;Dt_^.MemV:=Dt_^.Stk[1];CalcTapeAdd(Wd_,'STO '+FmtReal(Dt_^.MemV));End
+ Else If B='RCL' Then Begin
+  Commit;Push;Dt_^.Stk[1]:=Dt_^.MemV;Dt_^.Lift:=True;
+ End Else If B='M+' Then Begin Commit;Dt_^.MemV:=Dt_^.MemV+Dt_^.Stk[1];CalcTapeAdd(Wd_,'M+ '+FmtReal(Dt_^.MemV));End
+ Else If B='M-' Then Begin Commit;Dt_^.MemV:=Dt_^.MemV-Dt_^.Stk[1];CalcTapeAdd(Wd_,'M- '+FmtReal(Dt_^.MemV));End;
+ Dt_^.Res:=Dt_^.Stk[1];Dt_^.HaveRes:=True;
+ Invalidate(Wd_);
+End;
+
 Procedure CalcPress(Wd_: PWindow; Const B: String);
  Var Dt_: PCalcWin;
 Var V: Real; Ok: Boolean; S: String; Ch: Char;
 Begin
  Dt_:=Wd_^.Data;
+ If Dt_^.Rpn Then Begin CalcPressRpn(Wd_,B);Exit;End;
  If Dt_^.Err And (B<>'C/CE') Then Exit;
  Ch:=B[1];
  If (Length(B)=1) And (Ch In ['0'..'9']) Then Begin
@@ -7209,6 +7318,11 @@ Begin
    If Z='x2' Then Z:='x'#253;
    If Z='sqr' Then Z:=#251'x';
    If Z='<-' Then Z:=#27;
+   If Dt_^.Rpn Then Begin
+    If Z='=' Then Z:='Ent';
+    If Z='(' Then Z:='x'#29'y';
+    If Z=')' Then Z:='R'#25;
+   End;
    Button(BX1,BY1,BX2,BY2,Z,False,Sel,True);
   End;
  { bande }
@@ -7216,6 +7330,14 @@ Begin
   TX1:=X1+262;
   Sunken(TX1,Y1+6,X2-6,Y2-6,cWht);
   K:=(Y2-6-(Y1+6)-8) Div 11;
+  If Dt_^.Rpn Then Begin
+   For I:=1 To 4 Do Begin
+    S:=Copy('XYZT',I,1)+': '+FmtReal(Dt_^.Stk[I]);
+    GText(X2-12-TextW(S),Y1+12+(4-I)*11,S,cBlu);
+   End;
+   GHLine(TX1+3,X2-9,Y1+58,cDGr);
+   K:=K-5;
+  End;
   For I:=Dt_^.NTape DownTo Max2(1,Dt_^.NTape-K+1) Do Begin
    S:=Dt_^.Tape[I];
    GText(X2-12-TextW(S),Y2-12-11*(Dt_^.NTape-I)-8,S,cBlk);
@@ -7250,7 +7372,7 @@ Procedure CalcOnKey(Wd_: PWindow; K: Word);
 Begin
  Dt_:=Wd_^.Data;
  Case K Of
-  K_ENTER: CalcPress(Wd_,'=');
+  K_ENTER,K_SPACE: CalcPress(Wd_,'=');
   K_BKSP: CalcPress(Wd_,'<-');
   K_ESC: CalcPress(Wd_,'C/CE');
   K_CTRLC: CalcOnCommand(Wd_,CM_COPYV);
@@ -7279,15 +7401,28 @@ Procedure CalcPrepareMenus(Wd_: PWindow);
 Begin
  Dt_:=Wd_^.Data;
  WinSetFlag(Wd_,CM_TAPE,2,Dt_^.ShowTape);
+ WinSetFlag(Wd_,CM_CSTD,2,Not Dt_^.Rpn);
+ WinSetFlag(Wd_,CM_CRPN,2,Dt_^.Rpn);
 End;
 
 Procedure CalcOnCommand(Wd_: PWindow; Cmd: Integer);
  Var Dt_: PCalcWin;
-Var V,F: Real; S: String;
+Var V,F: Real; S: String; I: Integer;
 Begin
  Dt_:=Wd_^.Data;
  Case Cmd Of
   CM_TAPE: Begin Dt_^.ShowTape:=Not Dt_^.ShowTape;Invalidate(Wd_);End;
+  CM_CSTD: Begin Dt_^.Rpn:=False;Dt_^.Entry:='';Dt_^.Expr:='';Invalidate(Wd_);End;
+  CM_CRPN: Begin
+            Dt_^.Rpn:=True;Dt_^.Entry:='';Dt_^.Expr:='';Dt_^.Stk[1]:=Dt_^.Res;Dt_^.Lift:=False;
+            Invalidate(Wd_);
+           End;
+  CM_CDEC: Begin
+            I:=ChoiceBox(T3('Decimal Places','D'#130'cimales','Dezimalstellen'),T3('Display:','Affichage :','Anzeige:'),
+               T3('Floating|0|1|2|3|4|5|6|7|8|9','Flottant|0|1|2|3|4|5|6|7|8|9','Flie'#225'end|0|1|2|3|4|5|6|7|8|9'),CalcDecPl+2);
+            If I>0 Then CalcDecPl:=I-2;
+            Invalidate(Wd_);
+           End;
   CM_CLRTAPE: Begin Dt_^.NTape:=0;Invalidate(Wd_);End;
   CM_COPYV: Begin ClipClear;ClipN:=1;ClipL[1]:=NewStr(FmtReal(CalcCur(Wd_)));End;
   CM_PASTEV: If ClipN>0 Then Begin
@@ -10059,6 +10194,7 @@ End;
 
 Const
  CM_DNEW=620; CM_DDEL=621; CM_DNEXT=622; CM_DPREV=623; CM_DFIND=624; CM_DSAVE=625;
+ CM_DFNEXT=626; CM_DDIAL=627; CM_DQUICK=628; CM_DFOPT=629;
  MAXCARD = 300;
 
 Type
@@ -10072,6 +10208,9 @@ Type
   NC    : Integer;
   Cur   : Integer;
   Fld   : Integer;
+  LastFind : String[40];
+  FindFld  : Integer;      { 0 tous les champs, 1..5 un champ }
+  FindCase : Boolean;
  End;
 
 Function DexNew(AX,AY: Integer): PWindow; Forward;
@@ -10105,6 +10244,11 @@ Begin
  WinAddItem(Wd_,'Next~Suivante~N'#132'chste',CM_DNEXT,'PgDn');
  WinAddItem(Wd_,'Previous~Pr'#130'c'#130'dente~Vorherige',CM_DPREV,'PgUp');
  WinAddItem(Wd_,'Find...~Rechercher...~Suchen...',CM_DFIND,'Ctrl+F');
+ WinAddItem(Wd_,'Find Next~Suivant~Weitersuchen',CM_DFNEXT,'F3');
+ WinAddItem(Wd_,'Search Options...~Options de recherche...~Suchoptionen...',CM_DFOPT,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Dial Phone...~Composer le num'#130'ro...~Rufnummer w'#132'hlen...',CM_DDIAL,'');
+ WinAddItem(Wd_,'Quick Dial...~Num'#130'rotation rapide...~Kurzwahl...',CM_DQUICK,'');
  WinAddMenu(Wd_,'Window~Fen'#136'tre~Fenster');
  WinAddItem(Wd_,'Tile~Mosa'#139'que~Kacheln',CM_TILE,'');
  WinAddItem(Wd_,'Overlap~Cascade~'#154'berlappend',CM_OVERLAP,'');
@@ -10208,20 +10352,92 @@ Begin
  Invalidate(Wd_);
 End;
 
-Procedure DexFindCard(Wd_: PWindow);
+{ Recherche a partir de la fiche suivante (Again) ou apres saisie }
+Procedure DexFindNext(Wd_: PWindow; Start: Integer);
  Var Dt_: PDex;
-Var S: String; I,K: Integer; Fnd: Boolean;
+Var S,V: String; I,K,N,K1,K2: Integer; Fnd: Boolean;
 Begin
  Dt_:=Wd_^.Data;
- S:='';
- If Not InputBox(T3('Find','Rechercher','Suchen'),T3('Find what:','Rechercher :','Suchen nach:'),S,40) Then Exit;
- S:=Upper(S);
- For I:=1 To Dt_^.NC Do Begin
+ If Dt_^.LastFind='' Then Exit;
+ S:=Dt_^.LastFind;
+ If Not Dt_^.FindCase Then S:=Upper(S);
+ If Dt_^.FindFld=0 Then Begin K1:=1;K2:=5;End Else Begin K1:=Dt_^.FindFld;K2:=K1;End;
+ For N:=0 To Dt_^.NC-1 Do Begin
+  I:=((Start-1+N) Mod Dt_^.NC)+1;
   Fnd:=False;
-  For K:=1 To 5 Do If Pos(S,Upper(Dt_^.C[I].F[K]))>0 Then Fnd:=True;
+  For K:=K1 To K2 Do Begin
+   V:=Dt_^.C[I].F[K];
+   If Not Dt_^.FindCase Then V:=Upper(V);
+   If Pos(S,V)>0 Then Fnd:=True;
+  End;
   If Fnd Then Begin Dt_^.Cur:=I;Invalidate(Wd_);Exit;End;
  End;
  Info(T3('Find','Rechercher','Suchen'),T3('Not found.','Introuvable.','Nicht gefunden.'));
+End;
+
+Procedure DexFindCard(Wd_: PWindow);
+ Var Dt_: PDex;
+Var S: String;
+Begin
+ Dt_:=Wd_^.Data;
+ S:=Dt_^.LastFind;
+ If Not InputBox(T3('Find','Rechercher','Suchen'),T3('Find what:','Rechercher :','Suchen nach:'),S,40) Then Exit;
+ Dt_^.LastFind:=S;
+ DexFindNext(Wd_,Dt_^.Cur);
+End;
+
+Procedure DexSearchOptions(Wd_: PWindow);
+ Var Dt_: PDex;
+Var R: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ R:=ChoiceBox(T3('Search Options','Options de recherche','Suchoptionen'),T3('Search in:','Rechercher dans :','Suchen in:'),
+    T3('All fields|Name|Address|City|Phone|Notes','Tous les champs|Nom|Adresse|Ville|T'#130'l'#130'phone|Notes','Alle Felder|Name|Adresse|Ort|Telefon|Notizen'),Dt_^.FindFld+1);
+ If R>0 Then Dt_^.FindFld:=R-1;
+ R:=ChoiceBox(T3('Search Options','Options de recherche','Suchoptionen'),T3('Case:','Casse :','Gro'#225'/Klein:'),
+    T3('Ignore case|Match case','Ignorer la casse|Respecter la casse','Ignorieren|Beachten'),1+Ord(Dt_^.FindCase));
+ If R>0 Then Dt_^.FindCase:=R=2;
+End;
+
+{ Composition d'un numero : tonalites DTMF approximees et commande Hayes }
+Procedure DexDialNumber(Const Name,Phone: String);
+Var Digits,Cmd: String; I: Integer;
+Begin
+ Digits:='';
+ For I:=1 To Length(Phone) Do
+  If Phone[I] In ['0'..'9','*','#',','] Then Digits:=Digits+Phone[I];
+ If Digits='' Then Begin
+  Info(T3('Dial','Composer','W'#132'hlen'),T3('This card has no phone number.','Cette fiche n''a pas de num'#130'ro.','Diese Karte hat keine Nummer.'));
+  Exit;
+ End;
+ If ModemTone Then Cmd:='ATDT'+Digits Else Cmd:='ATDP'+Digits;
+ If SoundOn And ModemTone Then
+  For I:=1 To Length(Digits) Do
+   If Digits[I] In ['0'..'9'] Then Begin
+    Sound(697+(Ord(Digits[I])-48)*60);Delay(90);NoSound;Delay(40);
+   End;
+ Info(T3('Dial','Composer','W'#132'hlen'),Name+'|'+Phone+'|'+'COM'+IntStr(ModemPort)+' '+IntStr(BaudTab[ModemBaud])+' bps|'+Cmd+'|'+
+      T3('Pick up the phone, press OK.','D'#130'crochez, puis appuyez sur OK.','H'#148'rer abnehmen, dann OK.'));
+End;
+
+Procedure DexQuickDial(Wd_: PWindow);
+ Var Dt_: PDex;
+Var I,N,R: Integer; L: String; Map: Array[1..40] Of Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ L:='';N:=0;
+ For I:=1 To Dt_^.NC Do
+  If (Dt_^.C[I].F[4]<>'') And (N<40) Then Begin
+   Inc(N);Map[N]:=I;
+   If L<>'' Then L:=L+'|';
+   L:=L+Copy(Dt_^.C[I].F[1],1,18)+' '+Copy(Dt_^.C[I].F[4],1,18);
+  End;
+ If N=0 Then Begin Info('GeoDex',T3('No phone numbers.','Aucun num'#130'ro.','Keine Nummern.'));Exit;End;
+ R:=ChoiceBox(T3('Quick Dial','Num'#130'rotation rapide','Kurzwahl'),T3('Select a number:','Choisissez un num'#130'ro :','Nummer w'#132'hlen:'),L,1);
+ If R>0 Then Begin
+  Dt_^.Cur:=Map[R];
+  DexDialNumber(Dt_^.C[Map[R]].F[1],Dt_^.C[Map[R]].F[4]);
+ End;
 End;
 
 Procedure DexFieldRect(Wd_: PWindow; I: Integer; Var X1,Y1,X2,Y2: Integer);
@@ -10308,6 +10524,7 @@ Procedure DexOnKey(Wd_: PWindow; K: Word);
  Var Dt_: PDex;
 Begin
  Dt_:=Wd_^.Data;
+ If K=K_F3 Then Begin DexOnCommand(Wd_,CM_DFNEXT);Exit;End;
  Case K Of
   K_TAB,K_DOWN: Begin Inc(Dt_^.Fld);If Dt_^.Fld>5 Then Dt_^.Fld:=1;End;
   K_UP: Begin Dec(Dt_^.Fld);If Dt_^.Fld<1 Then Dt_^.Fld:=5;End;
@@ -10333,6 +10550,10 @@ Begin
   CM_DNEXT: If Dt_^.Cur<Dt_^.NC Then Inc(Dt_^.Cur);
   CM_DPREV: If Dt_^.Cur>1 Then Dec(Dt_^.Cur);
   CM_DFIND: DexFindCard(Wd_);
+  CM_DFNEXT: Begin If Dt_^.LastFind='' Then DexFindCard(Wd_) Else DexFindNext(Wd_,Dt_^.Cur Mod Dt_^.NC+1);End;
+  CM_DFOPT: DexSearchOptions(Wd_);
+  CM_DDIAL: DexDialNumber(Dt_^.C[Dt_^.Cur].F[1],Dt_^.C[Dt_^.Cur].F[4]);
+  CM_DQUICK: DexQuickDial(Wd_);
   CM_DSAVE: DexSaveData(Wd_);
  Else Begin CommonCmd(Wd_,Cmd);Exit;End;
  End;
@@ -10350,6 +10571,8 @@ Const
  CM_DNEWD=700; CM_DOPEN=701; CM_DSAVE2=702; CM_DSAVEAS=703; CM_DDELO=704; CM_DCLR=705;
  CM_DFRONT=706; CM_DBACK=707; CM_DPASTEI=708; CM_DW1=709; CM_DW2=710; CM_DW3=711;
  CM_DFILL=712; CM_DDUP=713;
+ CM_DOCUT=714; CM_DOCOPY=715; CM_DOPASTE=716; CM_DROT90=717; CM_DROT270=718; CM_DROT180=719;
+ CM_DFLIPH=720; CM_DFLIPV=721; CM_DSELALL=722;
  TL_SEL=0; TL_TEXT=1; TL_LINE=2; TL_RECT=3; TL_ELL=4; TL_FREE=5; TL_ERASE=6; TL_ICON=7;
 
 Type
@@ -10377,6 +10600,11 @@ Type
   Modified : Boolean;
   FillOn : Boolean;
  End;
+
+Var
+ DrwClipOb  : TObj;
+ DrwClipPts : Array[1..600] Of PointType;
+ DrwClipHas : Boolean;
 
 Function DrwNew(AX,AY: Integer; Const AFile: String): PWindow; Forward;
 Procedure DrwUpdateTitle(Wd_: PWindow); Forward;
@@ -10413,11 +10641,20 @@ Begin
  WinAddSep(Wd_);
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  WinAddMenu(Wd_,'Edit~'#144'dition~Bearbeiten');
+ WinAddItem(Wd_,'Cut~Couper~Ausschneiden',CM_DOCUT,'Ctrl+X');
+ WinAddItem(Wd_,'Copy~Copier~Kopieren',CM_DOCOPY,'Ctrl+C');
+ WinAddItem(Wd_,'Paste~Coller~Einf'#129'gen',CM_DOPASTE,'Ctrl+V');
  WinAddItem(Wd_,'Duplicate~Dupliquer~Duplizieren',CM_DDUP,'');
  WinAddItem(Wd_,'Delete~Supprimer~L'#148'schen',CM_DDELO,'Del');
  WinAddItem(Wd_,'Clear All~Tout effacer~Alles l'#148'schen',CM_DCLR,'');
  WinAddItem(Wd_,'Paste Scrapbook Image~Coller image Scrapbook~Scrapbook-Bild einf'#129'gen',CM_DPASTEI,'');
  WinAddMenu(Wd_,'Arrange~Disposition~Anordnen');
+ WinAddItem(Wd_,'Rotate 90'#248' Right~Pivoter 90'#248' '#133' droite~90'#248' nach rechts',CM_DROT90,'');
+ WinAddItem(Wd_,'Rotate 90'#248' Left~Pivoter 90'#248' '#133' gauche~90'#248' nach links',CM_DROT270,'');
+ WinAddItem(Wd_,'Rotate 180'#248'~Pivoter 180'#248'~180'#248' drehen',CM_DROT180,'');
+ WinAddItem(Wd_,'Flip Horizontal~Retourner horizontalement~Horizontal spiegeln',CM_DFLIPH,'');
+ WinAddItem(Wd_,'Flip Vertical~Retourner verticalement~Vertikal spiegeln',CM_DFLIPV,'');
+ WinAddSep(Wd_);
  WinAddItem(Wd_,'Bring to Front~Premier plan~In den Vordergrund',CM_DFRONT,'');
  WinAddItem(Wd_,'Send to Back~Arri'#138're-plan~In den Hintergrund',CM_DBACK,'');
  WinAddMenu(Wd_,'Options~Options~Optionen');
@@ -10754,6 +10991,9 @@ Procedure DrwOnKey(Wd_: PWindow; K: Word);
 Begin
  Dt_:=Wd_^.Data;
  If (K=K_DEL) And (Dt_^.Sel>0) Then Begin DrwDelObj(Wd_,Dt_^.Sel);Invalidate(Wd_);End;
+ If K=K_CTRLC Then DrwOnCommand(Wd_,CM_DOCOPY);
+ If K=K_CTRLX Then DrwOnCommand(Wd_,CM_DOCUT);
+ If K=K_CTRLV Then DrwOnCommand(Wd_,CM_DOPASTE);
 End;
 
 Procedure DrwPrepareMenus(Wd_: PWindow);
@@ -10765,6 +11005,9 @@ Begin
  WinSetFlag(Wd_,CM_DDELO,1,Dt_^.Sel=0);WinSetFlag(Wd_,CM_DDUP,1,Dt_^.Sel=0);
  WinSetFlag(Wd_,CM_DFRONT,1,Dt_^.Sel=0);WinSetFlag(Wd_,CM_DBACK,1,Dt_^.Sel=0);
  WinSetFlag(Wd_,CM_DPASTEI,1,ClipIconId<0);
+ WinSetFlag(Wd_,CM_DOCUT,1,Dt_^.Sel=0);WinSetFlag(Wd_,CM_DOCOPY,1,Dt_^.Sel=0);WinSetFlag(Wd_,CM_DOPASTE,1,Not DrwClipHas);
+ WinSetFlag(Wd_,CM_DROT90,1,Dt_^.NO=0);WinSetFlag(Wd_,CM_DROT270,1,Dt_^.NO=0);WinSetFlag(Wd_,CM_DROT180,1,Dt_^.NO=0);
+ WinSetFlag(Wd_,CM_DFLIPH,1,Dt_^.NO=0);WinSetFlag(Wd_,CM_DFLIPV,1,Dt_^.NO=0);
 End;
 
 Procedure DrwSaveFile(Wd_: PWindow; Const P: String);
@@ -10850,6 +11093,90 @@ Begin
  End;
 End;
 
+{ Rotation / retournement de l'objet selectionne (ou de tous les objets) autour de son centre }
+Procedure DrwXform(Wd_: PWindow; Mode: Integer);
+ Var Dt_: PDraw;
+Var I,K,Lo,Hi,A,B,C,D,CX,CY,MnX,MnY,MxX,MxY,HW,HH,NX,NY: Integer;
+
+ Procedure Tx(X,Y: Integer; Var RX,RY: Integer);
+ Begin
+  Case Mode Of
+   1: Begin RX:=CX-(Y-CY);RY:=CY+(X-CX);End;
+   2: Begin RX:=CX+(Y-CY);RY:=CY-(X-CX);End;
+   3: Begin RX:=2*CX-X;RY:=2*CY-Y;End;
+   4: Begin RX:=2*CX-X;RY:=Y;End;
+  Else Begin RX:=X;RY:=2*CY-Y;End;
+  End;
+ End;
+
+Begin
+ Dt_:=Wd_^.Data;
+ If Dt_^.NO=0 Then Exit;
+ If Dt_^.Sel>0 Then Begin Lo:=Dt_^.Sel;Hi:=Dt_^.Sel;End Else Begin Lo:=1;Hi:=Dt_^.NO;End;
+ MnX:=32000;MnY:=32000;MxX:=-32000;MxY:=-32000;
+ For I:=Lo To Hi Do Begin
+  DrwBounds(Wd_,Dt_^.O[I],A,B,C,D);
+  If A<MnX Then MnX:=A;If B<MnY Then MnY:=B;If C>MxX Then MxX:=C;If D>MxY Then MxY:=D;
+ End;
+ CX:=(MnX+MxX) Div 2;CY:=(MnY+MxY) Div 2;
+ For I:=Lo To Hi Do Begin
+  Case Dt_^.O[I].K Of
+   1,2,3: Begin
+           Tx(Dt_^.O[I].X1,Dt_^.O[I].Y1,NX,NY);Dt_^.O[I].X1:=NX;Dt_^.O[I].Y1:=NY;
+           Tx(Dt_^.O[I].X2,Dt_^.O[I].Y2,NX,NY);Dt_^.O[I].X2:=NX;Dt_^.O[I].Y2:=NY;
+          End;
+   4: Begin
+       For K:=Dt_^.O[I].P0 To Dt_^.O[I].P0+Dt_^.O[I].PN-1 Do Begin
+        Tx(Dt_^.Pts[K].X,Dt_^.Pts[K].Y,NX,NY);Dt_^.Pts[K].X:=NX;Dt_^.Pts[K].Y:=NY;
+       End;
+      End;
+   5,6: Begin
+         { texte et images : seul l'emplacement change (leur trace n'est pas pivotee) }
+         DrwBounds(Wd_,Dt_^.O[I],A,B,C,D);
+         HW:=(C-A) Div 2;HH:=(D-B) Div 2;
+         Tx((A+C) Div 2,(B+D) Div 2,NX,NY);
+         If Dt_^.O[I].K=5 Then Begin Dt_^.O[I].X1:=NX-HW;Dt_^.O[I].Y1:=NY-HH;End
+         Else Begin Dt_^.O[I].X1:=NX-HW;Dt_^.O[I].Y1:=NY-HH;End;
+        End;
+  End;
+ End;
+ Dt_^.Modified:=True;
+End;
+
+Procedure DrwCopyObj(Wd_: PWindow);
+ Var Dt_: PDraw;
+Var I: Integer;
+Begin
+ Dt_:=Wd_^.Data;
+ If Dt_^.Sel=0 Then Exit;
+ DrwClipOb:=Dt_^.O[Dt_^.Sel];
+ If DrwClipOb.K=4 Then Begin
+  If DrwClipOb.PN>600 Then DrwClipOb.PN:=600;
+  For I:=0 To DrwClipOb.PN-1 Do DrwClipPts[1+I]:=Dt_^.Pts[DrwClipOb.P0+I];
+ End;
+ DrwClipHas:=True;
+End;
+
+Procedure DrwPasteObj(Wd_: PWindow);
+ Var Dt_: PDraw;
+Var I: Integer; Ob: TObj;
+Begin
+ Dt_:=Wd_^.Data;
+ If Not DrwClipHas Then Exit;
+ Ob:=DrwClipOb;
+ If Ob.K=4 Then Begin
+  If Dt_^.NP+Ob.PN>=MAXPTS Then Exit;
+  For I:=0 To Ob.PN-1 Do Begin
+   Dt_^.Pts[Dt_^.NP+1+I].X:=DrwClipPts[1+I].X+10;Dt_^.Pts[Dt_^.NP+1+I].Y:=DrwClipPts[1+I].Y+10;
+  End;
+  Ob.P0:=Dt_^.NP+1;Dt_^.NP:=Dt_^.NP+Ob.PN;
+ End;
+ Ob.X1:=Ob.X1+10;Ob.X2:=Ob.X2+10;Ob.Y1:=Ob.Y1+10;Ob.Y2:=Ob.Y2+10;
+ DrwClipOb.X1:=Ob.X1;DrwClipOb.X2:=Ob.X2;DrwClipOb.Y1:=Ob.Y1;DrwClipOb.Y2:=Ob.Y2;
+ If Ob.K=4 Then For I:=1 To Ob.PN Do Begin DrwClipPts[I].X:=DrwClipPts[I].X+10;DrwClipPts[I].Y:=DrwClipPts[I].Y+10;End;
+ DrwAddObj(Wd_,Ob);
+End;
+
 Procedure DrwOnCommand(Wd_: PWindow; Cmd: Integer);
  Var Dt_: PDraw;
 Var P: String; I: Integer; Ob: TObj;
@@ -10870,6 +11197,14 @@ Begin
              DrwSaveFile(Wd_,P);Dt_^.FName:=P;
             End;
   CM_DDELO: If Dt_^.Sel>0 Then DrwDelObj(Wd_,Dt_^.Sel);
+  CM_DOCOPY: DrwCopyObj(Wd_);
+  CM_DOCUT: Begin DrwCopyObj(Wd_);If Dt_^.Sel>0 Then DrwDelObj(Wd_,Dt_^.Sel);End;
+  CM_DOPASTE: DrwPasteObj(Wd_);
+  CM_DROT90: DrwXform(Wd_,1);
+  CM_DROT270: DrwXform(Wd_,2);
+  CM_DROT180: DrwXform(Wd_,3);
+  CM_DFLIPH: DrwXform(Wd_,4);
+  CM_DFLIPV: DrwXform(Wd_,5);
   CM_DCLR: Begin Dt_^.NO:=0;Dt_^.NP:=0;Dt_^.Sel:=0;Dt_^.Modified:=True;End;
   CM_DFRONT: If Dt_^.Sel>0 Then Begin Ob:=Dt_^.O[Dt_^.Sel];For I:=Dt_^.Sel To Dt_^.NO-1 Do Dt_^.O[I]:=Dt_^.O[I+1];Dt_^.O[Dt_^.NO]:=Ob;Dt_^.Sel:=Dt_^.NO;End;
   CM_DBACK: If Dt_^.Sel>0 Then Begin Ob:=Dt_^.O[Dt_^.Sel];For I:=Dt_^.Sel DownTo 2 Do Dt_^.O[I]:=Dt_^.O[I-1];Dt_^.O[1]:=Ob;Dt_^.Sel:=1;End;
@@ -13921,7 +14256,7 @@ BEGIN
  Level:=StartLvl-1;
  NWins:=0;NextId:=1;NewWinCount:=0;Capture:=Nil;
  DeskBack:=-1;DeskInk:=cBlk;DeskPaper:=cDGr;
- LeftHand:=False;LightsMin:=0;LightsOk:=False;LastActCs:=0;KeyDelay:=2;KeyRate:=3;ModemPort:=1;ModemBaud:=5;ModemTone:=True;ModemInit:='ATZ';PrinterSel:=1;PrinterPort:=1;TextSize:=2;
+ CalcDecPl:=-1;LeftHand:=False;LightsMin:=0;LightsOk:=False;LastActCs:=0;KeyDelay:=2;KeyRate:=3;ModemPort:=1;ModemBaud:=5;ModemTone:=True;ModemInit:='ATZ';PrinterSel:=1;PrinterPort:=1;TextSize:=2;
  IntlDefaults;Clock24:=Lang<>0;DblCs:=40;ClipIconId:=-1;SoundOn:=True;Randomize;
  If Not MouseDriverFound Then Begin
   WriteLn('Pilote de souris non trouve.');
