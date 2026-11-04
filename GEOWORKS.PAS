@@ -5361,11 +5361,15 @@ Const
  CM_AL_L=220; CM_AL_C=221; CM_AL_R=222; CM_AL_J=223;
  CM_SZ8=230; CM_SZ12=231; CM_SZ18=232; CM_SZ24=233;
  CM_BOLD=240; CM_ITAL=241; CM_UNDER=242; CM_RULER=250; CM_FONT=251;
+ CM_PGBRK=252; CM_SPECIAL=253; CM_INSFILE=254; CM_SAVETXT=255; CM_PLAIN=256;
+ StyMark = '`GWSTYLE';
 
 Type
  PEdit = ^TEdit;
  TEdit = Record
   L        : Array[1..MAXL] Of PString;
+  A        : Array[1..MAXL] Of PString;   { attributs par caractere : 1 gras, 2 italique, 4 souligne }
+  CurAttr  : Byte;
   Al       : Array[1..MAXL] Of Byte;
   N        : Integer;
   CX,CY    : Integer;
@@ -5384,6 +5388,9 @@ Procedure EdInsLine(Var Ed: TEdit; I: Integer; Const S: String); Forward;
 Procedure EdDelLine(Var Ed: TEdit; I: Integer); Forward;
 Function EdLoad(Var Ed: TEdit; Const Path: String): Boolean; Forward;
 Function EdSave(Var Ed: TEdit; Const Path: String): Boolean; Forward;
+Function EdSaveEx(Var Ed: TEdit; Const Path: String; Styles: Boolean): Boolean; Forward;
+Function EdAttrOf(Var Ed: TEdit; I: Integer): String; Forward;
+Procedure EdSetAttr(Var Ed: TEdit; I: Integer; Const T: String); Forward;
 Procedure EdSelOrder(Var Ed: TEdit; Var X1,Y1,X2,Y2: Integer); Forward;
 Procedure EdDelSel(Var Ed: TEdit); Forward;
 Procedure EdSelAll(Var Ed: TEdit); Forward;
@@ -5400,12 +5407,13 @@ Procedure EdPaste(Var Ed: TEdit); Forward;
 
 Var
  ClipL : Array[1..300] Of PString;
+ ClipA : Array[1..300] Of PString;
  ClipN : Integer;
 
 Procedure ClipClear;
 Var I: Integer;
 Begin
- For I:=1 To ClipN Do FreeStr(ClipL[I]);
+ For I:=1 To ClipN Do Begin FreeStr(ClipL[I]);FreeStr(ClipA[I]);End;
  ClipN:=0;ClipIconId:=-1;
 End;
 
@@ -5418,20 +5426,41 @@ End;
 Procedure EdFree(Var Ed: TEdit);
 Var I: Integer;
 Begin
- For I:=1 To Ed.N Do FreeStr(Ed.L[I]);
+ For I:=1 To Ed.N Do Begin FreeStr(Ed.L[I]);FreeStr(Ed.A[I]);End;
  Ed.N:=0;
 End;
 
 Procedure EdClear(Var Ed: TEdit);
 Begin
  EdFree(Ed);
- Ed.N:=1;Ed.L[1]:=NewStr('');Ed.Al[1]:=0;
+ Ed.N:=1;Ed.L[1]:=NewStr('');Ed.A[1]:=Nil;Ed.Al[1]:=0;Ed.CurAttr:=0;
  Ed.CX:=0;Ed.CY:=1;Ed.TopL:=1;Ed.LeftC:=0;Ed.HasSel:=False;Ed.Modified:=False;
 End;
 
 Function EdLine(Var Ed: TEdit; I: Integer): String;
 Begin
  If (I<1) Or (I>Ed.N) Then EdLine:='' Else EdLine:=Ed.L[I]^;
+End;
+
+{ Attributs d'une ligne, a la longueur du texte }
+Function EdAttrOf(Var Ed: TEdit; I: Integer): String;
+Var S,T: String;
+Begin
+ S:=EdLine(Ed,I);
+ If (I<1) Or (I>Ed.N) Or (Ed.A[I]=Nil) Then T:='' Else T:=Ed.A[I]^;
+ While Length(T)<Length(S) Do T:=T+#0;
+ If Length(T)>Length(S) Then T:=Copy(T,1,Length(S));
+ EdAttrOf:=T;
+End;
+
+Procedure EdSetAttr(Var Ed: TEdit; I: Integer; Const T: String);
+Var K: Integer; Any: Boolean;
+Begin
+ If (I<1) Or (I>Ed.N) Then Exit;
+ FreeStr(Ed.A[I]);
+ Any:=False;
+ For K:=1 To Length(T) Do If T[K]<>#0 Then Any:=True;
+ If Any Then Ed.A[I]:=NewStr(T);
 End;
 
 Procedure EdSetLine(Var Ed: TEdit; I: Integer; Const S: String);
@@ -5445,8 +5474,8 @@ Procedure EdInsLine(Var Ed: TEdit; I: Integer; Const S: String);
 Var K: Integer;
 Begin
  If Ed.N>=MAXL Then Exit;
- For K:=Ed.N DownTo I Do Begin Ed.L[K+1]:=Ed.L[K];Ed.Al[K+1]:=Ed.Al[K];End;
- Ed.L[I]:=NewStr(S);
+ For K:=Ed.N DownTo I Do Begin Ed.L[K+1]:=Ed.L[K];Ed.A[K+1]:=Ed.A[K];Ed.Al[K+1]:=Ed.Al[K];End;
+ Ed.L[I]:=NewStr(S);Ed.A[I]:=Nil;
  If I>1 Then Ed.Al[I]:=Ed.Al[I-1] Else Ed.Al[I]:=0;
  Inc(Ed.N);
 End;
@@ -5455,14 +5484,15 @@ Procedure EdDelLine(Var Ed: TEdit; I: Integer);
 Var K: Integer;
 Begin
  If (I<1) Or (I>Ed.N) Then Exit;
- FreeStr(Ed.L[I]);
- For K:=I To Ed.N-1 Do Begin Ed.L[K]:=Ed.L[K+1];Ed.Al[K]:=Ed.Al[K+1];End;
+ FreeStr(Ed.L[I]);FreeStr(Ed.A[I]);
+ For K:=I To Ed.N-1 Do Begin Ed.L[K]:=Ed.L[K+1];Ed.A[K]:=Ed.A[K+1];Ed.Al[K]:=Ed.Al[K+1];End;
+ Ed.A[Ed.N]:=Nil;
  Dec(Ed.N);
- If Ed.N=0 Then Begin Ed.N:=1;Ed.L[1]:=NewStr('');Ed.Al[1]:=0;End;
+ If Ed.N=0 Then Begin Ed.N:=1;Ed.L[1]:=NewStr('');Ed.A[1]:=Nil;Ed.Al[1]:=0;End;
 End;
 
 Function EdLoad(Var Ed: TEdit; Const Path: String): Boolean;
-Var F: Text; S: String;
+Var F: Text; S: String; I,K,N0: Integer; Stop: Boolean;
 Begin
  EdLoad:=False;
  {$I-}
@@ -5471,33 +5501,72 @@ Begin
  {$I+}
  If IOResult<>0 Then Exit;
  EdFree(Ed);
- Ed.N:=0;
+ Ed.N:=0;Ed.CurAttr:=0;
+ Stop:=False;
  {$I-}
- While Not Eof(F) And (Ed.N<MAXL) Do Begin
+ While Not Eof(F) And (Ed.N<MAXL) And Not Stop Do Begin
   ReadLn(F,S);
-  Inc(Ed.N);Ed.L[Ed.N]:=NewStr(Copy(S,1,MAXLEN));Ed.Al[Ed.N]:=0;
+  If S=StyMark Then Begin
+   N0:=Ed.N;
+   For I:=1 To N0 Do Begin
+    If Not Eof(F) Then Begin
+     ReadLn(F,S);
+     For K:=1 To Length(S) Do S[K]:=Chr(Ord(S[K])-48);
+     EdSetAttr(Ed,I,S);
+    End;
+   End;
+   If Not Eof(F) Then Begin
+    ReadLn(F,S);
+    For I:=1 To Min2(N0,Length(S)) Do Ed.Al[I]:=Ord(S[I])-48;
+   End;
+   Stop:=True;
+  End Else Begin
+   Inc(Ed.N);Ed.L[Ed.N]:=NewStr(Copy(S,1,MAXLEN));Ed.A[Ed.N]:=Nil;Ed.Al[Ed.N]:=0;
+  End;
  End;
  Close(F);
  {$I+}
  If IOResult<>0 Then Begin End;
- If Ed.N=0 Then Begin Ed.N:=1;Ed.L[1]:=NewStr('');Ed.Al[1]:=0;End;
+ If Ed.N=0 Then Begin Ed.N:=1;Ed.L[1]:=NewStr('');Ed.A[1]:=Nil;Ed.Al[1]:=0;End;
  Ed.CX:=0;Ed.CY:=1;Ed.TopL:=1;Ed.LeftC:=0;Ed.HasSel:=False;Ed.Modified:=False;
  EdLoad:=True;
 End;
 
-Function EdSave(Var Ed: TEdit; Const Path: String): Boolean;
-Var F: Text; I: Integer;
+Function EdSaveEx(Var Ed: TEdit; Const Path: String; Styles: Boolean): Boolean;
+Var F: Text; I,K: Integer; Any: Boolean; S: String;
 Begin
- EdSave:=False;
+ EdSaveEx:=False;
+ Any:=False;
+ If Styles Then
+  For I:=1 To Ed.N Do Begin
+   If Ed.Al[I]<>0 Then Any:=True;
+   If Ed.A[I]<>Nil Then Any:=True;
+  End;
  {$I-}
  Assign(F,Path);
  Rewrite(F);
  For I:=1 To Ed.N Do WriteLn(F,Ed.L[I]^);
+ If Any Then Begin
+  WriteLn(F,StyMark);
+  For I:=1 To Ed.N Do Begin
+   S:=EdAttrOf(Ed,I);
+   For K:=1 To Length(S) Do S[K]:=Chr(Ord(S[K])+48);
+   WriteLn(F,S);
+  End;
+  S:='';
+  For I:=1 To Ed.N Do S:=S+Chr(48+Ed.Al[I]);
+  WriteLn(F,Copy(S,1,255));
+ End;
  Close(F);
  {$I+}
  If IOResult<>0 Then Exit;
  Ed.Modified:=False;
- EdSave:=True;
+ EdSaveEx:=True;
+End;
+
+Function EdSave(Var Ed: TEdit; Const Path: String): Boolean;
+Begin
+ EdSave:=EdSaveEx(Ed,Path,True);
 End;
 
 Procedure EdSelOrder(Var Ed: TEdit; Var X1,Y1,X2,Y2: Integer);
@@ -5507,15 +5576,17 @@ Begin
 End;
 
 Procedure EdDelSel(Var Ed: TEdit);
-Var X1,Y1,X2,Y2,I: Integer; S: String;
+Var X1,Y1,X2,Y2,I: Integer; S,T: String;
 Begin
  If Not Ed.HasSel Then Exit;
  EdSelOrder(Ed,X1,Y1,X2,Y2);
  If Y1=Y2 Then Begin
-  S:=EdLine(Ed,Y1);Delete(S,X1+1,X2-X1);EdSetLine(Ed,Y1,S);
+  T:=EdAttrOf(Ed,Y1);Delete(T,X1+1,X2-X1);
+  S:=EdLine(Ed,Y1);Delete(S,X1+1,X2-X1);EdSetLine(Ed,Y1,S);EdSetAttr(Ed,Y1,T);
  End Else Begin
+  T:=Copy(EdAttrOf(Ed,Y1),1,X1)+Copy(EdAttrOf(Ed,Y2),X2+1,255);
   S:=Copy(EdLine(Ed,Y1),1,X1)+Copy(EdLine(Ed,Y2),X2+1,255);
-  EdSetLine(Ed,Y1,S);
+  EdSetLine(Ed,Y1,S);EdSetAttr(Ed,Y1,T);
   For I:=Y2 DownTo Y1+1 Do EdDelLine(Ed,I);
  End;
  Ed.CX:=X1;Ed.CY:=Y1;Ed.HasSel:=False;Ed.Modified:=True;
@@ -5547,22 +5618,24 @@ Begin
  If Not Ed.HasSel Then Exit;
  ClipClear;
  EdSelOrder(Ed,X1,Y1,X2,Y2);
- If Y1=Y2 Then Begin ClipN:=1;ClipL[1]:=NewStr(Copy(EdLine(Ed,Y1),X1+1,X2-X1));End
+ If Y1=Y2 Then Begin ClipN:=1;ClipL[1]:=NewStr(Copy(EdLine(Ed,Y1),X1+1,X2-X1));ClipA[1]:=NewStr(Copy(EdAttrOf(Ed,Y1),X1+1,X2-X1));End
  Else Begin
-  ClipN:=1;ClipL[1]:=NewStr(Copy(EdLine(Ed,Y1),X1+1,255));
-  For I:=Y1+1 To Y2-1 Do If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(EdLine(Ed,I));End;
-  If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(Copy(EdLine(Ed,Y2),1,X2));End;
+  ClipN:=1;ClipL[1]:=NewStr(Copy(EdLine(Ed,Y1),X1+1,255));ClipA[1]:=NewStr(Copy(EdAttrOf(Ed,Y1),X1+1,255));
+  For I:=Y1+1 To Y2-1 Do If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(EdLine(Ed,I));ClipA[ClipN]:=NewStr(EdAttrOf(Ed,I));End;
+  If ClipN<300 Then Begin Inc(ClipN);ClipL[ClipN]:=NewStr(Copy(EdLine(Ed,Y2),1,X2));ClipA[ClipN]:=NewStr(Copy(EdAttrOf(Ed,Y2),1,X2));End;
  End;
 End;
 
 Procedure EdInsChar(Var Ed: TEdit; C: Char);
-Var S: String;
+Var S,T: String;
 Begin
  If Ed.HasSel Then EdDelSel(Ed);
  S:=EdLine(Ed,Ed.CY);
  If Length(S)>=MAXLEN Then Exit;
+ T:=EdAttrOf(Ed,Ed.CY);
+ Insert(Chr(Ed.CurAttr),T,Ed.CX+1);
  Insert(C,S,Ed.CX+1);
- EdSetLine(Ed,Ed.CY,S);
+ EdSetLine(Ed,Ed.CY,S);EdSetAttr(Ed,Ed.CY,T);
  Inc(Ed.CX);
  Ed.Modified:=True;
 End;
@@ -5575,38 +5648,44 @@ Begin
 End;
 
 Procedure EdNewLine(Var Ed: TEdit);
-Var S,R: String;
+Var S,R,T: String;
 Begin
  If Ed.HasSel Then EdDelSel(Ed);
- S:=EdLine(Ed,Ed.CY);
+ S:=EdLine(Ed,Ed.CY);T:=EdAttrOf(Ed,Ed.CY);
  R:=Copy(S,Ed.CX+1,255);
  EdSetLine(Ed,Ed.CY,Copy(S,1,Ed.CX));
  EdInsLine(Ed,Ed.CY+1,R);
+ EdSetAttr(Ed,Ed.CY,Copy(T,1,Ed.CX));EdSetAttr(Ed,Ed.CY+1,Copy(T,Ed.CX+1,255));
  Inc(Ed.CY);Ed.CX:=0;
  Ed.Modified:=True;
 End;
 
 Procedure EdBackspace(Var Ed: TEdit);
-Var S: String;
+Var S,T: String;
 Begin
  If Ed.HasSel Then Begin EdDelSel(Ed);Exit;End;
  If Ed.CX>0 Then Begin
-  S:=EdLine(Ed,Ed.CY);Delete(S,Ed.CX,1);EdSetLine(Ed,Ed.CY,S);Dec(Ed.CX);Ed.Modified:=True;
+  S:=EdLine(Ed,Ed.CY);T:=EdAttrOf(Ed,Ed.CY);Delete(S,Ed.CX,1);Delete(T,Ed.CX,1);
+  EdSetLine(Ed,Ed.CY,S);EdSetAttr(Ed,Ed.CY,T);Dec(Ed.CX);Ed.Modified:=True;
  End Else If Ed.CY>1 Then Begin
   Ed.CX:=Length(EdLine(Ed,Ed.CY-1));
-  EdSetLine(Ed,Ed.CY-1,EdLine(Ed,Ed.CY-1)+EdLine(Ed,Ed.CY));
+  T:=EdAttrOf(Ed,Ed.CY-1)+EdAttrOf(Ed,Ed.CY);
+  EdSetLine(Ed,Ed.CY-1,EdLine(Ed,Ed.CY-1)+EdLine(Ed,Ed.CY));EdSetAttr(Ed,Ed.CY-1,T);
   EdDelLine(Ed,Ed.CY);Dec(Ed.CY);Ed.Modified:=True;
  End;
 End;
 
 Procedure EdDelChar(Var Ed: TEdit);
-Var S: String;
+Var S,T: String;
 Begin
  If Ed.HasSel Then Begin EdDelSel(Ed);Exit;End;
  S:=EdLine(Ed,Ed.CY);
- If Ed.CX<Length(S) Then Begin Delete(S,Ed.CX+1,1);EdSetLine(Ed,Ed.CY,S);Ed.Modified:=True;End
- Else If Ed.CY<Ed.N Then Begin
-  EdSetLine(Ed,Ed.CY,S+EdLine(Ed,Ed.CY+1));EdDelLine(Ed,Ed.CY+1);Ed.Modified:=True;
+ T:=EdAttrOf(Ed,Ed.CY);
+ If Ed.CX<Length(S) Then Begin
+  Delete(S,Ed.CX+1,1);Delete(T,Ed.CX+1,1);EdSetLine(Ed,Ed.CY,S);EdSetAttr(Ed,Ed.CY,T);Ed.Modified:=True;
+ End Else If Ed.CY<Ed.N Then Begin
+  T:=T+EdAttrOf(Ed,Ed.CY+1);
+  EdSetLine(Ed,Ed.CY,S+EdLine(Ed,Ed.CY+1));EdSetAttr(Ed,Ed.CY,T);EdDelLine(Ed,Ed.CY+1);Ed.Modified:=True;
  End;
 End;
 
@@ -5634,15 +5713,22 @@ Begin
 End;
 
 Procedure EdPaste(Var Ed: TEdit);
-Var I: Integer; S: String;
+Var I,J: Integer; S,T: String; Sv: Byte;
 Begin
  If ClipN=0 Then Exit;
  If Ed.HasSel Then EdDelSel(Ed);
+ Sv:=Ed.CurAttr;
  For I:=1 To ClipN Do Begin
   S:=ClipL[I]^;
-  EdInsText(Ed,S);
+  If ClipA[I]<>Nil Then T:=ClipA[I]^ Else T:='';
+  While Length(T)<Length(S) Do T:=T+Chr(Sv);
+  For J:=1 To Length(S) Do Begin
+   If S[J]='|' Then EdNewLine(Ed)
+   Else Begin Ed.CurAttr:=Ord(T[J]);EdInsChar(Ed,S[J]);End;
+  End;
   If I<ClipN Then EdNewLine(Ed);
  End;
+ Ed.CurAttr:=Sv;
 End;
 
 { ---------------------------------------------------------------------- }
@@ -5683,6 +5769,12 @@ Function EdwDoSave(Wd_: PWindow; AsNew: Boolean): Boolean; Forward;
 Procedure EdwDoFind(Wd_: PWindow; Again: Boolean); Forward;
 Procedure EdwDoPrint(Wd_: PWindow); Forward;
 Procedure EdwOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+Procedure EdwToggleAttr(Wd_: PWindow; Bit: Integer); Forward;
+Procedure EdwSpecial(Wd_: PWindow); Forward;
+Procedure EdwInsertFile(Wd_: PWindow); Forward;
+Procedure EdwSaveText(Wd_: PWindow); Forward;
+Procedure EdwSyncAttr(Wd_: PWindow); Forward;
+Procedure EdwDrawStyled(X,Y: Integer; Const S,At: String; Fg,Scale,CW,CH: Integer); Forward;
 Procedure EdwOnKey(Wd_: PWindow; K: Word); Forward;
 Procedure EdwOnMouse(Wd_: PWindow; Var Ev: TEvent); Forward;
 
@@ -5733,6 +5825,7 @@ Begin
  WinAddItem(Wd_,'Save~Enregistrer~Speichern',CM_SAVE,'Ctrl+S');
  WinAddItem(Wd_,'Save As...~Enregistrer sous...~Speichern unter...',CM_SAVEAS,'');
  WinAddSep(Wd_);
+ If Dt_^.Mode=3 Then WinAddItem(Wd_,'Save As Text File...~Enregistrer en texte...~Als Textdatei speichern...',CM_SAVETXT,'');
  WinAddItem(Wd_,'Print~Imprimer~Drucken',CM_PRINT,'');
  WinAddSep(Wd_);
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
@@ -5745,6 +5838,12 @@ Begin
  WinAddItem(Wd_,'Find...~Rechercher...~Suchen...',CM_FIND,'Ctrl+F');
  WinAddItem(Wd_,'Find Next~Suivant~Weitersuchen',CM_FINDNEXT,'F3');
  WinAddItem(Wd_,'Insert Date~Ins'#130'rer la date~Datum einf'#129'gen',CM_DATE,'');
+ WinAddItem(Wd_,'Insert From File...~Ins'#130'rer un fichier...~Datei einf'#129'gen...',CM_INSFILE,'');
+ If Dt_^.Mode=3 Then Begin
+  WinAddItem(Wd_,'Page Break~Saut de page~Seitenumbruch',CM_PGBRK,'');
+  WinAddItem(Wd_,'Special Characters...~Caract'#138'res sp'#130'ciaux...~Sonderzeichen...',CM_SPECIAL,'');
+  WinAddItem(Wd_,'Plain Text~Texte normal~Normaler Text',CM_PLAIN,'');
+ End;
  If Dt_^.Mode=3 Then Begin
   WinAddMenu(Wd_,'View~Affichage~Ansicht');
   WinAddItem(Wd_,'Ruler~R'#138'gle~Lineal',CM_RULER,'');
@@ -5836,6 +5935,36 @@ Begin
  If Dt_^.E.CX>=Dt_^.E.LeftC+VC Then Dt_^.E.LeftC:=Dt_^.E.CX-VC+1;
 End;
 
+{ Dessine un texte avec ses attributs (gras, italique, souligne) par plages }
+Procedure EdwDrawStyled(X,Y: Integer; Const S,At: String; Fg,Scale,CW,CH: Integer);
+Var J,K,A,SX1,SY1,SX2,SY2: Integer; R: String; Sv: Boolean;
+Begin
+ J:=1;
+ While J<=Length(S) Do Begin
+  If J<=Length(At) Then A:=Ord(At[J]) Else A:=0;
+  K:=J;
+  While (K<Length(S)) And (K<Length(At)) And (Ord(At[K+1])=A) Do Inc(K);
+  If (K=J) And (J>Length(At)) Then K:=Length(S);
+  R:=Copy(S,J,K-J+1);
+  If (A And 2)<>0 Then Begin
+   { italique : la moitie haute est decalee d'un pixel }
+   SX1:=CX1;SY1:=CY1;SX2:=CX2;SY2:=CY2;
+   SetClip(SX1,Max2(SY1,Y),SX2,Min2(SY2,Y+CH Div 2-1));
+   If Scale=1 Then GText(X+(J-1)*CW+1,Y+1,R,Fg) Else GTextBig(X+(J-1)*CW+1,Y+1,R,Scale,Fg);
+   SetClip(SX1,Max2(SY1,Y+CH Div 2),SX2,Min2(SY2,Y+CH-1));
+   If Scale=1 Then GText(X+(J-1)*CW,Y+1,R,Fg) Else GTextBig(X+(J-1)*CW,Y+1,R,Scale,Fg);
+   SetClip(SX1,SY1,SX2,SY2);
+  End Else Begin
+   If Scale=1 Then GText(X+(J-1)*CW,Y+1,R,Fg) Else GTextBig(X+(J-1)*CW,Y+1,R,Scale,Fg);
+  End;
+  If (A And 1)<>0 Then Begin
+   If Scale=1 Then GText(X+(J-1)*CW+1,Y+1,R,Fg) Else GTextBig(X+(J-1)*CW+1,Y+1,R,Scale,Fg);
+  End;
+  If (A And 4)<>0 Then GHLine(X+(J-1)*CW,X+(J-1)*CW+Length(R)*CW-1,Y+CH-2,Fg);
+  J:=K+1;
+ End;
+End;
+
 Procedure EdwDrawClient(Wd_: PWindow);
  Var Dt_: PEditWin;
 Var X1,Y1,X2,Y2,CW,CH,VR,VC,I,Y,X,TW,Of_,SX1,SX2,A,B: Integer; S,T: String;
@@ -5856,7 +5985,9 @@ Begin
    End Else If I Mod 4=0 Then GVLine(X1+8+I*8,Y1+7,Y1+13,cBlk)
    Else GVLine(X1+8+I*8,Y1+10,Y1+13,cBlk);
   End;
-  GText(X1+8,Y1+15,'<'+T3('Page 1','Page 1','Seite 1')+'>  '+#24+' '+#24+' '+#24,cBlk);
+  A:=1;
+  For B:=1 To Dt_^.E.CY-1 Do If EdLine(Dt_^.E,B)=#12 Then Inc(A);
+  GText(X1+8,Y1+15,'<'+T3('Page ','Page ','Seite ')+IntStr(A)+'>  '+#24+' '+#24+' '+#24,cBlk);
  End;
  EdwTextRect(Wd_,HX1,HY1,HX2,HY2);
  If Dt_^.Mode=1 Then Begin
@@ -5894,14 +6025,10 @@ Begin
     End;
    End;
    If Dt_^.Mode=1 Then Fg:=cBlu Else Fg:=cBlk;
-   If Dt_^.Scale=1 Then Begin
-    GText(X,Y+1,S,Fg);
-    If Dt_^.Bold Then GText(X+1,Y+1,S,Fg);
-   End Else Begin
-    GTextBig(X,Y+1,S,Dt_^.Scale,Fg);
-    If Dt_^.Bold Then GTextBig(X+1,Y+1,S,Dt_^.Scale,Fg);
-   End;
-   If Dt_^.Und Then GHLine(X,X+Length(S)*CW-1,Y+CH-2,Fg);
+   If EdLine(Dt_^.E,I)=#12 Then Begin
+    GText(X,Y+1,Copy('- - - - - '+T3('Page break','Saut de page','Seitenumbruch')+' - - - - - - - - - - - - - - - - - -',1,VC),cDGr);
+   End Else
+    EdwDrawStyled(X,Y,S,Copy(EdAttrOf(Dt_^.E,I),Dt_^.E.LeftC+1,VC),Fg,Dt_^.Scale,CW,CH);
    If Dt_^.E.HasSel Then Begin
     { relecture en blanc de la partie selectionnee }
     EdSelOrder(Dt_^.E,A,B,SX1,SX2);
@@ -5911,8 +6038,7 @@ Begin
      CX_:=Max2(CX_,Dt_^.E.LeftC);Of_:=Min2(Of_,Dt_^.E.LeftC+VC);
      If Of_>CX_ Then Begin
       T:=Copy(EdLine(Dt_^.E,I),CX_+1,Of_-CX_);
-      If Dt_^.Scale=1 Then GText(X+(CX_-Dt_^.E.LeftC)*CW,Y+1,T,cWht)
-      Else GTextBig(X+(CX_-Dt_^.E.LeftC)*CW,Y+1,T,Dt_^.Scale,cWht);
+      If T<>#12 Then EdwDrawStyled(X+(CX_-Dt_^.E.LeftC)*CW,Y,T,Copy(EdAttrOf(Dt_^.E,I),CX_+1,Of_-CX_),cWht,Dt_^.Scale,CW,CH);
      End;
     End;
    End;
@@ -5954,7 +6080,7 @@ Begin
  WinSetFlag(Wd_,CM_COPY,1,Not Dt_^.E.HasSel);
  WinSetFlag(Wd_,CM_PASTE,1,ClipN=0);
  WinSetFlag(Wd_,CM_RULER,2,Dt_^.RulerOn);
- WinSetFlag(Wd_,CM_BOLD,2,Dt_^.Bold);WinSetFlag(Wd_,CM_ITAL,2,Dt_^.Ital);WinSetFlag(Wd_,CM_UNDER,2,Dt_^.Und);
+ WinSetFlag(Wd_,CM_BOLD,2,(Dt_^.E.CurAttr And 1)<>0);WinSetFlag(Wd_,CM_ITAL,2,(Dt_^.E.CurAttr And 2)<>0);WinSetFlag(Wd_,CM_UNDER,2,(Dt_^.E.CurAttr And 4)<>0);
  WinSetFlag(Wd_,CM_SZ8,2,Dt_^.Scale=1);WinSetFlag(Wd_,CM_SZ12,2,Dt_^.Scale=1);
  WinSetFlag(Wd_,CM_SZ18,2,Dt_^.Scale=2);WinSetFlag(Wd_,CM_SZ24,2,Dt_^.Scale=3);
  WinSetFlag(Wd_,CM_AL_L,2,Dt_^.E.Al[Dt_^.E.CY]=0);WinSetFlag(Wd_,CM_AL_C,2,Dt_^.E.Al[Dt_^.E.CY]=1);
@@ -6054,6 +6180,115 @@ Begin
  If Not Ok Then Info(T3('Print','Imprimer','Drucken'),T3('No printer available.','Aucune imprimante disponible.','Kein Drucker verf'#129'gbar.'));
 End;
 
+{ Applique ou retire un attribut sur la selection (ou sur le style de frappe) }
+Procedure EdwToggleAttr(Wd_: PWindow; Bit: Integer);
+ Var Dt_: PEditWin;
+Var X1,Y1,X2,Y2,I,K,A,B: Integer; T: String; All,SetOn: Boolean;
+Begin
+ Dt_:=Wd_^.Data;
+ If Not Dt_^.E.HasSel Then Begin
+  If Bit=0 Then Dt_^.E.CurAttr:=0 Else Dt_^.E.CurAttr:=Dt_^.E.CurAttr Xor Bit;
+  Invalidate(Wd_);Exit;
+ End;
+ EdSelOrder(Dt_^.E,X1,Y1,X2,Y2);
+ All:=True;
+ If Bit<>0 Then
+  For I:=Y1 To Y2 Do Begin
+   If I=Y1 Then A:=X1 Else A:=0;
+   If I=Y2 Then B:=X2 Else B:=Length(EdLine(Dt_^.E,I));
+   T:=EdAttrOf(Dt_^.E,I);
+   For K:=A+1 To B Do If (Ord(T[K]) And Bit)=0 Then All:=False;
+  End;
+ SetOn:=Not All;
+ For I:=Y1 To Y2 Do Begin
+  If I=Y1 Then A:=X1 Else A:=0;
+  If I=Y2 Then B:=X2 Else B:=Length(EdLine(Dt_^.E,I));
+  T:=EdAttrOf(Dt_^.E,I);
+  For K:=A+1 To B Do Begin
+   If Bit=0 Then T[K]:=#0
+   Else If SetOn Then T[K]:=Chr(Ord(T[K]) Or Bit)
+   Else T[K]:=Chr(Ord(T[K]) And (255-Bit));
+  End;
+  EdSetAttr(Dt_^.E,I,T);
+ End;
+ Dt_^.E.Modified:=True;
+ Invalidate(Wd_);
+End;
+
+{ Le style de frappe suit le caractere precedant le curseur }
+Procedure EdwSyncAttr(Wd_: PWindow);
+ Var Dt_: PEditWin;
+Var T: String;
+Begin
+ Dt_:=Wd_^.Data;
+ T:=EdAttrOf(Dt_^.E,Dt_^.E.CY);
+ If (Dt_^.E.CX>0) And (Dt_^.E.CX<=Length(T)) Then Dt_^.E.CurAttr:=Ord(T[Dt_^.E.CX])
+ Else If (Dt_^.E.CX=0) And (Length(T)>0) Then Dt_^.E.CurAttr:=Ord(T[1])
+ Else If Length(T)=0 Then Dt_^.E.CurAttr:=0;
+End;
+
+{ Palette de caracteres speciaux }
+Procedure EdwSpecial(Wd_: PWindow);
+ Var Dt_: PEditWin;
+Const Chars : String = #131#135#130#138#136#137#133#160#132#129#148#164#225#248#241#253#172#171#174#175#168#173#246#251#158#157#156#155#169#170;
+Var R,I,K: Integer; Desc,Lst: String;
+Begin
+ Dt_:=Wd_^.Data;
+ Desc:='a circumflex|c cedilla|e acute|e grave|e circumflex|e diaeresis|a grave|a acute|a umlaut|u umlaut|o umlaut|n tilde'+
+  '|sharp s|degree|plus-minus|squared|quarter|half|left guillemet|right guillemet|inverted ?|inverted !|divide|square root|peseta|yen|pound|cent|not|not';
+ Lst:='';I:=1;
+ While (Desc<>'') And (I<=Length(Chars)) Do Begin
+  K:=Pos('|',Desc);
+  If K=0 Then K:=Length(Desc)+1;
+  If Lst<>'' Then Lst:=Lst+'|';
+  Lst:=Lst+'('+Chars[I]+')  '+Copy(Desc,1,K-1);
+  Delete(Desc,1,K);Inc(I);
+ End;
+ R:=ChoiceBox(T3('Special Characters','Caract'#138'res sp'#130'ciaux','Sonderzeichen'),T3('Insert:','Ins'#130'rer :','Einf'#129'gen:'),Lst,1);
+ If (R>=1) And (R<=Length(Chars)) Then Begin
+  EdInsChar(Dt_^.E,Chars[R]);
+  EdwReveal(Wd_);Invalidate(Wd_);
+ End;
+End;
+
+Procedure EdwInsertFile(Wd_: PWindow);
+ Var Dt_: PEditWin;
+Var P,S: String; F: Text; First: Boolean;
+Begin
+ Dt_:=Wd_^.Data;
+ P:=CurDirStr;
+ If Not FileDlg(T3('Insert From File','Ins'#130'rer un fichier','Datei einf'#129'gen'),'*.*',P,False) Then Exit;
+ {$I-}
+ Assign(F,P);Reset(F);
+ {$I+}
+ If IOResult<>0 Then Begin Info(T3('Error','Erreur','Fehler'),T3('Cannot open file.','Impossible d''ouvrir le fichier.','Datei nicht ladbar.'));Exit;End;
+ If Dt_^.E.HasSel Then EdDelSel(Dt_^.E);
+ First:=True;
+ {$I-}
+ While Not Eof(F) Do Begin
+  ReadLn(F,S);
+  If Not First Then EdNewLine(Dt_^.E);
+  First:=False;
+  If S=StyMark Then Begin Dt_^.E.Modified:=True;Break;End;
+  EdInsText(Dt_^.E,Copy(S,1,MAXLEN));
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+ EdwReveal(Wd_);Invalidate(Wd_);
+End;
+
+Procedure EdwSaveText(Wd_: PWindow);
+ Var Dt_: PEditWin;
+Var P: String;
+Begin
+ Dt_:=Wd_^.Data;
+ P:=JoinPath(CurDirStr,'UNTITLED.TXT');
+ If Not FileDlg(T3('Save As Text File','Enregistrer en texte','Als Textdatei speichern'),'*.TXT',P,True) Then Exit;
+ If EdSaveEx(Dt_^.E,P,False) Then Dt_^.E.Modified:=True
+ Else Info(T3('Error','Erreur','Fehler'),T3('Cannot save file.','Impossible d''enregistrer.','Datei nicht speicherbar.'));
+End;
+
 Procedure EdwOnCommand(Wd_: PWindow; Cmd: Integer);
  Var Dt_: PEditWin;
 Var D: Word; Y,M,Dd,W: Word; I: Integer;
@@ -6079,9 +6314,25 @@ Begin
   CM_SZ8,CM_SZ12: Begin Dt_^.Scale:=1;Invalidate(Wd_);End;
   CM_SZ18: Begin Dt_^.Scale:=2;Invalidate(Wd_);End;
   CM_SZ24: Begin Dt_^.Scale:=3;Invalidate(Wd_);End;
-  CM_BOLD: Begin Dt_^.Bold:=Not Dt_^.Bold;Invalidate(Wd_);End;
-  CM_ITAL: Begin Dt_^.Ital:=Not Dt_^.Ital;Invalidate(Wd_);End;
-  CM_UNDER: Begin Dt_^.Und:=Not Dt_^.Und;Invalidate(Wd_);End;
+  CM_BOLD: EdwToggleAttr(Wd_,1);
+  CM_ITAL: EdwToggleAttr(Wd_,2);
+  CM_UNDER: EdwToggleAttr(Wd_,4);
+  CM_PLAIN: Begin
+             If Dt_^.E.HasSel Then Begin
+              For I:=1 To 1 Do Begin End;
+              EdwToggleAttr(Wd_,0);
+             End Else Dt_^.E.CurAttr:=0;
+            End;
+  CM_PGBRK: Begin
+             If Dt_^.E.HasSel Then EdDelSel(Dt_^.E);
+             If Dt_^.E.CX>0 Then EdNewLine(Dt_^.E);
+             EdInsLine(Dt_^.E,Dt_^.E.CY,#12);
+             Inc(Dt_^.E.CY);Dt_^.E.CX:=0;Dt_^.E.Modified:=True;
+             EdwReveal(Wd_);Invalidate(Wd_);
+            End;
+  CM_SPECIAL: EdwSpecial(Wd_);
+  CM_INSFILE: EdwInsertFile(Wd_);
+  CM_SAVETXT: EdwSaveText(Wd_);
   CM_RULER: Begin Dt_^.RulerOn:=Not Dt_^.RulerOn;Invalidate(Wd_);End;
   CM_FONT: Info(T3('Fonts','Polices','Schriften'),T3('Only the system font is available in this clone.','Seule la police syst'#138'me est disponible dans ce clone.','In diesem Klon ist nur die Systemschrift verf'#129'gbar.'));
  Else CommonCmd(Wd_,Cmd);
@@ -6096,9 +6347,9 @@ Begin
  Dt_:=Wd_^.Data;
  Dt_^.CursorOn:=True;
  Case K Of
-  K_LEFT,K_RIGHT,K_UP,K_DOWN,K_HOME,K_END,K_PGUP,K_PGDN: EdMoveCur(Dt_^.E,K,False);
+  K_LEFT,K_RIGHT,K_UP,K_DOWN,K_HOME,K_END,K_PGUP,K_PGDN: Begin EdMoveCur(Dt_^.E,K,False);EdwSyncAttr(Wd_);End;
   K_ENTER: EdNewLine(Dt_^.E);
-  K_BKSP: EdBackspace(Dt_^.E);
+  K_BKSP: Begin EdBackspace(Dt_^.E);EdwSyncAttr(Wd_);End;
   K_DEL: EdDelChar(Dt_^.E);
   K_TAB: Begin EdInsChar(Dt_^.E,' ');EdInsChar(Dt_^.E,' ');EdInsChar(Dt_^.E,' ');EdInsChar(Dt_^.E,' ');End;
   K_CTRLC: EdCopySel(Dt_^.E);
@@ -6164,6 +6415,7 @@ Begin
   SetCaret(Ev.X,Ev.Y);
   Dt_^.E.HasSel:=False;Dt_^.E.SAX:=Dt_^.E.CX;Dt_^.E.SAY:=Dt_^.E.CY;
   Dt_^.Selecting:=True;
+  EdwSyncAttr(Wd_);
   Dt_^.CursorOn:=True;
   Invalidate(Wd_);
  End Else If Ev.Kind=EV_MOVE Then Begin
