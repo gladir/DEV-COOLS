@@ -55,7 +55,7 @@ Const
  MAXWIN   = 32;
  MAXMENU  = 8;
  MAXITEM  = 26;
- MAXCTL   = 40;
+ MAXCTL   = 56;
 
  { Codes de touches : caractere = ord ; etendue = 256 + code }
  K_ESC    = 27;
@@ -123,6 +123,7 @@ Const
 { ====================================================================== }
 
 Type
+ TComSet = Record Baud,Bits,Par,Stop,Hs: Integer; End;
  TEvent = Record
   Kind : Byte;
   Key  : Word;
@@ -278,6 +279,21 @@ Var
  CurSym      : String[4];
  DecSep      : String[1];
  ThouSep     : String[1];
+ S1159,S2359 : String[8];
+ ListSep     : String[1];
+ CurFmt,NumDigits : Integer;
+ LeadZero    : Boolean;
+ MouseAcc    : Integer;       { 0 aucune, 1 moyenne, 2 haute }
+ PrnFileName : String[40];
+ PrnOrient,PrnPaper,DevTimeout,TxTimeout : Integer;
+ ComSet      : Array[1..2] Of TComSet;
+ SpoolPort   : Array[1..8] Of String[40];
+ SpoolPrn    : Array[1..8] Of String[30];
+ SpoolSrc    : Array[1..8] Of String[80];
+ SpoolSrcNext: String[80];
+
+Const
+ PaperNames: Array[0..3] Of String[8]=('Letter','Legal','A4','B5');
 
 { ====================================================================== }
 {                  LANGUE / UTILITAIRES GENERAUX                         }
@@ -393,6 +409,11 @@ Begin
  If V<Lo Then V:=Lo;
  If V>Hi Then V:=Hi;
  Clamp:=V;
+End;
+
+Function IfThenI(C: Boolean; A,B: Integer): Integer;
+Begin
+ If C Then IfThenI:=A Else IfThenI:=B;
 End;
 
 Function StrVal(Const S: String; Def: LongInt): LongInt;
@@ -575,11 +596,11 @@ Var S: String; Suf: String;
 Begin
  Suf:='';
  If Not Clock24 Then Begin
-  If H>=12 Then Suf:=' PM' Else Suf:=' AM';
+  If H>=12 Then Suf:=' '+S2359 Else Suf:=' '+S1159;
   H:=H Mod 12;
   If H=0 Then H:=12;
  End;
- S:=IntStr(H)+TimeSep+Pad2(M);
+ If LeadZero Then S:=Pad2(H)+TimeSep+Pad2(M) Else S:=IntStr(H)+TimeSep+Pad2(M);
  If Sec>=0 Then S:=S+TimeSep+Pad2(Sec);
  TimeStr:=S+Suf;
 End;
@@ -1120,7 +1141,7 @@ Begin
 End;
 
 Procedure PollEvent(Var E: TEvent);
-Var Ch: Char; K: Word; Nw: LongInt;
+Var Ch: Char; K: Word; Nw: LongInt; Dx,Dy,Mt: LongInt;
 Begin
  E.Kind:=EV_NONE;E.Key:=0;E.X:=MX;E.Y:=MY;E.B:=MB;E.Dbl:=False;
  If KeyPressed Then Begin
@@ -1131,6 +1152,14 @@ Begin
  End;
  PrevMX:=MX;PrevMY:=MY;LastB:=MB;
  GetMouseState(MX,MY,MB);
+ If MouseAcc>0 Then Begin
+  Dx:=MX-PrevMX;Dy:=MY-PrevMY;
+  If (Abs(Dx)<=40) And (Abs(Dy)<=40) And ((Abs(Dx)+Abs(Dy))>=IfThenI(MouseAcc=2,2,4)) Then Begin
+   Mt:=1+MouseAcc;
+   MX:=Clamp(PrevMX+Dx*Mt,0,SCR_W-1);MY:=Clamp(PrevMY+Dy*Mt,0,SCR_H-1);
+   SetMousePos(MX,MY);
+  End;
+ End;
  If LeftHand Then MB:=(MB And 4) Or ((MB And 1) Shl 1) Or ((MB And 2) Shr 1);
  If (MX<>PrevMX) Or (MY<>PrevMY) Or (MB<>LastB) Then LastActCs:=NowCs;
  If MX<0 Then MX:=0;
@@ -2443,6 +2472,7 @@ Begin
      If P=0 Then Begin Ln:=S;S:='';End Else Begin Ln:=Copy(S,1,P-1);Delete(S,1,P);End;
      If D.C[I].Grp=1 Then GText(X+(D.C[I].W-Length(NoAmp(Ln))*8) Div 2,Y+K*12,NoAmp(Ln),cBlk)
      Else If D.C[I].Grp=2 Then GText(X+D.C[I].W-Length(NoAmp(Ln))*8,Y+K*12,NoAmp(Ln),cBlk)
+     Else If Pos('&',Ln)>0 Then GTextU(X,Y+K*12,Ln,cBlk)
      Else GText(X,Y+K*12,NoAmp(Ln),cBlk);
      Inc(K);
     End;
@@ -2800,6 +2830,13 @@ Begin
             C_BUTTON: ActivateCtl(I);
             C_RADIO: Begin D.Focus:=I;SelectRadio(D,I);Hook(D,DE_CHANGE,I);DrawDlg(D);End;
             C_CHECK: Begin D.Focus:=I;D.C[I].Val:=1-D.C[I].Val;Hook(D,DE_CHANGE,I);DrawDlg(D);End;
+            C_TEXT: Begin
+              { etiquette : place le focus sur la zone de texte / liste qui suit }
+              For K:=I+1 To D.N Do
+               If D.C[K].Enabled And ((D.C[K].Kind=C_EDIT) Or (D.C[K].Kind=C_LIST) Or (D.C[K].Kind=C_SLIDER)) Then Begin
+                D.Focus:=K;DrawDlg(D);Break;
+               End;
+             End;
            End;
            Break;
           End;
@@ -3371,7 +3408,7 @@ Procedure ShowAboutMs(Const AppName: String; Ico: Integer; Free: Boolean); Forwa
 
 { ajoute un travail a la file d'attente ; lance le Spooler (en icone) s'il n'est pas actif }
 Function SpoolAdd(Const Job: String): Boolean;
-Var W: PWindow;
+Var W: PWindow; Fn: String;
 Begin
  SpoolAdd:=False;
  If NPrn=0 Then Begin
@@ -3382,7 +3419,15 @@ Begin
   InfoBox(T3('Cannot print.|The print queue is full.','Impression impossible.|La file d''attente est pleine.','Drucken nicht m'#148'glich.|Warteschlange voll.'));
   Exit;
  End;
+ Fn:=PrintPort;
+ If Fn='FILE' Then Begin
+  Fn:=PrnFileName;If Fn='' Then Fn:='OUTPUT.PRN';
+  If Not InputBox(T3('Print to file (name):','Imprimer dans le fichier (nom) :','In Datei drucken (Name):'),Fn,40,320) Then Begin SpoolSrcNext:='';Exit;End;
+  If Trim(Fn)='' Then Begin SpoolSrcNext:='';Exit;End;
+  PrnFileName:=Trim(Fn);Fn:=PrnFileName;
+ End;
  Inc(SpoolN);SpoolNames[SpoolN]:=Copy(Job,1,40);
+ SpoolPort[SpoolN]:=Fn;SpoolPrn[SpoolN]:=PrinterName;SpoolSrc[SpoolN]:=SpoolSrcNext;SpoolSrcNext:='';
  If SpoolN=1 Then SpoolT0:=NowCs;
  If CountApp(A_SPOOL)=0 Then Begin
   W:=Launch(A_SPOOL,'');
@@ -3895,7 +3940,10 @@ Begin
  If R<>ID_OK Then Exit;
  If N=0 Then SpoolAdd('MS-DOS Executive - '+X^.Dir)
  Else For K:=0 To N-1 Do
-  If Not SpoolAdd('MS-DOS Executive - '+X^.F^[Idx[K]].Disp+IfThenS(X^.F^[Idx[K]].IsDir,'\','')) Then Break;
+  Begin
+   If Not X^.F^[Idx[K]].IsDir Then SpoolSrcNext:=Copy(JoinPath(X^.Dir,X^.F^[Idx[K]].Disp),1,80);
+   If Not SpoolAdd('MS-DOS Executive - '+X^.F^[Idx[K]].Disp+IfThenS(X^.F^[Idx[K]].IsDir,'\','')) Then Break;
+  End;
 End;
 
 Procedure ExecRunDlg(W: PWindow; AsIcon: Boolean);
@@ -4979,7 +5027,7 @@ Var E: PEd; D: TDlg; R: Integer;
 Begin
  E:=W^.Data;
  DlgInit(D,'',300,100);
- DlgText(D,10,10,T3('Find What:','Rechercher :','Suchen nach:'));
+ DlgText(D,10,10,T3('Fi&nd What:','&Rechercher :','&Suchen nach:'));
  DlgEdit(D,10,100,6,190,E^.FindStr,40);
  DlgCheck(D,11,10,34,T3('Match &Case','&Respecter la casse','&Gro'#225'/Klein beachten'),E^.MatchCase);
  DlgButton(D,ID_OK,50,64,90,T3('&Find Next','&Suivant','&Weitersuchen'),True);
@@ -5035,9 +5083,9 @@ Var E: PEd; D: TDlg; R: Integer;
 Begin
  E:=W^.Data;RepEd:=E;RepWin:=W;
  DlgInit(D,'',330,150);
- DlgText(D,10,10,T3('Find What:','Rechercher :','Suchen nach:'));
+ DlgText(D,10,10,T3('Fi&nd What:','&Rechercher :','&Suchen nach:'));
  DlgEdit(D,10,110,6,210,E^.FindStr,40);
- DlgText(D,10,38,T3('Change To:','Remplacer par :','Ersetzen durch:'));
+ DlgText(D,10,38,T3('Change &To:','Rem&placer par :','&Ersetzen durch:'));
  DlgEdit(D,12,110,34,210,RepWith,40);
  DlgCheck(D,11,10,62,T3('Match &Case','&Respecter la casse','&Gro'#225'/Klein beachten'),E^.MatchCase);
  DlgButton(D,20,10,90,96,T3('&Find Next','&Suivant','&Weiter'),True);
@@ -5118,10 +5166,10 @@ Begin
  E:=W^.Data;
  DlgInit(D,'',280,150);
  DlgText(D,10,10,T3('Margins (1/10 inch):','Marges (1/10 pouce) :','R'#132'nder (1/10 Zoll):'));
- DlgText(D,10,34,T3('Left:','Gauche :','Links:'));DlgEdit(D,10,90,30,50,IntStr(E^.LM),3);
- DlgText(D,150,34,T3('Right:','Droite :','Rechts:'));DlgEdit(D,11,210,30,50,IntStr(E^.RM),3);
- DlgText(D,10,60,T3('Top:','Haut :','Oben:'));DlgEdit(D,12,90,56,50,IntStr(E^.TM),3);
- DlgText(D,150,60,T3('Bottom:','Bas :','Unten:'));DlgEdit(D,13,210,56,50,IntStr(E^.BM),3);
+ DlgText(D,10,34,T3('&Left:','&Gauche :','&Links:'));DlgEdit(D,10,90,30,50,IntStr(E^.LM),3);
+ DlgText(D,150,34,T3('&Right:','&Droite :','&Rechts:'));DlgEdit(D,11,210,30,50,IntStr(E^.RM),3);
+ DlgText(D,10,60,T3('&Top:','&Haut :','&Oben:'));DlgEdit(D,12,90,56,50,IntStr(E^.TM),3);
+ DlgText(D,150,60,T3('&Bottom:','&Bas :','&Unten:'));DlgEdit(D,13,210,56,50,IntStr(E^.BM),3);
  DlgButton(D,ID_OK,50,100,80,'OK',True);
  DlgButton(D,ID_CANCEL,150,100,80,T3('Cancel','Annuler','Abbrechen'),False);
  R:=RunDialog(D,@NoHook);
@@ -5143,8 +5191,8 @@ Begin
  SizeLst^.N:=9;
  For I:=1 To 9 Do SizeLst^.S[I]:=IntStr(6+I*2);
  DlgInit(D,'',300,170);
- DlgText(D,10,8,T3('Fonts:','Polices :','Schriften:'));
- DlgText(D,160,8,T3('Sizes:','Tailles :','Gr'#148#225'en:'));
+ DlgText(D,10,8,T3('&Fonts:','&Polices :','&Schriften:'));
+ DlgText(D,160,8,T3('&Sizes:','&Tailles :','&Gr'#148#225'en:'));
  DlgList(D,10,10,22,130,90,FontLst,2);
  DlgList(D,11,160,22,120,90,SizeLst,3);
  DlgText(D,10,118,T3('Used for printing; the screen uses|the system font.',
@@ -5907,11 +5955,42 @@ Begin
  If (I>=1) And (I<=SpoolN) Then Begin SpoolSel:=I;Dirty:=True;End;
 End;
 
+{ envoie le travail vers le port (fichier LPT1.PRN, COM1.PRN... ou fichier choisi) }
+Procedure SpoolDeliver(I: Integer);
+Var F,G: Text; Fn,L: String; N: Integer;
+Begin
+ If (I<1) Or (I>SpoolN) Then Exit;
+ Fn:=SpoolPort[I];
+ If (Fn='LPT1') Or (Fn='LPT2') Or (Fn='COM1') Or (Fn='COM2') Then Fn:=Fn+'.PRN';
+ If Fn='' Then Exit;
+ {$I-}
+ Assign(F,JoinPath(V2R('C:\'),Fn));
+ If FileExists(JoinPath(V2R('C:\'),Fn)) Then Append(F) Else Rewrite(F);
+ If IOResult=0 Then Begin
+  WriteLn(F,'*** ',SpoolPrn[I],' (',SpoolPort[I],') - ',SpoolNames[I],' - ',
+   IfThenS(PrnOrient=0,'Portrait','Landscape'),', ',PaperNames[PrnPaper],' ***');
+  If SpoolSrc[I]<>'' Then Begin
+   Assign(G,V2R(SpoolSrc[I]));Reset(G);
+   If IOResult=0 Then Begin
+    N:=0;
+    While (Not Eof(G)) And (N<5000) Do Begin ReadLn(G,L);WriteLn(F,L);Inc(N);End;
+    Close(G);
+   End;
+  End;
+  WriteLn(F,#12);
+  Close(F);
+ End;
+ {$I+}
+ If IOResult<>0 Then ;
+End;
+
 Procedure SpoolRemove(I: Integer);
 Var K: Integer;
 Begin
  If (I<1) Or (I>SpoolN) Then Exit;
- For K:=I To SpoolN-1 Do SpoolNames[K]:=SpoolNames[K+1];
+ For K:=I To SpoolN-1 Do Begin
+  SpoolNames[K]:=SpoolNames[K+1];SpoolPort[K]:=SpoolPort[K+1];SpoolPrn[K]:=SpoolPrn[K+1];SpoolSrc[K]:=SpoolSrc[K+1];
+ End;
  Dec(SpoolN);
  If I=1 Then SpoolT0:=NowCs;
  If SpoolSel>SpoolN Then SpoolSel:=SpoolN;
@@ -5921,7 +6000,7 @@ Procedure SpoolTimer(W: PWindow);
 Begin
  If SpoolN>0 Then Begin
   If SpoolPaused Then SpoolT0:=NowCs+0
-  Else If NowCs-SpoolT0>=SpoolJobTime Then SpoolRemove(1)
+  Else If NowCs-SpoolT0>=SpoolJobTime Then Begin SpoolDeliver(1);SpoolRemove(1);End
   Else If (NowCs Div 25) Mod 2=0 Then Invalidate(W);
  End;
 End;
@@ -6259,7 +6338,7 @@ Type
 Var
  PrnInst : TPrnList;
  PrnPort : Array[1..MAXPRN] Of String[6];
- FontInst: Array[1..12] Of String[24]; NFont: Integer;
+ FontInst: Array[1..12] Of String[34]; FontFile: Array[1..12] Of String[12]; NFont: Integer;
  CommPort: String[5];
  CommBaud,CommBits,CommStop: Integer;
  CommParity: Char;
@@ -6270,9 +6349,12 @@ Const
  KnownPrn : Array[1..NKNOWNP] Of String[26] = (
   'Epson FX-80','Epson LQ-1500','HP LaserJet','IBM Graphics Printer','Okidata Microline 92',
   'PostScript Printer','Apple LaserWriter','Toshiba P1351','Text Only');
- NKNOWNF = 7;
- KnownFont : Array[1..NKNOWNF] Of String[22] = (
-  'Courier 10','Courier 12','Helv 10','Helv 12','Tms Rmn 10','Modern 12','Roman 14');
+ NKNOWNF = 9;
+ KnownFnt : Array[1..NKNOWNF] Of String[48] = (
+  'COURA.FON|Courier 8,10,12 (Set #1)','COURB.FON|Courier 8,10,12 (Set #2)',
+  'HELVA.FON|Helv 8,10,12,14,18,24 (Set #1)','HELVB.FON|Helv 8,10,12,14,18,24 (Set #2)',
+  'TMSRA.FON|Tms Rmn 8,10,12,14,18,24 (Set #1)','TMSRB.FON|Tms Rmn 8,10,12,14,18,24 (Set #2)',
+  'MODERN.FON|Modern (Vector)','ROMAN.FON|Roman (Vector)','SCRIPT.FON|Script (Vector)');
 
 { ---------------- profil WIN.INI (lecture/ecriture d'une cle) ---------------- }
 
@@ -6298,7 +6380,7 @@ Begin
 End;
 
 Procedure IniWrite(Const Fn,Sec,Key,Val_: String);
-Var F,G: Text; L: String; In_,Done,SecSeen: Boolean; P: Integer; Tmp: String;
+Var F,G: Text; L: String; In_,Done,SecSeen,Had: Boolean; P: Integer; Tmp: String;
 Begin
  Tmp:=Fn+'.TMP';
  {$I-}
@@ -6306,7 +6388,8 @@ Begin
  If IOResult<>0 Then Exit;
  Done:=False;SecSeen:=False;In_:=False;
  Assign(F,Fn);Reset(F);
- If IOResult=0 Then Begin
+ Had:=IOResult=0;
+ If Had Then Begin
   While Not Eof(F) Do Begin
    ReadLn(F,L);
    If (Trim(L)<>'') And (Trim(L)[1]='[') Then Begin
@@ -6330,10 +6413,65 @@ Begin
   WriteLn(G,Key,'=',Val_);
  End;
  Close(G);
+ If IOResult<>0 Then ;
+ If Had Then Begin Erase(F);If IOResult<>0 Then ;End;
+ Rename(G,Fn);
+ {$I+}
+ If IOResult<>0 Then ;
+End;
+
+
+{ ---------- supprime une cle d'une section de WIN.INI ---------- }
+Procedure IniDel(Const Fn,Sec,Key: String);
+Var F,G: Text; L: String; In_: Boolean; P: Integer; Tmp: String;
+Begin
+ Tmp:=Fn+'.TMP';
+ {$I-}
+ Assign(F,Fn);Reset(F);
+ If IOResult<>0 Then Exit;
+ Assign(G,Tmp);Rewrite(G);
+ If IOResult<>0 Then Begin Close(F);Exit;End;
+ In_:=False;
+ While Not Eof(F) Do Begin
+  ReadLn(F,L);
+  If (Trim(L)<>'') And (Trim(L)[1]='[') Then In_:=Upper(Copy(Trim(L),2,Length(Trim(L))-2))=Upper(Sec)
+  Else If In_ Then Begin
+   P:=Pos('=',L);
+   If (P>0) And (Upper(Trim(Copy(L,1,P-1)))=Upper(Key)) Then Continue;
+  End;
+  WriteLn(G,L);
+ End;
+ Close(F);Close(G);
  Erase(F);Rename(G,Fn);
  {$I+}
  If IOResult<>0 Then ;
 End;
+
+{ enumere les cles d'une section (Idx a partir de 1) }
+Function IniEnum(Const Fn,Sec: String; Idx: Integer; Var Key,Val_: String): Boolean;
+Var F: Text; L: String; In_: Boolean; P,N: Integer;
+Begin
+ IniEnum:=False;N:=0;
+ {$I-}
+ Assign(F,Fn);Reset(F);
+ If IOResult<>0 Then Exit;
+ In_:=False;
+ While Not Eof(F) Do Begin
+  ReadLn(F,L);L:=Trim(L);
+  If (L<>'') And (L[1]='[') Then Begin In_:=Upper(Copy(L,2,Length(L)-2))=Upper(Sec);Continue;End;
+  If In_ And (L<>'') And (L[1]<>';') Then Begin
+   P:=Pos('=',L);
+   If P>1 Then Begin
+    Inc(N);
+    If N=Idx Then Begin Key:=Trim(Copy(L,1,P-1));Val_:=Trim(Copy(L,P+1,200));IniEnum:=True;Break;End;
+   End;
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then ;
+End;
+
 
 
 Const
@@ -6354,7 +6492,6 @@ End;
 
 Var
  BlinkMs : LongInt;       { CursorBlinkRate (ms) }
- MouseAcc: Integer;       { 0 aucune, 1 moyenne, 2 haute }
 
 Const
  IniColNames : Array[0..9] Of String[14] = ('Background','AppWorkspace','Window','WindowText',
@@ -6371,6 +6508,15 @@ Begin
  R:='';
  For I:=1 To Length(Nm) Do If (UpCase(Nm[I]) In ['A'..'Z','0'..'9']) And (Length(R)<8) Then R:=R+UpCase(Nm[I]);
  PrnDriver:=R;
+End;
+
+Function ComStr(K: Integer): String;
+Const ParL: Array[0..4] Of Char=('n','o','e','m','s');
+Var St: String;
+Begin
+ Case ComSet[K].Stop Of 1: St:='1.5';2: St:='2';Else St:='1';End;
+ ComStr:=IntStr(ComSet[K].Baud)+','+ParL[ComSet[K].Par]+','+IntStr(ComSet[K].Bits)+','+St+
+  IfThenS(ComSet[K].Hs=0,',p',IfThenS(ComSet[K].Hs=1,',x',''));
 End;
 
 Procedure IniSave;
@@ -6394,12 +6540,28 @@ Begin
  IniWrite(IniFile,'intl','sCurrency',CurSym);
  IniWrite(IniFile,'intl','sDecimal',DecSep);
  IniWrite(IniFile,'intl','sThousand',ThouSep);
- Sg:=CommPort+':';
- IniWrite(IniFile,'ports',Sg,IntStr(CommBaud)+','+LowerStr(CommParity)+','+IntStr(CommBits)+','+IntStr(CommStop)+',p');
+ IniWrite(IniFile,'intl','iCurrency',IntStr(CurFmt));
+ IniWrite(IniFile,'intl','iDigits',IntStr(NumDigits));
+ IniWrite(IniFile,'intl','iLzero',IntStr(Ord(LeadZero)));
+ IniWrite(IniFile,'intl','s1159',S1159);
+ IniWrite(IniFile,'intl','s2359',S2359);
+ IniWrite(IniFile,'intl','sList',ListSep);
+ IniWrite(IniFile,'windows','DeviceNotSelectedTimeout',IntStr(DevTimeout));
+ IniWrite(IniFile,'windows','TransmissionRetryTimeout',IntStr(TxTimeout));
+ IniWrite(IniFile,'windows','PrinterOrientation',IntStr(PrnOrient));
+ IniWrite(IniFile,'windows','PaperSize',IntStr(PrnPaper));
+ For I:=1 To 2 Do Begin
+  Sg:=ComStr(I);
+  IniWrite(IniFile,'ports','COM'+IntStr(I)+':',Sg);
+ End;
+ If PrnFileName<>'' Then IniWrite(IniFile,'ports','FILE:',PrnFileName);
+ For I:=1 To NFont Do IniWrite(IniFile,'fonts',FontInst[I],FontFile[I]);
 End;
 
+Procedure CommMirror; Forward;
+
 Procedure IniLoad;
-Var V: String; I,P,R,G,B: Integer;
+Var V,K1: String; I,P,R,G,B: Integer;
 Begin
  If IniRead(IniFile,'windows','DoubleClickSpeed',V) Then DblCs:=Clamp(StrVal(V,450) Div 10,5,100);
  If IniRead(IniFile,'windows','CursorBlinkRate',V) Then BlinkMs:=Clamp(StrVal(V,530),100,2000);
@@ -6431,11 +6593,50 @@ Begin
  If IniRead(IniFile,'intl','sCurrency',V) Then CurSym:=Copy(V,1,4);
  If IniRead(IniFile,'intl','sDecimal',V) Then DecSep:=Copy(V,1,1);
  If IniRead(IniFile,'intl','sThousand',V) Then ThouSep:=Copy(V,1,1);
- If IniRead(IniFile,'ports',CommPort+':',V) Then Begin
-  P:=Pos(',',V);If P>0 Then Begin CommBaud:=StrVal(Copy(V,1,P-1),CommBaud);Delete(V,1,P);End;
-  P:=Pos(',',V);If P>0 Then Begin If Copy(V,1,P-1)<>'' Then CommParity:=UpCase(V[1]);Delete(V,1,P);End;
-  P:=Pos(',',V);If P>0 Then Begin CommBits:=StrVal(Copy(V,1,P-1),CommBits);Delete(V,1,P);End;
-  P:=Pos(',',V);If P>0 Then CommStop:=StrVal(Copy(V,1,P-1),CommStop) Else CommStop:=StrVal(V,CommStop);
+ For I:=1 To 2 Do
+  If IniRead(IniFile,'ports','COM'+IntStr(I)+':',V) Then Begin
+   P:=Pos(',',V);If P>0 Then Begin ComSet[I].Baud:=StrVal(Copy(V,1,P-1),ComSet[I].Baud);Delete(V,1,P);End;
+   P:=Pos(',',V);If P>0 Then Begin
+    Case UpCase(V[1]) Of 'O': ComSet[I].Par:=1;'E': ComSet[I].Par:=2;'M': ComSet[I].Par:=3;'S': ComSet[I].Par:=4;Else ComSet[I].Par:=0;End;
+    Delete(V,1,P);End;
+   P:=Pos(',',V);If P>0 Then Begin ComSet[I].Bits:=Clamp(StrVal(Copy(V,1,P-1),8),4,8);Delete(V,1,P);End;
+   P:=Pos(',',V);If P=0 Then P:=Length(V)+1;
+   If Copy(V,1,P-1)='1.5' Then ComSet[I].Stop:=1 Else If Copy(V,1,P-1)='2' Then ComSet[I].Stop:=2 Else ComSet[I].Stop:=0;
+   Delete(V,1,P);
+   If V='p' Then ComSet[I].Hs:=0 Else If V='x' Then ComSet[I].Hs:=1 Else ComSet[I].Hs:=2;
+  End;
+ CommMirror;
+ If IniRead(IniFile,'ports','FILE:',V) Then PrnFileName:=Copy(V,1,40);
+ If IniRead(IniFile,'intl','iCurrency',V) Then CurFmt:=Clamp(StrVal(V,0),0,3);
+ If IniRead(IniFile,'intl','iDigits',V) Then NumDigits:=Clamp(StrVal(V,2),0,9);
+ If IniRead(IniFile,'intl','iLzero',V) Then LeadZero:=V='1';
+ If IniRead(IniFile,'intl','s1159',V) Then S1159:=Copy(V,1,8);
+ If IniRead(IniFile,'intl','s2359',V) Then S2359:=Copy(V,1,8);
+ If IniRead(IniFile,'intl','sList',V) Then ListSep:=Copy(V,1,1);
+ If IniRead(IniFile,'windows','DeviceNotSelectedTimeout',V) Then DevTimeout:=Clamp(StrVal(V,15),1,999);
+ If IniRead(IniFile,'windows','TransmissionRetryTimeout',V) Then TxTimeout:=Clamp(StrVal(V,45),1,999);
+ If IniRead(IniFile,'windows','PrinterOrientation',V) Then PrnOrient:=Clamp(StrVal(V,0),0,1);
+ If IniRead(IniFile,'windows','PaperSize',V) Then PrnPaper:=Clamp(StrVal(V,0),0,3);
+ { imprimantes et polices installees }
+ If IniRead(IniFile,'intl','iLzero',V) Then Begin
+  NPrn:=0;I:=1;
+  While (NPrn<MAXPRN) And IniEnum(IniFile,'devices',I,K1,V) Do Begin
+   Inc(NPrn);PrnInst[NPrn]:=Copy(K1,1,30);PrnPort[NPrn]:='LPT1';
+   P:=0;For R:=Length(V) Downto 1 Do If V[R]=',' Then Begin P:=R;Break;End;
+   If P>0 Then Begin PrnPort[NPrn]:=Copy(V,P+1,6);If PrnPort[NPrn][Length(PrnPort[NPrn])]=':' Then Dec(PrnPort[NPrn][0]);End;
+   Inc(I);
+  End;
+ End;
+ If IniRead(IniFile,'intl','iLzero',V) Then Begin
+  NFont:=0;I:=1;
+  While (NFont<12) And IniEnum(IniFile,'fonts',I,K1,V) Do Begin
+   Inc(NFont);FontInst[NFont]:=Copy(K1,1,34);FontFile[NFont]:=Copy(V,1,12);Inc(I);
+  End;
+ End;
+ If NPrn=0 Then Begin PrinterName:='';PrintPort:='LPT1';End
+ Else Begin
+  P:=0;For I:=1 To NPrn Do If PrnInst[I]=PrinterName Then P:=I;
+  If P=0 Then Begin PrinterName:=PrnInst[1];PrintPort:=PrnPort[1];End Else PrintPort:=PrnPort[P];
  End;
  For P:=0 To 3 Do If IniRead(IniFile,'volumes',Chr(65+P),V) Then VolNames[Chr(65+P)]:=Copy(V,1,11);
  ApplyScreenColors;
@@ -6454,128 +6655,345 @@ Begin
  If R=ID_OK Then Begin Sel:=DlgGetVal(D,10);PickList:=Sel>0;End Else PickList:=False;
 End;
 
-Procedure CpAddPrinter;
-Var L: PStrList; I,S: Integer;
+{ ================== imprimantes et polices : ajout / suppression ================== }
+
+Const
+ ID_RESET = 9;
+
+
+
+
+Var
+ DrvDest: String[40];
+
+{ cree un fichier "pilote" (marqueur W2DRV) dans le repertoire de destination }
+Function DrvPut(Const Dest,Fn,Desc: String): Boolean;
+Var F: Text; P: String;
 Begin
+ DrvPut:=False;
+ P:=JoinPath(V2R(Dest),Fn);
+ {$I-}
+ Assign(F,P);Rewrite(F);
+ If IOResult<>0 Then Exit;
+ WriteLn(F,'W2DRV ',Fn);
+ WriteLn(F,Desc);
+ Close(F);
+ {$I+}
+ DrvPut:=IOResult=0;
+End;
+
+{ supprime le fichier pilote s'il porte notre marqueur }
+Procedure DrvKill(Const Dest,Fn: String);
+Var F: Text; P,L: String;
+Begin
+ P:=JoinPath(V2R(Dest),Fn);
+ {$I-}
+ Assign(F,P);Reset(F);
+ If IOResult<>0 Then Exit;
+ ReadLn(F,L);Close(F);
+ If Copy(L,1,5)='W2DRV' Then Begin Assign(F,P);Erase(F);End;
+ {$I+}
+ If IOResult<>0 Then ;
+End;
+
+{ liste + repertoire de destination ; Sel est le choix }
+Function ListDirDlg(Const Prompt: String; L: PStrList; Var Sel: Integer; Var Dir: String; WithDir: Boolean): Boolean;
+Var D: TDlg; R: Integer;
+Begin
+ DlgInit(D,'',320,IfThenI(WithDir,226,196));
+ DlgText(D,10,8,Prompt);
+ DlgList(D,10,10,26,300,110,L,Sel);
+ If WithDir Then Begin
+  DlgText(D,10,144,T3('&Drive/directory:','&Unit'#130'/r'#130'pertoire :','&Laufwerk/Verzeichnis:'));
+  DlgEdit(D,11,10,158,300,Dir,36);
+ End;
+ DlgButton(D,ID_OK,60,IfThenI(WithDir,190,150),90,'OK',True);
+ DlgButton(D,ID_CANCEL,170,IfThenI(WithDir,190,150),90,T3('Cancel','Annuler','Abbrechen'),False);
+ R:=RunDialog(D,@NoHook);
+ If R=ID_OK Then Begin
+  Sel:=DlgGetVal(D,10);
+  If WithDir Then Dir:=Trim(DlgGetText(D,11));
+  ListDirDlg:=Sel>0;
+ End Else ListDirDlg:=False;
+End;
+
+Procedure CpAddPrinter;
+Var L: PStrList; I,S: Integer; Dir: String; Nm: String;
+Begin
+ If NPrn>=MAXPRN Then Begin
+  InfoBox(T3('Cannot add a printer.|The printer list is full.','Ajout impossible.|La liste des imprimantes est pleine.','Hinzuf'#129'gen nicht m'#148'glich.|Druckerliste voll.'));Exit;
+ End;
  New(L);L^.N:=NKNOWNP;
- For I:=1 To NKNOWNP Do L^.S[I]:=KnownPrn[I];
- S:=1;
- If PickList(T3('Select a printer to add:','Choisissez une imprimante '#133' ajouter :','Drucker zum Hinzuf'#129'gen w'#132'hlen:'),L,S) Then Begin
-  If NPrn<MAXPRN Then Begin Inc(NPrn);PrnInst[NPrn]:=KnownPrn[S];PrnPort[NPrn]:='LPT1';IniSave;End;
+ For I:=1 To NKNOWNP Do L^.S[I]:=KnownPrn[I]+'  ('+PrnDriver(KnownPrn[I])+'.DRV)';
+ S:=1;Dir:=DrvDest;
+ If ListDirDlg(T3('Select a &printer to add:','Choisissez une &imprimante '#133' ajouter :','&Drucker zum Hinzuf'#129'gen w'#132'hlen:'),L,S,Dir,True) Then Begin
+  Nm:=KnownPrn[S];
+  For I:=1 To NPrn Do If PrnInst[I]=Nm Then Begin
+   InfoBox(T3('This printer is already installed.','Cette imprimante est d'#130'j'#133' install'#130'e.','Dieser Drucker ist bereits installiert.'));
+   Dispose(L);Exit;
+  End;
+  If Dir='' Then Dir:='C:\';
+  If Not DrvPut(Dir,PrnDriver(Nm)+'.DRV','Printer driver: '+Nm) Then Begin
+   InfoBox(T3('Cannot copy the printer driver to '+Dir,'Impossible de copier le pilote vers '+Dir,'Treiber kann nicht nach '+Dir+' kopiert werden'));
+   Dispose(L);Exit;
+  End;
+  DrvDest:=Dir;
+  Inc(NPrn);PrnInst[NPrn]:=Nm;PrnPort[NPrn]:='LPT1';
+  If NPrn=1 Then Begin PrinterName:=Nm;PrintPort:='LPT1';End;
+  IniSave;
+  InfoBox(T3('Printer '+Nm+' installed.|Use Connections to choose its port.','Imprimante '+Nm+' install'#130'e.|Utilisez Connexions pour choisir son port.','Drucker '+Nm+' installiert.|Anschl'#129'sse w'#132'hlen Sie unter Verbindungen.'));
  End;
  Dispose(L);
 End;
 
 Procedure CpDelPrinter;
-Var L: PStrList; I,S,K: Integer;
+Var L: PStrList; I,S,K: Integer; Dir: String; Nm: String;
 Begin
- If NPrn=0 Then Exit;
+ If NPrn=0 Then Begin InfoBox(T3('No printer is installed.','Aucune imprimante install'#130'e.','Kein Drucker installiert.'));Exit;End;
  New(L);L^.N:=NPrn;
- For I:=1 To NPrn Do L^.S[I]:=PrnInst[I];
- S:=1;
- If PickList(T3('Select a printer to delete:','Choisissez l''imprimante '#133' supprimer :','Zu l'#148'schenden Drucker w'#132'hlen:'),L,S) Then Begin
-  For K:=S To NPrn-1 Do Begin PrnInst[K]:=PrnInst[K+1];PrnPort[K]:=PrnPort[K+1];End;
-  Dec(NPrn);
-  If NPrn>0 Then Begin PrinterName:=PrnInst[1];PrintPort:=PrnPort[1];End;
-  IniSave;
+ For I:=1 To NPrn Do L^.S[I]:=PrnInst[I]+'  ('+PrnPort[I]+')';
+ S:=1;Dir:='';
+ If ListDirDlg(T3('Select the &printer to delete:','Choisissez l''&imprimante '#133' supprimer :','Zu l'#148'schenden &Drucker w'#132'hlen:'),L,S,Dir,False) Then Begin
+  Nm:=PrnInst[S];
+  If MsgBox(T3('Delete '+Nm+' from the printer list?','Supprimer '+Nm+' de la liste des imprimantes ?','L'#148'schen: '+Nm+'?'),1,2)=ID_OK Then Begin
+   For K:=S To NPrn-1 Do Begin PrnInst[K]:=PrnInst[K+1];PrnPort[K]:=PrnPort[K+1];End;
+   Dec(NPrn);
+   IniDel(IniFile,'devices',Nm);
+   DrvKill(DrvDest,PrnDriver(Nm)+'.DRV');
+   If PrinterName=Nm Then Begin
+    If NPrn>0 Then Begin PrinterName:=PrnInst[1];PrintPort:=PrnPort[1];End
+    Else Begin PrinterName:='';IniDel(IniFile,'windows','device');End;
+   End;
+   IniSave;
+  End;
  End;
  Dispose(L);
 End;
 
 Procedure CpAddFont;
-Var L: PStrList; I,S: Integer;
+Var L: PStrList; I,S: Integer; Dir,Fn,Ds: String; P: Integer;
 Begin
+ If NFont>=12 Then Begin
+  InfoBox(T3('Cannot add a font.|The font list is full.','Ajout impossible.|La liste des polices est pleine.','Hinzuf'#129'gen nicht m'#148'glich.|Schriftliste voll.'));Exit;
+ End;
  New(L);L^.N:=NKNOWNF;
- For I:=1 To NKNOWNF Do L^.S[I]:=KnownFont[I];
- S:=1;
- If PickList(T3('Select a font to add:','Choisissez une police '#133' ajouter :','Schrift zum Hinzuf'#129'gen w'#132'hlen:'),L,S) Then
-  If NFont<12 Then Begin Inc(NFont);FontInst[NFont]:=KnownFont[S];End;
- Dispose(L);
-End;
-
-Procedure CpDelFont;
-Var L: PStrList; I,S,K: Integer;
-Begin
- If NFont=0 Then Exit;
- New(L);L^.N:=NFont;
- For I:=1 To NFont Do L^.S[I]:=FontInst[I];
- S:=1;
- If PickList(T3('Select a font to delete:','Choisissez la police '#133' supprimer :','Zu l'#148'schende Schrift w'#132'hlen:'),L,S) Then Begin
-  For K:=S To NFont-1 Do FontInst[K]:=FontInst[K+1];
-  Dec(NFont);
+ For I:=1 To NKNOWNF Do Begin
+  P:=Pos('|',KnownFnt[I]);
+  L^.S[I]:=Copy(KnownFnt[I],P+1,60);
+ End;
+ S:=1;Dir:=DrvDest;
+ If ListDirDlg(T3('Select a &font to add:','Choisissez une &police '#133' ajouter :','&Schrift zum Hinzuf'#129'gen w'#132'hlen:'),L,S,Dir,True) Then Begin
+  P:=Pos('|',KnownFnt[S]);Fn:=Copy(KnownFnt[S],1,P-1);Ds:=Copy(KnownFnt[S],P+1,60);
+  For I:=1 To NFont Do If FontInst[I]=Ds Then Begin
+   InfoBox(T3('This font is already installed.','Cette police est d'#130'j'#133' install'#130'e.','Diese Schrift ist bereits installiert.'));
+   Dispose(L);Exit;
+  End;
+  If Dir='' Then Dir:='C:\';
+  If Not DrvPut(Dir,Fn,'Font: '+Ds) Then Begin
+   InfoBox(T3('Cannot copy the font file to '+Dir,'Impossible de copier la police vers '+Dir,'Schrift kann nicht nach '+Dir+' kopiert werden'));
+   Dispose(L);Exit;
+  End;
+  DrvDest:=Dir;
+  Inc(NFont);FontInst[NFont]:=Ds;FontFile[NFont]:=Fn;
+  IniWrite(IniFile,'fonts',Ds,Fn);
  End;
  Dispose(L);
 End;
 
-Procedure CpConnections;
-Var D: TDlg; R,I,P: Integer; L: PStrList; Sel: Integer;
-Const Ports: Array[0..4] Of String[5]=('LPT1','LPT2','COM1','COM2','FILE');
+Procedure CpDelFont;
+Var L: PStrList; I,S,K: Integer; Dir: String;
 Begin
+ If NFont=0 Then Begin InfoBox(T3('No font is installed.','Aucune police install'#130'e.','Keine Schrift installiert.'));Exit;End;
+ New(L);L^.N:=NFont;
+ For I:=1 To NFont Do L^.S[I]:=FontInst[I];
+ S:=1;Dir:='';
+ If ListDirDlg(T3('Select the &font to delete:','Choisissez la &police '#133' supprimer :','Zu l'#148'schende &Schrift w'#132'hlen:'),L,S,Dir,False) Then Begin
+  If MsgBox(T3('Delete '+FontInst[S]+'?','Supprimer '+FontInst[S]+' ?','L'#148'schen: '+FontInst[S]+'?'),1,2)=ID_OK Then Begin
+   IniDel(IniFile,'fonts',FontInst[S]);
+   DrvKill(DrvDest,FontFile[S]);
+   For K:=S To NFont-1 Do Begin FontInst[K]:=FontInst[K+1];FontFile[K]:=FontFile[K+1];End;
+   Dec(NFont);
+  End;
+ End;
+ Dispose(L);
+End;
+
+{ ================== connexions des imprimantes ================== }
+Const
+ PortNames: Array[0..4] Of String[5]=('LPT1','LPT2','COM1','COM2','FILE');
+
+Var
+ CnnPort: Array[1..MAXPRN] Of String[6];
+
+Function CnnHook(Var D: TDlg; Ev,Ct: Integer): Boolean;
+Var S,I,P: Integer;
+Begin
+ CnnHook:=False;
+ If (Ev<>DE_CHANGE) And (Ev<>DE_INIT) Then Exit;
+ If (Ev=DE_CHANGE) And (D.C[Ct].Id>=20) And (D.C[Ct].Id<=24) Then Begin
+  S:=DlgGetVal(D,10);
+  If (S>=1) And (S<=NPrn) Then CnnPort[S]:=PortNames[D.C[Ct].Id-20];
+ End Else If (Ev=DE_CHANGE) And (D.C[Ct].Id=10) Then Begin
+  S:=D.C[Ct].Val;
+  If (S>=1) And (S<=NPrn) Then
+   For I:=0 To 4 Do If PortNames[I]=CnnPort[S] Then SelectRadio(D,DlgFind(D,20+I));
+ End;
+End;
+
+Procedure CpConnections;
+Var D: TDlg; R,I,P: Integer; L: PStrList; Sel: Integer; Fn: String;
+Begin
+ If NPrn=0 Then Begin InfoBox(T3('No printer is installed.','Aucune imprimante install'#130'e.','Kein Drucker installiert.'));Exit;End;
  New(L);L^.N:=NPrn;
- For I:=1 To NPrn Do L^.S[I]:=PrnInst[I];
+ For I:=1 To NPrn Do Begin L^.S[I]:=PrnInst[I];CnnPort[I]:=PrnPort[I];End;
  Sel:=1;
  For I:=1 To NPrn Do If PrnInst[I]=PrinterName Then Sel:=I;
- DlgInit(D,'',340,176);
- DlgText(D,10,8,T3('Printers:','Imprimantes :','Drucker:'));
+ DlgInit(D,'',350,176);
+ DlgText(D,10,8,T3('&Printers:','&Imprimantes :','&Drucker:'));
  DlgList(D,10,10,24,190,100,L,Sel);
- DlgBox(D,210,8,120,110,T3('Connection','Connexion','Anschlu'#225));
- For I:=0 To 4 Do DlgRadio(D,20+I,220,26+I*16,1,Ports[I],PrintPort=Ports[I]);
- DlgButton(D,ID_OK,60,136,100,'OK',True);
- DlgButton(D,ID_CANCEL,180,136,100,T3('Cancel','Annuler','Abbrechen'),False);
- R:=RunDialog(D,@NoHook);
- If (R=ID_OK) And (NPrn>0) Then Begin
-  Sel:=DlgGetVal(D,10);
-  If Sel<1 Then Sel:=1;
-  P:=RadioGroupVal(D,1);
-  If P>=0 Then PrnPort[Sel]:=Ports[P];
+ DlgBox(D,210,8,130,118,T3('Connection','Connexion','Anschlu'#225));
+ For I:=0 To 4 Do DlgRadio(D,20+I,220,26+I*16,1,PortNames[I],CnnPort[Sel]=PortNames[I]);
+ DlgButton(D,ID_OK,70,140,100,'OK',True);
+ DlgButton(D,ID_CANCEL,190,140,100,T3('Cancel','Annuler','Abbrechen'),False);
+ R:=RunDialog(D,@CnnHook);
+ If R=ID_OK Then Begin
+  Sel:=DlgGetVal(D,10);If Sel<1 Then Sel:=1;
+  For I:=1 To NPrn Do PrnPort[I]:=CnnPort[I];
+  P:=0;For I:=1 To NPrn Do If PrnPort[I]='FILE' Then P:=1;
+  If P=1 Then Begin
+   Fn:=PrnFileName;If Fn='' Then Fn:='OUTPUT.PRN';
+   If InputBox(T3('Print to &file (name):','Imprimer dans le &fichier (nom) :','In &Datei drucken (Name):'),Fn,40,320) And (Trim(Fn)<>'') Then PrnFileName:=Trim(Fn)
+   Else If PrnFileName='' Then PrnFileName:='OUTPUT.PRN';
+  End;
   PrinterName:=PrnInst[Sel];PrintPort:=PrnPort[Sel];
   IniSave;
  End;
  Dispose(L);
 End;
 
+{ ================== imprimante par defaut + delais ================== }
 Procedure CpPrinter;
-Var L: PStrList; I,S: Integer;
+Var D: TDlg; R,I,S: Integer; L: PStrList;
 Begin
  If NPrn=0 Then Begin InfoBox(T3('No printer is installed.','Aucune imprimante install'#130'e.','Kein Drucker installiert.'));Exit;End;
  New(L);L^.N:=NPrn;S:=1;
  For I:=1 To NPrn Do Begin L^.S[I]:=PrnInst[I]+' ('+PrnPort[I]+')';If PrnInst[I]=PrinterName Then S:=I;End;
- If PickList(T3('Select the default printer:','Choisissez l''imprimante par d'#130'faut :','Standarddrucker w'#132'hlen:'),L,S) Then Begin
-  PrinterName:=PrnInst[S];PrintPort:=PrnPort[S];IniSave;
+ DlgInit(D,'',380,226);
+ DlgText(D,10,6,T3('&Default printer:','Imprimante par &d'#130'faut :','&Standarddrucker:'));
+ DlgList(D,10,10,20,196,86,L,S);
+ DlgBox(D,214,4,158,60,T3('Orientation','Orientation','Ausrichtung'));
+ DlgRadio(D,20,224,22,1,T3('&Portrait','&Portrait','&Hochformat'),PrnOrient=0);
+ DlgRadio(D,21,224,38,1,T3('&Landscape','Pa&ysage','&Querformat'),PrnOrient=1);
+ DlgBox(D,214,68,158,54,T3('Paper','Papier','Papier'));
+ For I:=0 To 3 Do DlgRadio(D,30+I,224+(I Mod 2)*72,84+(I Div 2)*16,2,PaperNames[I],PrnPaper=I);
+ DlgText(D,10,128,T3('Device not &selected (s):','P'#130'riph'#130'rique non &s'#130'lectionn'#130' (s) :','Ger'#132't nicht &bereit (s):'));
+ DlgEdit(D,40,300,124,50,IntStr(DevTimeout),3);
+ DlgText(D,10,150,T3('&Transmission retry (s):','Nouvel essai de &transmission (s) :','&Sendewiederholung (s):'));
+ DlgEdit(D,41,300,146,50,IntStr(TxTimeout),3);
+ DlgButton(D,ID_OK,100,184,90,'OK',True);
+ DlgButton(D,ID_CANCEL,200,184,90,T3('Cancel','Annuler','Abbrechen'),False);
+ R:=RunDialog(D,@NoHook);
+ If R=ID_OK Then Begin
+  S:=DlgGetVal(D,10);
+  If (S>=1) And (S<=NPrn) Then Begin PrinterName:=PrnInst[S];PrintPort:=PrnPort[S];End;
+  PrnOrient:=Max2(0,RadioGroupVal(D,1));
+  PrnPaper:=Max2(0,RadioGroupVal(D,2));
+  DevTimeout:=Clamp(StrVal(DlgGetText(D,40),15),1,999);
+  TxTimeout:=Clamp(StrVal(DlgGetText(D,41),45),1,999);
+  IniSave;
  End;
  Dispose(L);
 End;
 
-Procedure CpComm;
-Var D: TDlg; R: Integer;
-Const Bauds: Array[0..5] Of Integer=(300,1200,2400,4800,9600,19200);
-Var I,B: Integer;
+{ ================== ports serie (reglages par port) ================== }
+Const
+ Bauds: Array[0..6] Of Integer=(110,300,1200,2400,4800,9600,19200);
+ ParCh: Array[0..4] Of Char=('N','O','E','M','S');
+
+Var
+ CommCur: Integer;
+
+Function BaudIdx(B: Integer): Integer;
+Var I,R: Integer;
 Begin
- DlgInit(D,'',360,190);
- DlgBox(D,8,6,100,56,T3('Port','Port','Anschlu'#225));
- DlgRadio(D,10,18,24,1,'COM&1',CommPort='COM1');DlgRadio(D,11,18,40,1,'COM&2',CommPort='COM2');
- DlgBox(D,120,6,110,104,T3('Baud Rate','Vitesse','Baudrate'));
- B:=0;For I:=0 To 5 Do If Bauds[I]=CommBaud Then B:=I;
- For I:=0 To 5 Do DlgRadio(D,20+I,130,22+I*14,2,IntStr(Bauds[I]),B=I);
- DlgBox(D,242,6,110,40,T3('Word Length','Longueur','Wortl'#132'nge'));
- DlgRadio(D,30,252,22,3,'&7',CommBits=7);DlgRadio(D,31,300,22,3,'&8',CommBits=8);
- DlgBox(D,242,52,110,58,T3('Parity','Parit'#130,'Parit'#132't'));
- DlgRadio(D,40,252,68,4,T3('None','Aucune','Keine'),CommParity='N');
- DlgRadio(D,41,252,82,4,T3('Odd','Impaire','Ungerade'),CommParity='O');
- DlgRadio(D,42,252,96,4,T3('Even','Paire','Gerade'),CommParity='E');
- DlgBox(D,8,70,100,40,T3('Stop Bits','Bits d''arr'#136't','Stopbits'));
- DlgRadio(D,50,18,86,5,'1',CommStop=1);DlgRadio(D,51,60,86,5,'2',CommStop=2);
- DlgButton(D,ID_OK,90,146,80,'OK',True);
- DlgButton(D,ID_CANCEL,190,146,80,T3('Cancel','Annuler','Abbrechen'),False);
- R:=RunDialog(D,@NoHook);
- If R=ID_OK Then Begin
-  If RadioGroupVal(D,1)=1 Then CommPort:='COM2' Else CommPort:='COM1';
-  I:=RadioGroupVal(D,2);If I>=0 Then CommBaud:=Bauds[I];
-  If RadioGroupVal(D,3)=0 Then CommBits:=7 Else CommBits:=8;
-  Case RadioGroupVal(D,4) Of 1: CommParity:='O';2: CommParity:='E';Else CommParity:='N';End;
-  If RadioGroupVal(D,5)=1 Then CommStop:=2 Else CommStop:=1;
-  IniSave;
+ R:=2;For I:=0 To 6 Do If Bauds[I]=B Then R:=I;
+ BaudIdx:=R;
+End;
+
+Procedure CommMirror;
+Var K: Integer;
+Begin
+ K:=1;If CommPort='COM2' Then K:=2;
+ CommBaud:=ComSet[K].Baud;CommBits:=ComSet[K].Bits;CommParity:=ParCh[ComSet[K].Par];
+ CommStop:=IfThenI(ComSet[K].Stop=2,2,1);
+End;
+
+Procedure CommFromDlg(Var D: TDlg; K: Integer);
+Begin
+ ComSet[K].Baud:=Bauds[Max2(0,RadioGroupVal(D,2))];
+ ComSet[K].Bits:=4+Max2(0,RadioGroupVal(D,3));
+ ComSet[K].Par:=Max2(0,RadioGroupVal(D,4));
+ ComSet[K].Stop:=Max2(0,RadioGroupVal(D,5));
+ ComSet[K].Hs:=Max2(0,RadioGroupVal(D,6));
+End;
+
+Procedure CommToDlg(Var D: TDlg; K: Integer);
+Begin
+ SelectRadio(D,DlgFind(D,20+BaudIdx(ComSet[K].Baud)));
+ SelectRadio(D,DlgFind(D,30+Clamp(ComSet[K].Bits-4,0,4)));
+ SelectRadio(D,DlgFind(D,40+ComSet[K].Par));
+ SelectRadio(D,DlgFind(D,50+ComSet[K].Stop));
+ SelectRadio(D,DlgFind(D,60+ComSet[K].Hs));
+End;
+
+Function CommHook(Var D: TDlg; Ev,Ct: Integer): Boolean;
+Var K: Integer;
+Begin
+ CommHook:=False;
+ If (Ev=DE_CHANGE) And ((D.C[Ct].Id=10) Or (D.C[Ct].Id=11)) Then Begin
+  K:=D.C[Ct].Id-9;
+  If K<>CommCur Then Begin
+   CommFromDlg(D,CommCur);
+   CommCur:=K;
+   CommToDlg(D,K);
+  End;
  End;
+End;
+
+Procedure CpComm;
+Var D: TDlg; R,I: Integer; Sv: Array[1..2] Of TComSet;
+Begin
+ Sv:=ComSet;
+ CommCur:=1;If CommPort='COM2' Then CommCur:=2;
+ DlgInit(D,'',402,222);
+ DlgBox(D,8,4,92,50,T3('Port','Port','Anschlu'#225));
+ DlgRadio(D,10,18,22,1,'COM&1',CommCur=1);DlgRadio(D,11,18,36,1,'COM&2',CommCur=2);
+ DlgBox(D,108,4,100,124,T3('Baud Rate','Vitesse','Baudrate'));
+ For I:=0 To 6 Do DlgRadio(D,20+I,118,22+I*14,2,IntStr(Bauds[I]),False);
+ DlgBox(D,8,58,92,70,T3('Stop Bits','Arr'#136't','Stopbits'));
+ DlgRadio(D,50,18,76,5,'1',False);DlgRadio(D,51,18,90,5,'1.5',False);DlgRadio(D,52,18,104,5,'2',False);
+ DlgBox(D,216,4,178,40,T3('Word Length','Longueur des mots','Wortl'#132'nge'));
+ For I:=0 To 4 Do DlgRadio(D,30+I,224+I*34,22,3,IntStr(4+I),False);
+ DlgBox(D,216,48,178,64,T3('Parity','Parit'#130,'Parit'#132't'));
+ DlgRadio(D,40,224,64,4,T3('None','Aucune','Keine'),False);
+ DlgRadio(D,41,224,78,4,T3('Odd','Impaire','Ungerade'),False);
+ DlgRadio(D,42,224,92,4,T3('Even','Paire','Gerade'),False);
+ DlgRadio(D,43,312,64,4,T3('Mark','Marque','Mark'),False);
+ DlgRadio(D,44,312,78,4,T3('Space','Espace','Space'),False);
+ DlgBox(D,216,116,178,62,T3('Handshake','Contr'#147'le de flux','Handshake'));
+ DlgRadio(D,60,224,134,6,T3('&Hardware','&Mat'#130'riel','&Hardware'),False);
+ DlgRadio(D,61,224,148,6,'XON/&XOFF',False);
+ DlgRadio(D,62,224,162,6,T3('N&one','Aucu&n','Ke&in'),False);
+ CommToDlg(D,CommCur);
+ DlgButton(D,ID_OK,100,188,90,'OK',True);
+ DlgButton(D,ID_CANCEL,210,188,90,T3('Cancel','Annuler','Abbrechen'),False);
+ R:=RunDialog(D,@CommHook);
+ If R=ID_OK Then Begin
+  CommFromDlg(D,CommCur);
+  If CommCur=2 Then CommPort:='COM2' Else CommPort:='COM1';
+  CommMirror;
+  IniSave;
+ End Else ComSet:=Sv;
 End;
 
 Procedure CpBorder;
@@ -6588,79 +7006,162 @@ Begin
  End;
 End;
 
+{ ================== souris ================== }
 Procedure CpMouse;
 Var D: TDlg; R: Integer;
 Begin
- DlgInit(D,'',330,150);
+ DlgInit(D,'',340,206);
  DlgCheck(D,10,10,10,T3('&Swap Left/Right Buttons','&Inverser les boutons gauche/droit','Linke/rechte Taste &vertauschen'),LeftHand);
- DlgText(D,10,36,T3('Double-click speed:','Vitesse du double-clic :','Doppelklick-Geschwindigkeit:'));
- DlgSlider(D,11,10,52,300,15,100,115-DblCs);
+ DlgText(D,10,36,T3('&Double-click speed:','Vitesse du &double-clic :','&Doppelklick-Geschwindigkeit:'));
+ DlgSlider(D,11,10,52,310,15,100,115-DblCs);
  DlgText(D,10,76,T3('Slow','Lent','Langsam'));DlgText(D,270,76,T3('Fast','Rapide','Schnell'));
- DlgButton(D,ID_OK,60,104,90,'OK',True);
- DlgButton(D,ID_CANCEL,180,104,90,T3('Cancel','Annuler','Abbrechen'),False);
+ DlgBox(D,10,94,320,56,T3('Mouse Acceleration','Acc'#130'l'#130'ration de la souris','Maus-Beschleunigung'));
+ DlgRadio(D,20,22,112,1,T3('&None','&Aucune','&Keine'),MouseAcc=0);
+ DlgRadio(D,21,120,112,1,T3('&Medium','&Moyenne','&Mittel'),MouseAcc=1);
+ DlgRadio(D,22,230,112,1,T3('&High','&Haute','&Hoch'),MouseAcc=2);
+ DlgButton(D,ID_OK,70,164,90,'OK',True);
+ DlgButton(D,ID_CANCEL,180,164,90,T3('Cancel','Annuler','Abbrechen'),False);
  R:=RunDialog(D,@NoHook);
  If R=ID_OK Then Begin
   LeftHand:=DlgGetVal(D,10)=1;
   DblCs:=Clamp(115-DlgGetVal(D,11),15,100);
+  MouseAcc:=Clamp(RadioGroupVal(D,1),0,2);
   IniSave;
  End;
 End;
 
+{ ================== parametres regionaux complets ================== }
+Type
+ TCntry = Record
+  N: String[24]; Df: Integer; Ds: String[1]; C24: Boolean; Ts: String[1];
+  Am,Pm: String[8]; Cs: String[4]; Cf,Dg: Integer; Dc,Th,Ls: String[1]; Lz: Boolean;
+ End;
+
 Const
- NCNTRY = 7;
- CntNames : Array[1..NCNTRY] Of String[22] = (
-  'United States','France','Germany','United Kingdom','Canada (French)','Italy','Denmark');
- CntFmt : Array[1..NCNTRY] Of Integer = (0,1,1,1,2,1,1);
- CntSep : Array[1..NCNTRY] Of String[1] = ('/','/','.','/','-','/','-');
- CntClk : Array[1..NCNTRY] Of Boolean = (False,True,True,False,True,True,True);
- CntCur : Array[1..NCNTRY] Of String[3] = ('$','F','DM',#156,'$','L','kr');
- CntDec : Array[1..NCNTRY] Of String[1] = ('.',',',',','.',',',',',',');
- CntTho : Array[1..NCNTRY] Of String[1] = (',',' ','.',',',' ','.','.');
+ NCNTRY = 19;
+ Cntry : Array[1..NCNTRY] Of TCntry = (
+  (N:'United States';Df:0;Ds:'/';C24:False;Ts:':';Am:'AM';Pm:'PM';Cs:'$';Cf:0;Dg:2;Dc:'.';Th:',';Ls:',';Lz:False),
+  (N:'Australia';Df:1;Ds:'/';C24:False;Ts:':';Am:'am';Pm:'pm';Cs:'$';Cf:0;Dg:2;Dc:'.';Th:',';Ls:',';Lz:False),
+  (N:'Belgium';Df:1;Ds:'/';C24:True;Ts:':';Am:'';Pm:'';Cs:'BF';Cf:3;Dg:2;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Canada (English)';Df:0;Ds:'/';C24:False;Ts:':';Am:'AM';Pm:'PM';Cs:'$';Cf:0;Dg:2;Dc:'.';Th:',';Ls:',';Lz:False),
+  (N:'Canada (French)';Df:2;Ds:'-';C24:True;Ts:':';Am:'';Pm:'';Cs:'$';Cf:3;Dg:2;Dc:',';Th:' ';Ls:';';Lz:True),
+  (N:'Denmark';Df:1;Ds:'-';C24:True;Ts:'.';Am:'';Pm:'';Cs:'kr';Cf:2;Dg:2;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Finland';Df:1;Ds:'.';C24:True;Ts:'.';Am:'';Pm:'';Cs:'mk';Cf:3;Dg:2;Dc:',';Th:' ';Ls:';';Lz:True),
+  (N:'France';Df:1;Ds:'/';C24:True;Ts:':';Am:'';Pm:'';Cs:'F';Cf:3;Dg:2;Dc:',';Th:' ';Ls:';';Lz:True),
+  (N:'Germany';Df:1;Ds:'.';C24:True;Ts:':';Am:'';Pm:'';Cs:'DM';Cf:3;Dg:2;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Italy';Df:1;Ds:'/';C24:True;Ts:'.';Am:'';Pm:'';Cs:'L.';Cf:2;Dg:0;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Japan';Df:2;Ds:'/';C24:True;Ts:':';Am:'';Pm:'';Cs:#157;Cf:0;Dg:0;Dc:'.';Th:',';Ls:',';Lz:True),
+  (N:'Netherlands';Df:1;Ds:'-';C24:True;Ts:':';Am:'';Pm:'';Cs:'f';Cf:2;Dg:2;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Norway';Df:1;Ds:'.';C24:True;Ts:':';Am:'';Pm:'';Cs:'kr';Cf:2;Dg:2;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Portugal';Df:1;Ds:'-';C24:True;Ts:':';Am:'';Pm:'';Cs:'Esc.';Cf:3;Dg:0;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Spain';Df:1;Ds:'/';C24:True;Ts:':';Am:'';Pm:'';Cs:'Pts';Cf:3;Dg:0;Dc:',';Th:'.';Ls:';';Lz:True),
+  (N:'Sweden';Df:2;Ds:'-';C24:True;Ts:'.';Am:'';Pm:'';Cs:'kr';Cf:3;Dg:2;Dc:',';Th:' ';Ls:';';Lz:True),
+  (N:'Switzerland';Df:1;Ds:'.';C24:True;Ts:'.';Am:'';Pm:'';Cs:'SFr.';Cf:2;Dg:2;Dc:'.';Th:#39;Ls:';';Lz:True),
+  (N:'United Kingdom';Df:1;Ds:'/';C24:True;Ts:':';Am:'';Pm:'';Cs:#156;Cf:0;Dg:2;Dc:'.';Th:',';Ls:',';Lz:True),
+  (N:'Other Country';Df:0;Ds:'/';C24:False;Ts:':';Am:'AM';Pm:'PM';Cs:'$';Cf:0;Dg:2;Dc:'.';Th:',';Ls:',';Lz:False));
 
 Var CtryList: PStrList;
 
+{ charge les reglages d'un pays dans les controles }
+Procedure CtryToDlg(Var D: TDlg; S: Integer);
+Begin
+ If (S<1) Or (S>NCNTRY) Then Exit;
+ SelectRadio(D,DlgFind(D,20+Cntry[S].Df));
+ SelectRadio(D,DlgFind(D,30+Ord(Cntry[S].C24)));
+ SelectRadio(D,DlgFind(D,50+Cntry[S].Cf));
+ DlgSetText(D,40,Cntry[S].Ds);DlgSetText(D,41,Cntry[S].Ts);
+ DlgSetText(D,42,Cntry[S].Am);DlgSetText(D,43,Cntry[S].Pm);
+ DlgSetText(D,44,Cntry[S].Cs);DlgSetText(D,45,IntStr(Cntry[S].Dg));
+ DlgSetText(D,46,Cntry[S].Dc);DlgSetText(D,47,Cntry[S].Th);DlgSetText(D,48,Cntry[S].Ls);
+ DlgSetVal(D,49,Ord(Cntry[S].Lz));
+End;
+
+{ exemple formate d'apres les controles }
+Function CtrySample(Var D: TDlg): String;
+Var Df,Cf,Dg,I: Integer; Ds,Ts,Am,Pm,Cs,Dc,Th,Nm,Ti,Da,Cu: String; C24,Lz: Boolean;
+Begin
+ Df:=Max2(0,RadioGroupVal(D,1));C24:=RadioGroupVal(D,2)=1;Cf:=Max2(0,RadioGroupVal(D,3));
+ Ds:=DlgGetText(D,40);Ts:=DlgGetText(D,41);Am:=DlgGetText(D,42);Pm:=DlgGetText(D,43);
+ Cs:=DlgGetText(D,44);Dg:=Clamp(StrVal(DlgGetText(D,45),2),0,3);
+ Dc:=DlgGetText(D,46);Th:=DlgGetText(D,47);Lz:=DlgGetVal(D,49)=1;
+ Nm:='1'+Th+'234';
+ If Dg>0 Then Nm:=Nm+Dc+Copy('567',1,Dg);
+ Case Cf Of
+  0: Cu:=Cs+Nm;
+  1: Cu:=Nm+Cs;
+  2: Cu:=Cs+' '+Nm;
+  Else Cu:=Nm+' '+Cs;
+ End;
+ If C24 Then Ti:='13'+Ts+'05'
+ Else Ti:=IfThenS(Lz,'01','1')+Ts+'05 '+Pm;
+ Case Df Of
+  0: Da:='11'+Ds+'04'+Ds+'2026';
+  1: Da:='04'+Ds+'11'+Ds+'2026';
+  Else Da:='2026'+Ds+'11'+Ds+'04';
+ End;
+ CtrySample:=Da+'   '+Ti+'   '+Cu;
+End;
+
 Function CtryHook(Var D: TDlg; Ev,Ct: Integer): Boolean;
-Var S: Integer;
 Begin
  CtryHook:=False;
- If (Ev=DE_CHANGE) And (D.C[Ct].Id=10) Then Begin
-  S:=D.C[Ct].Val;
-  If (S>=1) And (S<=NCNTRY) Then Begin
-   SelectRadio(D,DlgFind(D,20+CntFmt[S]));
-   DlgSetVal(D,31,Ord(CntClk[S]));DlgSetVal(D,30,1-Ord(CntClk[S]));
-   SelectRadio(D,DlgFind(D,30+Ord(CntClk[S])));
-   DlgSetText(D,40,CntCur[S]);DlgSetText(D,41,CntDec[S]);DlgSetText(D,42,CntTho[S]);
-   DlgSetText(D,43,CntSep[S]);
+ If Ev=DE_BUTTON Then Begin
+  If D.C[Ct].Id=ID_RESET Then Begin
+   CtryToDlg(D,DlgGetVal(D,10));DlgSetText(D,60,CtrySample(D));CtryHook:=True;
   End;
+ End Else If (Ev=DE_CHANGE) Then Begin
+  If D.C[Ct].Id=10 Then CtryToDlg(D,D.C[Ct].Val);
+  If D.C[Ct].Id<>60 Then DlgSetText(D,60,CtrySample(D));
  End;
 End;
 
 Procedure CpCountry;
 Var D: TDlg; R,I,Sel: Integer;
 Begin
- New(CtryList);CtryList^.N:=NCNTRY;Sel:=1;
- For I:=1 To NCNTRY Do Begin CtryList^.S[I]:=CntNames[I];If CntNames[I]=CountryName Then Sel:=I;End;
- DlgInit(D,'',420,190);
- DlgText(D,10,6,T3('Country:','Pays :','Land:'));
- DlgList(D,10,10,20,160,100,CtryList,Sel);
- DlgBox(D,180,4,110,64,T3('Date','Date','Datum'));
- DlgRadio(D,20,190,22,1,'M/D/Y',DateFmt=0);DlgRadio(D,21,190,36,1,'D/M/Y',DateFmt=1);DlgRadio(D,22,190,50,1,'Y/M/D',DateFmt=2);
- DlgBox(D,300,4,110,64,T3('Time','Heure','Zeit'));
- DlgRadio(D,30,310,22,2,'12 h',Not Clock24);DlgRadio(D,31,310,36,2,'24 h',Clock24);
- DlgText(D,180,76,T3('Currency:','Devise :','W'#132'hrung:'));DlgEdit(D,40,270,72,40,CurSym,4);
- DlgText(D,180,96,T3('Decimal:','D'#130'cimal :','Dezimal:'));DlgEdit(D,41,270,92,40,DecSep,1);
- DlgText(D,180,116,T3('Thousands:','Milliers :','Tausender:'));DlgEdit(D,42,270,112,40,ThouSep,1);
- DlgText(D,320,76,T3('Date sep.:','S'#130'p. date :','Datumstr.:'));DlgEdit(D,43,320,92,40,DateSep,1);
- DlgButton(D,ID_OK,100,146,90,'OK',True);
- DlgButton(D,ID_CANCEL,230,146,90,T3('Cancel','Annuler','Abbrechen'),False);
+ New(CtryList);CtryList^.N:=NCNTRY;Sel:=NCNTRY;
+ For I:=1 To NCNTRY Do Begin CtryList^.S[I]:=Cntry[I].N;If Cntry[I].N=CountryName Then Sel:=I;End;
+ DlgInit(D,'',476,304);
+ DlgText(D,10,6,T3('&Country:','&Pays :','&Land:'));
+ DlgList(D,10,10,20,166,176,CtryList,Sel);
+ DlgBox(D,184,4,134,92,T3('Date','Date','Datum'));
+ DlgRadio(D,20,192,22,1,'M/D/Y',DateFmt=0);DlgRadio(D,21,192,36,1,'D/M/Y',DateFmt=1);DlgRadio(D,22,192,50,1,'Y/M/D',DateFmt=2);
+ DlgText(D,192,70,T3('Se&p.:','S'#130'&p. :','&Trenn.:'));DlgEdit(D,40,256,66,40,DateSep,1);
+ DlgBox(D,184,100,134,114,T3('Time','Heure','Zeit'));
+ DlgRadio(D,30,192,118,2,T3('12 &hours','&12 heures','&12 Std.'),Not Clock24);DlgRadio(D,31,192,132,2,T3('24 h&ours','24 h&eures','24 S&td.'),Clock24);
+ DlgText(D,192,150,T3('Sep&arator:','&S'#130'p. :','Trennzei&chen:'));DlgEdit(D,41,264,146,32,TimeSep,1);
+ DlgText(D,192,168,T3('&AM:','&AM :','&AM:'));DlgEdit(D,42,232,164,72,S1159,8);
+ DlgText(D,192,186,T3('P&M:','P&M :','P&M:'));DlgEdit(D,43,232,182,72,S2359,8);
+ DlgBox(D,326,4,142,106,T3('Currency','Devise','W'#132'hrung'));
+ DlgText(D,334,22,T3('Sym&bol:','Sym&bole :','Sym&bol:'));DlgEdit(D,44,398,18,56,CurSym,4);
+ DlgRadio(D,50,334,38,3,'$1',CurFmt=0);DlgRadio(D,51,334,52,3,'1$',CurFmt=1);
+ DlgRadio(D,52,334,66,3,'$ 1',CurFmt=2);DlgRadio(D,53,334,80,3,'1 $',CurFmt=3);
+ DlgBox(D,326,114,142,100,T3('Numbers','Nombres','Zahlen'));
+ DlgText(D,334,130,T3('Dig&its:','&Chiffres :','&Stellen:'));DlgEdit(D,45,430,126,24,IntStr(NumDigits),1);
+ DlgText(D,334,148,T3('Dec&imal:','D'#130'c&imal :','Dez&imal:'));DlgEdit(D,46,430,144,24,DecSep,1);
+ DlgText(D,334,166,T3('T&housands:','&Milliers :','&Tausend:'));DlgEdit(D,47,430,162,24,ThouSep,1);
+ DlgText(D,334,184,T3('&List sep.:','&Liste :','Listen&trenn.:'));DlgEdit(D,48,430,180,24,ListSep,1);
+ DlgCheck(D,49,10,222,T3('Leading &zero for hours','&Z'#130'ro initial pour les heures','F'#129'hrende N&ull bei Stunden'),LeadZero);
+ DlgText(D,10,246,T3('Sample:','Exemple :','Beispiel:'));
+ I:=DlgText(D,90,246,'');D.C[I].Id:=60;
+ DlgButton(D,ID_OK,150,272,90,'OK',True);
+ DlgButton(D,ID_CANCEL,250,272,90,T3('Cancel','Annuler','Abbrechen'),False);
+ DlgButton(D,ID_RESET,350,272,90,T3('&Reset','R'#130'&init.','&Zur'#129'ck'),False);
+ DlgSetText(D,60,CtrySample(D));
  R:=RunDialog(D,@CtryHook);
  If R=ID_OK Then Begin
-  I:=DlgGetVal(D,10);If I>0 Then CountryName:=CntNames[I];
+  I:=DlgGetVal(D,10);If I>0 Then CountryName:=Cntry[I].N;
   DateFmt:=Max2(0,RadioGroupVal(D,1));
   Clock24:=RadioGroupVal(D,2)=1;
-  CurSym:=DlgGetText(D,40);DecSep:=DlgGetText(D,41);ThouSep:=DlgGetText(D,42);
-  DateSep:=DlgGetText(D,43);
-  If DateSep='' Then DateSep:='/';
+  CurFmt:=Max2(0,RadioGroupVal(D,3));
+  DateSep:=DlgGetText(D,40);If DateSep='' Then DateSep:='/';
+  TimeSep:=DlgGetText(D,41);If TimeSep='' Then TimeSep:=':';
+  S1159:=DlgGetText(D,42);S2359:=DlgGetText(D,43);
+  CurSym:=DlgGetText(D,44);
+  NumDigits:=Clamp(StrVal(DlgGetText(D,45),2),0,9);
+  DecSep:=DlgGetText(D,46);If DecSep='' Then DecSep:='.';
+  ThouSep:=DlgGetText(D,47);
+  ListSep:=DlgGetText(D,48);If ListSep='' Then ListSep:=',';
+  LeadZero:=DlgGetVal(D,49)=1;
   IniSave;
  End;
  Dispose(CtryList);
@@ -8390,7 +8891,7 @@ Begin
    End;
   CM_L_CONTROLS: Begin
     DlgInit(D,'',280,110);
-    DlgText(D,10,12,T3('Early ring (minutes):','Sonnerie anticip'#130'e (minutes) :','Fr'#129'her klingeln (Min.):'));
+    DlgText(D,10,12,T3('&Early ring (minutes):','Sonnerie &anticip'#130'e (minutes) :','&Fr'#129'her klingeln (Min.):'));
     DlgEdit(D,10,200,8,60,IntStr(C^.AlarmEarly),2);
     DlgCheck(D,11,10,40,T3('&Sound','&Son','&Ton'),C^.AlarmSound);
     DlgButton(D,ID_OK,30,72,90,'OK',True);
@@ -8415,7 +8916,7 @@ Begin
     DlgRadio(D,10,18,22,1,'15',C^.Interval=15);DlgRadio(D,11,18,38,1,'30',C^.Interval=30);DlgRadio(D,12,18,54,1,'60',C^.Interval=60);
     DlgBox(D,150,4,140,50,T3('Hour Format','Format','Format'));
     DlgRadio(D,20,160,22,2,'12 h',Not C^.H24);DlgRadio(D,21,160,38,2,'24 h',C^.H24);
-    DlgText(D,150,62,T3('Day starts:','D'#130'but :','Beginn:'));DlgEdit(D,30,230,58,40,IntStr(C^.DayStart Div 60),2);
+    DlgText(D,150,62,T3('&Day starts:','&D'#130'but :','&Beginn:'));DlgEdit(D,30,230,58,40,IntStr(C^.DayStart Div 60),2);
     DlgButton(D,ID_OK,50,100,90,'OK',True);
     DlgButton(D,ID_CANCEL,160,100,90,T3('Cancel','Annuler','Abbrechen'),False);
     If RunDialog(D,@NoHook)=ID_OK Then Begin
@@ -16062,16 +16563,18 @@ BEGIN
   End Else If Arg[1]<>'/' Then StartFile:=Arg;
  End;
  BorderW:=3;DblCs:=45;LeftHand:=False;
+ S1159:='AM';S2359:='PM';ListSep:=',';CurFmt:=0;NumDigits:=2;LeadZero:=False;PrnFileName:='';PrnOrient:=0;PrnPaper:=0;DevTimeout:=15;TxTimeout:=45;SpoolSrcNext:='';DrvDest:='C:\';
  DateFmt:=0;DateSep:='/';Clock24:=False;TimeSep:=':';CurSym:='$';DecSep:='.';ThouSep:=',';
- If Lang<>0 Then Begin DateFmt:=1;Clock24:=True;TimeSep:=':';DecSep:=',';ThouSep:=' ';CurSym:='F';End;
+ If Lang<>0 Then Begin S1159:='';S2359:='';CurFmt:=3;ListSep:=';';LeadZero:=True;DateFmt:=1;Clock24:=True;TimeSep:=':';DecSep:=',';ThouSep:=' ';CurSym:='F';End;
  If Lang=2 Then Begin DateSep:='.';CurSym:='DM';End;
  PrinterName:='Epson FX-80';PrintPort:='LPT1';
  VolNames['A']:='';VolNames['B']:='';VolNames['C']:='';VolNames['D']:='';
  NWins:=0;NextId:=1;NewWinCount:=0;Capture:=Nil;QuitFlag:=False;
  DefaultScreenColors;
- BlinkMs:=530;BlinkHalf:=26;MouseAcc:=1;Beeping:=True;NPrn:=1;PrnInst[1]:='Epson FX-80';PrnPort[1]:='LPT1';NFont:=3;
- FontInst[1]:='Courier 10';FontInst[2]:='Helv 10';FontInst[3]:='Tms Rmn 10';
+ BlinkMs:=530;BlinkHalf:=26;MouseAcc:=0;Beeping:=True;NPrn:=1;PrnInst[1]:='Epson FX-80';PrnPort[1]:='LPT1';NFont:=3;
+ FontInst[1]:='Courier 8,10,12 (Set #1)';FontFile[1]:='COURA.FON';FontInst[2]:='Helv 8,10,12,14,18,24 (Set #1)';FontFile[2]:='HELVA.FON';FontInst[3]:='Tms Rmn 8,10,12,14,18,24 (Set #1)';FontFile[3]:='TMSRA.FON';
  CommPort:='COM1';CommBaud:=1200;CommBits:=8;CommStop:=1;CommParity:='N';
+ For I:=1 To 2 Do Begin ComSet[I].Baud:=1200;ComSet[I].Bits:=8;ComSet[I].Par:=0;ComSet[I].Stop:=0;ComSet[I].Hs:=2;End;
  CountryName:=IfThenS(Lang=0,'United States',IfThenS(Lang=2,'Germany','France'));Beeping:=True;
  IniFile:=JoinPath(IfThenS(DirExists(V2R('C:\WINDOWS')),V2R('C:\WINDOWS'),HomeDir),'WIN.INI');
  IniLoad;
