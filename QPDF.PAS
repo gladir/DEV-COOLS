@@ -2373,6 +2373,505 @@ Begin
 End;
 
 { ------------------------------------------------------------------ }
+{ Recompression JPEG (DCTDecode) dans le domaine des coefficients DCT  }
+{ Seuls les JPEG de base (SOF0/SOF1, 8 bits, un seul balayage) sont    }
+{ traites. Les tables de Huffman sont optimisees (sans perte) ; avec   }
+{ --jpeg-requant les pas de quantification sont en plus agrandis.      }
+{ ------------------------------------------------------------------ }
+
+Type
+ TCoef=Array[0..63]of Longint;
+
+Var
+ JpegOn:Boolean;
+ JpegPct:Longint;          { 100 = sans perte, > 100 = pas de quantif. agrandis }
+ JIn,JOut:PBuf;
+ JPos,JEnd,JBB,JBC:Longint;
+ JBad,JTally:Boolean;
+ JQ,JQN:Array[0..3,0..63]of Longint;
+ JQDef:Array[0..3]of Boolean;
+ JHB:Array[0..7,1..16]of Byte;
+ JHV:Array[0..7,0..255]of Byte;
+ JHDef:Array[0..7]of Boolean;
+ JHMax,JHMin,JHPtr:Array[0..7,0..16]of Longint;
+ JNC:Longint;
+ JCid,JCH,JCV,JCTq,JCTd,JCTa:Array[1..4]of Longint;
+ JImgW,JImgH,JRst,JHMaxF,JVMaxF:Longint;
+ JApp,JSof:TBuf;
+ JFreq:Array[0..3,0..256]of Longint;
+ JEBits:Array[0..3,1..16]of Byte;
+ JEVal:Array[0..3,0..255]of Byte;
+ JECode,JESize:Array[0..3,0..255]of Longint;
+ JENum:Array[0..3]of Longint;
+ JOB,JOC:Longint;
+ JPred:Array[1..4]of Longint;
+ JTotal,JDone:Longint;     { images JPEG a traiter / traitees (progression) }
+
+{ Progression : (n/total) - pct % ; ecrite sur la sortie d'erreur }
+Procedure JProgress;
+Var Pct:Longint;
+Begin
+ If JTotal<=0 Then Exit;
+ Pct:=(JDone*100)div JTotal;
+ {$IFDEF FPC}
+ Write(StdErr,#13'Images JPEG : (',JDone,'/',JTotal,') - ',Pct,'%   ');
+ {$ELSE}
+ Write(#13'Images JPEG : (',JDone,'/',JTotal,') - ',Pct,'%   ');
+ {$ENDIF}
+End;
+
+Function JByte(P:Longint):Longint;Begin
+ If(P<0)or(P>=JEnd)Then JByte:=0 Else JByte:=BufGet(JIn^,P);
+End;
+
+Function JWord(P:Longint):Longint;Begin
+ JWord:=JByte(P)*256+JByte(P+1);
+End;
+
+{ Lecture des bits de donnees entropiques }
+Function JGetBits(N:Longint):Longint;
+Var B:Longint;
+Begin
+ While JBC<N Do Begin
+  If JPos>=JEnd Then Begin JBad:=True;B:=0;End
+   Else
+  Begin
+   B:=BufGet(JIn^,JPos);
+   If B=255 Then Begin
+    If JByte(JPos+1)=0 Then Inc(JPos,2)
+     Else B:=0;                { marqueur : on fournit des zeros }
+   End
+    Else
+   Inc(JPos);
+  End;
+  JBB:=((JBB shl 8)or B)and $FFFFFF;
+  Inc(JBC,8);
+ End;
+ JGetBits:=(JBB shr(JBC-N))and((Longint(1)shl N)-1);
+ Dec(JBC,N);
+End;
+
+Function JDecodeSym(T:Longint):Longint;
+Var L:Longint;Code:Longint;Found:Boolean;
+Begin
+ Code:=0;Found:=False;JDecodeSym:=0;L:=1;
+ While(L<=16)and Not Found Do Begin
+  Code:=(Code shl 1)or JGetBits(1);
+  If(JHMax[T,L]>=0)and(Code<=JHMax[T,L])and(Code>=JHMin[T,L])Then Begin
+   JDecodeSym:=JHV[T,JHPtr[T,L]+Code-JHMin[T,L]];
+   Found:=True;
+  End;
+  Inc(L);
+ End;
+ If Not Found Then JBad:=True;
+End;
+
+Procedure JBuildDec(T:Longint);
+Var L:Longint;Code,K:Longint;
+Begin
+ Code:=0;K:=0;
+ For L:=1 to 16 Do Begin
+  JHPtr[T,L]:=K;JHMin[T,L]:=Code;
+  Inc(Code,JHB[T,L]);Inc(K,JHB[T,L]);
+  If JHB[T,L]>0 Then JHMax[T,L]:=Code-1 Else JHMax[T,L]:=-1;
+  Code:=Code shl 1;
+ End;
+End;
+
+{ Analyse des marqueurs jusqu'au debut du balayage }
+Function JParse(Var Src:TBuf):Boolean;
+Var P,L,Mk,End0,I,K,T,Tq,Tc,Th,N,Sum,Id,Hv:Longint;
+    Got,Done,Bad:Boolean;
+Begin
+ JParse:=False;
+ JIn:=@Src;JEnd:=Src.Len;
+ BufClear(JApp);BufClear(JSof);
+ For I:=0 to 3 Do JQDef[I]:=False;
+ For I:=0 to 7 Do JHDef[I]:=False;
+ JNC:=0;JRst:=0;Got:=False;Done:=False;Bad:=False;
+ If(JByte(0)<>255)or(JByte(1)<>$D8)Then Exit;
+ P:=2;
+ While(P+4<=JEnd)and Not Done and Not Bad Do Begin
+  Mk:=JByte(P+1);
+  L:=JWord(P+2);
+  If JByte(P)<>255 Then Bad:=True
+   Else
+  If Mk=255 Then Inc(P)
+   Else
+  If(L<2)or(P+2+L>JEnd)Then Bad:=True
+   Else
+  Begin
+   End0:=P+2+L;
+   If(Mk=$C0)or(Mk=$C1)Then Begin
+    If Got or(JByte(P+4)<>8)Then Bad:=True
+     Else
+    Begin
+     JImgH:=JWord(P+5);JImgW:=JWord(P+7);
+     JNC:=JByte(P+9);
+     If(JImgH<1)or(JImgW<1)or(JNC<1)or(JNC>4)or(L<>8+3*JNC)Then Bad:=True
+      Else
+     Begin
+      JHMaxF:=1;JVMaxF:=1;
+      For I:=1 to JNC Do Begin
+       Id:=JByte(P+10+(I-1)*3);Hv:=JByte(P+11+(I-1)*3);
+       JCid[I]:=Id;JCH[I]:=Hv shr 4;JCV[I]:=Hv and 15;
+       JCTq[I]:=JByte(P+12+(I-1)*3);
+       If(JCH[I]<1)or(JCH[I]>4)or(JCV[I]<1)or(JCV[I]>4)or(JCTq[I]>3)Then
+         Bad:=True;
+       If JCH[I]>JHMaxF Then JHMaxF:=JCH[I];
+       If JCV[I]>JVMaxF Then JVMaxF:=JCV[I];
+      End;
+      BufAppend(JSof,Src,P,End0-P);
+      Got:=True;
+     End;
+    End;
+   End
+    Else
+   If(Mk=$C2)or(Mk=$C3)or((Mk>=$C5)and(Mk<=$CF)and(Mk<>$C8)and(Mk<>$CC))Then
+     Bad:=True
+    Else
+   If Mk=$DB Then Begin
+    I:=P+4;
+    While(I<End0)and Not Bad Do Begin
+     Tq:=JByte(I)and 15;
+     If((JByte(I)shr 4)<>0)or(Tq>3)or(I+65>End0)Then Bad:=True
+      Else
+     Begin
+      For K:=0 to 63 Do JQ[Tq,K]:=JByte(I+1+K);
+      JQDef[Tq]:=True;
+      Inc(I,65);
+     End;
+    End;
+   End
+    Else
+   If Mk=$C4 Then Begin
+    I:=P+4;
+    While(I<End0)and Not Bad Do Begin
+     Tc:=JByte(I)shr 4;Th:=JByte(I)and 15;
+     If(Tc>1)or(Th>3)Then Bad:=True
+      Else
+     Begin
+      T:=Tc*4+Th;Sum:=0;
+      For K:=1 to 16 Do Begin JHB[T,K]:=JByte(I+K);Inc(Sum,JHB[T,K]);End;
+      If(Sum>256)or(I+17+Sum>End0)Then Bad:=True
+       Else
+      Begin
+       For K:=0 to Sum-1 Do JHV[T,K]:=JByte(I+17+K);
+       JHDef[T]:=True;JBuildDec(T);
+       Inc(I,17+Sum);
+      End;
+     End;
+    End;
+   End
+    Else
+   If Mk=$DD Then JRst:=JWord(P+4)
+    Else
+   If(Mk>=$E0)and(Mk<=$EF)Then BufAppend(JApp,Src,P,End0-P)
+    Else
+   If Mk=$DA Then Begin
+    If Not Got Then Bad:=True
+     Else
+    Begin
+     N:=JByte(P+4);
+     If(N<>JNC)or(L<>6+2*N)Then Bad:=True
+      Else
+     Begin
+      For I:=1 to N Do Begin
+       Id:=JByte(P+5+(I-1)*2);
+       If Id<>JCid[I]Then Bad:=True;
+       JCTd[I]:=JByte(P+6+(I-1)*2)shr 4;
+       JCTa[I]:=JByte(P+6+(I-1)*2)and 15;
+       If(JCTd[I]>3)or(JCTa[I]>3)Then Bad:=True
+        Else
+       If Not(JHDef[JCTd[I]]and JHDef[4+JCTa[I]]and JQDef[JCTq[I]])Then
+         Bad:=True;
+      End;
+      If(JByte(P+5+2*N)<>0)or(JByte(P+6+2*N)<>63)or(JByte(P+7+2*N)<>0)Then
+        Bad:=True;
+      If Not Bad Then Begin JPos:=End0;Done:=True;End;
+     End;
+    End;
+   End
+    Else
+   If Mk=$D9 Then Bad:=True;
+   P:=End0;
+  End;
+ End;
+ JParse:=Done and Not Bad;
+End;
+
+Function JNBits(V:Longint):Longint;
+Var N:Longint;
+Begin
+ N:=0;
+ While V>0 Do Begin Inc(N);V:=V shr 1;End;
+ JNBits:=N;
+End;
+
+Procedure JPutBits(V:Longint;N:Longint);
+Var B:Longint;
+Begin
+ If N=0 Then Exit;
+ JOB:=((JOB shl N)or(V and((Longint(1)shl N)-1)))and $FFFFFFF;
+ Inc(JOC,N);
+ While JOC>=8 Do Begin
+  B:=(JOB shr(JOC-8))and 255;
+  BufPut(JOut^,B);
+  If B=255 Then BufPut(JOut^,0);
+  Dec(JOC,8);
+ End;
+ JOB:=JOB and((Longint(1)shl JOC)-1);
+End;
+
+Procedure JSym(T,S:Longint);Begin
+ If JTally Then Inc(JFreq[T,S])
+  Else JPutBits(JECode[T,S],JESize[T,S]);
+End;
+
+{ Code (ou compte) un bloc deja quantifie (ordre zigzag) }
+Procedure JCodeBlock(C:Longint;Var Co:TCoef);
+Var K,S,Run:Longint;D,V,Ts:Longint;
+Begin
+ If C=1 Then Ts:=0 Else Ts:=1;
+ D:=Co[0]-JPred[C];JPred[C]:=Co[0];
+ If D<0 Then V:=-D Else V:=D;
+ S:=JNBits(V);
+ JSym(Ts*2,S);
+ If S>0 Then Begin
+  If D<0 Then Dec(D);
+  If Not JTally Then JPutBits(D,S);
+ End;
+ Run:=0;
+ For K:=1 to 63 Do Begin
+  If Co[K]=0 Then Inc(Run)
+   Else
+  Begin
+   While Run>15 Do Begin JSym(Ts*2+1,$F0);Dec(Run,16);End;
+   V:=Co[K];If V<0 Then V:=-V;
+   S:=JNBits(V);
+   JSym(Ts*2+1,Run*16+S);
+   If Not JTally Then Begin
+    V:=Co[K];If V<0 Then Dec(V);
+    JPutBits(V,S);
+   End;
+   Run:=0;
+  End;
+ End;
+ If Run>0 Then JSym(Ts*2+1,0);
+End;
+
+{ Un balayage complet : decodage des MCU, requantification, code/compte }
+Function JScan:Boolean;
+Var McuX,McuY,Mx,My,Rc,C,H,V,K,S,R,Tries,Val,Q,QO,Sum:Longint;
+    Co:TCoef;
+    DecPred:Array[1..4]of Longint;
+    Ok:Boolean;
+Begin
+ JScan:=False;
+ JBB:=0;JBC:=0;JBad:=False;Ok:=True;
+ For C:=1 to 4 Do Begin DecPred[C]:=0;JPred[C]:=0;End;
+ McuX:=(JImgW+8*JHMaxF-1)div(8*JHMaxF);
+ McuY:=(JImgH+8*JVMaxF-1)div(8*JVMaxF);
+ Rc:=0;
+ My:=0;
+ While Ok and(My<McuY)Do Begin
+  Mx:=0;
+  While Ok and(Mx<McuX)Do Begin
+   If(JRst>0)and(Rc=JRst)Then Begin
+    JBB:=0;JBC:=0;Tries:=0;
+    While(Tries<16)and Not((JByte(JPos)=255)and(JByte(JPos+1)>=$D0)
+      and(JByte(JPos+1)<=$D7))Do Begin Inc(JPos);Inc(Tries);End;
+    If Tries>=16 Then Ok:=False Else Inc(JPos,2);
+    Rc:=0;
+    For C:=1 to 4 Do Begin DecPred[C]:=0;JPred[C]:=0;End;
+   End;
+   Inc(Rc);
+   C:=1;
+   While Ok and(C<=JNC)Do Begin
+    V:=0;
+    While Ok and(V<JCV[C])Do Begin
+     H:=0;
+     While Ok and(H<JCH[C])Do Begin
+      S:=JDecodeSym(JCTd[C]);
+      If(S>11)or JBad Then Ok:=False
+       Else
+      Begin
+       Val:=0;
+       If S>0 Then Begin
+        Val:=JGetBits(S);
+        If Val<(Longint(1)shl(S-1))Then Val:=Val-(Longint(1)shl S)+1;
+       End;
+       Inc(DecPred[C],Val);
+       For K:=0 to 63 Do Co[K]:=0;
+       Co[0]:=DecPred[C];
+       K:=1;
+       While Ok and(K<=63)Do Begin
+        R:=JDecodeSym(4+JCTa[C]);
+        If JBad Then Ok:=False
+         Else
+        Begin
+         S:=R and 15;R:=R shr 4;
+         If S=0 Then Begin
+          If R=15 Then Inc(K,16) Else K:=64;
+         End
+          Else
+         Begin
+          Inc(K,R);
+          If K>63 Then Ok:=False
+           Else
+          Begin
+           Val:=JGetBits(S);
+           If Val<(Longint(1)shl(S-1))Then Val:=Val-(Longint(1)shl S)+1;
+           Co[K]:=Val;Inc(K);
+          End;
+         End;
+        End;
+       End;
+       If JBad Then Ok:=False;
+       If Ok Then Begin
+        If JpegPct>100 Then
+         For K:=0 to 63 Do If Co[K]<>0 Then Begin
+          QO:=JQ[JCTq[C],K];Q:=JQN[JCTq[C],K];
+          If Q<>QO Then Begin
+           If Co[K]<0 Then Begin
+            Sum:=((-Co[K])*QO+Q div 2)div Q;Co[K]:=-Sum;
+           End
+            Else
+           Co[K]:=(Co[K]*QO+Q div 2)div Q;
+          End;
+         End;
+        JCodeBlock(C,Co);
+       End;
+      End;
+      Inc(H);
+     End;
+     Inc(V);
+    End;
+    Inc(C);
+   End;
+   Inc(Mx);
+  End;
+  Inc(My);
+ End;
+ JScan:=Ok and Not JBad;
+End;
+
+{ Construit la table de Huffman optimale (limite 16 bits) de l'ensemble T }
+Procedure JGenTable(T:Longint);
+Var Fr:Array[0..256]of Longint;
+    CS,Oth:Array[0..256]of Longint;
+    Bits:Array[0..40]of Longint;
+    I,J,C1,C2,Len:Longint;V,P:Longint;
+Begin
+ For I:=0 to 255 Do Fr[I]:=JFreq[T,I];
+ Fr[256]:=1;
+ For I:=0 to 256 Do Begin CS[I]:=0;Oth[I]:=-1;End;
+ For I:=0 to 40 Do Bits[I]:=0;
+ Repeat
+  C1:=-1;V:=1000000000;
+  For I:=0 to 256 Do If(Fr[I]<>0)and(Fr[I]<=V)Then Begin V:=Fr[I];C1:=I;End;
+  C2:=-1;V:=1000000000;
+  For I:=0 to 256 Do
+   If(Fr[I]<>0)and(Fr[I]<=V)and(I<>C1)Then Begin V:=Fr[I];C2:=I;End;
+  If C2>=0 Then Begin
+   Inc(Fr[C1],Fr[C2]);Fr[C2]:=0;
+   Inc(CS[C1]);
+   While Oth[C1]>=0 Do Begin C1:=Oth[C1];Inc(CS[C1]);End;
+   Oth[C1]:=C2;
+   Inc(CS[C2]);
+   While Oth[C2]>=0 Do Begin C2:=Oth[C2];Inc(CS[C2]);End;
+  End;
+ Until C2<0;
+ For I:=0 to 256 Do If CS[I]>0 Then Inc(Bits[CS[I]]);
+ For I:=40 downto 17 Do
+  While Bits[I]>0 Do Begin
+   J:=I-2;
+   While Bits[J]=0 Do Dec(J);
+   Dec(Bits[I],2);Inc(Bits[I-1]);Inc(Bits[J+1],2);Dec(Bits[J]);
+  End;
+ I:=16;
+ While(I>0)and(Bits[I]=0)Do Dec(I);
+ If I>0 Then Dec(Bits[I]);
+ JENum[T]:=0;
+ For I:=1 to 16 Do Begin JEBits[T,I]:=Bits[I];Inc(JENum[T],Bits[I]);End;
+ P:=0;
+ For Len:=1 to 40 Do
+  For J:=0 to 255 Do If CS[J]=Len Then Begin
+   JEVal[T,P]:=J;Inc(P);
+  End;
+ V:=0;P:=0;
+ For Len:=1 to 16 Do Begin
+  For I:=1 to JEBits[T,Len] Do Begin
+   JECode[T,JEVal[T,P]]:=V;JESize[T,JEVal[T,P]]:=Len;
+   Inc(V);Inc(P);
+  End;
+  V:=V shl 1;
+ End;
+End;
+
+Procedure JPutByte(V:Longint);Begin BufPut(JOut^,V and 255);End;
+
+Procedure JPutWord(V:Longint);Begin
+ BufPut(JOut^,(V shr 8)and 255);BufPut(JOut^,V and 255);
+End;
+
+{ Recode le JPEG Src dans Dst ; False si non supporte ou corrompu }
+Function JpegTranscode(Var Src,Dst:TBuf):Boolean;
+Var I,K,T,Tq,ScanStart:Longint;Seen:Array[0..3]of Boolean;Fin:Boolean;
+Begin
+ JpegTranscode:=False;
+ If Not JParse(Src)Then Exit;
+ For Tq:=0 to 3 Do
+  If JQDef[Tq]Then
+   For K:=0 to 63 Do Begin
+    JQN[Tq,K]:=(JQ[Tq,K]*JpegPct+50)div 100;
+    If JQN[Tq,K]>255 Then JQN[Tq,K]:=255;
+    If JQN[Tq,K]<JQ[Tq,K]Then JQN[Tq,K]:=JQ[Tq,K];
+    If JQN[Tq,K]<1 Then JQN[Tq,K]:=1;
+   End;
+ For T:=0 to 3 Do For K:=0 to 256 Do JFreq[T,K]:=0;
+ { passe 1 : statistiques }
+ JTally:=True;
+ ScanStart:=JPos;
+ If Not JScan Then Exit;
+ For T:=0 to 3 Do JGenTable(T);
+ { passe 2 : ecriture }
+ JPos:=ScanStart;JTally:=False;
+ BufClear(Dst);
+ JOut:=@Dst;JOB:=0;JOC:=0;
+ JPutByte(255);JPutByte($D8);
+ BufAppend(Dst,JApp,0,JApp.Len);
+ For Tq:=0 to 3 Do Seen[Tq]:=False;
+ For I:=1 to JNC Do Begin
+  Tq:=JCTq[I];
+  If Not Seen[Tq]Then Begin
+   Seen[Tq]:=True;
+   JPutByte(255);JPutByte($DB);JPutWord(67);JPutByte(Tq);
+   For K:=0 to 63 Do JPutByte(JQN[Tq,K]);
+  End;
+ End;
+ BufAppend(Dst,JSof,0,JSof.Len);
+ For T:=0 to 3 Do If JENum[T]>0 Then Begin
+  JPutByte(255);JPutByte($C4);JPutWord(19+JENum[T]);
+  JPutByte((T and 1)*16+(T shr 1));
+  For K:=1 to 16 Do JPutByte(JEBits[T,K]);
+  For K:=0 to JENum[T]-1 Do JPutByte(JEVal[T,K]);
+ End;
+ JPutByte(255);JPutByte($DA);JPutWord(6+2*JNC);JPutByte(JNC);
+ For I:=1 to JNC Do Begin
+  JPutByte(JCid[I]);
+  If I=1 Then JPutByte(0) Else JPutByte($11);
+ End;
+ JPutByte(0);JPutByte(63);JPutByte(0);
+ Fin:=JScan;
+ If Fin Then Begin
+  If JOC>0 Then JPutBits((Longint(1)shl(8-JOC))-1,8-JOC);
+  JPutByte(255);JPutByte($D9);
+ End;
+ JpegTranscode:=Fin;
+End;
+
+{ ------------------------------------------------------------------ }
 { Options                                                             }
 { ------------------------------------------------------------------ }
 
@@ -2696,6 +3195,14 @@ Var K,KMax,I:Integer;Src,Tgt:PBuf;Flip,Ok,AllFlate:Boolean;
 Begin
  Data:=@Raw;
  StrChanged:=False;OutFlate:=False;OutFirst:=1;
+ { recompression JPEG (coefficients DCT) d'un flux DCTDecode simple }
+ If JpegOn and FOk and(NF=1)and(FName[1]='DCTDecode')Then Begin
+  If JpegTranscode(Raw,W1)Then Begin
+   If W1.Len<Raw.Len Then Data:=@W1;
+  End;
+  Inc(JDone);JProgress;
+  Exit;
+ End;
  { recompression directe d'un flux Flate simple }
  If CompressOn and RecompFlate and FOk and(NF=1)and(FName[1]='FlateDecode')Then
    Begin
@@ -2915,9 +3422,21 @@ Procedure EndOutput;Begin
 End;
 
 Procedure WriteOutput;
-Var N,NComp:Longint;R:PObjRec;
+Var N,NComp,P:Longint;R:PObjRec;
 Begin
  NComp:=0;
+ JTotal:=0;JDone:=0;
+ If JpegOn Then
+  For N:=1 to HighObj do Begin
+   R:=PeekRec(N);
+   If(R^.Kind<>0)and((R^.Flags and FlReach)<>0)and((R^.Flags and
+     FlStream)<>0)Then
+     If OpenObject(N,P)Then Begin
+      AnalyzeFilters(P);
+      If FOk and(NF=1)and(FName[1]='DCTDecode')Then Inc(JTotal);
+     End;
+  End;
+ JProgress;
  If UseObjStm Then
   For N:=1 to HighObj do Begin
    R:=PeekRec(N);
@@ -2932,6 +3451,7 @@ Begin
                                                Else WriteNormalObject(N,R);
   End;
  End;
+ If JTotal>0 Then ErrLn('');
  EndOutput;
 End;
 
@@ -4331,6 +4851,14 @@ Procedure ShowHelp;Begin
  WriteLn('                          decodes : ils sont conserves tels quels.');
  WriteLn(' --recompress-flate       Recompresse aussi les flux deja en Flate');
  WriteLn(' --compression-level=0..9 Niveau de compression Flate (defaut : 9)');
+ WriteLn(' --optimize-jpeg          Recode les images JPEG (DCTDecode) avec des'+
+   ' tables de');
+ WriteLn('                          Huffman optimales (sans perte, ~4 %)');
+ WriteLn(' --jpeg-requant=pct       Comme --optimize-jpeg, mais agrandit en plus'+
+   ' les pas de');
+ WriteLn('                          quantification de pct % (ex. 150 : image'+
+   ' ~15 % plus');
+ WriteLn('                          petite, avec perte ; 100 = sans perte)');
  WriteLn(' --object-streams=disable|preserve|generate');
  WriteLn('                          Gestion des flux d''objets (defaut :'+
    ' preserve)');
@@ -4450,6 +4978,14 @@ Begin
    End
     Else
    If Opt='recompress-flate' Then RecompFlate:=True
+    Else
+   If Opt='optimize-jpeg' Then JpegOn:=True
+    Else
+   If Opt='jpeg-requant' Then Begin
+    Val(OptVal,V,Code);
+    If(Code<>0)or(V<100)or(V>1000)Then BadOpt(S);
+    JpegOn:=True;JpegPct:=V;
+   End
     Else
    If Opt='compression-level' Then Begin
     Val(OptVal,V,Code);
@@ -4620,6 +5156,7 @@ Begin
  WMode:=0;TopSkip:='';ExtraKind:=0;EmBuf:=NIL;
  DInit:=False;DForceStore:=False;
  CompressOn:=True;DecodeOn:=True;RecompFlate:=False;ObjMode:=1;Level:=9;
+ JpegOn:=False;JpegPct:=100;BufInit(JApp);BufInit(JSof);
  CheckOnly:=False;ShowNPages:=False;KeepUnref:=False;
  MinVerMaj:=0;MinVerMin:=0;ForceMaj:=0;ForceMin:=0;
  StrChanged:=False;OutFlate:=False;OutFirst:=1;SLen:=0;
