@@ -257,6 +257,20 @@ Var
  PrintPort   : String;
  SpoolN      : Integer;
  StepLeft    : LongInt;
+ TrCS1       : Word;
+ TrCSn       : LongInt;
+ TrWin       : Boolean;
+ TrK         : Integer;
+ TrMF        : File;
+ TrSnap      : Integer;
+ TrWatch     : Word;
+ TrGN        : Integer;
+ TrPos       : LongInt;
+ TrZero      : Boolean;
+ TrW2        : Word;
+ TrB5        : Byte;
+ TrGRet      : Array[1..8] Of LongInt;
+ TrR         : Array[0..13] Of Word;
  Ring        : Array[0..1023] Of LongInt;
  RingP       : Integer;
  TraceOn     : Boolean;
@@ -9670,6 +9684,7 @@ Const
  SG_ES=0; SG_CS=1; SG_SS=2; SG_DS=3;
  R_AX=0; R_CX=1; R_DX=2; R_BX=3; R_SP=4; R_BP=5; R_SI=6; R_DI=7;
  ROMSEG = $F000;
+ EMSSEG = $F100;
 
 Var
  Mem   : PByteArr_;
@@ -9900,11 +9915,14 @@ Function PortIn(P: Word; Wide: Boolean): Word; Forward;
 Procedure PortOut(P: Word; V: Word; Wide: Boolean); Forward;
 
 { Interruption logicielle ou materielle }
+Var ErrF: File; ErrI: Integer;
+
 Procedure DoInterrupt(N: Integer);
 Var Vo,Vs: Word;
 Begin
  Vo:=RdW(N*4);Vs:=RdW(N*4+2);
  If (Vs=ROMSEG) And (Vo<1024) Then Begin HleInt(Vo Div 4);Exit;End;
+ If (Vs=EMSSEG) And (Vo=0) Then Begin HleInt($67);Exit;End;
  Push(GetFlags);Push(Sg[SG_CS]);Push(IPr);
  fIF:=False;fTF:=False;
  IPr:=Vo;Sg[SG_CS]:=Vs;
@@ -10274,6 +10292,8 @@ Begin
  Else Begin
    CpuHalt:=True;
    CpuErr:='Invalid opcode '+HexStr(Op,2)+' at '+HexStr(Sg[SG_CS],4)+':'+HexStr(StartIP,4);
+   If TraceOn Then Begin For ErrI:=1023 Downto 0 Do WriteLn(TraceF,'ERRRING ',HexStr(Ring[(RingP-ErrI) And 1023] Shr 16,4),':',HexStr(Ring[(RingP-ErrI) And 1023] And $FFFF,4));WriteLn(TraceF,'ERRSTACK ',HexStr(Sg[SG_SS],4),':',HexStr(Rg[R_SP],4),' BP=',HexStr(Rg[R_BP],4));For ErrI:=0 To 31 Do Write(TraceF,' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+ErrI*2)),4));WriteLn(TraceF);Flush(TraceF);End;
+   If GetEnv('W2TRACE')<>'' Then Begin Assign(ErrF,GetEnv('W2TRACE')+'.err');Rewrite(ErrF,1);BlockWrite(ErrF,Mem^[0],$A0000);Close(ErrF);End;
   End;
  End;
 End;
@@ -10833,6 +10853,16 @@ Begin
 End;
 
 { Charge un .COM ou .EXE ; Nouveau processus enfant de V^.PSP }
+Procedure WriteMcb(S,Size: Word);
+Var A: LongInt;
+Begin
+ A:=LongInt(S-1)*16;
+ If LongInt(S)+Size>=$A000 Then Mem^[A]:=$5A Else Mem^[A]:=$4D;
+ WrW(A+1,S);WrW(A+3,Size);
+End;
+
+Procedure EmsEnable(V: PVM); Forward;
+
 Function LoadProgram(V: PVM; Const VPath,Tail: String): Integer;
 Var F: File; Sz,Nb: LongInt; Cnt: Word; Real_: String; IsExe: Boolean; Sig: Word;
     LastPg,Pages,HdrPar,MinA,MaxA,Reloc,RelOfs,InitSS,InitSP,InitIP,InitCS,Need: LongInt;
@@ -10862,6 +10892,7 @@ Begin
  Parent:=V^.PSP;
  ProgName:=VPath;
  DosV3:=(Pos('EXCEL',Upper(BaseName(VPath)))=1) Or (Upper(BaseName(VPath))='WIN.COM') Or (Upper(BaseName(VPath))='WIN200.BIN');
+ If DosV3 Then EmsEnable(V);
  EnvSeg:=ArenaAlloc(V,32,$FFFE);
  If EnvSeg=0 Then Begin Close(F);LoadProgram:=LD_NOMEM;Exit;End;
  BuildEnv(V,EnvSeg,ProgName);
@@ -10873,7 +10904,7 @@ Begin
   If PspSeg=0 Then Begin ArenaFree(V,EnvSeg);Close(F);LoadProgram:=LD_NOMEM;Exit;End;
   For I:=1 To V^.NBlk Do If V^.Blk[I].Seg=PspSeg Then V^.Blk[I].Owner:=PspSeg;
   For I:=1 To V^.NBlk Do If V^.Blk[I].Seg=EnvSeg Then V^.Blk[I].Owner:=PspSeg;
-  BuildPsp(V,PspSeg,EnvSeg,Parent,PspSeg+Mx,Tail);
+  BuildPsp(V,PspSeg,EnvSeg,Parent,PspSeg+Mx,Tail);If DosV3 Then WriteMcb(PspSeg,Mx);
   Seek(F,0);
   BlockRead(F,Mem^[Lin(PspSeg,$100)],FSize,N);
   Close(F);
@@ -10901,7 +10932,7 @@ Begin
  PspSeg:=ArenaAlloc(V,Blocks,$FFFF);
  For I:=1 To V^.NBlk Do If V^.Blk[I].Seg=PspSeg Then V^.Blk[I].Owner:=PspSeg;
  For I:=1 To V^.NBlk Do If V^.Blk[I].Seg=EnvSeg Then V^.Blk[I].Owner:=PspSeg;
- BuildPsp(V,PspSeg,EnvSeg,Parent,PspSeg+Blocks,Tail);
+ BuildPsp(V,PspSeg,EnvSeg,Parent,PspSeg+Blocks,Tail);If DosV3 Then WriteMcb(PspSeg,Blocks);
  Load:=PspSeg+16;
  {$I-}
  Seek(F,HdrPar*16);
@@ -11166,16 +11197,23 @@ Begin
  End;
 End;
 
+Var M14Mask,M14Seg,M14Off,TmpW: Word;
+
 Procedure Int33;
 Begin
  Case Rg[R_AX] Of
-  0: Begin Rg[R_AX]:=$FFFF;Rg[R_BX]:=2;End;
+  0: If GetEnv('W2NOMOUSE')<>'' Then Rg[R_AX]:=0 Else Begin Rg[R_AX]:=$FFFF;Rg[R_BX]:=2;End;
   1,2: ;
   3: Begin Rg[R_BX]:=CV^.MouseB;Rg[R_CX]:=CV^.MouseX;Rg[R_DX]:=CV^.MouseY;End;
   4: Begin CV^.MouseX:=Rg[R_CX];CV^.MouseY:=Rg[R_DX];End;
   5,6: Begin Rg[R_BX]:=0;Rg[R_AX]:=CV^.MouseB;End;
   $B: Begin Rg[R_CX]:=0;Rg[R_DX]:=0;End;
   $24: Begin Rg[R_BX]:=$0805;Rg[R_CX]:=$0400;End;
+  $14: Begin
+    TmpW:=Rg[R_CX];Rg[R_CX]:=M14Mask;M14Mask:=TmpW;
+    TmpW:=Sg[SG_ES];Sg[SG_ES]:=M14Seg;M14Seg:=TmpW;
+    TmpW:=Rg[R_DX];Rg[R_DX]:=M14Off;M14Off:=TmpW;
+   End;
  End;
 End;
 
@@ -11600,7 +11638,432 @@ End;
 { ---------------- repartition des interruptions ---------------- }
 
 
-Var RingDumped: Boolean;
+Var RingDumped: Boolean; MemF: File;
+
+{ ---------------- EMS 4.0 (LIM) : INT 67h + EMMXXXX0 ---------------- }
+Var EmsOnFlag: Boolean;
+
+Const
+ EMS_SEG   = $F100;
+ EMS_FRAME = $E000;
+ EMS_PGSZ  = 16384;
+ EMS_TOTAL = 1024;      { 16 Mo }
+ EMS_NPHYS = 24;        { 4 pages cadre E000 + 20 pages mappables en memoire conventionnelle (EEMS) }
+ EMS_CONV0 = $5000;
+
+Type
+ TEmsH = Record
+  Used : Boolean;
+  N    : Integer;
+  Pg   : Array Of Pointer;
+  Name : String[8];
+  SvOk : Boolean;
+  SvH,SvL : Array[0..EMS_NPHYS-1] Of Integer;
+ End;
+
+Var
+ EmsH    : Array[0..255] Of TEmsH;
+ EmsUsed : Integer;
+ EmsMapH,EmsMapL : Array[0..EMS_NPHYS-1] Of Integer;
+ EmsShadow : Array[0..EMS_NPHYS-1] Of Pointer;
+ EmsCur : Integer;
+ EmsAltH,EmsAltL : Array[1..7,0..EMS_NPHYS-1] Of Integer;
+ EmsAltUsed : Array[1..7] Of Boolean;
+ EmsLastArea : LongInt;
+ EmsInit : Boolean;
+
+Procedure EmsReset;
+Var I,J: Integer;
+Begin
+ For I:=0 To 255 Do Begin
+  If EmsInit Then For J:=0 To High(EmsH[I].Pg) Do If EmsH[I].Pg[J]<>Nil Then FreeMem(EmsH[I].Pg[J]);
+  SetLength(EmsH[I].Pg,0);EmsH[I].Used:=False;EmsH[I].N:=0;EmsH[I].Name:='';EmsH[I].SvOk:=False;
+ End;
+ EmsH[0].Used:=True;
+ For I:=0 To EMS_NPHYS-1 Do Begin
+  If EmsInit And (EmsShadow[I]<>Nil) Then FreeMem(EmsShadow[I]);
+  EmsShadow[I]:=Nil;EmsMapH[I]:=-1;EmsMapL[I]:=0;
+ End;
+ EmsUsed:=0;EmsInit:=True;EmsCur:=0;EmsLastArea:=0;
+ For I:=1 To 7 Do EmsAltUsed[I]:=False;
+End;
+
+Function EmsPhysSeg(P: Integer): Word;
+Begin
+ If P<4 Then EmsPhysSeg:=EMS_FRAME+P*$400 Else EmsPhysSeg:=EMS_CONV0+(P-4)*$400;
+End;
+
+Function EmsSegToPhys(Sg_: Word): Integer;
+Var I: Integer;
+Begin
+ EmsSegToPhys:=-1;
+ For I:=0 To EMS_NPHYS-1 Do If EmsPhysSeg(I)=Sg_ Then EmsSegToPhys:=I;
+End;
+
+Function EmsWin(P: Integer): LongInt;
+Begin
+ EmsWin:=LongInt(EmsPhysSeg(P))*16;
+End;
+
+Procedure EmsFlush(P: Integer);
+Begin
+ If EmsMapH[P]>=0 Then Move(Mem^[EmsWin(P)],EmsH[EmsMapH[P]].Pg[EmsMapL[P]]^,EMS_PGSZ);
+End;
+
+Procedure EmsLoadWin(P: Integer);
+Begin
+ If EmsMapH[P]>=0 Then Move(EmsH[EmsMapH[P]].Pg[EmsMapL[P]]^,Mem^[EmsWin(P)],EMS_PGSZ);
+End;
+
+Function EmsMapPage(P,H,L: Integer): Integer;
+Begin
+ EmsMapPage:=0;
+ If (P<0) Or (P>=EMS_NPHYS) Then Begin EmsMapPage:=$8B;Exit;End;
+ If L=-1 Then Begin
+  EmsFlush(P);
+  If (EmsMapH[P]>=0) And (EmsShadow[P]<>Nil) Then Move(EmsShadow[P]^,Mem^[EmsWin(P)],EMS_PGSZ);
+  EmsMapH[P]:=-1;Exit;
+ End;
+ If (H<0) Or (H>255) Or Not EmsH[H].Used Then Begin EmsMapPage:=$83;Exit;End;
+ If (L<0) Or (L>=EmsH[H].N) Then Begin EmsMapPage:=$8A;Exit;End;
+ EmsFlush(P);
+ If (P>=4) And (EmsMapH[P]<0) Then Begin
+  If EmsShadow[P]=Nil Then GetMem(EmsShadow[P],EMS_PGSZ);
+  Move(Mem^[EmsWin(P)],EmsShadow[P]^,EMS_PGSZ);
+ End;
+ EmsMapH[P]:=H;EmsMapL[P]:=L;EmsLoadWin(P);
+End;
+
+Procedure EmsFlushAll;
+Var P: Integer;
+Begin
+ For P:=0 To EMS_NPHYS-1 Do EmsFlush(P);
+End;
+
+Procedure EmsLoadAll;
+Var P: Integer;
+Begin
+ For P:=0 To EMS_NPHYS-1 Do EmsLoadWin(P);
+End;
+
+Function EmsAlloc(H,N: Integer): Boolean;
+Var I: Integer;
+Begin
+ EmsAlloc:=False;
+ SetLength(EmsH[H].Pg,N);
+ For I:=0 To N-1 Do Begin GetMem(EmsH[H].Pg[I],EMS_PGSZ);FillChar(EmsH[H].Pg[I]^,EMS_PGSZ,0);End;
+ EmsH[H].N:=N;EmsH[H].Used:=True;Inc(EmsUsed,N);
+ EmsAlloc:=True;
+End;
+
+Procedure EmsFree(H: Integer);
+Var I,P: Integer;
+Begin
+ For P:=0 To EMS_NPHYS-1 Do If EmsMapH[P]=H Then Begin EmsMapH[P]:=-1;End;
+ For I:=0 To EmsH[H].N-1 Do If EmsH[H].Pg[I]<>Nil Then FreeMem(EmsH[H].Pg[I]);
+ SetLength(EmsH[H].Pg,0);Dec(EmsUsed,EmsH[H].N);EmsH[H].N:=0;
+ If H>0 Then EmsH[H].Used:=False;
+ EmsH[H].Name:='';
+End;
+
+Function EmsByte(Typ,H: Integer; Idx: LongInt; Var Ok: Boolean): PByte;
+Var L,O: Integer;
+Begin
+ Ok:=True;EmsByte:=Nil;
+ If Typ=0 Then Begin EmsByte:=@Mem^[Idx And $FFFFF];Exit;End;
+ L:=Idx Div EMS_PGSZ;O:=Idx Mod EMS_PGSZ;
+ If (H<0) Or (H>255) Or Not EmsH[H].Used Or (L>=EmsH[H].N) Then Begin Ok:=False;Exit;End;
+ EmsByte:=PByte(PtrUInt(EmsH[H].Pg[L])+O);
+End;
+
+Procedure EmsSaveCtx(A: LongInt);
+Var P: Integer;
+Begin
+ For P:=0 To EMS_NPHYS-1 Do Begin WrW(A+P*4,Word(SmallInt(EmsMapH[P])));WrW(A+P*4+2,EmsMapL[P]);End;
+End;
+
+Procedure EmsRestoreCtx(A: LongInt);
+Var P,H: Integer;
+Begin
+ For P:=0 To EMS_NPHYS-1 Do Begin
+  H:=SmallInt(RdW(A+P*4));
+  If H<0 Then EmsMapPage(P,0,-1) Else EmsMapPage(P,H,RdW(A+P*4+2));
+ End;
+End;
+
+Procedure EmsSwitchSet(N: Integer; Area: LongInt);
+Var P,K: Integer;
+Begin
+ If N=EmsCur Then Exit;
+ EmsFlushAll;
+ { sauvegarde du jeu courant }
+ If EmsCur=0 Then Begin EmsSaveCtx(Area);EmsLastArea:=Area;End
+ Else For P:=0 To EMS_NPHYS-1 Do Begin EmsAltH[EmsCur,P]:=EmsMapH[P];EmsAltL[EmsCur,P]:=EmsMapL[P];End;
+ { activation du nouveau jeu }
+ If N=0 Then EmsRestoreCtx(Area)
+ Else For P:=0 To EMS_NPHYS-1 Do Begin
+  K:=EmsAltH[N,P];
+  If K<0 Then EmsMapPage(P,0,-1) Else EmsMapPage(P,K,EmsAltL[N,P]);
+ End;
+ EmsCur:=N;
+End;
+
+Procedure Ems67;
+Var AH,AL: Byte; I,H,P,L,Cnt: Integer; A,A2: LongInt; Sv,Dv: Integer; Len: LongInt;
+    St,Dt,Sh,Dh: Integer; So,Do_: LongInt; Ok1,Ok2: Boolean; B1,B2: PByte; Tmp: Byte; S: String;
+ Procedure Err(E: Integer);
+ Begin
+  Rg[R_AX]:=(Rg[R_AX] And $FF) Or (E Shl 8);
+ End;
+ Procedure Okay;
+ Begin
+  Rg[R_AX]:=Rg[R_AX] And $FF;
+ End;
+Begin
+ AH:=Rg[R_AX] Shr 8;AL:=Rg[R_AX] And 255;
+ Okay;
+ Case AH Of
+  $40: ;
+  $41: Rg[R_BX]:=EMS_FRAME;
+  $42: Begin Rg[R_BX]:=EMS_TOTAL-EmsUsed;Rg[R_DX]:=EMS_TOTAL;End;
+  $43,$5A: Begin
+     Cnt:=Rg[R_BX];
+     If (AH=$5A) And (AL>1) Then Begin Err($8F);Exit;End;
+     If (Cnt=0) And (AH=$43) Then Begin Err($89);Exit;End;
+     If Cnt>EMS_TOTAL Then Begin Err($87);Exit;End;
+     If Cnt>EMS_TOTAL-EmsUsed Then Begin Err($88);Exit;End;
+     H:=1;While (H<=255) And EmsH[H].Used Do Inc(H);
+     If H>255 Then Begin Err($85);Exit;End;
+     EmsAlloc(H,Cnt);Rg[R_DX]:=H;
+    End;
+  $44: Begin
+     L:=SmallInt(Rg[R_BX]);
+     I:=EmsMapPage(AL,Rg[R_DX],L);
+     If I<>0 Then Err(I);
+    End;
+  $45: Begin
+     H:=Rg[R_DX];
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     EmsFree(H);
+    End;
+  $46: Rg[R_AX]:=$0040;
+  $47: Begin
+     H:=Rg[R_DX];
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     For P:=0 To EMS_NPHYS-1 Do Begin EmsH[H].SvH[P]:=EmsMapH[P];EmsH[H].SvL[P]:=EmsMapL[P];End;
+     EmsH[H].SvOk:=True;
+    End;
+  $48: Begin
+     H:=Rg[R_DX];
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     If Not EmsH[H].SvOk Then Begin Err($8E);Exit;End;
+     For P:=0 To EMS_NPHYS-1 Do
+      If EmsH[H].SvH[P]<0 Then EmsMapPage(P,0,-1) Else EmsMapPage(P,EmsH[H].SvH[P],EmsH[H].SvL[P]);
+    End;
+  $4B: Begin
+     Cnt:=0;For I:=0 To 255 Do If EmsH[I].Used Then Inc(Cnt);
+     Rg[R_BX]:=Cnt;
+    End;
+  $4C: Begin
+     H:=Rg[R_DX];
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     Rg[R_BX]:=EmsH[H].N;
+    End;
+  $4D: Begin
+     A:=Lin(Sg[SG_ES],Rg[R_DI]);Cnt:=0;
+     For I:=0 To 255 Do If EmsH[I].Used Then Begin WrW(A,I);WrW(A+2,EmsH[I].N);Inc(A,4);Inc(Cnt);End;
+     Rg[R_BX]:=Cnt;
+    End;
+  $4E: Case AL Of
+     0: Begin
+         A:=Lin(Sg[SG_ES],Rg[R_DI]);
+         For P:=0 To EMS_NPHYS-1 Do Begin WrW(A+P*4,Word(SmallInt(EmsMapH[P])));WrW(A+P*4+2,EmsMapL[P]);End;
+        End;
+     1: Begin
+         A:=Lin(Sg[SG_DS],Rg[R_SI]);
+         For P:=0 To EMS_NPHYS-1 Do Begin
+          H:=SmallInt(RdW(A+P*4));
+          If H<0 Then EmsMapPage(P,0,-1) Else EmsMapPage(P,H,RdW(A+P*4+2));
+         End;
+        End;
+     2: Begin
+         A:=Lin(Sg[SG_ES],Rg[R_DI]);
+         For P:=0 To EMS_NPHYS-1 Do Begin WrW(A+P*4,Word(SmallInt(EmsMapH[P])));WrW(A+P*4+2,EmsMapL[P]);End;
+         A:=Lin(Sg[SG_DS],Rg[R_SI]);
+         For P:=0 To EMS_NPHYS-1 Do Begin
+          H:=SmallInt(RdW(A+P*4));
+          If H<0 Then EmsMapPage(P,0,-1) Else EmsMapPage(P,H,RdW(A+P*4+2));
+         End;
+        End;
+     3: Rg[R_AX]:=(Rg[R_AX] And $FF00) Or (EMS_NPHYS*4);
+    Else Err($8F);
+    End;
+  $4F: Case AL Of
+     0: Begin
+         A2:=Lin(Sg[SG_DS],Rg[R_SI]);A:=Lin(Sg[SG_ES],Rg[R_DI]);
+         Cnt:=RdW(A2);WrW(A,Cnt);
+         For I:=0 To Cnt-1 Do Begin
+          P:=EmsSegToPhys(RdW(A2+2+I*2));If P<0 Then P:=0;
+          WrW(A+2+I*6,RdW(A2+2+I*2));WrW(A+4+I*6,Word(SmallInt(EmsMapH[P])));WrW(A+6+I*6,EmsMapL[P]);
+         End;
+        End;
+     1: Begin
+         A:=Lin(Sg[SG_DS],Rg[R_SI]);Cnt:=RdW(A);
+         For I:=0 To Cnt-1 Do Begin
+          P:=EmsSegToPhys(RdW(A+2+I*6));If P<0 Then P:=0;
+          H:=SmallInt(RdW(A+4+I*6));
+          If H<0 Then EmsMapPage(P,0,-1) Else EmsMapPage(P,H,RdW(A+6+I*6));
+         End;
+        End;
+     2: Rg[R_AX]:=(Rg[R_AX] And $FF00) Or ((2+Rg[R_BX]*6) And 255);
+    Else Err($8F);
+    End;
+  $50: Begin
+     H:=Rg[R_DX];A:=Lin(Sg[SG_DS],Rg[R_SI]);
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     For I:=0 To Rg[R_CX]-1 Do Begin
+      L:=SmallInt(RdW(A+I*4));
+      If AL=0 Then P:=RdW(A+I*4+2) Else P:=EmsSegToPhys(RdW(A+I*4+2));
+      If (P<0) Or (P>=EMS_NPHYS) Then Begin Err($8B);Exit;End;
+      Sv:=EmsMapPage(P,H,L);
+      If Sv<>0 Then Begin Err(Sv);Exit;End;
+     End;
+    End;
+  $51: Begin
+     H:=Rg[R_DX];Cnt:=Rg[R_BX];
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     If Cnt>EmsH[H].N Then Begin
+      If Cnt-EmsH[H].N>EMS_TOTAL-EmsUsed Then Begin Err($88);Exit;End;
+      SetLength(EmsH[H].Pg,Cnt);
+      For I:=EmsH[H].N To Cnt-1 Do Begin GetMem(EmsH[H].Pg[I],EMS_PGSZ);FillChar(EmsH[H].Pg[I]^,EMS_PGSZ,0);End;
+      Inc(EmsUsed,Cnt-EmsH[H].N);
+     End Else If Cnt<EmsH[H].N Then Begin
+      For P:=0 To EMS_NPHYS-1 Do If (EmsMapH[P]=H) And (EmsMapL[P]>=Cnt) Then EmsMapH[P]:=-1;
+      For I:=Cnt To EmsH[H].N-1 Do FreeMem(EmsH[H].Pg[I]);
+      Dec(EmsUsed,EmsH[H].N-Cnt);SetLength(EmsH[H].Pg,Cnt);
+     End;
+     EmsH[H].N:=Cnt;
+    End;
+  $52: Case AL Of
+     0: Rg[R_AX]:=Rg[R_AX] And $FF00;
+     1: ;
+     2: Rg[R_AX]:=Rg[R_AX] And $FF00;
+    Else Err($8F);
+    End;
+  $53: Begin
+     H:=Rg[R_DX];
+     If (H>255) Or Not EmsH[H].Used Then Begin Err($83);Exit;End;
+     If AL=0 Then Begin
+      A:=Lin(Sg[SG_ES],Rg[R_DI]);
+      For I:=1 To 8 Do If I<=Length(EmsH[H].Name) Then Mem^[A+I-1]:=Ord(EmsH[H].Name[I]) Else Mem^[A+I-1]:=0;
+     End Else If AL=1 Then Begin
+      A:=Lin(Sg[SG_DS],Rg[R_SI]);S:='';
+      For I:=0 To 7 Do If Mem^[A+I]<>0 Then S:=S+Chr(Mem^[A+I]);
+      EmsH[H].Name:=S;
+     End Else Err($8F);
+    End;
+  $54: Case AL Of
+     0: Begin
+         A:=Lin(Sg[SG_ES],Rg[R_DI]);Cnt:=0;
+         For I:=0 To 255 Do If EmsH[I].Used Then Begin
+          WrW(A,I);
+          For P:=1 To 8 Do If P<=Length(EmsH[I].Name) Then Mem^[A+2+P-1]:=Ord(EmsH[I].Name[P]) Else Mem^[A+2+P-1]:=0;
+          Inc(A,10);Inc(Cnt);
+         End;
+         Rg[R_AX]:=Cnt And $FF;
+        End;
+     1: Err($A0);
+     2: Rg[R_BX]:=255;
+    Else Err($8F);
+    End;
+  $57: Begin
+     A:=Lin(Sg[SG_DS],Rg[R_SI]);
+     Len:=LongInt(RdW(A))+LongInt(RdW(A+2)) Shl 16;
+     St:=Mem^[A+4];Sh:=RdW(A+5);So:=RdW(A+7);
+     If St=0 Then Sv:=RdW(A+9) Else Sv:=RdW(A+9);
+     Dt:=Mem^[A+11];Dh:=RdW(A+12);Do_:=RdW(A+14);Dv:=RdW(A+16);
+     EmsFlushAll;
+     If St=0 Then So:=LongInt(Sv)*16+So Else So:=LongInt(Sv)*EMS_PGSZ+So;
+     If Dt=0 Then Do_:=LongInt(Dv)*16+Do_ Else Do_:=LongInt(Dv)*EMS_PGSZ+Do_;
+     If AL=0 Then Begin
+      { deplacement (gere le chevauchement) }
+      If (St=0) And (Dt=0) And (Do_>So) Then Begin
+       For A2:=Len-1 Downto 0 Do Mem^[(Do_+A2) And $FFFFF]:=Mem^[(So+A2) And $FFFFF];
+      End Else
+       For A2:=0 To Len-1 Do Begin
+        B1:=EmsByte(St,Sh,So+A2,Ok1);B2:=EmsByte(Dt,Dh,Do_+A2,Ok2);
+        If Not (Ok1 And Ok2) Then Begin Err($8A);Break;End;
+        B2^:=B1^;
+       End;
+     End Else If AL=1 Then Begin
+      For A2:=0 To Len-1 Do Begin
+       B1:=EmsByte(St,Sh,So+A2,Ok1);B2:=EmsByte(Dt,Dh,Do_+A2,Ok2);
+       If Not (Ok1 And Ok2) Then Begin Err($8A);Break;End;
+       Tmp:=B1^;B1^:=B2^;B2^:=Tmp;
+      End;
+     End Else Err($8F);
+     EmsLoadAll;
+    End;
+  $58: Case AL Of
+     0: Begin
+         A:=Lin(Sg[SG_ES],Rg[R_DI]);
+         For P:=0 To EMS_NPHYS-1 Do Begin WrW(A+P*4,EmsPhysSeg(P));WrW(A+P*4+2,P);End;
+         Rg[R_CX]:=EMS_NPHYS;
+        End;
+     1: Rg[R_CX]:=EMS_NPHYS;
+    Else Err($8F);
+    End;
+  $59: Case AL Of
+     0: Begin
+         A:=Lin(Sg[SG_ES],Rg[R_DI]);
+         WrW(A,$400);WrW(A+2,0);WrW(A+4,EMS_NPHYS*4);WrW(A+6,0);WrW(A+8,0);
+        End;
+     1: Begin Rg[R_BX]:=EMS_TOTAL-EmsUsed;Rg[R_DX]:=EMS_TOTAL;End;
+    Else Err($8F);
+    End;
+  $5B: Case AL Of
+     0: Begin
+         Rg[R_BX]:=(Rg[R_BX] And $FF00) Or EmsCur;
+         If EmsCur=0 Then Begin Sg[SG_ES]:=EmsLastArea Shr 4;Rg[R_DI]:=EmsLastArea And 15;End;
+        End;
+     1: Begin
+         I:=Rg[R_BX] And 255;
+         If (I>7) Or ((I>0) And Not EmsAltUsed[I]) Then Begin Err($8F);Exit;End;
+         EmsSwitchSet(I,Lin(Sg[SG_ES],Rg[R_DI]));
+        End;
+     2: Rg[R_DX]:=EMS_NPHYS*4;
+     3: Begin
+         I:=1;While (I<=7) And EmsAltUsed[I] Do Inc(I);
+         If I>7 Then Rg[R_BX]:=Rg[R_BX] And $FF00 Else Begin
+          EmsAltUsed[I]:=True;
+          For P:=0 To EMS_NPHYS-1 Do Begin EmsAltH[I,P]:=-1;EmsAltL[I,P]:=0;End;
+          Rg[R_BX]:=(Rg[R_BX] And $FF00) Or I;
+         End;
+        End;
+     4: Begin
+         I:=Rg[R_BX] And 255;
+         If (I>=1) And (I<=7) Then Begin
+          If EmsCur=I Then Err($8F) Else EmsAltUsed[I]:=False;
+         End;
+        End;
+     5..8: Err($91);
+    Else Err($8F);
+    End;
+ Else Err($84);
+ End;
+End;
+
+Procedure EmsEnable(V: PVM);
+Var I: Integer;
+Begin
+ If GetEnv('W2NOEMS')<>'' Then Exit;
+ Mem:=V^.Mem;EmsReset;EmsOnFlag:=True;
+ V^.Mem^[$67*4]:=0;V^.Mem^[$67*4+1]:=0;V^.Mem^[$67*4+2]:=0;V^.Mem^[$67*4+3]:=$F1;
+ V^.Mem^[$F1000]:=$CF;
+ For I:=1 To 8 Do V^.Mem^[$F1000+$A+I-1]:=Ord('EMMXXXX0'[I]);
+ { table de configuration BIOS (INT 15h AH=C0h) : PC AT }
+ V^.Mem^[$FE000]:=8;V^.Mem^[$FE001]:=0;V^.Mem^[$FE002]:=$FC;V^.Mem^[$FE003]:=1;V^.Mem^[$FE004]:=0;V^.Mem^[$FE005]:=$70;
+End;
 
 Procedure HleInt(N: Integer);
 Var Cnt: Integer;
@@ -11616,6 +12079,7 @@ Begin
   $15: Begin
       Case Rg[R_AX] Shr 8 Of
        $88: Rg[R_AX]:=0;
+       $C0: If EmsOnFlag Then Begin Rg[R_AX]:=0;Sg[SG_ES]:=$F000;Rg[R_BX]:=$E000;fCF:=False;End Else Begin Rg[R_AX]:=(Rg[R_AX] And $FF) Or $8600;fCF:=True;End;
        $4F: Begin fCF:=True;End;
        $86: fCF:=False;
       Else Begin Rg[R_AX]:=(Rg[R_AX] And $FF) Or $8600;fCF:=True;End;
@@ -11633,6 +12097,7 @@ Begin
       End;
       If TraceOn And ((Rg[R_AX] Shr 8)=$40) And (Rg[R_BX]=1) And Not RingDumped Then Begin
        RingDumped:=True;
+       Assign(MemF,GetEnv('W2TRACE')+'.mem');Rewrite(MemF,1);BlockWrite(MemF,Mem^[0],$A0000);Close(MemF);
        For Cnt:=0 To $17F Do Begin
         If (Cnt And 15)=0 Then Write(TraceF,'MEM2B00 ',HexStr(Cnt,4),': ');
         Write(TraceF,HexStr(Mem^[Lin($0671,$8E00+Cnt)],2),' ');
@@ -11657,6 +12122,7 @@ Begin
       If Rg[R_AX]=$1680 Then Rg[R_AX]:=Rg[R_AX] And $FF00;
      End;
   $33: Int33;
+  $67: Ems67;
  End;
 End;
 
@@ -12100,6 +12566,7 @@ Procedure VMInitMemory(V: PVM);
 Var I: Integer;
 Begin
  GetMem(V^.Mem,$100000+4096);
+ EmsOnFlag:=False;
  FillChar(V^.Mem^,$100000+4096,0);
  For I:=0 To 255 Do Begin
   V^.Mem^[I*4]:=(I*4) And 255;V^.Mem^[I*4+1]:=(I*4) Shr 8;V^.Mem^[I*4+2]:=0;V^.Mem^[I*4+3]:=$F0;
@@ -12172,6 +12639,37 @@ Begin
  While N>0 Do Begin
   CpuBlock:=False;
   If TraceOn And (Sg[SG_CS]=$0671) And (IPr=$8E5E) Then WriteLn(TraceF,'WATCH 8E5E AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4));
+  If TraceOn And (Sg[SG_CS]=$0671) And (IPr=$5CAF) And (TrGN<8) Then Begin
+   Inc(TrGN);TrGRet[TrGN]:=LongInt(RdW(Lin(Sg[SG_SS],Rg[R_SP]+2)))*65536+RdW(Lin(Sg[SG_SS],Rg[R_SP]));
+   WriteLn(TraceF,'GALLOC from ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+2)),4),':',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP])),4),' arg=',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+4)),4),' size=',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+6)),4),' flags=',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+8)),4));
+  End;
+  If TraceOn And (Sg[SG_CS]=0) And Not TrZero Then Begin
+   TrZero:=True;
+   WriteLn(TraceF,'CS0 ENTERED IP=',HexStr(IPr,4),' AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4),' SI=',HexStr(Rg[R_SI],4),' DI=',HexStr(Rg[R_DI],4),' BP=',HexStr(Rg[R_BP],4),' SP=',HexStr(Rg[R_SP],4),' SS=',HexStr(Sg[SG_SS],4),' DS=',HexStr(Sg[SG_DS],4),' ES=',HexStr(Sg[SG_ES],4));
+   For TrK:=1023 Downto 1 Do WriteLn(TraceF,'Z0RING ',HexStr(Ring[(RingP-TrK) And 1023] Shr 16,4),':',HexStr(Ring[(RingP-TrK) And 1023] And $FFFF,4));
+   Write(TraceF,'Z0STACK');For TrK:=0 To 31 Do Write(TraceF,' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+TrK*2)),4));WriteLn(TraceF);Flush(TraceF);
+  End;
+  If TraceOn Then Begin Inc(TrPos);If (TrPos And $3FFFFF)=0 Then Begin WriteLn(TraceF,'POS ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4),' SI=',HexStr(Rg[R_SI],4),' DI=',HexStr(Rg[R_DI],4),' DS=',HexStr(Sg[SG_DS],4),' ES=',HexStr(Sg[SG_ES],4));Flush(TraceF);End;End;
+  If TraceOn And ((RdW($8CB01)<>TrW2) Or (Mem^[$8CB05]<>TrB5)) Then Begin
+   WriteLn(TraceF,'WATCHCUR owner ',HexStr(TrW2,4),'->',HexStr(RdW($8CB01),4),' f5 ',HexStr(TrB5,2),'->',HexStr(Mem^[$8CB05],2),' at ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' AX=',HexStr(Rg[R_AX],4),' SP=',HexStr(Rg[R_SP],4),' ST:');For TrK:=0 To 15 Do Write(TraceF,' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+TrK*2)),4));WriteLn(TraceF);
+   TrW2:=RdW($8CB01);TrB5:=Mem^[$8CB05];
+  End;
+  If TraceOn And (TrCSn>0) Then Begin
+   If (Sg[SG_CS]=$0633) And (IPr=$011D) Then TrWin:=True;
+   If (Sg[SG_CS]=$0671) And (IPr=$8E6E) Then TrWin:=False;
+   If TrWin And (Sg[SG_CS]=$0671) And (IPr=$5148) And (Rg[R_CX]=1) And (Rg[R_BX]=6) And (Rg[R_SI]=$26CD) Then Begin Assign(TrMF,GetEnv('W2TRACE')+'.mem2');Rewrite(TrMF,1);BlockWrite(TrMF,Mem^[0],$A0000);Close(TrMF);WriteLn(TraceF,'DUMP2 ES=',HexStr(Sg[SG_ES],4),' DS=',HexStr(Sg[SG_DS],4));End;
+   If TrWin And (Sg[SG_CS]=$0671) And (IPr=$0248) Then Begin
+    Inc(TrSnap);
+    If TrSnap=2 Then Begin
+     Assign(TrMF,GetEnv('W2TRACE')+'.snap');Rewrite(TrMF,1);
+     TrR[0]:=Rg[0];TrR[1]:=Rg[1];TrR[2]:=Rg[2];TrR[3]:=Rg[3];TrR[4]:=Rg[4];TrR[5]:=Rg[5];TrR[6]:=Rg[6];TrR[7]:=Rg[7];
+     TrR[8]:=Sg[0];TrR[9]:=Sg[1];TrR[10]:=Sg[2];TrR[11]:=Sg[3];TrR[12]:=IPr;TrR[13]:=GetFlags;
+     BlockWrite(TrMF,TrR,28);BlockWrite(TrMF,Mem^[0],$A0000);Close(TrMF);
+    End;
+   End;
+   If TrWin And (Sg[SG_CS]=$0671) And ((IPr=$0248) Or (IPr=$0BF2) Or (IPr=$0012)) Then Begin Write(TraceF,'ARGS ',HexStr(IPr,4),':');For TrK:=0 To 9 Do Write(TraceF,' ',HexStr(RdW(Lin(Sg[SG_SS],Rg[R_SP]+TrK*2)),4));WriteLn(TraceF);End;
+   If TrWin Then Begin Dec(TrCSn);WriteLn(TraceF,'L ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' ',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' ',HexStr(Rg[R_AX],4),' ',HexStr(Rg[R_BX],4),' ',HexStr(Rg[R_CX],4),' ',HexStr(Rg[R_DX],4),' ',HexStr(Rg[R_SI],4),' ',HexStr(Rg[R_DI],4),' ',HexStr(Rg[R_BP],4),' ',HexStr(Rg[R_SP],4),' ',HexStr(Sg[SG_DS],4),' ',HexStr(Sg[SG_ES],4));End;
+  End;
   If TraceOn Then Begin RingP:=(RingP+1) And 1023;Ring[RingP]:=LongInt(Sg[SG_CS])*65536+IPr;End;
   If TraceOn And (StepLeft>0) Then Begin Dec(StepLeft);WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' AX=',HexStr(Rg[R_AX],4),' BX=',HexStr(Rg[R_BX],4),' CX=',HexStr(Rg[R_CX],4),' DX=',HexStr(Rg[R_DX],4),' DS=',HexStr(Sg[SG_DS],4),' SP=',HexStr(Rg[R_SP],4));End;
   If TraceOn And (TrApi>=-5) And (TrApi<=-5) Then WriteLn(TraceF,'STEP ',HexStr(Sg[SG_CS],4),':',HexStr(IPr,4),' op=',HexStr(Mem^[Lin(Sg[SG_CS],IPr)],2),' SP=',HexStr(Rg[R_SP],4));
@@ -16584,6 +17082,7 @@ BEGIN
  End;
  {$IFDEF FPC}
  TraceOn:=GetEnv('W2TRACE')<>'';
+ TrCSn:=0;If GetEnv('W2TRCS')<>'' Then Begin TrCS1:=StrVal('$'+GetEnv('W2TRCS'),0);TrCSn:=4000000;TrWin:=False;TrSnap:=0;TrGN:=0;TrWatch:=0;TrZero:=False;End;
  If TraceOn Then Begin Assign(TraceF,GetEnv('W2TRACE'));Rewrite(TraceF);End;
  {$ENDIF}
  InitializeGraphics;
