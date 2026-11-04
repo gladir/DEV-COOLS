@@ -76,3 +76,7 @@ Reste a faire :
   * Association des classes Gen* de "ui" aux composants du clone (GenPrimary ->
     fenetre, GenTrigger -> bouton, GenText -> champ, GenGlyph -> libelle...).
   * VMLock / tableaux de chunks / HugeArray / FPU : semantique encore absente.
+
+wrap80.py : coupe les lignes du source Pascal a 80 colonnes (apres les virgules,
+points-virgules, mots-cles ; les longues chaines sont coupees par '+') sans
+modifier le code. Usage : python3 wrap80.py entree.pas sortie.pas
