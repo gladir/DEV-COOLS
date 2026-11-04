@@ -2248,6 +2248,15 @@ Begin
    End;
 End;
 
+{ Change le libelle d'une commande de menu (ex. Pause / Continuer) }
+Procedure WinSetText(W: PWindow; Cmd: Integer; Const T: String);
+Var M,I: Integer;
+Begin
+ For M:=1 To W^.NMenu Do
+  For I:=1 To W^.Menus[M].N Do
+   If W^.Menus[M].It[I].Cmd=Cmd Then W^.Menus[M].It[I].Txt:=T;
+End;
+
 { Rectangle de la zone client (sous la barre de menus) }
 Procedure WinClientRect(W: PWindow; Var X1,Y1,X2,Y2: Integer);
 Begin
@@ -4003,10 +4012,10 @@ Begin
  CloseGraph;
  GfxOn:=False;
  {$IFDEF UNIX}
- Exec('/bin/sh','-c "'+Cmd+'"');
+ If Cmd='' Then Exec('/bin/sh','') Else Exec('/bin/sh','-c "'+Cmd+'"');
  {$ELSE}
  SwapVectors;
- Exec(GetEnv('COMSPEC'),'/C '+Cmd);
+ If Cmd='' Then Exec(GetEnv('COMSPEC'),'') Else Exec(GetEnv('COMSPEC'),'/C '+Cmd);
  SwapVectors;
  {$ENDIF}
  RestoreGraphicsAfterDos;
@@ -4996,6 +5005,282 @@ Begin
           'Dieser Vorgang ist in diesem Klon nicht verf'#129'gbar.|Benutzen Sie FORMAT / DISKCOPY unter DOS.'));
  Else CommonCmd(Wd_,Cmd);
  End;
+End;
+
+{ ====================================================================== }
+{    ESPACES DE TRAVAIL : BEGINNER (APPAREILS) ET ECRAN DOS PROGRAMS     }
+{ ====================================================================== }
+
+{ Barre de titre pleine largeur avec EXIT a gauche et HELP a droite }
+Procedure WsTitleBar(Const Title: String);
+Begin
+ ClipFull;
+ GBar(0,0,SCR_W-1,SCR_H-1,cLGr);
+ GBar(48,0,SCR_W-50,31,cDGr);
+ Bevel1(48,0,SCR_W-50,31,cWht,cBlk);
+ GTextBig((SCR_W-TextW(Title)*2) Div 2,8,Title,2,cWht);
+ GTextBig((SCR_W-TextW(Title)*2) Div 2+1,8,Title,2,cWht);
+ Btn3D(0,0,47,31,False);
+ GBar(2,2,45,29,cLGr);
+ VecText(7,8,9,15,'EXIT',cBlk,3);
+ VecText(7,8,9,15,'EXIT',cRed,2);
+ Btn3D(SCR_W-49,0,SCR_W-1,31,False);
+ GBar(SCR_W-47,2,SCR_W-3,29,cLGr);
+ VecText(SCR_W-44,8,9,15,'HELP',cBlk,3);
+ VecText(SCR_W-44,8,9,15,'HELP',cLCy,2);
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Espace Beginner : six appareils                                           }
+{ ---------------------------------------------------------------------- }
+
+Const
+ NAPPL = 6;
+ ApplApp : Array[1..NAPPL] Of Integer = (A_NOTEPAD,A_CALC,A_DEX,A_PLANNER,A_SOLIT,A_BANNER);
+
+Function ApplLabel(I: Integer): String;
+Begin
+ Case I Of
+  1: ApplLabel:=T3('Notepad','Bloc-notes','Notizblock');
+  2: ApplLabel:=T3('Calculator','Calculatrice','Rechner');
+  3: ApplLabel:=T3('Address Book','Carnet d''adresses','Adressbuch');
+  4: ApplLabel:=T3('Planner','Agenda','Planer');
+  5: ApplLabel:=T3('Solitaire','Solitaire','Solitaire');
+ Else ApplLabel:=T3('Banner','Banni'#138're','Banner');
+ End;
+End;
+
+Function ApplIcon(I: Integer): Integer;
+Begin
+ Case I Of
+  1: ApplIcon:=IC_NOTE;
+  2: ApplIcon:=IC_CALC;
+  3: ApplIcon:=IC_DEX;
+  4: ApplIcon:=IC_PLAN;
+  5: ApplIcon:=IC_SOLI;
+ Else ApplIcon:=IC_BANNER;
+ End;
+End;
+
+Procedure ApplRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Begin
+ X1:=40+((I-1) Mod 3)*200;Y1:=70+((I-1) Div 3)*180;X2:=X1+179;Y2:=Y1+159;
+End;
+
+Procedure DrawBeginner(Sel: Integer);
+Var I,X1,Y1,X2,Y2,Id,Z: Integer; S: String;
+Begin
+ WsTitleBar(T3('Choose an Appliance','Choisissez un appareil','Ger'#132'te w'#132'hlen'));
+ For I:=1 To NAPPL Do Begin
+  ApplRect(I,X1,Y1,X2,Y2);
+  Btn3D(X1,Y1,X2,Y2,False);
+  GBar(X1+8,Y1+8,X2-8,Y2-34,cWht);
+  Sunken1(X1+8,Y1+8,X2-8,Y2-34);
+  Id:=ApplIcon(I);Z:=3;
+  If BigIcon(Id)>=0 Then Begin Id:=BigIcon(Id);Z:=2;End;
+  DrawIconZ(Id,(X1+X2-IconWd[Id]*Z) Div 2,Y1+14+(Y2-Y1-60-IconHt[Id]*Z) Div 2,Z);
+  S:=ApplLabel(I);
+  GTextCtr(X1,X2,Y2-24,S,cBlk);
+  GTextCtr(X1+1,X2+1,Y2-24,S,cBlk);
+  If I=Sel Then GDotRect(X1+3,Y1+3,X2-3,Y2-3,cBlk);
+ End;
+ S:=T3('Click an appliance to start it.','Cliquez sur un appareil pour le lancer.','Klicken Sie auf ein Ger'#132't, um es zu starten.');
+ GTextCtr(0,SCR_W-1,SCR_H-30,S,cBlk);
+End;
+
+{ Retourne l'application choisie, 0 pour revenir a l'accueil }
+Function BeginnerScreen: Integer;
+Var E: TEvent; Sel,I,R: Integer; X1,Y1,X2,Y2: Integer;
+Begin
+ Sel:=1;R:=-1;
+ HideMouse;DrawBeginner(Sel);ShowMouse;
+ Repeat
+  PollEvent(E);
+  If E.Kind=EV_KEY Then Begin
+   Case E.Key Of
+    K_LEFT: If Sel>1 Then Dec(Sel);
+    K_RIGHT: If Sel<NAPPL Then Inc(Sel);
+    K_UP: If Sel>3 Then Dec(Sel,3);
+    K_DOWN: If Sel<=3 Then Inc(Sel,3);
+    K_ENTER: R:=Sel;
+    K_ESC: R:=0;
+   End;
+   If R=-1 Then Begin HideMouse;DrawBeginner(Sel);ShowMouse;End;
+  End Else If E.Kind=EV_UP Then Begin
+   For I:=1 To NAPPL Do Begin
+    ApplRect(I,X1,Y1,X2,Y2);
+    If InBox(E.X,E.Y,X1,Y1,X2,Y2) Then R:=I;
+   End;
+   If InBox(E.X,E.Y,0,0,47,31) Then R:=0;
+   If InBox(E.X,E.Y,SCR_W-49,0,SCR_W-1,31) Then
+    Info(T3('Help','Aide','Hilfe'),T3('The Beginner workspace offers six simple appliances.|Click one to start it ; close its window to come back here.',
+     'L''espace D'#130'butant offre six appareils simples.|Cliquez sur l''un d''eux pour le lancer ; fermez sa fen'#136'tre pour revenir ici.',
+     'Der Anf'#132'ngerbereich bietet sechs einfache Ger'#132'te.|Klicken Sie eines an; schlie'#225'en Sie sein Fenster, um zur'#129'ckzukehren.'));
+  End;
+ Until R<>-1;
+ If R>0 Then BeginnerScreen:=ApplApp[R] Else BeginnerScreen:=0;
+End;
+
+{ ---------------------------------------------------------------------- }
+{ Ecran DOS Programs                                                        }
+{ ---------------------------------------------------------------------- }
+
+Const
+ MAXDOSB = 48;
+
+Var
+ DosN    : Integer;
+ DosName : Array[1..MAXDOSB] Of String[22];
+ DosCmd  : Array[1..MAXDOSB] Of String[100];
+ DosAsk  : Array[1..MAXDOSB] Of Boolean;
+
+Procedure DosLoad;
+Var F: Text; S: String; P: Integer;
+Begin
+ DosN:=0;
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'DOSPROG.CFG'));
+ Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}
+ While Not Eof(F) And (DosN<MAXDOSB) Do Begin
+  ReadLn(F,S);
+  P:=Pos('|',S);
+  If P>1 Then Begin
+   Inc(DosN);
+   DosName[DosN]:=Copy(S,1,P-1);Delete(S,1,P);
+   P:=Pos('|',S);
+   If P=0 Then Begin DosCmd[DosN]:=S;DosAsk[DosN]:=False;End
+   Else Begin DosCmd[DosN]:=Copy(S,1,P-1);DosAsk[DosN]:=Copy(S,P+1,1)='1';End;
+  End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure DosSave;
+Var F: Text; I: Integer;
+Begin
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'DOSPROG.CFG'));
+ Rewrite(F);
+ For I:=1 To DosN Do Begin
+  Write(F,DosName[I],'|',DosCmd[I],'|');
+  If DosAsk[I] Then WriteLn(F,'1') Else WriteLn(F,'0');
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure DosBtnRect(I: Integer; Var X1,Y1,X2,Y2: Integer);
+Begin
+ X1:=36+((I-1) Mod 4)*148;Y1:=74+((I-1) Mod 8 Div 4)*130;X2:=X1+135;Y2:=Y1+115;
+End;
+
+Procedure DrawDosScreen(Page: Integer);
+Var I,K,X1,Y1,X2,Y2: Integer; S: String;
+Begin
+ WsTitleBar(T3('DOS Programs','Programmes DOS','DOS-Programme'));
+ For K:=1 To 8 Do Begin
+  I:=Page*8+K;
+  DosBtnRect(K,X1,Y1,X2,Y2);
+  If I<=DosN Then Begin
+   Btn3D(X1,Y1,X2,Y2,False);
+   GBar(X1+10,Y1+8,X2-10,Y1+62,cWht);Sunken1(X1+10,Y1+8,X2-10,Y1+62);
+   DrawIconZ(IC_DOSPROG,(X1+X2-48*2) Div 2,Y1+10,2);
+   S:=Copy(DosName[I],1,16);
+   GTextCtr(X1,X2,Y2-30,S,cBlk);
+   GTextCtr(X1+1,X2+1,Y2-30,S,cBlk);
+  End;
+ End;
+ If DosN=0 Then GTextCtr(0,SCR_W-1,200,T3('No program button yet : choose Options > Create New Button.',
+   'Aucun bouton de programme : choisissez Options > Cr'#130'er un bouton.','Noch keine Programmschaltfl'#132'che: Optionen > Neue Schaltfl'#132'che.'),cBlk);
+ Button(36,SCR_H-70,170,SCR_H-40,T3('Options','Options','Optionen'),False,False,True);
+ Button(SCR_W Div 2-90,SCR_H-74,SCR_W Div 2+90,SCR_H-36,T3('Enter DOS','Entrer sous DOS','DOS starten'),True,False,True);
+ If DosN>8 Then Begin
+  Button(SCR_W-170,SCR_H-70,SCR_W-100,SCR_H-40,'<',False,False,Page>0);
+  Button(SCR_W-90,SCR_H-70,SCR_W-36,SCR_H-40,'>',False,False,(Page+1)*8<DosN);
+ End;
+End;
+
+Procedure DosRun(I: Integer);
+Begin
+ RunDosCommand(DosCmd[I]);
+ If DosAsk[I] Then Info(T3('Return','Retour','R'#129'ckkehr'),T3('Press OK to return to PC/GEOS.','Appuyez sur OK pour revenir '#133' PC/GEOS.','OK dr'#129'cken, um zu PC/GEOS zur'#129'ckzukehren.'));
+End;
+
+Procedure DosOptions(Var Page: Integer);
+Var R,I: Integer; N,C: String;
+Begin
+ R:=ChoiceBox(T3('Options','Options','Optionen'),T3('Choose a command:','Choisissez une commande :','Befehl w'#132'hlen:'),
+   T3('Create New Button|Change Button Settings|Delete Button','Cr'#130'er un bouton|Modifier un bouton|Supprimer un bouton','Neue Schaltfl'#132'che|Schaltfl'#132'che '#132'ndern|Schaltfl'#132'che l'#148'schen'),1);
+ Case R Of
+  1: If DosN<MAXDOSB Then Begin
+      N:='';C:='';
+      If InputBox(T3('New Button','Nouveau bouton','Neue Schaltfl'#132'che'),T3('Button name:','Nom du bouton :','Name:'),N,20) And (N<>'') Then
+       If InputBox(T3('New Button','Nouveau bouton','Neue Schaltfl'#132'che'),T3('Command line:','Ligne de commande :','Befehlszeile:'),C,90) Then Begin
+        Inc(DosN);DosName[DosN]:=N;DosCmd[DosN]:=C;
+        DosAsk[DosN]:=Confirm(T3('Button Settings','Param'#138'tres du bouton','Schaltfl'#132'cheneinstellungen'),
+         T3('Ask before returning to PC/GEOS?','Demander avant de revenir '#133' PC/GEOS ?','Vor der R'#129'ckkehr zu PC/GEOS fragen?'));
+        DosSave;
+       End;
+     End;
+  2,3: If DosN>0 Then Begin
+      N:='';
+      For I:=1 To DosN Do Begin If I>1 Then N:=N+'|';N:=N+DosName[I];End;
+      I:=ChoiceBox(T3('Select Button','Choisir un bouton','Schaltfl'#132'che w'#132'hlen'),T3('Button:','Bouton :','Schaltfl'#132'che:'),N,Page*8+1);
+      If I>0 Then Begin
+       If R=3 Then Begin
+        While I<DosN Do Begin DosName[I]:=DosName[I+1];DosCmd[I]:=DosCmd[I+1];DosAsk[I]:=DosAsk[I+1];Inc(I);End;
+        Dec(DosN);
+        If Page*8>=DosN Then Page:=Max2(0,Page-1);
+       End Else Begin
+        N:=DosName[I];C:=DosCmd[I];
+        If InputBox(T3('Button Settings','Param'#138'tres du bouton','Schaltfl'#132'cheneinstellungen'),T3('Button name:','Nom du bouton :','Name:'),N,20) Then
+         If InputBox(T3('Button Settings','Param'#138'tres du bouton','Schaltfl'#132'cheneinstellungen'),T3('Command line:','Ligne de commande :','Befehlszeile:'),C,90) Then Begin
+          DosName[I]:=N;DosCmd[I]:=C;
+          DosAsk[I]:=Confirm(T3('Button Settings','Param'#138'tres du bouton','Schaltfl'#132'cheneinstellungen'),
+           T3('Ask before returning to PC/GEOS?','Demander avant de revenir '#133' PC/GEOS ?','Vor der R'#129'ckkehr zu PC/GEOS fragen?'));
+         End;
+       End;
+       DosSave;
+      End;
+     End;
+ End;
+End;
+
+Procedure DosScreen;
+Var E: TEvent; Page,K,I,X1,Y1,X2,Y2: Integer; Done: Boolean;
+Begin
+ DosLoad;
+ Page:=0;Done:=False;
+ HideMouse;DrawDosScreen(Page);ShowMouse;
+ Repeat
+  PollEvent(E);
+  If E.Kind=EV_KEY Then Begin
+   If E.Key=K_ESC Then Done:=True;
+  End Else If E.Kind=EV_UP Then Begin
+   If InBox(E.X,E.Y,0,0,47,31) Then Done:=True
+   Else If InBox(E.X,E.Y,SCR_W-49,0,SCR_W-1,31) Then
+    Info(T3('Help','Aide','Hilfe'),T3('Click a button to run its DOS program.|Options creates, changes or deletes buttons.',
+     'Cliquez sur un bouton pour lancer son programme DOS.|Options cr'#130'e, modifie ou supprime des boutons.',
+     'Klicken Sie auf eine Schaltfl'#132'che, um das DOS-Programm zu starten.|Optionen erstellt, '#132'ndert oder l'#148'scht Schaltfl'#132'chen.'))
+   Else If InBox(E.X,E.Y,36,SCR_H-70,170,SCR_H-40) Then DosOptions(Page)
+   Else If InBox(E.X,E.Y,SCR_W Div 2-90,SCR_H-74,SCR_W Div 2+90,SCR_H-36) Then RunDosCommand('')
+   Else If (DosN>8) And InBox(E.X,E.Y,SCR_W-170,SCR_H-70,SCR_W-100,SCR_H-40) And (Page>0) Then Dec(Page)
+   Else If (DosN>8) And InBox(E.X,E.Y,SCR_W-90,SCR_H-70,SCR_W-36,SCR_H-40) And ((Page+1)*8<DosN) Then Inc(Page)
+   Else
+    For K:=1 To 8 Do Begin
+     I:=Page*8+K;
+     DosBtnRect(K,X1,Y1,X2,Y2);
+     If (I<=DosN) And InBox(E.X,E.Y,X1,Y1,X2,Y2) Then DosRun(I);
+    End;
+   If Not Done Then Begin HideMouse;DrawDosScreen(Page);ShowMouse;End;
+  End;
+ Until Done;
 End;
 
 { ====================================================================== }
@@ -6391,8 +6676,10 @@ End;
 { ====================================================================== }
 
 Const
+ CM_SLV0=410; CM_SLV1=411; CM_SLV2=412; CM_SSC0=413; CM_SSC1=414; CM_SSC2=415; CM_STIMED=416;
  CM_GNEW=400; CM_GPAUSE=401; CM_DRAW1=402; CM_DRAW3=403; CM_GHELP=404; CM_UNDO=405;
  TCELL = 14;
+ CM_TPREV=420; CM_TLINES=421; CM_THIGH=422; CM_TSAVE=423;
 
 Const
  PieceTxt : Array[1..7] Of String[16] = (
@@ -6409,6 +6696,9 @@ Type
   Lines,Score,Level : LongInt;
   Over,Paused : Boolean;
   Tick,Speed  : Integer;
+  Preview : Boolean;
+  StartLines : Integer;
+  HiDone : Boolean;
  End;
 
 Function TetNew(AX,AY: Integer): PWindow; Forward;
@@ -6424,6 +6714,97 @@ Procedure TetOnKey(Wd_: PWindow; K: Word); Forward;
 Procedure TetPrepareMenus(Wd_: PWindow); Forward;
 Procedure TetOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
 
+Var
+ HiName : Array[1..10] Of String[20];
+ HiVal  : Array[1..10] Of LongInt;
+ HiN    : Integer;
+
+Procedure TetLoadHi;
+Var F: Text; S: String; P: Integer;
+Begin
+ HiN:=0;
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'TETRIS.SCO'));Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}
+ While Not Eof(F) And (HiN<10) Do Begin
+  ReadLn(F,S);P:=Pos('|',S);
+  If P>1 Then Begin Inc(HiN);HiName[HiN]:=Copy(S,1,P-1);HiVal[HiN]:=StrVal(Copy(S,P+1,12),0);End;
+ End;
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure TetSaveHi;
+Var F: Text; I: Integer;
+Begin
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'TETRIS.SCO'));Rewrite(F);
+ For I:=1 To HiN Do WriteLn(F,HiName[I],'|',HiVal[I]);
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure TetShowHi;
+Var I: Integer; S: String;
+Begin
+ TetLoadHi;
+ S:='';
+ For I:=1 To HiN Do Begin
+  If S<>'' Then S:=S+'|';
+  S:=S+Pad2(I)+'. '+HiName[I]+RepStr(' ',22-Length(HiName[I]))+IntStr(HiVal[I]);
+ End;
+ If S='' Then S:=T3('No scores yet.','Aucun score pour l''instant.','Noch keine Punkte.');
+ Info(T3('High Scores','Meilleurs scores','Bestenliste'),S);
+End;
+
+Procedure TetAddHi(Pts: LongInt);
+Var N: String; I,J: Integer;
+Begin
+ TetLoadHi;
+ If Pts<=0 Then Exit;
+ If (HiN>=10) And (Pts<=HiVal[HiN]) Then Exit;
+ N:='';
+ If Not InputBox(T3('High Score','Meilleur score','Bestenliste'),T3('Your name:','Votre nom :','Ihr Name:'),N,18) Then Exit;
+ If N='' Then N:='?';
+ If HiN<10 Then Inc(HiN);
+ I:=HiN;
+ While (I>1) And (HiVal[I-1]<Pts) Do Begin HiName[I]:=HiName[I-1];HiVal[I]:=HiVal[I-1];Dec(I);End;
+ HiName[I]:=N;HiVal[I]:=Pts;
+ TetSaveHi;
+ TetShowHi;
+End;
+
+Procedure TetLoadOpt(Dt_: PTetris);
+Var F: Text; S: String;
+Begin
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'TETRIS.OPT'));Reset(F);
+ {$I+}
+ If IOResult<>0 Then Exit;
+ {$I-}
+ ReadLn(F,S);Dt_^.Preview:=S='1';
+ ReadLn(F,S);Dt_^.StartLines:=Clamp(StrVal(S,0),0,10);
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
+Procedure TetSaveOpt(Dt_: PTetris);
+Var F: Text;
+Begin
+ {$I-}
+ Assign(F,JoinPath(HomeDir,'TETRIS.OPT'));Rewrite(F);
+ If Dt_^.Preview Then WriteLn(F,'1') Else WriteLn(F,'0');
+ WriteLn(F,Dt_^.StartLines);
+ Close(F);
+ {$I+}
+ If IOResult<>0 Then Begin End;
+End;
+
 Function TetNew(AX,AY: Integer): PWindow;
  Var Wd_: PWindow; Dt_: PTetris;
 Begin
@@ -6431,12 +6812,20 @@ Begin
  WinInit(Wd_,A_TETRIS,AX,AY,TCELL*10+34+62,TCELL*20+BORDER*2+TITLE_H+MENU_H+66,'Tetris');
  Wd_^.IconId:=IC_TETRIS;Wd_^.Resizable:=False;
  WinAddMenu(Wd_,'Game~Jeu~Spiel');
- WinAddItem(Wd_,'New Game~Nouvelle partie~Neues Spiel',CM_GNEW,'F2');
- WinAddItem(Wd_,'Pause~Pause~Pause',CM_GPAUSE,'P');
+ WinAddItem(Wd_,'Start New Game~D'#130'marrer une partie~Neues Spiel starten',CM_GNEW,'F2');
+ WinAddItem(Wd_,'Pause Game~Suspendre la partie~Spiel anhalten',CM_GPAUSE,'P');
  WinAddSep(Wd_);
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  WinAddMenu(Wd_,'Options~Options~Optionen');
+ WinAddItem(Wd_,'Preview Pieces~Aper'#135'u des pi'#138'ces~Vorschau der Steine',CM_TPREV,'');
+ WinAddItem(Wd_,'Set Starting Lines...~Lignes de d'#130'part...~Startlinien...',CM_TLINES,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Show High Scores~Meilleurs scores~Bestenliste',CM_THIGH,'');
+ WinAddItem(Wd_,'Save Options~Enregistrer les options~Optionen speichern',CM_TSAVE,'');
+ WinAddSep(Wd_);
  WinAddItem(Wd_,'Help~Aide~Hilfe',CM_GHELP,'');
+ Dt_^.Preview:=True;Dt_^.StartLines:=0;
+ TetLoadOpt(Dt_);
  TetBuildMasks(Wd_);
  TetNewGame(Wd_);
  TetNew:=Wd_;
@@ -6450,16 +6839,20 @@ Begin
  For K:=1 To 7 Do Begin
   For Y:=0 To 3 Do For X:=0 To 3 Do Dt_^.Mask[K,0,Y,X]:=PieceTxt[K][Y*4+X+1]<>'.';
   For R:=1 To 3 Do
-   For Y:=0 To 3 Do For X:=0 To 3 Do Dt_^.Mask[K,R,Y,X]:=Dt_^.Mask[K,R-1,3-X,Y];
+   For Y:=0 To 3 Do For X:=0 To 3 Do Dt_^.Mask[K,R,Y,X]:=Dt_^.Mask[K,R-1,X,3-Y];
  End;
 End;
 
 Procedure TetNewGame(Wd_: PWindow);
  Var Dt_: PTetris;
+Var I,J: Integer;
 Begin
  Dt_:=Wd_^.Data;
  FillChar(Dt_^.Board,SizeOf(Dt_^.Board),0);
  Dt_^.Lines:=0;Dt_^.Score:=0;Dt_^.Level:=0;Dt_^.Over:=False;Dt_^.Paused:=False;Dt_^.Tick:=0;Dt_^.Speed:=10;
+ Dt_^.HiDone:=False;
+ For I:=1 To Dt_^.StartLines Do
+  For J:=0 To 9 Do If Random(10)<7 Then Dt_^.Board[19-I+1,J]:=Random(7)+1;
  Dt_^.NK:=Random(7)+1;
  TetSpawn(Wd_);
 End;
@@ -6489,13 +6882,15 @@ Begin
   Dt_^.PY:=-2;
   If Not TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY) Then Dt_^.Over:=True;
  End;
+ If Dt_^.Over And Not Dt_^.HiDone Then Begin Dt_^.HiDone:=True;TetAddHi(Dt_^.Score);End;
 End;
 
 Procedure TetLock(Wd_: PWindow);
  Var Dt_: PTetris;
-Var I,J,Y,X,N: Integer;
+Var I,J,Y,X,N,P: Integer;
 Begin
  Dt_:=Wd_^.Data;
+ Inc(Dt_^.Score,Dt_^.Level+1);
  For I:=0 To 3 Do
   For J:=0 To 3 Do
    If Dt_^.Mask[Dt_^.PK,Dt_^.PR,I,J] And (Dt_^.PY+I>=0) Then Dt_^.Board[Dt_^.PY+I,Dt_^.PX+J]:=Dt_^.PK;
@@ -6512,8 +6907,9 @@ Begin
  End;
  If N>0 Then Begin
   Dt_^.Lines:=Dt_^.Lines+N;
-  Case N Of 1: Dt_^.Score:=Dt_^.Score+40*(Dt_^.Level+1); 2: Dt_^.Score:=Dt_^.Score+100*(Dt_^.Level+1);
-   3: Dt_^.Score:=Dt_^.Score+300*(Dt_^.Level+1); Else Dt_^.Score:=Dt_^.Score+1200*(Dt_^.Level+1); End;
+  Case N Of 1: P:=100; 2: P:=300; 3: P:=600; Else P:=1000; End;
+  If Dt_^.Preview Then P:=P Div 2;
+  Dt_^.Score:=Dt_^.Score+P;
   Dt_^.Level:=Dt_^.Lines Div 10;
   Dt_^.Speed:=Max2(2,10-Dt_^.Level);
  End;
@@ -6548,14 +6944,16 @@ Begin
    For J:=0 To 3 Do
     If Dt_^.Mask[Dt_^.PK,Dt_^.PR,I,J] And (Dt_^.PY+I>=0) Then TetDrawCell(Wd_,BX+(Dt_^.PX+J)*TCELL,BY+(Dt_^.PY+I)*TCELL,PieceCol[Dt_^.PK]);
  { suivante }
+ If Dt_^.Preview Then Begin
  GText(BX+TCELL*10+14,BY,T3('Next','Suivant','N'#132'chstes'),cBlk);
  Sunken(BX+TCELL*10+12,BY+14,BX+TCELL*10+12+4*TCELL div 2+10+30,BY+14+60,cLGr);
  For I:=0 To 3 Do
   For J:=0 To 3 Do
    If Dt_^.Mask[Dt_^.NK,0,I,J] Then Begin
     GBar(BX+TCELL*10+22+J*10,BY+22+I*10,BX+TCELL*10+22+J*10+9,BY+22+I*10+9,PieceCol[Dt_^.NK]);
-    GRect(BX+TCELL*10+22+J*10,BY+22+I*10,BX+TCELL*10+22+J*10+9,BY+22+I*10+9,cBlk);
+ GRect(BX+TCELL*10+22+J*10,BY+22+I*10,BX+TCELL*10+22+J*10+9,BY+22+I*10+9,cBlk);
    End;
+ End;
  GText(BX+TCELL*10+14,BY+90,T3('Level ','Niveau ','Stufe ')+IntStr(Dt_^.Level),cBlk);
  If Dt_^.Over Then Begin
   GBar(BX+4,BY+TCELL*8,BX+TCELL*10-4,BY+TCELL*8+34,cBlk);
@@ -6587,6 +6985,11 @@ Var NR: Integer;
 Begin
  Dt_:=Wd_^.Data;
  If K=K_F2 Then Begin TetNewGame(Wd_);Invalidate(Wd_);Exit;End;
+ If ((K=Ord('i')) Or (K=Ord('I'))) And Not Dt_^.Over Then Begin
+  If Dt_^.Level<9 Then Inc(Dt_^.Level);
+  Dt_^.Speed:=Max2(2,10-Dt_^.Level);
+  Invalidate(Wd_);Exit;
+ End;
  If (K=Ord('p')) Or (K=Ord('P')) Then Begin Dt_^.Paused:=Not Dt_^.Paused;Invalidate(Wd_);Exit;End;
  If Dt_^.Over Or Dt_^.Paused Then Exit;
  Case K Of
@@ -6599,7 +7002,7 @@ Begin
          Else If TetFits(Wd_,Dt_^.PK,NR,Dt_^.PX+1,Dt_^.PY) Then Begin Dt_^.PR:=NR;Inc(Dt_^.PX);End;
         End;
   K_DOWN: If TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY+1) Then Begin Inc(Dt_^.PY);Inc(Dt_^.Score);End Else TetLock(Wd_);
-  K_SPACE: Begin
+  K_SPACE,K_INS: Begin
             While TetFits(Wd_,Dt_^.PK,Dt_^.PR,Dt_^.PX,Dt_^.PY+1) Do Begin Inc(Dt_^.PY);Inc(Dt_^.Score,2);End;
             TetLock(Wd_);
            End;
@@ -6611,16 +7014,25 @@ Procedure TetPrepareMenus(Wd_: PWindow);
  Var Dt_: PTetris;
 Begin
  Dt_:=Wd_^.Data;
- WinSetFlag(Wd_,CM_GPAUSE,2,Dt_^.Paused);
+ If Dt_^.Paused Then WinSetText(Wd_,CM_GPAUSE,T3('Continue Game','Reprendre la partie','Spiel fortsetzen'))
+ Else WinSetText(Wd_,CM_GPAUSE,T3('Pause Game','Suspendre la partie','Spiel anhalten'));
+ WinSetFlag(Wd_,CM_TPREV,2,Dt_^.Preview);
 End;
 
 Procedure TetOnCommand(Wd_: PWindow; Cmd: Integer);
- Var Dt_: PTetris;
+ Var Dt_: PTetris; I: Integer;
 Begin
  Dt_:=Wd_^.Data;
  Case Cmd Of
   CM_GNEW: Begin TetNewGame(Wd_);Invalidate(Wd_);End;
   CM_GPAUSE: Begin Dt_^.Paused:=Not Dt_^.Paused;Invalidate(Wd_);End;
+  CM_TPREV: Begin Dt_^.Preview:=Not Dt_^.Preview;Invalidate(Wd_);End;
+  CM_TLINES: Begin
+     I:=ChoiceBox(T3('Starting Lines','Lignes de d'#130'part','Startlinien'),T3('Number of partially filled lines:','Nombre de lignes partiellement remplies :','Anzahl teilweise gef'#129'llter Zeilen:'),'0|1|2|3|4|5|6|7|8|9|10',Dt_^.StartLines+1);
+     If I>0 Then Dt_^.StartLines:=I-1;
+    End;
+  CM_THIGH: TetShowHi;
+  CM_TSAVE: TetSaveOpt(Dt_);
   CM_GHELP: Info('Tetris',T3('Left/Right: move|Up: rotate|Down: drop one row|Space: drop|P: pause',
         'Gauche/Droite : d'#130'placer|Haut : tourner|Bas : descendre|Espace : chute|P : pause',
         'Links/Rechts: bewegen|Hoch: drehen|Runter: absenken|Leertaste: fallen|P: Pause'));
@@ -6642,6 +7054,14 @@ Const
  BDY = 6;
 
 Type
+ TSolSnap = Record
+  Stock : Array[1..52] Of Byte;  SN : Integer;
+  Waste : Array[1..52] Of Byte;  WN : Integer;
+  Fnd   : Array[1..4,1..13] Of Byte; FN : Array[1..4] Of Integer;
+  Tab   : Array[1..7,1..30] Of Byte; TN,TD : Array[1..7] Of Integer;
+  Score,Passes : Integer;
+ End;
+
  PSolit = ^TSolit;
  TSolit = Record
   Stock : Array[1..52] Of Byte;  SN : Integer;
@@ -6658,6 +7078,10 @@ Type
   GrabX,GrabY : Integer;
   RX,RY : Integer;
   RShown : Boolean;
+  Scoring,Level,Passes,VegasTotal : Integer;   { bareme 0 standard 1 Vegas 2 aucun ; niveau 0..2 }
+  Timed : Boolean;
+  UN    : Integer;
+  UStack: Array[1..20] Of TSolSnap;
  End;
 
 Function SolNew(AX,AY: Integer): PWindow; Forward;
@@ -6680,6 +7104,38 @@ Procedure SolOnMouse(Wd_: PWindow; Var E: TEvent); Forward;
 Procedure SolOnKey(Wd_: PWindow; K: Word); Forward;
 Procedure SolPrepareMenus(Wd_: PWindow); Forward;
 Procedure SolOnCommand(Wd_: PWindow; Cmd: Integer); Forward;
+
+Procedure SolSave(Dt_: PSolit);
+Var I: Integer;
+Begin
+ If Dt_^.UN>=20 Then Begin
+  For I:=1 To 19 Do Dt_^.UStack[I]:=Dt_^.UStack[I+1];
+  Dt_^.UN:=19;
+ End;
+ Inc(Dt_^.UN);
+ With Dt_^.UStack[Dt_^.UN] Do Begin
+  Stock:=Dt_^.Stock;SN:=Dt_^.SN;Waste:=Dt_^.Waste;WN:=Dt_^.WN;Fnd:=Dt_^.Fnd;FN:=Dt_^.FN;
+  Tab:=Dt_^.Tab;TN:=Dt_^.TN;TD:=Dt_^.TD;Score:=Dt_^.Score;Passes:=Dt_^.Passes;
+ End;
+End;
+
+Procedure SolUndo(Dt_: PSolit);
+Begin
+ If Dt_^.UN<=0 Then Exit;
+ With Dt_^.UStack[Dt_^.UN] Do Begin
+  Dt_^.Stock:=Stock;Dt_^.SN:=SN;Dt_^.Waste:=Waste;Dt_^.WN:=WN;Dt_^.Fnd:=Fnd;Dt_^.FN:=FN;
+  Dt_^.Tab:=Tab;Dt_^.TN:=TN;Dt_^.TD:=TD;Dt_^.Score:=Score;Dt_^.Passes:=Passes;
+ End;
+ Dec(Dt_^.UN);
+ If Dt_^.Scoring=1 Then Dt_^.VegasTotal:=Dt_^.Score;
+End;
+
+{ Points : Std en mode standard, Veg en mode Vegas, rien sans score }
+Procedure SolAdd(Dt_: PSolit; Std,Veg: Integer);
+Begin
+ If Dt_^.Scoring=0 Then Dt_^.Score:=Max2(0,Dt_^.Score+Std)
+ Else If Dt_^.Scoring=1 Then Begin Dt_^.Score:=Dt_^.Score+Veg;Dt_^.VegasTotal:=Dt_^.Score;End;
+End;
 
 Function CardRank(C: Integer): Integer;
 Begin
@@ -6724,14 +7180,25 @@ Begin
  New(Wd_);New(Dt_);FillChar(Dt_^,SizeOf(Dt_^),0);Wd_^.Data:=Dt_;
  WinInit(Wd_,A_SOLIT,AX,AY,516,BORDER*2+TITLE_H+MENU_H+TABY+CHT+7*FDY+60,'Solitaire');
  Wd_^.IconId:=IC_SOLI;Wd_^.MinW:=516;Wd_^.MinH:=300;
- Dt_^.Draw3:=False;
+ Dt_^.Draw3:=False;Dt_^.Timed:=True;
  WinAddMenu(Wd_,'Game~Jeu~Spiel');
- WinAddItem(Wd_,'Deal~Distribuer~Geben',CM_GNEW,'F2');
+ WinAddItem(Wd_,'Re-Deal~Redistribuer~Neu geben',CM_GNEW,'F2');
+ WinAddItem(Wd_,'Undo~Annuler~R'#129'ckg'#132'ngig',CM_UNDO,'Ctrl+Z');
  WinAddSep(Wd_);
  WinAddItem(Wd_,'Close~Fermer~Schlie'#225'en',CM_CLOSE,'Alt+F4');
  WinAddMenu(Wd_,'Options~Options~Optionen');
- WinAddItem(Wd_,'Draw One~Une carte~Eine Karte',CM_DRAW1,'');
- WinAddItem(Wd_,'Draw Three~Trois cartes~Drei Karten',CM_DRAW3,'');
+ WinAddItem(Wd_,'Draw One Card~Tirer une carte~Eine Karte ziehen',CM_DRAW1,'');
+ WinAddItem(Wd_,'Draw Three Cards~Tirer trois cartes~Drei Karten ziehen',CM_DRAW3,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Level: Beginner~Niveau : D'#130'butant~Stufe: Anf'#132'nger',CM_SLV0,'');
+ WinAddItem(Wd_,'Level: Intermediate~Niveau : Interm'#130'diaire~Stufe: Fortgeschritten',CM_SLV1,'');
+ WinAddItem(Wd_,'Level: Advanced~Niveau : Avanc'#130'~Stufe: Experte',CM_SLV2,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Scoring: Standard~Score : Standard~Wertung: Standard',CM_SSC0,'');
+ WinAddItem(Wd_,'Scoring: Vegas~Score : Vegas~Wertung: Vegas',CM_SSC1,'');
+ WinAddItem(Wd_,'No Scoring~Sans score~Ohne Wertung',CM_SSC2,'');
+ WinAddSep(Wd_);
+ WinAddItem(Wd_,'Timed Game~Partie chronom'#130'tr'#130'e~Zeitspiel',CM_STIMED,'');
  SolDeal(Wd_);
  SolNew:=Wd_;
 End;
@@ -6754,7 +7221,9 @@ Begin
  For I:=K+1 To 52 Do Begin Inc(Dt_^.SN);Dt_^.Stock[Dt_^.SN]:=Deck[I];End;
  Dt_^.WN:=0;
  For I:=1 To 4 Do Dt_^.FN[I]:=0;
- Dt_^.Score:=0;Dt_^.Secs:=0;Dt_^.Started:=False;Dt_^.Won:=False;Dt_^.Dragging:=False;Dt_^.RShown:=False;
+ Dt_^.Passes:=0;Dt_^.UN:=0;
+ If Dt_^.Scoring=1 Then Begin Dt_^.VegasTotal:=Dt_^.VegasTotal-52;Dt_^.Score:=Dt_^.VegasTotal;End Else Dt_^.Score:=0;
+ Dt_^.Secs:=0;Dt_^.Started:=False;Dt_^.Won:=False;Dt_^.Dragging:=False;Dt_^.RShown:=False;
 End;
 
 Procedure SolColX(Wd_: PWindow; C: Integer; Var X: Integer);
@@ -6882,7 +7351,9 @@ Begin
  { barre d'etat }
  GBar(X1,Y2-18,X2,Y2,cLGr);
  GHLine(X1,X2,Y2-18,cWht);
- S:=T3('Score: ','Score : ','Punkte: ')+IntStr(Dt_^.Score)+'     '+T3('Time: ','Temps : ','Zeit: ')+IntStr(Dt_^.Secs Div 60)+':'+Pad2(Dt_^.Secs Mod 60);
+ S:='';
+ If Dt_^.Scoring<>2 Then S:=T3('Score: ','Score : ','Punkte: ')+IntStr(Dt_^.Score)+'     ';
+ If Dt_^.Timed Then S:=S+T3('Time: ','Temps : ','Zeit: ')+IntStr(Dt_^.Secs Div 60)+':'+Pad2(Dt_^.Secs Mod 60);
  GText(X1+10,Y2-12,S,cBlk);
 End;
 
@@ -6895,7 +7366,10 @@ Begin
  If Dt_^.Started And Not Dt_^.Won And Not Wd_^.Iconic Then Begin
   N:=(NowCs-Dt_^.StartCs) Div 100;
   If N<0 Then N:=Dt_^.Secs+1;
-  If N<>Dt_^.Secs Then Begin Dt_^.Secs:=N;SolIdle:=True;End;
+  If N<>Dt_^.Secs Then Begin
+   Dt_^.Secs:=N;SolIdle:=True;
+   If (Dt_^.Scoring=0) And Dt_^.Timed And (N>0) And (N Mod 10=0) Then SolAdd(Dt_,-1,0);
+  End;
  End;
 End;
 
@@ -6934,7 +7408,7 @@ Begin
  Dt_:=Wd_^.Data;
  If (Dt_^.TN[Col]>0) And (Dt_^.TD[Col]>=Dt_^.TN[Col]) Then Begin
   Dt_^.TD[Col]:=Dt_^.TN[Col]-1;
-  Inc(Dt_^.Score,5);
+  SolAdd(Dt_,5,0);
  End;
 End;
 
@@ -6986,12 +7460,26 @@ Begin
   If InBox(E.X,E.Y,X,Y1+TOPY,X+CWD-1,Y1+TOPY+CHT-1) Then Begin
    If Not Dt_^.Started Then Begin Dt_^.Started:=True;Dt_^.StartCs:=NowCs;End;
    If Dt_^.SN>0 Then Begin
+    SolSave(Dt_);
     K:=1;If Dt_^.Draw3 Then K:=Min2(3,Dt_^.SN);
     For I:=1 To K Do Begin Inc(Dt_^.WN);Dt_^.Waste[Dt_^.WN]:=Dt_^.Stock[Dt_^.SN];Dec(Dt_^.SN);End;
    End Else If Dt_^.WN>0 Then Begin
-    For I:=Dt_^.WN DownTo 1 Do Begin Inc(Dt_^.SN);Dt_^.Stock[Dt_^.SN]:=Dt_^.Waste[I];End;
-    Dt_^.WN:=0;
-    If Not Dt_^.Draw3 Then Dt_^.Score:=Max2(0,Dt_^.Score-100);
+    If Dt_^.Scoring=1 Then Begin
+     If Dt_^.Draw3 Then K:=3 Else K:=1;
+     If Dt_^.Passes>=K Then Dt_^.WN:=Dt_^.WN+0;
+    End Else K:=1000;
+    If Dt_^.Passes<K Then Begin
+     SolSave(Dt_);
+     For I:=Dt_^.WN DownTo 1 Do Begin Inc(Dt_^.SN);Dt_^.Stock[Dt_^.SN]:=Dt_^.Waste[I];End;
+     Dt_^.WN:=0;Inc(Dt_^.Passes);
+     If Dt_^.Scoring=0 Then Begin
+      If Dt_^.Draw3 Then Begin
+       If Dt_^.Passes<=2 Then SolAdd(Dt_,-30,0) Else SolAdd(Dt_,-30*(Dt_^.Passes-1),0);
+      End Else Begin
+       If Dt_^.Passes<=4 Then SolAdd(Dt_,-10,0) Else SolAdd(Dt_,-10*(Dt_^.Passes-3),0);
+      End;
+     End;
+    End;
    End;
    Invalidate(Wd_);Exit;
   End;
@@ -7001,7 +7489,8 @@ Begin
    If E.Dbl Then Begin
     F:=SolAutoFnd(Wd_,Dt_^.Waste[Dt_^.WN]);
     If F>0 Then Begin
-     Inc(Dt_^.FN[F]);Dt_^.Fnd[F,Dt_^.FN[F]]:=Dt_^.Waste[Dt_^.WN];Dec(Dt_^.WN);Inc(Dt_^.Score,10);SolCheckWin(Wd_);Invalidate(Wd_);
+     SolSave(Dt_);
+     Inc(Dt_^.FN[F]);Dt_^.Fnd[F,Dt_^.FN[F]]:=Dt_^.Waste[Dt_^.WN];Dec(Dt_^.WN);SolAdd(Dt_,10,5);SolCheckWin(Wd_);Invalidate(Wd_);
     End;
     Exit;
    End;
@@ -7012,7 +7501,7 @@ Begin
   If Not Dt_^.Dragging Then
    For I:=1 To 4 Do Begin
     SolColX(Wd_,3+I,X);
-    If (Dt_^.FN[I]>0) And InBox(E.X,E.Y,X,Y1+TOPY,X+CWD-1,Y1+TOPY+CHT-1) Then Begin
+    If (Dt_^.FN[I]>0) And (Dt_^.Level=0) And InBox(E.X,E.Y,X,Y1+TOPY,X+CWD-1,Y1+TOPY+CHT-1) Then Begin
      Dt_^.Dragging:=True;Dt_^.DSrc:=7+I;Dt_^.DCount:=1;Dt_^.DCards[1]:=Dt_^.Fnd[I,Dt_^.FN[I]];Dt_^.GrabX:=E.X-X;Dt_^.GrabY:=E.Y-(Y1+TOPY);
     End;
    End;
@@ -7025,11 +7514,12 @@ Begin
      Y:=SolCardY(Wd_,I,K);
      If K>Dt_^.TD[I] Then Begin
       If K=Dt_^.TN[I] Then Tx:=Y+CHT-1 Else Tx:=SolCardY(Wd_,I,K+1)-1;
-      If InBox(E.X,E.Y,X,Y,X+CWD-1,Tx) Then Begin
+      If InBox(E.X,E.Y,X,Y,X+CWD-1,Tx) And ((Dt_^.Level<2) Or (K=Dt_^.TD[I]+1) Or (K=Dt_^.TN[I])) Then Begin
        If E.Dbl And (K=Dt_^.TN[I]) Then Begin
         F:=SolAutoFnd(Wd_,Dt_^.Tab[I,K]);
         If F>0 Then Begin
-         Inc(Dt_^.FN[F]);Dt_^.Fnd[F,Dt_^.FN[F]]:=Dt_^.Tab[I,K];Dec(Dt_^.TN[I]);SolFlip(Wd_,I);Inc(Dt_^.Score,10);SolCheckWin(Wd_);
+         SolSave(Dt_);
+         Inc(Dt_^.FN[F]);Dt_^.Fnd[F,Dt_^.FN[F]]:=Dt_^.Tab[I,K];Dec(Dt_^.TN[I]);SolFlip(Wd_,I);SolAdd(Dt_,10,5);SolCheckWin(Wd_);
          Invalidate(Wd_);Exit;
         End;
        End;
@@ -7074,9 +7564,10 @@ Begin
      If (CxC>=X-GAPX Div 2+CWD Div 2) And (CxC<X+CWD+(GAPX-CWD) Div 2+0) And Not Hit Then
       If SolCanTab(Wd_,Dt_^.DCards[1],I) And (I<>Dt_^.DSrc) Then Begin
        Hit:=True;
+       SolSave(Dt_);
        SolRemoveSrc(Wd_);
        For K:=1 To Dt_^.DCount Do Begin Inc(Dt_^.TN[I]);Dt_^.Tab[I,Dt_^.TN[I]]:=Dt_^.DCards[K];End;
-       If Dt_^.DSrc=0 Then Inc(Dt_^.Score,5) Else If Dt_^.DSrc>7 Then Dt_^.Score:=Max2(0,Dt_^.Score-15);
+       If Dt_^.DSrc=0 Then SolAdd(Dt_,5,0) Else If Dt_^.DSrc>7 Then SolAdd(Dt_,-15,-5);
       End;
     End;
    End Else If Dt_^.DCount=1 Then Begin
@@ -7085,9 +7576,10 @@ Begin
      If (CxC>=X-6) And (CxC<X+CWD+6) And Not Hit Then
       If SolCanFnd(Wd_,Dt_^.DCards[1],I) And (Dt_^.DSrc<>7+I) Then Begin
        Hit:=True;
+       SolSave(Dt_);
        SolRemoveSrc(Wd_);
        Inc(Dt_^.FN[I]);Dt_^.Fnd[I,Dt_^.FN[I]]:=Dt_^.DCards[1];
-       If Dt_^.DSrc<=7 Then Inc(Dt_^.Score,10);
+       If Dt_^.DSrc<=7 Then SolAdd(Dt_,10,5);
        SolCheckWin(Wd_);
       End;
     End;
@@ -7101,7 +7593,8 @@ Procedure SolOnKey(Wd_: PWindow; K: Word);
  Var Dt_: PSolit;
 Begin
  Dt_:=Wd_^.Data;
- If K=K_F2 Then Begin SolDeal(Wd_);Invalidate(Wd_);End;
+ If K=K_F2 Then Begin SolDeal(Wd_);Invalidate(Wd_);End
+ Else If K=K_CTRLZ Then Begin SolUndo(Dt_);Invalidate(Wd_);End;
 End;
 
 Procedure SolPrepareMenus(Wd_: PWindow);
@@ -7109,6 +7602,9 @@ Procedure SolPrepareMenus(Wd_: PWindow);
 Begin
  Dt_:=Wd_^.Data;
  WinSetFlag(Wd_,CM_DRAW1,2,Not Dt_^.Draw3);WinSetFlag(Wd_,CM_DRAW3,2,Dt_^.Draw3);
+ WinSetFlag(Wd_,CM_SLV0,2,Dt_^.Level=0);WinSetFlag(Wd_,CM_SLV1,2,Dt_^.Level=1);WinSetFlag(Wd_,CM_SLV2,2,Dt_^.Level=2);
+ WinSetFlag(Wd_,CM_SSC0,2,Dt_^.Scoring=0);WinSetFlag(Wd_,CM_SSC1,2,Dt_^.Scoring=1);WinSetFlag(Wd_,CM_SSC2,2,Dt_^.Scoring=2);
+ WinSetFlag(Wd_,CM_STIMED,2,Dt_^.Timed);WinSetFlag(Wd_,CM_UNDO,1,Dt_^.UN=0);
 End;
 
 Procedure SolOnCommand(Wd_: PWindow; Cmd: Integer);
@@ -7117,8 +7613,16 @@ Begin
  Dt_:=Wd_^.Data;
  Case Cmd Of
   CM_GNEW: Begin SolDeal(Wd_);Invalidate(Wd_);End;
-  CM_DRAW1: Begin Dt_^.Draw3:=False;SolDeal(Wd_);Invalidate(Wd_);End;
-  CM_DRAW3: Begin Dt_^.Draw3:=True;SolDeal(Wd_);Invalidate(Wd_);End;
+  CM_DRAW1: Begin Dt_^.Draw3:=False;Invalidate(Wd_);End;
+  CM_DRAW3: Begin Dt_^.Draw3:=True;Invalidate(Wd_);End;
+  CM_UNDO: Begin SolUndo(Dt_);Invalidate(Wd_);End;
+  CM_SLV0: Dt_^.Level:=0;
+  CM_SLV1: Dt_^.Level:=1;
+  CM_SLV2: Dt_^.Level:=2;
+  CM_SSC0: Begin Dt_^.Scoring:=0;SolDeal(Wd_);Invalidate(Wd_);End;
+  CM_SSC1: Begin Dt_^.Scoring:=1;SolDeal(Wd_);Invalidate(Wd_);End;
+  CM_SSC2: Begin Dt_^.Scoring:=2;SolDeal(Wd_);Invalidate(Wd_);End;
+  CM_STIMED: Begin Dt_^.Timed:=Not Dt_^.Timed;Invalidate(Wd_);End;
  Else CommonCmd(Wd_,Cmd);
  End;
 End;
@@ -11353,7 +11857,7 @@ Var
  Arg,StartFile: String;
  NoWelcome: Boolean;
  M: PWindow;
- RunApp,BgOpt: Integer;
+ RunApp,BgOpt,A: Integer;
  ForceEmu: Boolean;
 
 BEGIN
@@ -11427,9 +11931,19 @@ BEGIN
   Else Begin
    If Choice<=3 Then Level:=Choice-1 Else Level:=1;
    NWins:=0;
-   If Choice=4 Then Begin
-    M:=MgrNew(20,10,584,408,HomeDir);
-    WinResize(M);AddWindow(M);
+   If Choice=4 Then DosScreen
+   Else If (Choice=1) And (StartFile='') And (RunApp=0) Then Begin
+    R:=1;
+    Repeat
+     A:=BeginnerScreen;
+     If A>0 Then Begin
+      LaunchApp(A,'');
+      If NWins>0 Then MaximizeWin(Wins[NWins]);
+      R:=DesktopLoop;
+      While NWins>0 Do RemoveWindow(Wins[NWins]);
+     End;
+    Until (A=0) Or (R=2);
+    If A=0 Then R:=1;
    End Else Begin
     LaunchApp(A_MANAGER,'');
     If (Level=0) And (NWins>0) Then MaximizeWin(Wins[1]);
