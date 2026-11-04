@@ -134,6 +134,10 @@ Il possède un clone de Devpac (DEVPAC.PAS) :
 
 <img width="638" height="481" alt="image" src="https://github.com/user-attachments/assets/a63b10ec-3049-4ed2-8fab-5f3803c77bb0" />
 
+Il possède un clone de GeoBasic intégré le clone de GeoWorks (GEOWORKS.PAS) :
+
+<img width="638" height="479" alt="image" src="https://github.com/user-attachments/assets/79bcc27d-54c0-498c-991b-078418c3b1ca" />
+
 Il possède un clone OSS Personal Pascal (OSSPAS.PAS) :
 
 <img width="639" height="480" alt="image" src="https://github.com/user-attachments/assets/c2b25f96-8a28-4ced-92fc-7ace4f88f426" />
