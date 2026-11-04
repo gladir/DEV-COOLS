@@ -9585,6 +9585,11 @@ Var
  Win16_DlgIdx           : Integer;     { indice de la fenetre de dialogue, -1 :
    aucune }
  Win16_DlgActive, Win16_DlgDone, Win16_DlgModal: Boolean;
+ Win16_ChunkBreak: Boolean;
+ Win16_NestDepth: Integer;
+ Win16_HostPumpProc: Procedure;
+ Win16_HostPumpOk: Boolean;
+ Win16_LastHostPump: LongInt;
  Win16_AccelCount      : Integer;
  Win16_AccelFlags      : Array[0..127] Of Byte;
  Win16_AccelKey        : Array[0..127] Of Word;
@@ -110111,6 +110116,11 @@ Begin
  If MenuSlot >= 0 Then MenuH := WIN16_MENUBAR_H Else MenuH := 0;
  If UpCaseStr(Win16_WndClassName[Win16_WindowClassIdx[WIndex]]) = 'DIALOG' Then
  Begin
+  If (Win16_WindowStyle[WIndex] And $40000000) <> 0 Then Begin
+   { dialogue enfant : simple fond blanc dans le parent }
+   Win16_Rect(X1, Y1, X2, Y2, 15);
+   Exit;
+  End;
   { boite de dialogue : ombre, double filet noir, fond blanc }
   Win16_Rect(X1 + 3, Y1 + 3, X2 + 6, Y2 + 6, 0);
   Win16_Rect(X1 - 3, Y1 - 3, X2 + 3, Y2 + 3, 15);
@@ -111720,6 +111730,19 @@ Begin
  If Win16_WindowCount > 0 Then Begin
   DX0 := Win16_WindowX[0]; DY0 := Win16_WindowY[0];
  End;
+ { dialogue enfant (WS_CHILD) : origine = zone cliente du parent }
+ If ((Style And $40000000) <> 0) And (ParentH <> 0) Then
+  For I := 0 To Win16_WindowCount - 1 Do
+   If Win16_WindowHWnd[I] = ParentH Then Begin
+    DX0 := Win16_WindowX[I] + 1; DY0 := Win16_WindowY[I] + 1;
+   End;
+ { Windows 2.x : boite de dialogue centree dans le bureau }
+ If Win16_IsWin2 And ((Style And $40000000) = 0) Then Begin
+  DX0 := (640 - CX * 2) Div 2 - X * 2;
+  DY0 := (340 - CY) Div 2 - Y;
+  If DX0 + X * 2 < 0 Then DX0 := -X * 2;
+  If DY0 + Y < 4 Then DY0 := 4 - Y;
+ End;
  Idx := Win16_WindowCount;
  Win16_InitWindowSlot(Idx);
  Win16_WindowHWnd[Idx] := Win16_NextHWnd;
@@ -111948,6 +111971,17 @@ Begin
      Win16_CtlText(X1 + 2, Y1 + 2 + I * 10, Win16_LbText[WIdx, I], 0, 15);
  End Else If Cls = 'SCROLLBAR' Then Begin
   { barre de defilement : fleches aux extremites, piste grisee, curseur }
+  { SBS_TOPALIGN (2) / SBS_BOTTOMALIGN (4) : la barre garde sa taille systeme }
+  { (16 px) collee a un bord du rectangle au lieu de le remplir. }
+  If (St And 6) <> 0 Then Begin
+   If (St And 1) <> 0 Then Begin
+    If (St And 4) <> 0 Then X1 := X2 - 15 Else X2 := X1 + 15;
+    W := 16;
+   End Else Begin
+    If (St And 4) <> 0 Then Y1 := Y2 - 15 Else Y2 := Y1 + 15;
+    H := 16;
+   End;
+  End;
   Win16_Rect(X1, Y1, X2, Y2, 7);
   Win16_FrameRect(X1, Y1, X2, Y2, 0);
   If (St And 1) <> 0 Then Begin                   { verticale }
@@ -112010,6 +112044,12 @@ Begin
   { elle-meme WM_COMMAND. }
   If Msg = $000F Then Begin
    Win16_DrawWindowFrame(P, WIdx);
+   { les controles du dialogue sont repeints par-dessus son fond }
+   For I := 0 To Win16_WindowCount - 1 Do
+    If (Win16_WindowParent[I] = HWnd) And (I <> WIdx) Then Begin
+     Win16_PaintControl(I);
+     Win16_WindowNeedsPaint[I] := False;
+    End;
    Win16_NativeProc := 0;
    Exit;
   End;
@@ -112132,7 +112172,7 @@ Function Win16_CallWndProc(Var P: TEmulatorPanel; ProcSeg, ProcOfs,
  HWnd, Msg, WParam, LParamLo, LParamHi: Word): LongInt;
 Var
  WPDumpI: Integer;
- SavedDS: Word;
+ SavedDS, SavedCS, SavedIP: Word;
 Begin
  { Fenetre d'une classe predefinie (Edit, Button...) : pas de code invite   }
  { a appeler, resultat 0 (traitement par defaut).                           }
@@ -112157,6 +112197,8 @@ Begin
  { de l'application (le prologue "mov ax,ds ... mov ds,ax" des exports     }
  { s'appuie dessus) ; sans cela DS=0 et le programme lit n'importe quoi.    }
  SavedDS := P.CPU.Segs.DS;
+ SavedCS := P.CPU.Segs.CS;
+ SavedIP := P.CPU.IP;
  P.CPU.Segs.DS := Win16_StackSeg;
  P.CPU.Regs.AX := Win16_StackSeg;
  Emu_PushWord(P.CPU, HWnd);
@@ -112189,13 +112231,20 @@ Begin
    WriteLn(Win16_WndProcTraceFile);
   End;
  End;
+ Inc(Win16_NestDepth);
  Dpmi_RunRealProc(P, ProcSeg, ProcOfs, False);
+ Dec(Win16_NestDepth);
  If Win16_WndProcTraceOn Then Begin
   Win16_WndProcTraceOn := False;
   Close(Win16_WndProcTraceFile);
  End;
  Win16_CallWndProc := (LongInt(P.CPU.Regs.DX) Shl 16) Or P.CPU.Regs.AX;
  P.CPU.Segs.DS := SavedDS;
+ { l'appel imbrique ne doit pas deplacer le CS:IP de l'appelant }
+ If P.CPU.Fault = sfNone Then Begin
+  P.CPU.Segs.CS := SavedCS;
+  P.CPU.IP := SavedIP;
+ End;
 End;
 
 
@@ -114396,6 +114445,134 @@ Begin
  W2WindowDC := W2DcNew(1, Hw);
 End;
 
+Function W2Atan2(Y, X: Double): Double;
+Begin
+ If X > 0 Then W2Atan2 := ArcTan(Y / X)
+ Else If X < 0 Then Begin
+  If Y >= 0 Then W2Atan2 := ArcTan(Y / X) + Pi
+  Else W2Atan2 := ArcTan(Y / X) - Pi;
+ End Else Begin
+  If Y > 0 Then W2Atan2 := Pi / 2
+  Else If Y < 0 Then W2Atan2 := -Pi / 2
+  Else W2Atan2 := 0;
+ End;
+End;
+
+{ Arc / Pie / Chord (Mode 0/1/2) : portion d'ellipse du rectangle englobant, }
+{ du point de depart (XS,YS) au point d'arrivee (XE,YE), sens trigonometrique. }
+Procedure W2ArcShape(D, X1, Y1, X2, Y2, XS, YS, XE, YE, Mode: Integer);
+Var
+ CX, CY, RX, RY, X, Y, N, I, C, Fc, Z: Integer;
+ SA, EA, Dl, T, Rel, MX, MY: Double;
+ Nl: Boolean;
+ PX, PY, QX, QY: Integer;
+ Sd, Sm: Double;
+Begin
+ If X2 < X1 Then Begin Z := X1; X1 := X2; X2 := Z; End;
+ If Y2 < Y1 Then Begin Z := Y1; Y1 := Y2; Y2 := Z; End;
+ CX := (X1 + X2) Div 2; CY := (Y1 + Y2) Div 2;
+ RX := (X2 - X1) Div 2; RY := (Y2 - Y1) Div 2;
+ If (RX < 1) Or (RY < 1) Then Exit;
+ SA := W2Atan2((CY - YS) / RY, (XS - CX) / RX);
+ EA := W2Atan2((CY - YE) / RY, (XE - CX) / RX);
+ Dl := EA - SA;
+ If Dl <= 0 Then Dl := Dl + 2 * Pi;
+ C := W2PenCol(D, Nl);
+ { remplissage (Pie / Chord) }
+ If Mode > 0 Then Begin
+  MX := CX + RX * Cos(SA + Dl / 2); MY := CY - RY * Sin(SA + Dl / 2);
+  Sm := (XE - XS) * (MY - YS) - (YE - YS) * (MX - XS);
+  For Y := Y1 To Y2 Do
+   For X := X1 To X2 Do
+    If Sqr((X - CX) / RX) + Sqr((Y - CY) / RY) <= 1 Then Begin
+     If Mode = 1 Then Begin
+      T := W2Atan2((CY - Y) / RY, (X - CX) / RX);
+      Rel := T - SA;
+      While Rel < 0 Do Rel := Rel + 2 * Pi;
+      While Rel >= 2 * Pi Do Rel := Rel - 2 * Pi;
+      If Rel <= Dl Then Begin
+       Fc := W2BrushPix(D, X, Y);
+       If Fc >= 0 Then W2Pix(D, X, Y, Fc);
+      End;
+     End Else Begin
+      Sd := (XE - XS) * (Y - YS) - (YE - YS) * (X - XS);
+      If Sd * Sm >= 0 Then Begin
+       Fc := W2BrushPix(D, X, Y);
+       If Fc >= 0 Then W2Pix(D, X, Y, Fc);
+      End;
+     End;
+    End;
+ End;
+ If Nl Then Exit;
+ N := (RX + RY) * 4;
+ PX := CX + Round(RX * Cos(SA)); PY := CY - Round(RY * Sin(SA));
+ For I := 0 To N Do Begin
+  T := SA + Dl * I / N;
+  QX := CX + Round(RX * Cos(T)); QY := CY - Round(RY * Sin(T));
+  W2PlotPen(D, QX, QY, C);
+ End;
+ If Mode = 1 Then Begin
+  W2PenLine(D, CX, CY, PX, PY);
+  W2PenLine(D, CX, CY, QX, QY);
+ End Else If Mode = 2 Then W2PenLine(D, PX, PY, QX, QY);
+End;
+
+{ FloodFill : remplit avec le pinceau jusqu'a la couleur de bord Border }
+Procedure W2FloodFill(D, X0, Y0, Border: Integer);
+Var
+ StackX, StackY: Array[0..511] Of Integer;
+ Sp, X, Y, XL, XR, W, H, Dir, Yn: Integer;
+ Pc: Integer;
+ M: Boolean;
+ Idx: LongInt;
+ Function Free(PxX, PxY: Integer): Boolean;
+ Begin
+  Free := False;
+  If (PxX < W2DcCL[D] - W2DcOrgX[D]) Or (PxX > W2DcCR[D] - W2DcOrgX[D]) Or
+     (PxY < W2DcCT[D] - W2DcOrgY[D]) Or (PxY > W2DcCB[D] - W2DcOrgY[D]) Then
+   Exit;
+  Idx := LongInt(PxY - (W2DcCT[D] - W2DcOrgY[D])) * W +
+   (PxX - (W2DcCL[D] - W2DcOrgX[D]));
+  If (Idx < 0) Or (Idx >= 256000) Then Exit;
+  If Win16_BlitBuf[Idx] <> 0 Then Exit;
+  Free := W2Get(D, PxX, PxY, M) <> Border;
+ End;
+Begin
+ W := W2DcCR[D] - W2DcCL[D] + 1;
+ H := W2DcCB[D] - W2DcCT[D] + 1;
+ If (W <= 0) Or (H <= 0) Or (LongInt(W) * H > 256000) Then Exit;
+ FillChar(Win16_BlitBuf, LongInt(W) * H, 0);
+ Sp := 0;
+ StackX[0] := X0; StackY[0] := Y0; Sp := 1;
+ While Sp > 0 Do Begin
+  Dec(Sp);
+  X := StackX[Sp]; Y := StackY[Sp];
+  If Free(X, Y) Then Begin
+   XL := X; XR := X;
+   While Free(XL - 1, Y) Do Dec(XL);
+   While Free(XR + 1, Y) Do Inc(XR);
+   For X := XL To XR Do Begin
+    Idx := LongInt(Y - (W2DcCT[D] - W2DcOrgY[D])) * W +
+     (X - (W2DcCL[D] - W2DcOrgX[D]));
+    Win16_BlitBuf[Idx] := 1;
+    Pc := W2BrushPix(D, X, Y);
+    If Pc >= 0 Then W2Pix(D, X, Y, Pc);
+   End;
+   For Dir := -1 To 1 Do
+    If Dir <> 0 Then Begin
+     Yn := Y + Dir;
+     X := XL;
+     While X <= XR Do Begin
+      If Free(X, Yn) Then Begin
+       If Sp < 512 Then Begin StackX[Sp] := X; StackY[Sp] := Yn; Inc(Sp); End;
+       While (X <= XR) And Free(X, Yn) Do Inc(X);
+      End Else Inc(X);
+     End;
+    End;
+  End;
+ End;
+End;
+
 { ---- Dispatcheur GDI Windows 2.x ---------------------------------------- }
 Function Win16_Win2Gdi(Var P: TEmulatorPanel; Ord: Word;
   Var AW: Integer): Boolean;
@@ -114516,9 +114693,16 @@ Begin
       If (D > 0) And W2DcPrep(D) Then W2Rectangle(D, Si(2), Si(3), Si(4),
         Si(5));
       P.CPU.Regs.AX := 1; AW := 7; End;
-  25: Begin K := 5; D := DcOf(1);                      { FloodFill (non pris en
-    charge) }
+  25: Begin K := 5; D := DcOf(1);                      { FloodFill }
+      If (D > 0) And W2DcPrep(D) Then
+       W2FloodFill(D, Si(2), Si(3), W2Col(Gl(4)));
       P.CPU.Regs.AX := 1; AW := 5; End;
+  23, 26, 348: Begin K := 9; D := DcOf(1);           { Arc / Pie / Chord }
+      If (D > 0) And W2DcPrep(D) Then Begin
+       If Ord = 23 Then N := 0 Else If Ord = 26 Then N := 1 Else N := 2;
+       W2ArcShape(D, Si(2), Si(3), Si(4), Si(5), Si(6), Si(7), Si(8), Si(9), N);
+      End;
+      P.CPU.Regs.AX := 1; AW := 9; End;
   29: Begin K := 7; D := DcOf(1);                      { PatBlt }
       If (D > 0) And W2DcPrep(D) Then
        W2BitBlt(D, Si(2), Si(3), Si(4), Si(5), 0, 0, 0, Si(4), Si(5), Gl(6));
@@ -120897,6 +121081,17 @@ Begin
      End Else Begin
       Win16_DrawWindowFrame(P, CWIdx);
       P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
+      { un enfant recoit WM_SIZE des sa creation (comme sous Windows) :     }
+      { il n'y a pas forcement de ShowWindow ensuite. }
+      If ((Win16_WindowStyle[CWIdx] And $40000000) <> 0) And
+         (Win16_WndClassProcSeg[CWClassIdx] <> 0) Then Begin
+       Win16_WindowSizeSent[CWIdx] := True;
+       Win16_CallWndProc(P, Win16_WndClassProcSeg[CWClassIdx],
+        Win16_WndClassProcOfs[CWClassIdx], Win16_WindowHWnd[CWIdx],
+        WIN16_WM_SIZE, 0, Word(Win16_WindowW[CWIdx]),
+        Word(Win16_WindowH[CWIdx]));
+       P.CPU.Regs.AX := Win16_WindowHWnd[CWIdx];
+      End;
      End;
     End;
     ArgWords := 15;
@@ -121325,6 +121520,12 @@ Begin
         CWX := Word(Win16_WindowX[CWI] + 1 + SmallInt(CWX));
         CWY := Word(Win16_WindowY[CWI] + 1 + SmallInt(CWY));
        End;
+     { Windows 2.x : la boite de dialogue modale reste centree }
+     If Win16_IsWin2 And (SWWIdx = Win16_DlgIdx) And
+        ((Win16_WindowStyle[SWWIdx] And $40000000) = 0) Then Begin
+      CWX := Word((640 - SmallInt(CWW)) Div 2);
+      CWY := Word(MaxInt(4, (340 - SmallInt(CWH)) Div 2));
+     End;
      Win16_ShiftChildren(SWWIdx, SmallInt(CWX) - Win16_WindowX[SWWIdx],
       SmallInt(CWY) - Win16_WindowY[SWWIdx], 0);
      Win16_WindowX[SWWIdx] := SmallInt(CWX);
@@ -122263,6 +122464,8 @@ Begin
      If Not Win16_DlgDone Then Begin
       P.CPU.IP := Word(P.CPU.IP - 2);     { re-execute : la boite reste ouverte
         }
+      If Win16_NestDepth = 0 Then Win16_ChunkBreak := True
+      Else If Win16_HostPumpOk Then Win16_HostPumpProc;
       Exit;
      End;
      Win16_DlgActive := False;
@@ -122402,15 +122605,88 @@ Begin
     ArgWords := 2;
    End;
    99: Begin
+    { DlgDirSelect(hDlg, lpString, nIDListBox) : entree selectionnee de la
+      liste }
+    HeapRes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ANOfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    ANSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
     P.CPU.Regs.AX := 0;
+    For LSI := 0 To Win16_WindowCount - 1 Do
+     If (Win16_WindowParent[LSI] = ANSeg1) And (Win16_WindowId[LSI] = HeapRes)
+       And
+        (Win16_LbSel[LSI] >= 0) And (Win16_LbSel[LSI] < Win16_LbCount[LSI])
+          Then Begin
+      ANStr1 := Win16_LbText[LSI, Win16_LbSel[LSI]];
+      For ANI := 1 To Length(ANStr1) Do
+       Emu_WriteByte(P.CPU, ANSeg2, Word(ANOfs2 + ANI - 1), Ord(ANStr1[ANI]));
+      Emu_WriteByte(P.CPU, ANSeg2, Word(ANOfs2 + Length(ANStr1)), 0);
+      P.CPU.Regs.AX := 1;
+     End;
     ArgWords := 4;
    End;
    100: Begin
-    P.CPU.Regs.AX := 0;
+    { DlgDirList(hDlg, lpPathSpec, nIDListBox, nIDStaticPath, wFileType) :
+      remplit }
+    { la zone de liste avec les fichiers de l'hote correspondant au masque. }
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    HeapRes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    CMId := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    ANOfs2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    ANSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
+    ANStr1 := Win16_ReadGuestString(P.CPU, ANSeg2, ANOfs2);
+    If (ANStr1 = '') Or (Pos('*', ANStr1) = 0) And (Pos('?', ANStr1) = 0) Then
+     ANStr1 := '*.*';
+    For LSI := 0 To Win16_WindowCount - 1 Do
+     If Win16_WindowParent[LSI] = ANSeg1 Then Begin
+      If Win16_WindowId[LSI] = CMId Then Begin
+       Win16_LbCount[LSI] := 0;
+       Win16_LbSel[LSI] := -1;
+       FindFirst(ANStr1, AnyFile, DirInfo);
+       While (DosError = 0) And (Win16_LbCount[LSI] < WIN16_MAX_LB) Do Begin
+        If (DirInfo.Attr And Directory) = 0 Then Begin
+         If Win16_IsWin2 Then
+         Win16_LbText[LSI, Win16_LbCount[LSI]] := UpCaseStr(DirInfo.Name)
+        Else
+         Win16_LbText[LSI, Win16_LbCount[LSI]] := LowerCaseStr(DirInfo.Name);
+         Inc(Win16_LbCount[LSI]);
+        End;
+        FindNext(DirInfo);
+       End;
+       Win16_WindowNeedsPaint[LSI] := True;
+      End Else If Win16_WindowId[LSI] = HeapRes Then Begin
+       GetDir(0, ANStr2);
+       If Win16_IsWin2 Then
+        Win16_WindowTitle[LSI] := UpCaseStr(ANStr2)
+       Else
+        Win16_WindowTitle[LSI] := LowerCase(ANStr2);
+       Win16_WindowNeedsPaint[LSI] := True;
+      End;
+     End;
+    P.CPU.Regs.AX := 1;
     ArgWords := 6;
    End;
    101: Begin
+    { SendDlgItemMessage(hDlg, nID, msg, wParam, lParam) }
+    ANOfs1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 4));
+    ANSeg2 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 6));
+    HeapRes := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 8));
+    CMFlags := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 10));
+    CMId := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 12));
+    ANSeg1 := Emu_ReadWord(P.CPU, P.CPU.Segs.SS, Word(P.CPU.Regs.SP + 14));
     P.CPU.Regs.AX := 0;
+    P.CPU.Regs.DX := 0;
+    For LSI := 0 To Win16_WindowCount - 1 Do
+     If (Win16_WindowParent[LSI] = ANSeg1) And (Win16_WindowId[LSI] = CMId)
+       Then Begin
+      CRRes := Win16_CallWndProc(P,
+        Win16_WndClassProcSeg[Win16_WindowClassIdx[LSI]],
+       Win16_WndClassProcOfs[Win16_WindowClassIdx[LSI]], Win16_WindowHWnd[LSI],
+       CMFlags, HeapRes, ANOfs1, ANSeg2);
+      P.CPU.Regs.AX := Word(CRRes And $FFFF);
+      P.CPU.Regs.DX := Word((CRRes Shr 16) And $FFFF);
+     End;
     ArgWords := 6;
    End;
    102: Begin
@@ -130840,6 +131116,9 @@ Begin
        FindFirst(ANStr1, AnyFile, DirInfo);
        While (DosError = 0) And (Win16_LbCount[LSI] < WIN16_MAX_LB) Do Begin
         If (DirInfo.Attr And Directory) = 0 Then Begin
+         If Win16_IsWin2 Then
+         Win16_LbText[LSI, Win16_LbCount[LSI]] := UpCaseStr(DirInfo.Name)
+        Else
          Win16_LbText[LSI, Win16_LbCount[LSI]] := LowerCaseStr(DirInfo.Name);
          Inc(Win16_LbCount[LSI]);
         End;
@@ -130848,7 +131127,10 @@ Begin
        Win16_WindowNeedsPaint[LSI] := True;
       End Else If Win16_WindowId[LSI] = HeapRes Then Begin
        GetDir(0, ANStr2);
-       Win16_WindowTitle[LSI] := LowerCase(ANStr2);
+       If Win16_IsWin2 Then
+        Win16_WindowTitle[LSI] := UpCaseStr(ANStr2)
+       Else
+        Win16_WindowTitle[LSI] := LowerCase(ANStr2);
        Win16_WindowNeedsPaint[LSI] := True;
       End;
      End;
@@ -221212,6 +221494,8 @@ Begin
   End;
   Emu_StepOne(P);
   Inc(Iter);
+  { boite modale ouverte : la boucle d'attente du dialogue n'est pas bornee }
+  If Win16_DlgActive And (Iter > 1000000) Then Iter := 0;
  End;
  Dpmi_LastRunRealProcIter := Iter;
 End;
@@ -255686,6 +255970,7 @@ Var
 Begin
  For ChunkI := 0 To 4999 Do Begin
   If P.CPU.Fault <> sfNone Then Break;
+  If Win16_ChunkBreak Then Begin Win16_ChunkBreak := False; Break; End;
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
@@ -261739,8 +262024,66 @@ End;
 { False) continuent de s executer entierement dans ShowEmulatorPanel comme  }
 { avant ; seul le chemin DOS/DPMI (deja partiellement pas-a-pas) est encore }
 { gere via P.CPU.Fault ci-dessous, inchange. --- }
+{ Script d'entrees de test pour le backend Win16 : WIN16SCRIPT.TXT (une    }
+{ ligne par evenement "image genre x y" ; genre 0=deplacement, 1=bouton    }
+{ enfonce, 2=relache, 3=caractere de code x) rejoue image par image : tests }
+{ automatiques des applications (clics, menus, saisie). }
+Var
+ W16ScrN, W16ScrI: Integer;
+ W16ScrFrame: LongInt;
+ W16ScrLoaded: Boolean;
+ W16ScrT: Array[0..399] Of LongInt;
+ W16ScrK: Array[0..399] Of Integer;
+ W16ScrX: Array[0..399] Of Integer;
+ W16ScrY: Array[0..399] Of Integer;
+
+Procedure Win16_RunInputScript(Var P: TEmulatorPanel);
+Var
+ F: Text;
+ Ln, Tok: String;
+ V: Array[0..3] Of LongInt;
+ K, Er, Q: Integer;
+Begin
+ If Not W16ScrLoaded Then Begin
+  W16ScrLoaded := True;
+  {$I-} Assign(F, 'WIN16SCRIPT.TXT'); Reset(F); {$I+}
+  If IOResult = 0 Then Begin
+   While (Not Eof(F)) And (W16ScrN < 400) Do Begin
+    ReadLn(F, Ln);
+    For K := 0 To 3 Do V[K] := 0;
+    For K := 0 To 3 Do Begin
+     While (Ln <> '') And (Ln[1] = ' ') Do Delete(Ln, 1, 1);
+     Q := Pos(' ', Ln);
+     If Q = 0 Then Q := Length(Ln) + 1;
+     Tok := Copy(Ln, 1, Q - 1);
+     Delete(Ln, 1, Q);
+     Val(Tok, V[K], Er);
+    End;
+    W16ScrT[W16ScrN] := V[0]; W16ScrK[W16ScrN] := V[1];
+    W16ScrX[W16ScrN] := V[2]; W16ScrY[W16ScrN] := V[3];
+    Inc(W16ScrN);
+   End;
+   Close(F);
+  End;
+ End;
+ If W16ScrN = 0 Then Exit;
+ Q := 0;
+ For K := 0 To Win16_WindowCount - 1 Do
+  If Win16_IsVisible(K) Then Inc(Q);
+ If (Q < 1) And (W16ScrFrame = 0) Then Exit;
+ Inc(W16ScrFrame);
+ While (W16ScrI < W16ScrN) And (W16ScrT[W16ScrI] <= W16ScrFrame) Do Begin
+  If W16ScrK[W16ScrI] = 3 Then
+   Win16_KeyCharEvent(Byte(W16ScrX[W16ScrI]), 0)
+  Else
+   Win16_HandleMouseEvent(P, P.PanelX + W16ScrX[W16ScrI],
+    P.PanelY + 24 + W16ScrY[W16ScrI], W16ScrK[W16ScrI]);
+  Inc(W16ScrI);
+ End;
+End;
+
 Procedure StepEmulator(Var P: TEmulatorPanel);
-Var NowTS: LongInt; Finished: Boolean; Active: Boolean;
+Var ScrK: Integer; NowTS: LongInt; Finished: Boolean; Active: Boolean;
  EmuPumpNow: LongInt; FrameChanged: Boolean; CurBlink: Boolean;
  YChk, XChk: Integer;
 Begin
@@ -262433,6 +262776,15 @@ Begin
   If Not EmuLastActiveState Then Begin
    P.StatusMsg := '';
    EmuLastActiveState := True;
+  End;
+  If P.TargetCPU = '-CWIN16' Then Begin
+   Win16_RunInputScript(P);
+   { mode script : plusieurs tranches d'execution par trame affichee }
+   If (W16ScrN > 0) And (W16ScrI < W16ScrN) Then
+    For ScrK := 1 To 24 Do Begin
+     DOS_RunOneChunk(P);
+     Win16_RunInputScript(P);
+    End;
   End;
   DOS_RunOneChunk(P);
   DrawEmulatorPanel(P);
@@ -279861,6 +280213,21 @@ End;
 
 { --- Boucle principale de l IDE --- }
 
+{ Pompe d'evenements hote appelee depuis la boucle d'une boite de dialogue }
+{ modale Win16 executee a l'interieur d'un appel imbrique (DispatchMessage) : }
+{ sans elle ni la souris ni le script de test n'atteignent jamais la boite. }
+Procedure Win16_HostPumpImpl;
+Var Ev: TEvent; NowT: LongInt;
+Begin
+ NowT := GetTimestamp;
+ If (NowT - Win16_LastHostPump) < 15 Then Exit;
+ Win16_LastHostPump := NowT;
+ If EmuPanel.TargetCPU = '-CWIN16' Then Win16_RunInputScript(EmuPanel);
+ PollEvents(Ev);
+ If Ev.Kind <> EV_NONE Then DispatchEvent(Ev);
+ DrawEmulatorPanel(EmuPanel);
+End;
+
 Procedure MainLoop;
 Var
  Ev: TEvent;
@@ -279869,6 +280236,8 @@ Var
  ActNow: LongInt;
  Win95NowH, Win95NowM, Win95NowS, Win95NowS100: Word;
 Begin
+ Win16_HostPumpProc := Win16_HostPumpImpl;
+ Win16_HostPumpOk := True;
  QuitRequested := False;
  LastBlinkState := ProjPropCursorVisible;
  While Not QuitRequested Do Begin
