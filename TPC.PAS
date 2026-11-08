@@ -1922,7 +1922,7 @@ Var
  { Sauts courts : les passes successives memorisent pour chaque saut (ordinal) s'il tient en 8 bits ;
    la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
  JumpOrd: Word;
- DbgNoJ, DbgNoIf, DbgNoBack, KeepES, TailIndexed, DirIndexed: Boolean;
+ DbgNoJ, DbgNoIf, DbgNoBack, KeepES, TailIndexed, DirIndexed, KernelSeen: Boolean;
  LitAddr, LitEnd: Array[1..1500] Of Word; LitUnit: Array[1..1500] Of Byte; LitCount: Word;
  ProcOrd: Word; FramePred, FrameNext, FrameForce: Array[1..8000] Of Boolean;
  ReportLines: Array[1..64] Of String[120];
@@ -2925,7 +2925,7 @@ End;
 
 Function JumpZeroKeep: Word;Begin
  { AX doit rester le resultat booleen (0) a la cible: pas de raccourci. }
- Emit2($09,$C0); Emit2($75,$03); JumpZeroKeep:=Jump;
+ Emit2($09,$C0); JumpZeroKeep:=JumpIf($75);
 End;
 
 Procedure EmitBP(Reg: Byte; D: Integer); Forward;
@@ -2971,7 +2971,7 @@ Begin
     Else Begin Emit($81); EmitBP(7,SmallInt(D)); EmitWord(V) End;
    End Else Begin Emit($3D); EmitWord(V) End;
   End;
-  Emit2(CondJcc,3); JumpZero:=Jump; Exit;
+  JumpZero:=JumpIf(CondJcc); Exit;
  End;
  Inverted:=False;
  { "not b" : saut sur la condition inverse au lieu de "xor ax,1" }
@@ -2982,8 +2982,7 @@ Begin
  End Else If (LastJumpTarget<CodeSize) And TailLoadWord(Len,D) Then Begin
   Dec(CodeSize,Len); Emit($83); EmitBP(7,SmallInt(D)); Emit(0);   { cmp word [bp+d],0 }
  End Else Emit2($09,$C0);    { or ax,ax }
- If Inverted Then Emit2($74,$03) Else Emit2($75,$03); { jnz +3: 8086 n'a pas Jcc near }
- JumpZero:=Jump;
+ If Inverted Then JumpZero:=JumpIf($74) Else JumpZero:=JumpIf($75); { 8086 : pas de Jcc near }
 End;
 
 Function RtlTarget(T: Word): Word; Forward;
@@ -3096,7 +3095,7 @@ Function AllocBss(N: Word): Word;
   FinalDataAddress lors de l'edition des liens, dans l'ordre de declaration
   (comme TP: un debordement de tampon atteint les variables suivantes). }
 Begin
- If Longint(DataSize)+BssSize+N>MaxImage Then Fail(49,'Segment de donnees trop grand');
+ If Longint(DataSize)+BssSize+N>MaxImage Then Begin If GetEnv('TPC_PASSES')<>'' Then WriteLn(StdErr,'BSS ',DataSize,' ',BssSize,' ',N); Fail(49,'Segment de donnees trop grand') End;
  If BssCount=MaxSymbols Then Unsupported('trop de variables globales');
  BssTop:=BssTop-N; Inc(BssCount); BssStart[BssCount]:=Word(BssTop); BssLen[BssCount]:=N;
  AllocBss:=Word(BssTop);
@@ -3377,7 +3376,8 @@ Begin
  CurrentUnit:=255; I:=NewSymbol('INPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10); Symbols[I].Addr:=StandardInputAddress;
  I:=NewSymbol('OUTPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10); Symbols[I].Addr:=StandardOutputAddress;
  CurrentUnit:=0; RandomSeed:=AllocData(4);
- StringRing:=AllocBss(2048); StringRingPos:=AllocBss(2);
+ If AnalysisPass Or KernelSeen Then Begin StringRing:=AllocData(2048); StringRingPos:=AllocData(2) End
+ Else Begin StringRing:=AllocBss(2048); StringRingPos:=AllocBss(2) End;
  CurrentUnit:=255; I:=NewSymbol('RANDSEED'); Symbols[I].Kind:=skVar; ApplyType(I,9); Symbols[I].Addr:=RandomSeed;
  I:=NewSymbol('MAXINT'); Symbols[I].Kind:=skConst; ApplyType(I,1); Symbols[I].Value:=32767;
  { TP 7.0: segments standard et constante Pi de l'unite System }
@@ -3796,13 +3796,13 @@ Begin
  If Types[SourceType].Width<>4 Then Begin
   If Types[SourceType].Signed Then Emit($99) Else Emit2($31,$D2);
  End;
- Emit2($81,$FA); EmitWord(Word(LowBound Shr 16)); Emit2($7D,3); Bad[1]:=Jump;
+ Emit2($81,$FA); EmitWord(Word(LowBound Shr 16)); Bad[1]:=JumpIf($7D);
  P:=JumpIf($7E);
- Emit($3D); EmitWord(Word(LowBound)); Emit2($73,3); Bad[2]:=Jump;
+ Emit($3D); EmitWord(Word(LowBound)); Bad[2]:=JumpIf($73);
  PatchJump(P,CodeSize);
- Emit2($81,$FA); EmitWord(Word(HighBound Shr 16)); Emit2($7E,3); Bad[3]:=Jump;
+ Emit2($81,$FA); EmitWord(Word(HighBound Shr 16)); Bad[3]:=JumpIf($7E);
  Q:=JumpIf($7D);
- Emit($3D); EmitWord(Word(HighBound)); Emit2($76,3); Bad[4]:=Jump;
+ Emit($3D); EmitWord(Word(HighBound)); Bad[4]:=JumpIf($76);
  PatchJump(Q,CodeSize); Done:=Jump;
  For K:=1 To 4 Do PatchJump(Bad[K],CodeSize);
  LoadImmediate(201); CallTo(RtlTarget(RuntimeError)); PatchJump(Done,CodeSize);
@@ -4778,7 +4778,7 @@ Begin
   LeftType:=ExprType; LeftUnsigned:=ExprUnsigned;
   LeftKnown:=ExprKnown; LeftValue:=ExprValue;
   If ShortCircuit Then Begin
-   Emit2($09,$C0); Emit2($74,$03); Skip:=Jump;
+   Emit2($09,$C0); Skip:=JumpIf($74);
   End;
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
   If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
@@ -8383,7 +8383,7 @@ End;
 
 Procedure EnterKernel(U: Byte);
 Begin
- Units[U].Kernel:=True; KUnit:=U;
+ Units[U].Kernel:=True; KUnit:=U; KernelSeen:=True;
  New(SavedImg); Move(Image,SavedImg^,SizeOf(Image));
  New(SavedOwn); Move(CodeOwners,SavedOwn^,SizeOf(CodeOwners));
  New(SavedRel); Move(RelativeFixups,SavedRel^,SizeOf(RelativeFixups));
@@ -11374,7 +11374,8 @@ Begin
 End;
 Begin
  FillChar(RuntimeStandard,SizeOf(RuntimeStandard),0);
- StringScratch:=AllocBss(256); StringScratch2:=AllocBss(256);
+ If AnalysisPass Or KernelSeen Then Begin StringScratch:=AllocData(256); StringScratch2:=AllocData(256) End
+ Else Begin StringScratch:=AllocBss(256); StringScratch2:=AllocBss(256) End;
  InputAhead:=AllocData(2); Data[InputAhead]:=255; Data[InputAhead+1]:=255;
  InputByte:=AllocData(1); InputHandle:=AllocData(2);
  InputConsoleAhead:=AllocData(2); Data[InputConsoleAhead]:=255; Data[InputConsoleAhead+1]:=255;
