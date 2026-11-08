@@ -348,6 +348,7 @@ Type
  End;
  TImageBuf = Array[0..MaxImage-1] Of Byte;
  TRelTable = Array[1..MaxFixups] Of TRelativeFixup;
+ TOrdBuf = Array[0..MaxImage-1] Of Word;
  TBinaryBuffer = Array[0..262143] Of Byte;
  PBinaryBuffer = ^TBinaryBuffer;
  TNativeRef = Record
@@ -1918,6 +1919,16 @@ Var
  PendAbs: Array[1..8192] Of Boolean;
  PendAdd: Array[1..8192] Of Longint;
  PendCount: Word;
+ { Sauts courts : les passes successives memorisent pour chaque saut (ordinal) s'il tient en 8 bits ;
+   la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
+ JumpOrd: Word;
+ DbgNoJ, DbgNoIf, DbgNoBack: Boolean;
+ ReportLines: Array[1..64] Of String[120];
+ ReportCount: Word;
+ ShortPred, ShortNext, ForceLong: Array[1..32000] Of Boolean;
+ OrdAt: Array[0..MaxImage-1] Of Word;
+ RuntimeDepth: Word;
+ JumpOverflow: Boolean;
  { Edition de liens intelligente (comme TP) : graphe d'appels des routines, passe
    d'analyse tolerant le debordement du segment de code, puis recompilation
    sans les routines jamais referencees. }
@@ -1931,6 +1942,7 @@ Var
  KUnit: Byte;
  KImage, SavedImg: ^TImageBuf;
  SavedRel: ^TRelTable;
+ SavedOrd: ^TOrdBuf;
  SavedOwn: ^TImageBuf;
  KSize: Word;
  KDataStart, KDataFlushed, KFixBase, SCode, SFix, SRel, SNat, SReloc, SObj, SPend, SDbg, SLab, SDataFix, SRing, SRingPos: Word;
@@ -2423,12 +2435,15 @@ End;
 Procedure ReportSource;
 { TPC 7.0 affiche FICHIER(ligne) pour chaque source compile et cumule les
   lignes pour le resume final. }
-Var N: Longint;
+Var N: Longint; NS: String;
 Begin
  N:=Line;
  If (SourceSize>0) And (Source[SourceSize]=#10) And (N>1) Then Dec(N);
  Inc(TotalLines,N);
- If Not Quiet Then WriteLn(SourceName,'(',N,')');
+ If Not Quiet Then Begin
+  Str(N,NS);
+  If ReportCount<64 Then Begin Inc(ReportCount); ReportLines[ReportCount]:=SourceName+'('+NS+')' End;
+ End;
 End;
 
 Procedure EndInclude;
@@ -2758,7 +2773,7 @@ Procedure Emit(B: Byte);Begin
  End;
  CodeOwners[CodeSize]:=CurrentUnit;
  If CurrentUnit In [253,254] Then CodeOwners[CodeSize]:=0;
- Image[CodeSize]:=B; Inc(CodeSize);
+ Image[CodeSize]:=B; OrdAt[CodeSize]:=0; Inc(CodeSize);
 End;
 
 Procedure EmitWord(W: Word);Begin
@@ -2773,15 +2788,72 @@ Procedure Emit2(A,B: Byte);Begin
  Emit(A); Emit(B)
 End;
 
-Function Jump: Word;Begin
- Emit($E9); Jump:=CodeSize; EmitWord(0)
+Function WantShort(O: Word): Boolean;
+{ Saut court autorise pour l'ordinal O ? Pas dans le runtime ecrit a la main. }
+Begin
+ WantShort:=(RuntimeDepth=0) And (O<>0) And (O<=32000) And ShortPred[O] And Not ForceLong[O];
+End;
+
+Function AfterSkip: Boolean;
+{ Le code se termine par un "jcc +n" ecrit a la main : le saut qui suit peut etre saute par n,
+  il doit rester long (3 octets). }
+Begin
+ AfterSkip:=(CodeSize>=2) And (Image[CodeSize-2]>=$70) And (Image[CodeSize-2]<=$7F) And
+  (Image[CodeSize-1]>=2) And (Image[CodeSize-1]<=16);
+End;
+
+Function Jump: Word;
+Var O,R: Word;
+Begin
+ Inc(JumpOrd); O:=JumpOrd; If O>32000 Then O:=0;
+ { derriere un "jcc +n" ecrit a la main, le saut peut etre saute par n : rester long }
+ If WantShort(O) And Not DbgNoJ And Not AfterSkip Then Begin
+  Emit($EB); R:=CodeSize; Emit(0);
+ End Else Begin
+  Emit($E9); R:=CodeSize; EmitWord(0);
+ End;
+ OrdAt[R]:=O; Jump:=R;
+End;
+
+Function JumpIf(CCSkip: Byte): Word;
+{ Saut conditionnel vers une cible a patcher : jcc'(rel8) si court, sinon "jcc +3; jmp rel16".
+  CCSkip est le code de la condition INVERSE (celle qui saute par-dessus le jmp). }
+Var O,R: Word;
+Begin
+ Inc(JumpOrd); O:=JumpOrd; If O>32000 Then O:=0;
+ If WantShort(O) And Not DbgNoIf Then Begin
+  Emit(CCSkip Xor 1); R:=CodeSize; Emit(0);
+ End Else Begin
+  Emit2(CCSkip,3); Emit($E9); R:=CodeSize; EmitWord(0);
+ End;
+ OrdAt[R]:=O; JumpIf:=R;
+End;
+
+Function JumpLong: Word;
+Var R: Word;
+Begin
+ Emit($E9); R:=CodeSize; EmitWord(0); OrdAt[R]:=0; JumpLong:=R;
 End;
 
 Procedure PatchJump(P, Target: Word);
 Var
- I: Word;
+ I,O: Word; D: Longint;
 Begin
  LastJumpTarget:=Target;
+ O:=OrdAt[P];
+ If (P>0) And ((Image[P-1]=$EB) Or ((Image[P-1]>=$70) And (Image[P-1]<=$7F))) Then Begin
+  { saut court : deplacement sur 8 bits, pas de fixup de relocalisation }
+  D:=Longint(Target)-P-1;
+  If (D<-128) Or (D>127) Then Begin
+   JumpOverflow:=True; If O<>0 Then ForceLong[O]:=True; D:=0;
+  End Else If O<>0 Then ShortNext[O]:=True;
+  Image[P]:=Byte(D);
+  Exit;
+ End;
+ If (O<>0) And (O<=32000) Then Begin
+  D:=Longint(Target)-P-1;
+  ShortNext[O]:=(D>=-120) And (D<=120);
+ End;
  PatchWord(P,Word(Longint(Target)-P-2));
  For I:=1 To RelativeCount Do If RelativeFixups[I].Position=P Then Begin
   RelativeFixups[I].Target:=Target; Exit;
@@ -2793,8 +2865,15 @@ End;
 
 Procedure JumpTo(Target: Word);
 Var
- P: Word;
+ P,O: Word;
 Begin
+ { saut arriere court : deplacement connu tout de suite }
+ If (RuntimeDepth=0) And Not DbgNoBack And Not AfterSkip And (Target<CodeSize) And (CodeSize+2-Target<=128) Then Begin
+  Inc(JumpOrd);
+  Emit($EB); Emit(Byte(Longint(Target)-CodeSize-1));
+  LastJumpTarget:=Target;
+  Exit;
+ End;
  P:=Jump; PatchJump(P,Target)
 End;
 
@@ -3585,11 +3664,11 @@ Begin
   If Types[SourceType].Signed Then Emit($99) Else Emit2($31,$D2);
  End;
  Emit2($81,$FA); EmitWord(Word(LowBound Shr 16)); Emit2($7D,3); Bad[1]:=Jump;
- Emit2($7E,3); P:=Jump;
+ P:=JumpIf($7E);
  Emit($3D); EmitWord(Word(LowBound)); Emit2($73,3); Bad[2]:=Jump;
  PatchJump(P,CodeSize);
  Emit2($81,$FA); EmitWord(Word(HighBound Shr 16)); Emit2($7E,3); Bad[3]:=Jump;
- Emit2($7D,3); Q:=Jump;
+ Q:=JumpIf($7D);
  Emit($3D); EmitWord(Word(HighBound)); Emit2($76,3); Bad[4]:=Jump;
  PatchJump(Q,CodeSize); Done:=Jump;
  For K:=1 To 4 Do PatchJump(Bad[K],CodeSize);
@@ -4278,7 +4357,7 @@ Begin
     End;
     tkAnd:Begin Emit2($21,$D8); Emit2($21,$CA) End;
     tkShl,tkShr:Begin
-     Emit2($89,$D9); Emit2($80,$E1); Emit(31); Emit2($09,$C9); Emit2($75,3); Skip:=Jump;
+     Emit2($89,$D9); Emit2($80,$E1); Emit(31); Emit2($09,$C9); Skip:=JumpIf($75);
      ShiftLoop:=CodeSize;
      If Op=tkShl Then Begin Emit2($D1,$E0); Emit2($D1,$D2) End
      Else Begin Emit2($D1,$EA); Emit2($D1,$D8) End;
@@ -4506,7 +4585,7 @@ Begin
    Fail(26,'Type de l''element IN');
   Emit2($89,$C7); Emit2($8E,$C2); Emit($58);
   Emit($2D); EmitWord(Types[ExprType].LowBound Div 8*8);
-  Emit($3D); EmitWord(TypeExtras[ExprType].Size*8); Emit2($72,3); P:=Jump;
+  Emit($3D); EmitWord(TypeExtras[ExprType].Size*8); P:=JumpIf($72);
   Emit2($89,$C3); Emit2($89,$C1); Emit2($80,$E1); Emit(7);
   Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB);
   Emit($26); Emit2($84,$11); LoadImmediate(1); Emit2($75,2); Emit2($31,$C0); Q:=Jump;
@@ -4576,7 +4655,7 @@ Begin
     If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
     Emit2($89,$C3); Emit2($89,$D1); Emit($58);
     If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,$D2) Else Emit($99);
-    Emit2($39,$CA); Emit2($74,3); H:=Jump;
+    Emit2($39,$CA); H:=JumpIf($74);
     Emit2($39,$D8);
     Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76 End;
     Emit2(Jcc Xor 1,3); P:=Jump; Q:=Jump;
@@ -4818,7 +4897,7 @@ Var LoopStart,Done: Word;
 Begin
  Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);        { push ds; mov ds,dx; mov si,ax }
  LoopStart:=CodeSize;
- Emit($AC); Emit2($08,$C0); Emit2($75,3); Done:=Jump; { lodsb; or al,al; jnz suite; jmp fin }
+ Emit($AC); Emit2($08,$C0); Done:=JumpIf($75); { lodsb; or al,al; jnz suite; jmp fin }
  Emit2($30,$E4); Emit($1E); Emit($56);                { xor ah,ah; push ds; push si }
  Emit2($8B,$DC); Emit($36); Emit2($8E,$5F); Emit(4);  { mov bx,sp; mov ds,ss:[bx+4] }
  CallTo(RtlTarget(RuntimeChar));
@@ -4967,7 +5046,7 @@ Begin
  End Else Begin
   If Op=tkGE Then Begin Emit($BE); DataAddress(B); Emit($BF); DataAddress(A) End;
   LoopStart:=CodeSize; Emit($26); Emit2($8A,$05); Emit2($F6,$D0); Emit2($22,$04);
-  Emit2($09,$C0); Emit2($74,3); P:=Jump;
+  Emit2($09,$C0); P:=JumpIf($74);
   Emit($46); Emit($47); Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1));
   LoadImmediate(1); Q:=Jump; PatchJump(P,CodeSize); Emit2($31,$C0); PatchJump(Q,CodeSize);
  End;
@@ -4981,7 +5060,7 @@ Begin
   Emit($BB); EmitWord($660D); Emit($B9); EmitWord($19); CallTo(RtlTarget(RuntimeStandard[14]));
   Emit($05); EmitWord($F35F); Emit2($81,$D2); EmitWord($3C6E);
   Emit($A3); DataAddress(RandomSeed); Emit2($89,$16); DataAddress(RandomSeed+2); Emit($5B);
-  Emit2($09,$DB); Emit2($75,3); P:=Jump;
+  Emit2($09,$DB); P:=JumpIf($75);
   Emit($50); Emit2($89,$D0); Emit2($31,$D2); Emit2($F7,$F3); Emit($58);
   Emit2($F7,$F3); Emit2($89,$D0); Q:=Jump;
   PatchJump(P,CodeSize); Emit2($31,$C0); PatchJump(Q,CodeSize);
@@ -5014,7 +5093,7 @@ Begin
  End Else If (Name='FILEPOS') Or (Name='FILESIZE') Then Begin
   Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'FilePos/Size exige File');
   Need(tkRP); If Name='FILEPOS' Then LoadImmediate(0) Else LoadImmediate(1);
-  CallTo(RtlTarget(RuntimeStandard[38])); Emit($52); Emit($50); Emit2($09,$C9); Emit2($75,3); P:=Jump;
+  CallTo(RtlTarget(RuntimeStandard[38])); Emit($52); Emit($50); Emit2($09,$C9); P:=JumpIf($75);
   Emit2($89,$C8); CallTo(RtlTarget(RuntimeStandard[24])); PatchJump(P,CodeSize);
   If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25])); Emit($58); Emit($5A); StandardFunction:=9;
  End Else If (Name='EOF') Or (Name='EOLN') Or (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
@@ -5041,18 +5120,18 @@ Begin
   P:=CodeSize;
   CallTo(RtlTarget(RuntimeStandard[18]));
   If (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
-   Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
-   If Name='SEEKEOF' Then Begin Emit($3D); EmitWord(32); Emit2($76,3); A:=Jump End
+   Emit($3D); EmitWord(26); Q:=JumpIf($75);
+   If Name='SEEKEOF' Then Begin Emit($3D); EmitWord(32); A:=JumpIf($76) End
    Else Begin
-    Emit($3D); EmitWord(32); Emit2($74,8); Emit($3D); EmitWord(9); Emit2($74,3); A:=Jump;
+    Emit($3D); EmitWord(32); Emit2($74,8); Emit($3D); EmitWord(9); A:=JumpIf($74);
    End;
    CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(P); PatchJump(A,CodeSize); PatchJump(Q,CodeSize);
   End;
   If (Name='EOF') Or (Name='SEEKEOF') Then Begin
    Emit($3D); EmitWord(26); LoadImmediate(1); Emit2($74,2); Emit2($31,$C0);
   End Else Begin
-   Emit($3D); EmitWord(13); Emit2($75,3); P:=Jump;
-   Emit($3D); EmitWord(10); Emit2($75,3); Q:=Jump;
+   Emit($3D); EmitWord(13); P:=JumpIf($75);
+   Emit($3D); EmitWord(10); Q:=JumpIf($75);
    Emit($3D); EmitWord(26); LoadImmediate(1); Emit2($74,2); Emit2($31,$C0); A:=Jump;
    PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(1); PatchJump(A,CodeSize);
   End;
@@ -5094,9 +5173,9 @@ Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
   If Name='TEST8086' Then Begin
    { 0 = 8086/88, 1 = 80286, 2 = 80386 ou plus (methode de Turbo Pascal). }
-   Emit($54); Emit($58); Emit2($39,$E0); Emit2($74,3); P:=Jump;     { push sp; pop ax; cmp ax,sp; jne 8086 }
+   Emit($54); Emit($58); Emit2($39,$E0); P:=JumpIf($74);     { push sp; pop ax; cmp ax,sp; jne 8086 }
    Emit($9C); Emit($58); Emit($0D); EmitWord($7000); Emit($50); Emit($9D);
-   Emit($9C); Emit($58); Emit($25); EmitWord($7000); Emit2($75,3); Q:=Jump; { 286 si bits 12-14 nuls }
+   Emit($9C); Emit($58); Emit($25); EmitWord($7000); Q:=JumpIf($75); { 286 si bits 12-14 nuls }
    LoadImmediate(2); A:=Jump;
    PatchJump(Q,CodeSize); LoadImmediate(1); T:=Jump;
    PatchJump(P,CodeSize); LoadImmediate(0); PatchJump(A,CodeSize); PatchJump(T,CodeSize);
@@ -5161,8 +5240,8 @@ End;
 Procedure FileTransferResult(Op,Count: Word);
 Var P,Q,R: Word;
 Begin
- Emit2($09,$D2); Emit2($74,3); P:=Jump;
- Emit($3D); EmitWord(Count); Emit2($75,3); Q:=Jump;
+ Emit2($09,$D2); P:=JumpIf($74);
+ Emit($3D); EmitWord(Count); Q:=JumpIf($75);
  LoadImmediate(100+Op); CallTo(RtlTarget(RuntimeStandard[24])); R:=Jump;
  PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RtlTarget(RuntimeStandard[24]));
  PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
@@ -5296,9 +5375,9 @@ Begin
   Emit2($8B,$46); Emit(14); Emit2($8E,$C0); Emit2($8B,$7E); Emit(12);
   Emit2($8B,$4E); Emit(6);
   Op:=0; If Name='BLOCKWRITE' Then Op:=1; LoadImmediate(Op); CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
-  Emit($50); Emit2($09,$D2); Emit2($74,3); P:=Jump;
+  Emit($50); Emit2($09,$D2); P:=JumpIf($74);
   If Not HasResult Then Begin
-   Emit2($3B,$46); Emit(6); Emit2($75,3); Q:=Jump;
+   Emit2($3B,$46); Emit(6); Q:=JumpIf($75);
    LoadImmediate(100+Op); CallTo(RtlTarget(RuntimeStandard[24])); R:=Jump;
    PatchJump(Q,CodeSize);
   End Else R:=Jump;
@@ -5361,7 +5440,7 @@ Begin
       ttReal:Begin
        CallTo(RtlTarget(RuntimeStandard[20])); Emit2($8C,$DA); RealParseText;
        Emit($52); Emit($50);
-       Emit2($09,$C9); Emit2($74,3); P:=Jump; Q:=Jump;
+       Emit2($09,$C9); P:=JumpIf($74); Q:=Jump;
        PatchJump(P,CodeSize); LoadImmediate(106); CallTo(RtlTarget(RuntimeStandard[24]));
        PatchJump(Q,CodeSize); Emit($58); Emit($5A);
       End;
@@ -5375,16 +5454,16 @@ Begin
       End;
       ttInteger:Begin
        CallTo(RtlTarget(RuntimeStandard[20])); Emit2($89,$C6); CallTo(RtlTarget(RuntimeStandard[17]));
-       Emit2($09,$C9); Emit2($74,3); P:=Jump; Q:=0; R:=0; A:=0;
+       Emit2($09,$C9); P:=JumpIf($74); Q:=0; R:=0; A:=0;
        If Types[T].Width<>4 Then Begin
         If Types[T].Signed Then Begin Emit2($89,$C3); Emit2($B1,15); Emit2($D3,$FB) End
         Else Emit2($31,$DB);
-        Emit2($39,$DA); Emit2($74,3); Q:=Jump;
+        Emit2($39,$DA); Q:=JumpIf($74);
         If Types[T].Width=1 Then Begin
          Emit($3D); EmitWord(Word(Types[T].LowBound));
-         If Types[T].Signed Then Emit2($7D,3) Else Emit2($73,3); R:=Jump;
+         If Types[T].Signed Then Emit2($7D,3) Else R:=JumpIf($73);
          Emit($3D); EmitWord(Word(Types[T].HighBound));
-         If Types[T].Signed Then Emit2($7E,3) Else Emit2($76,3); A:=Jump;
+         If Types[T].Signed Then Emit2($7E,3) Else A:=JumpIf($76);
         End;
        End;
        Done:=Jump; PatchJump(P,CodeSize); If Q<>0 Then PatchJump(Q,CodeSize);
@@ -5477,7 +5556,7 @@ Begin
   If (Types[T].Width=2) And (OptionBits And 2=0) Then OverflowCheck(Not Types[T].Signed);
   If OptionBits And 2<>0 Then Begin
    If Types[T].Width>=2 Then Begin
-    If Types[T].Signed Then Emit2($71,3) Else Emit2($73,3); P:=Jump; Q:=Jump;
+    If Types[T].Signed Then Emit2($71,3) Else P:=JumpIf($73); Q:=Jump;
     PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError)); PatchJump(Q,CodeSize);
    End;
    If Types[T].Width=1 Then A:=1 Else A:=T;
@@ -5494,7 +5573,7 @@ Begin
    Fail(26,'Type de l''element');
   Need(tkRP); Emit($5F); Emit($07);
   Emit($2D); EmitWord(Types[T].LowBound Div 8*8);
-  Emit($3D); EmitWord(TypeExtras[T].Size*8); Emit2($72,3); P:=Jump;
+  Emit($3D); EmitWord(TypeExtras[T].Size*8); P:=JumpIf($72);
   Emit2($89,$C3); Emit2($89,$C1); Emit2($80,$E1); Emit(7);
   Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB);
   If Name='INCLUDE' Then Begin Emit($26); Emit2($08,$11) End
@@ -5547,12 +5626,12 @@ Begin
    If Types[T].Signed Then Begin
     Emit2($89,$C3); Emit($51); Emit2($B1,15); Emit2($D3,$FB); Emit($59);
    End Else Emit2($31,$DB);
-   Emit2($39,$DA); Emit2($74,3); P:=Jump; Q:=0; R:=0;
+   Emit2($39,$DA); P:=JumpIf($74); Q:=0; R:=0;
    If Types[T].Width=1 Then Begin
     Emit($3D); EmitWord(Word(Types[T].LowBound));
-    If Types[T].Signed Then Emit2($7D,3) Else Emit2($73,3); Q:=Jump;
+    If Types[T].Signed Then Emit2($7D,3) Else Q:=JumpIf($73);
     Emit($3D); EmitWord(Word(Types[T].HighBound));
-    If Types[T].Signed Then Emit2($7E,3) Else Emit2($76,3); R:=Jump;
+    If Types[T].Signed Then Emit2($7E,3) Else R:=JumpIf($76);
    End;
    Done:=Jump; PatchJump(P,CodeSize);
    If Q<>0 Then PatchJump(Q,CodeSize); If R<>0 Then PatchJump(R,CodeSize);
@@ -5731,9 +5810,9 @@ Begin
     End Else Begin
      Emit2($89,$C7); Emit2($8E,$C2);
      CallTo(RtlTarget(RuntimeStandard[49]));
-     Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
-     Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); Q:=Jump;
-     Emit($26); Emit2($83,$7D); Emit(4); Emit(1); Emit2($75,3); A:=Jump;
+     Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); P:=JumpIf($74);
+     Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Q:=JumpIf($75);
+     Emit($26); Emit2($83,$7D); Emit(4); Emit(1); A:=JumpIf($75);
      Emit($26); Emit2($8B,$05); CallTo(RtlTarget(RuntimeStandard[40])); B:=Jump;
      PatchJump(P,CodeSize); LoadImmediate(105); P:=Jump; { non assigne: 105 comme TP }
      PatchJump(Q,CodeSize); LoadImmediate(103); Q:=Jump;
@@ -5766,7 +5845,7 @@ Begin
    If Token=tkColon Then Unsupported('precision de champ non reelle');
    Emit2($89,$C1); Emit($58); Emit($5A); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
    Emit2($31,$DB); Emit2($8A,$1C); Emit2($89,$C8); Emit2($29,$D8);
-   Emit2($7F,2); Emit2($31,$C0); Emit2($89,$C1); Emit2($09,$C9); Emit2($75,3); P:=Jump;
+   Emit2($7F,2); Emit2($31,$C0); Emit2($89,$C1); Emit2($09,$C9); P:=JumpIf($75);
    Q:=CodeSize; LoadImmediate(32); CallTo(RtlTarget(RuntimeChar)); Emit($E2); Emit(Byte(Longint(Q)-CodeSize-1));
    PatchJump(P,CodeSize); Emit2($89,$F0); CallTo(RtlTarget(RuntimeString)); Emit($1F);
   End Else Begin
@@ -6571,17 +6650,17 @@ Begin
  Emit($36); Emit2($3B,$57); Emit(2);                          { cmp dx,ss:[bx+2] }
  { Le motif "Jcc +3; JMP cible" saute vers la cible quand cc est faux. }
  If Direction=tkTo Then Begin
-  Emit2($7D,3); P1:=Jump; Emit2($7E,3); P2:=Jump;             { dx<hi: corps; dx>hi: sortie }
-  Emit($36); Emit2($3B,$07); Emit2($76,3); P3:=Jump;          { cmp ax,ss:[bx]; ax>lo: sortie }
+  P1:=JumpIf($7D); P2:=JumpIf($7E);             { dx<hi: corps; dx>hi: sortie }
+  Emit($36); Emit2($3B,$07); P3:=JumpIf($76);          { cmp ax,ss:[bx]; ax>lo: sortie }
  End Else Begin
-  Emit2($7E,3); P1:=Jump; Emit2($7D,3); P2:=Jump;             { dx>hi: corps; dx<hi: sortie }
-  Emit($36); Emit2($3B,$07); Emit2($73,3); P3:=Jump;          { cmp ax,ss:[bx]; ax<lo: sortie }
+  P1:=JumpIf($7E); P2:=JumpIf($7D);             { dx>hi: corps; dx<hi: sortie }
+  Emit($36); Emit2($3B,$07); P3:=JumpIf($73);          { cmp ax,ss:[bx]; ax<lo: sortie }
  End;
  PatchJump(P1,CodeSize); LoopEnter; Statement;
  ContinueAt:=CodeSize;
  { Egalite avec la borne testee AVANT l'increment (pas de debordement). }
  Load32(I); Emit2($89,$E3); Emit($36); Emit2($3B,$57); Emit(2); Emit2($75,8);
- Emit($36); Emit2($3B,$07); Emit2($75,3); Q1:=Jump;
+ Emit($36); Emit2($3B,$07); Q1:=JumpIf($75);
  If Direction=tkTo Then Begin Emit($05); EmitWord(1); Emit2($83,$D2); Emit(0) End
  Else Begin Emit($2D); EmitWord(1); Emit2($83,$DA); Emit(0) End;
  Store32(I); JumpTo(Start);
@@ -6624,9 +6703,9 @@ Begin
     Inc(BodyCount); BodyJumps[BodyCount]:=Jump;
     PatchJump(N1,CodeSize); PatchJump(N2,CodeSize);
    End Else Begin
-    Emit($3D); EmitWord(Word(V1.Value)); Emit2($74,3); N1:=Jump;
+    Emit($3D); EmitWord(Word(V1.Value)); N1:=JumpIf($74);
     If Wide Then Begin
-     Emit2($81,$FA); EmitWord(Word(V1.Value Shr 16)); Emit2($74,3); N2:=Jump;
+     Emit2($81,$FA); EmitWord(Word(V1.Value Shr 16)); N2:=JumpIf($74);
     End Else N2:=0;
     Inc(BodyCount); BodyJumps[BodyCount]:=Jump;
     PatchJump(N1,CodeSize); If N2<>0 Then PatchJump(N2,CodeSize);
@@ -7950,6 +8029,7 @@ Begin
  New(SavedImg); Move(Image,SavedImg^,SizeOf(Image));
  New(SavedOwn); Move(CodeOwners,SavedOwn^,SizeOf(CodeOwners));
  New(SavedRel); Move(RelativeFixups,SavedRel^,SizeOf(RelativeFixups));
+ New(SavedOrd); Move(OrdAt,SavedOrd^,SizeOf(OrdAt));
  SCode:=CodeSize; SFix:=FixupCount; SRel:=RelativeCount; SNat:=NativeRefCount; SReloc:=RelocationCount;
  SObj:=ObjectCallCount; SPend:=PendCount; SDbg:=DebugCount; SLab:=LabelJumpCount; SDataFix:=DataFixupCount;
  CodeSize:=0; RelativeCount:=0; KFixBase:=FixupCount;
@@ -7971,6 +8051,7 @@ Begin
  Move(SavedImg^,Image,SizeOf(Image)); Dispose(SavedImg);
  Move(SavedOwn^,CodeOwners,SizeOf(CodeOwners)); Dispose(SavedOwn);
  Move(SavedRel^,RelativeFixups,SizeOf(RelativeFixups)); Dispose(SavedRel);
+ Move(SavedOrd^,OrdAt,SizeOf(OrdAt)); Dispose(SavedOrd);
  CodeSize:=SCode; FixupCount:=SFix; RelativeCount:=SRel; NativeRefCount:=SNat; RelocationCount:=SReloc;
  ObjectCallCount:=SObj; PendCount:=SPend; DebugCount:=SDbg; LabelJumpCount:=SLab; DataFixupCount:=SDataFix;
  { les donnees du noyau sont maintenant dans son segment }
@@ -10469,8 +10550,8 @@ Begin
  Emit($26); Emit2($C7,$45); Emit(106); EmitWord(0); Emit($C3);
 
  RuntimeStandard[51]:=CodeSize; { SetTextBuf ES:DI, DX:AX buffer, CX taille }
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
- Emit2($09,$C9); Emit2($75,3); Q:=Jump;
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); P:=JumpIf($74);
+ Emit2($09,$C9); Q:=JumpIf($75);
  Emit($26); Emit2($89,$45); Emit(96); Emit($26); Emit2($89,$55); Emit(98);
  Emit($26); Emit2($89,$4D); Emit(100); CallTo(RtlTarget(RuntimeStandard[53]));
  Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit($C3);
@@ -10480,14 +10561,14 @@ Begin
 
  RuntimeStandard[52]:=CodeSize; { Flush buffer ES:DI, rend AX=erreur }
  Emit($1E); Emit($53); Emit($51); Emit($52);
- Emit($26); Emit2($83,$7D); Emit(8); Emit(1); Emit2($74,3); P:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($74,3); Q:=Jump;
- Emit($26); Emit2($8B,$4D); Emit(106); Emit2($09,$C9); Emit2($75,3); R:=Jump;
+ Emit($26); Emit2($83,$7D); Emit(8); Emit(1); P:=JumpIf($74);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Q:=JumpIf($74);
+ Emit($26); Emit2($8B,$4D); Emit(106); Emit2($09,$C9); R:=JumpIf($75);
  Emit($26); Emit2($8B,$55); Emit(96); Emit($26); Emit2($8B,$45); Emit(98); Emit2($8E,$D8);
  { Unite Crt: la sortie standard (handle 1) passe par CrtWrite(Seg,Ofs,Count). }
  Emit($1E); EmitLoadDS;                                     { push ds(tampon); ds=donnees }
- Emit2($83,$3E); DataAddress(CrtHook); Emit(0); Emit2($75,3); ErrorClosed:=Jump;
- Emit($26); Emit2($83,$3D); Emit(1); Emit2($74,3); ErrorMode:=Jump;
+ Emit2($83,$3E); DataAddress(CrtHook); Emit(0); ErrorClosed:=JumpIf($75);
+ Emit($26); Emit2($83,$3D); Emit(1); ErrorMode:=JumpIf($74);
  Emit($06); Emit($57); Emit($51);                            { push es,di,cx }
  Emit2($89,$E3); Emit($36); Emit2($FF,$77); Emit(6);         { push ss:[bx+6] = segment du tampon }
  Emit($52); Emit($51); Emit2($FF,$16); DataAddress(CrtHook); { push dx,cx; call [hook] (ABI TP7 : pas de lien statique) }
@@ -10495,8 +10576,8 @@ Begin
  Emit2($89,$C8); Emit($F8); LoopStart:=Jump;                 { ax=cx; clc }
  PatchJump(ErrorClosed,CodeSize); PatchJump(ErrorMode,CodeSize); Emit($1F);
  Emit($26); Emit2($8B,$1D); Emit2($B4,$40); Emit2($CD,$21);
- PatchJump(LoopStart,CodeSize); Emit2($73,3); S:=Jump;
- Emit2($39,$C8); Emit2($74,3); Done:=Jump;
+ PatchJump(LoopStart,CodeSize); S:=JumpIf($73);
+ Emit2($39,$C8); Done:=JumpIf($74);
  Emit($26); Emit2($C7,$45); Emit(106); EmitWord(0);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); Emit2($31,$C0); P:=Jump;
  PatchJump(Done,CodeSize); LoadImmediate(101);
@@ -10508,24 +10589,24 @@ Begin
  Emit($55); Emit2($89,$E5); Emit($50); Emit($06); Emit($57); Emit($1E);
  Emit($53); Emit($51); Emit($52); Emit($56);
  EmitLoadDS; Emit2($C4,$3E); DataAddress(OutputFilePointer);
- Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); Emit2($75,3); P:=Jump;
+ Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); P:=JumpIf($75);
  CallTo(RtlTarget(RuntimeStandard[54]));
- Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); ErrorClosed:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($74,3); ErrorMode:=Jump;
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(0); ErrorClosed:=JumpIf($75);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(2); ErrorMode:=JumpIf($74);
  Emit($26); Emit2($8B,$5D); Emit(106); Emit($26); Emit2($3B,$5D); Emit(100);
- Emit2($73,3); Q:=Jump; CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); Emit2($74,3); R:=Jump;
+ Q:=JumpIf($73); CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); R:=JumpIf($74);
  PatchJump(Q,CodeSize); Emit($26); Emit2($8B,$75); Emit(106);
  Emit($26); Emit2($8B,$5D); Emit(96); Emit($26); Emit2($8B,$55); Emit(98);
  Emit($06); Emit($57); Emit2($8E,$C2); Emit2($89,$DF); Emit2($01,$F7);
  Emit2($8B,$46); Emit($FE); Emit($26); Emit2($88,$05); Emit($5F); Emit($07);
  Emit($26); Emit2($FF,$45); Emit(106);
  Emit($26); Emit2($8B,$5D); Emit(106); Emit($26); Emit2($3B,$5D); Emit(100);
- Emit2($73,3); Q:=Jump; CallTo(RtlTarget(RuntimeStandard[52])); S:=Jump;
+ Q:=JumpIf($73); CallTo(RtlTarget(RuntimeStandard[52])); S:=Jump;
  PatchJump(Q,CodeSize); Emit2($31,$C0); Q:=Jump;
  PatchJump(ErrorClosed,CodeSize); LoadImmediate(103); ErrorClosed:=Jump;
  PatchJump(ErrorMode,CodeSize); LoadImmediate(105);
  PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize); PatchJump(ErrorClosed,CodeSize);
- Emit2($09,$C0); Emit2($75,3); Q:=Jump; Emit($A3); DataAddress(InputError);
+ Emit2($09,$C0); Q:=JumpIf($75); Emit($A3); DataAddress(InputError);
  PatchJump(Q,CodeSize); Done:=Jump;
  PatchJump(P,CodeSize); Emit2($8B,$46); Emit($FE); CallTo(RtlTarget(RuntimeRawChar));
  PatchJump(Done,CodeSize); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($5F); Emit($07); Emit($58); Emit($5D); Emit($C3);
@@ -10533,21 +10614,21 @@ Begin
  RuntimeStandard[48]:=CodeSize; { prochain octet du Text actif, 26=EOF }
  Emit($06); Emit($57); Emit($1E); Emit($53); Emit($51); Emit($52); Emit($56);
  EmitLoadDS; Emit2($C4,$3E); DataAddress(InputFilePointer);
- Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); Emit2($75,3); P:=Jump;
+ Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); P:=JumpIf($75);
  CallTo(RtlTarget(RuntimeStandard[54]));
  Emit($26); Emit2($8B,$5D); Emit(102); Emit($26); Emit2($3B,$5D); Emit(104);
- Emit2($73,3); Q:=Jump;
+ Q:=JumpIf($73);
  Emit($26); Emit2($8B,$4D); Emit(100); Emit($26); Emit2($8B,$55); Emit(96);
  Emit($26); Emit2($8B,$45); Emit(98); Emit2($8E,$D8); Emit($26); Emit2($8B,$1D);
- Emit2($B4,$3F); Emit2($CD,$21); Emit2($73,3); R:=Jump;
- Emit2($09,$C0); Emit2($75,3); S:=Jump;
+ Emit2($B4,$3F); Emit2($CD,$21); R:=JumpIf($73);
+ Emit2($09,$C0); S:=JumpIf($75);
  Emit($26); Emit2($89,$45); Emit(104); Emit($26); Emit2($C7,$45); Emit(102); EmitWord(0);
  PatchJump(Q,CodeSize); Emit($26); Emit2($8B,$75); Emit(96); Emit($26); Emit2($03,$75); Emit(102);
  Emit($26); Emit2($8B,$45); Emit(98); Emit2($8E,$D8); Emit($AC); Emit2($30,$E4);
  Emit($26); Emit2($FF,$45); Emit(102); Done:=Jump;
  PatchJump(P,CodeSize); Emit2($8B,$1E); DataAddress(InputHandle); Emit($B9); EmitWord(1);
- Emit($BA); DataAddress(InputByte); Emit2($B4,$3F); Emit2($CD,$21); Emit2($73,3); P:=Jump;
- Emit2($09,$C0); Emit2($75,3); Q:=Jump;
+ Emit($BA); DataAddress(InputByte); Emit2($B4,$3F); Emit2($CD,$21); P:=JumpIf($73);
+ Emit2($09,$C0); Q:=JumpIf($75);
  Emit($A0); DataAddress(InputByte); Emit2($30,$E4); LoopStart:=Jump;
  PatchJump(R,CodeSize); PatchJump(P,CodeSize); EmitLoadDS; Emit($A3); DataAddress(InputError);
  PatchJump(S,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(26);
@@ -10586,7 +10667,7 @@ Begin
  Emit($26); Emit2($89,$5D); Emit(2); Emit($26); Emit2($C7,$45); Emit(4); EmitWord(0);
  Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit($26); Emit2($89,$45); Emit(8);
  Emit($26); Emit2($C7,$45); Emit(12); EmitWord($5046);
- Emit2($09,$C0); Emit2($75,3); P:=Jump;
+ Emit2($09,$C0); P:=JumpIf($75);
  Emit2($89,$F8); Emit($05); EmitWord(128);
  Emit($26); Emit2($89,$45); Emit(96); Emit2($8C,$C0); Emit($26); Emit2($89,$45); Emit(98);
  Emit($26); Emit2($C7,$45); Emit(100); EmitWord(128); CallTo(RtlTarget(RuntimeStandard[53]));
@@ -10626,13 +10707,13 @@ Begin
  FileName; Emit2($80,$7D); Emit(16); Emit(0); Emit2($75,6); LoadImmediate(1); P:=Jump;
  LoadImmediate($3D01); Emit2($CD,$21); FailIf($72,0); Emit2($89,$05);
  Emit2($89,$C3); Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202); Emit2($CD,$21);
- Emit2($73,3); Q:=Jump; Emit2($8B,$05); PatchJump(P,CodeSize); OpenResult(2);
+ Q:=JumpIf($73); Emit2($8B,$05); PatchJump(P,CodeSize); OpenResult(2);
  PatchJump(Q,CodeSize); Emit($50); Emit2($B4,$3E); Emit2($CD,$21); Emit($58); FinishIO;
 
  PatchJump(Dispatch[4],CodeSize); { Close }
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); FailIf($75,0);
- Emit($26); Emit2($8B,$1D); Emit2($83,$FB); Emit(3); Emit2($73,3); P:=Jump;
+ Emit($26); Emit2($8B,$1D); Emit2($83,$FB); Emit(3); P:=JumpIf($73);
  Emit2($B4,$3E); Emit2($CD,$21); FailIf($72,0); PatchJump(P,CodeSize);
  Emit($26); Emit2($C7,$45); Emit(4); EmitWord(0); Emit2($31,$C0); FinishIO;
 
@@ -10670,7 +10751,7 @@ Begin
  Emit($26); Emit2($83,$7D); Emit(4); Emit(2); FailIf($74,104); P:=Jump;
  Emit($26); Emit2($83,$7D); Emit(4); Emit(1); FailIf($74,105); PatchJump(P,CodeSize);
  Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106); Emit2($89,$5E); Emit($F8);
- Emit2($09,$C9); Emit2($75,3); Q:=Jump;
+ Emit2($09,$C9); Q:=JumpIf($75);
  Emit2($89,$C8); Emit2($F7,$E3); { Count*RecSize, poids faible seulement comme TP }
  Emit2($89,$C1); Emit2($8B,$56); Emit($FA); Emit($26); Emit2($8B,$1D);
  Emit2($83,$7E); Emit($FE); Emit(0); Emit2($75,5); Emit2($B4,$3F); P:=Jump;
@@ -10712,7 +10793,7 @@ Begin
  Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106);
  Emit2($89,$5E); Emit($FC); Emit($26); Emit2($8B,$1D);
  Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4201); Emit2($CD,$21); FailIf($72,0);
- Emit2($F6,$46); Emit($FE); Emit(1); Emit2($75,3); P:=Jump;
+ Emit2($F6,$46); Emit($FE); Emit(1); P:=JumpIf($75);
  Emit2($89,$46); Emit($F4); Emit2($89,$56); Emit($F2);
  Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202); Emit2($CD,$21); FailIf($72,0);
  Emit2($89,$46); Emit($F0); Emit2($89,$56); Emit($EE);
@@ -10735,14 +10816,14 @@ Begin
  RuntimeStandard[42]:=CodeSize; { Rename ES:DI ferme, nouveau shortstring DS:SI }
  NameBuffer:=AllocData(80);
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57); Emit($1E); Emit($56);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($74,3); Q:=Jump;
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); P:=JumpIf($74);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Q:=JumpIf($74);
  EmitLoadES; Emit($BF); DataAddress(NameBuffer);
- Emit2($31,$C9); Emit($AC); Emit2($88,$C1); Emit2($83,$F9); Emit(79); Emit2($76,3); R:=Jump;
+ Emit2($31,$C9); Emit($AC); Emit2($88,$C1); Emit2($83,$F9); Emit(79); R:=JumpIf($76);
  Emit2($F3,$A4); Emit2($31,$C0); Emit($AA);
  Emit2($8B,$56); Emit($FC); Emit2($83,$C2); Emit(16);
  Emit2($8B,$46); Emit($FE); Emit2($8E,$D8);
- Emit($BF); DataAddress(NameBuffer); Emit2($B4,$56); Emit2($CD,$21); Emit2($73,3); S:=Jump;
+ Emit($BF); DataAddress(NameBuffer); Emit2($B4,$56); Emit2($CD,$21); S:=JumpIf($73);
  EmitLoadDS; Emit2($8B,$46); Emit($FE); Emit2($8E,$C0);
  Emit2($8B,$7E); Emit($FC); Emit2($83,$C7); Emit(16);
  Emit($BE); DataAddress(NameBuffer); Emit($B9); EmitWord(80); Emit2($F3,$A4);
@@ -10755,23 +10836,23 @@ Begin
  Emit($5E); Emit($1F); Emit($5F); Emit($07); Emit($5D); Emit($C3);
 
  RuntimeStandard[43]:=CodeSize; { DOS directory operation AH, DS:DX ASCIIZ }
- Emit2($CD,$21); Emit2($73,3); P:=Jump; Emit($C3);
+ Emit2($CD,$21); P:=JumpIf($73); Emit($C3);
  PatchJump(P,CodeSize); CallTo(RtlTarget(RuntimeStandard[24])); Emit($C3);
 
  RuntimeStandard[44]:=CodeSize; { GetDir AX drive -> shortstring DX:AX }
  Emit($06); Emit($57); Emit($56); Emit($53); Emit($51);
  Emit2($C6,$06); DataAddress(StringScratch2); Emit(0);
- Emit($3D); EmitWord(26); Emit2($76,3); P:=Jump;
+ Emit($3D); EmitWord(26); P:=JumpIf($76);
  Emit2($89,$C3); Emit2($09,$C0); Emit2($75,7);
  Emit2($B4,$19); Emit2($CD,$21); Emit2($30,$E4); Emit($40);
  Emit2($04,64); Emit($A2); DataAddress(StringScratch2+1);
  Emit2($C6,$06); DataAddress(StringScratch2+2); Emit(Ord(':'));
  Emit2($C6,$06); DataAddress(StringScratch2+3); Emit(Ord('\'));
  Emit2($89,$DA); Emit($BE); DataAddress(NameBuffer); Emit2($B4,$47); Emit2($CD,$21);
- Emit2($73,3); Q:=Jump;
+ Q:=JumpIf($73);
  EmitLoadES; Emit($BF); DataAddress(StringScratch2+4); Emit($BE); DataAddress(NameBuffer);
  Emit($B9); EmitWord(3);
- R:=CodeSize; Emit($AC); Emit2($08,$C0); Emit2($75,3); S:=Jump;
+ R:=CodeSize; Emit($AC); Emit2($08,$C0); S:=JumpIf($75);
  Emit($AA); Emit($41); JumpTo(R);
  PatchJump(S,CodeSize); Emit2($88,$0E); DataAddress(StringScratch2); Done:=Jump;
  PatchJump(P,CodeSize); LoadImmediate(15); PatchJump(Q,CodeSize); CallTo(RtlTarget(RuntimeStandard[24]));
@@ -10780,12 +10861,12 @@ Begin
 
  RuntimeStandard[45]:=CodeSize; { Eof(File): compare la position et la taille en octets (comme TP:
    un dernier record incomplet n'est pas la fin du fichier) }
- LoadImmediate(2); CallTo(RtlTarget(RuntimeStandard[38])); Emit2($09,$C9); Emit2($74,3); P:=Jump;
+ LoadImmediate(2); CallTo(RtlTarget(RuntimeStandard[38])); Emit2($09,$C9); P:=JumpIf($74);
  Emit($52); Emit($50); LoadImmediate(3); CallTo(RtlTarget(RuntimeStandard[38]));
- Emit2($89,$D6); Emit($5B); Emit($5A); Emit2($09,$C9); Emit2($74,3); Q:=Jump;
- Emit2($39,$F2); Emit2($73,3); R:=Jump;
- Emit2($74,3); S:=Jump;
- Emit2($39,$C3); Emit2($73,3); Done:=Jump;
+ Emit2($89,$D6); Emit($5B); Emit($5A); Emit2($09,$C9); Q:=JumpIf($74);
+ Emit2($39,$F2); R:=JumpIf($73);
+ S:=JumpIf($74);
+ Emit2($39,$C3); Done:=JumpIf($73);
  PatchJump(S,CodeSize); LoadImmediate(1); Emit($C3);
  PatchJump(R,CodeSize); PatchJump(Done,CodeSize); LoadImmediate(0); Emit($C3);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); Emit2($89,$C8);
@@ -10794,17 +10875,17 @@ Begin
  RuntimeStandard[41]:=CodeSize; { input DX:AX, nil=stdin; rend l'ancien descripteur }
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57); Emit($56); Emit($53); Emit($50); Emit($52);
  Emit2($8B,$36); DataAddress(InputFilePointer); Emit2($8B,$1E); DataAddress(InputFilePointer+2);
- Emit($56); Emit($53); Emit2($89,$D8); Emit2($09,$F0); Emit2($75,3); P:=Jump;
+ Emit($56); Emit($53); Emit2($89,$D8); Emit2($09,$F0); P:=JumpIf($75);
  Emit2($8E,$C3); Emit2($89,$F7); Emit($A1); DataAddress(InputAhead);
  Emit($26); Emit2($89,$45); Emit(6); Q:=Jump;
  PatchJump(P,CodeSize); Emit($A1); DataAddress(InputAhead); Emit($A3); DataAddress(InputConsoleAhead);
  PatchJump(Q,CodeSize); Emit2($8B,$46); Emit($F6); Emit2($8B,$56); Emit($F4);
  Emit($A3); DataAddress(InputFilePointer); Emit2($89,$16); DataAddress(InputFilePointer+2);
- Emit2($09,$D0); Emit2($75,3); P:=Jump;
+ Emit2($09,$D0); P:=JumpIf($75);
  Emit2($8B,$46); Emit($F6); Emit2($89,$C7); Emit2($8E,$C2);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); Q:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); R:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($75,3); S:=Jump;
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Q:=JumpIf($74);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(0); R:=JumpIf($75);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(2); S:=JumpIf($75);
  Emit($26); Emit2($8B,$05); Emit($A3); DataAddress(InputHandle);
  Emit($26); Emit2($8B,$45); Emit(6); Emit($A3); DataAddress(InputAhead); Done:=Jump;
  PatchJump(P,CodeSize); Emit($A1); DataAddress(InputConsoleAhead); Emit($A3); DataAddress(InputAhead);
@@ -10840,7 +10921,7 @@ Begin
 
  RuntimeStandard[64]:=CodeSize; { ouvrir/valider le fichier OVR, AX=0 succes }
  BadCount:=0; Emit($53); Emit($51); Emit($52); CallTo(RtlTarget(RuntimeStandard[63]));
- Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
+ Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); P:=JumpIf($75);
  Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF);
  Emit($BA); DataAddress(OverlayFileName); LoadImmediate($3D00); Emit2($CD,$21); FailIf($72);
  Emit($A3); DataAddress(OverlayHandle); Emit2($89,$C3); Emit($B9); EmitWord(12); Emit($BA); DataAddress(OverlayScratch);
@@ -10853,14 +10934,14 @@ Begin
  Emit($A1); DataAddress(OverlayBankCount); Emit2($3B,$06); DataAddress(OverlayScratch+10); FailIf($75);
  SetResult(0); Emit2($31,$C0); Done:=Jump;
  For K:=1 To BadCount Do PatchJump(Bad[K],CodeSize);
- Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
+ Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); P:=JumpIf($75);
  Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF); SetResult($FFFF); LoadImmediate(1);
  PatchJump(Done,CodeSize); Emit($5A); Emit($59); Emit($5B); Emit($C3);
 
  RuntimeStandard[65]:=CodeSize; { lire exactement CX octets DS:DX et checksum [BP-14] }
  Emit($50); Emit($53); Emit($56); Emit2($8B,$1E); DataAddress(OverlayHandle);
- Emit2($B4,$3F); Emit2($CD,$21); Emit2($73,3); P:=Jump;
- Emit2($39,$C8); Emit2($74,3); Q:=Jump;
+ Emit2($B4,$3F); Emit2($CD,$21); P:=JumpIf($73);
+ Emit2($39,$C8); Q:=JumpIf($74);
  Emit2($8B,$5E); Emit($F2); Emit2($89,$D6);
  LoopStart:=CodeSize; Emit2($D1,$C3); Emit2($8A,$04); Emit2($30,$E4); Emit2($01,$C3); Emit($46);
  Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit2($89,$5E); Emit($F2);
@@ -10871,10 +10952,10 @@ Begin
  BadCount:=0; Emit($9C); Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(14);
  Emit2($89,$46); Emit($FE); Emit($50); Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($1E); Emit($06);
  EmitLoadDS; Emit2($B1,4); Emit2($D3,$E0); Emit($05); DataAddress(OverlayTable); Emit2($89,$C6); Emit2($89,$76); Emit($FC);
- Emit2($83,$3C); Emit(1); Emit2($75,3); Done:=Jump;
+ Emit2($83,$3C); Emit(1); Done:=JumpIf($75);
  Emit2($83,$7C); Emit(6); Emit(1); FailIf($75);
- Emit2($83,$3E); DataAddress(OverlayHandle); Emit($FF); Emit2($74,3); P:=Jump;
- CallTo(RtlTarget(RuntimeStandard[64])); Emit2($09,$C0); Emit2($74,3); Q:=Jump;
+ Emit2($83,$3E); DataAddress(OverlayHandle); Emit($FF); P:=JumpIf($74);
+ CallTo(RtlTarget(RuntimeStandard[64])); Emit2($09,$C0); Q:=JumpIf($74);
  S:=Jump; PatchJump(Q,CodeSize); LoadImmediate(208); CallTo(RtlTarget(RuntimeError)); PatchJump(S,CodeSize);
  PatchJump(P,CodeSize); Emit2($8B,$76); Emit($FC);
  Emit2($8B,$54); Emit(2); Emit2($8B,$4C); Emit(4); Emit2($8B,$1E); DataAddress(OverlayHandle);
@@ -10882,7 +10963,7 @@ Begin
  Emit2($C7,$46); Emit($F2); EmitWord(0); Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch);
  CallTo(RtlTarget(RuntimeStandard[65])); Emit($A1); DataAddress(OverlayScratch); Emit2($8B,$76); Emit($FC);
  Emit2($3B,$44); Emit(14); FailIf($75); Emit2($89,$46); Emit($FA);
- LoopStart:=CodeSize; Emit2($83,$7E); Emit($FA); Emit(0); Emit2($75,3); R:=Jump;
+ LoopStart:=CodeSize; Emit2($83,$7E); Emit($FA); Emit(0); R:=JumpIf($75);
  Emit($B9); EmitWord(6); Emit($BA); DataAddress(OverlayScratch); CallTo(RtlTarget(RuntimeStandard[65]));
  Emit2($8B,$16); DataAddress(OverlayScratch); Emit2($89,$56); Emit($F6);
  Emit2($8B,$0E); DataAddress(OverlayScratch+2); Emit2($09,$C9); FailIf($74); Emit2($89,$4E); Emit($F4);
@@ -10890,7 +10971,7 @@ Begin
  Emit2($89,$D0); Emit2($01,$C8); FailIf($72); Emit2($3B,$44); Emit(10); FailIf($77);
  Emit($A1); DataAddress(OverlayScratch+4); Emit2($89,$46); Emit($F8);
  CallTo(RtlTarget(RuntimeStandard[65]));
- P:=CodeSize; Emit2($83,$7E); Emit($F8); Emit(0); Emit2($75,3); Q:=Jump;
+ P:=CodeSize; Emit2($83,$7E); Emit($F8); Emit(0); Q:=JumpIf($75);
  Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch); CallTo(RtlTarget(RuntimeStandard[65]));
  Emit($A1); DataAddress(OverlayScratch); Emit2($89,$C3); Emit2($83,$C0); Emit(2); FailIf($72);
  Emit2($3B,$46); Emit($F4); FailIf($77); Emit2($03,$5E); Emit($F6);
@@ -10910,14 +10991,14 @@ Begin
  EmitLoadDS; CallTo(RtlTarget(RuntimeStandard[64])); Emit($59); Emit($5F); Emit($5E); Emit($07); Emit($1F); Emit($5D);
  Emit($CA); EmitWord(258);
  RuntimeStandard[59]:=CodeSize; { OvrDone }
- Emit($53); Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
+ Emit($53); Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); P:=JumpIf($75);
  Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF); CallTo(RtlTarget(RuntimeStandard[63])); SetResult(0);
  Emit($5B); Emit($CA); EmitWord(2);
  RuntimeStandard[60]:=CodeSize; CallTo(RtlTarget(RuntimeStandard[63])); SetResult(0); Emit($CA); EmitWord(2);
  RuntimeStandard[61]:=CodeSize; Emit($A1); DataAddress(OverlayBufferSize); Emit2($31,$D2); Emit($CA); EmitWord(2);
  RuntimeStandard[62]:=CodeSize; { OvrSetBuf: regions fixes; autre taille -> ovrNoMemory }
- Emit($55); Emit2($89,$E5); Emit2($83,$7E); Emit(10); Emit(0); Emit2($74,3); P:=Jump;
- Emit2($8B,$46); Emit(8); Emit2($3B,$06); DataAddress(OverlayBufferSize); Emit2($74,3); Q:=Jump;
+ Emit($55); Emit2($89,$E5); Emit2($83,$7E); Emit(10); Emit(0); P:=JumpIf($74);
+ Emit2($8B,$46); Emit(8); Emit2($3B,$06); DataAddress(OverlayBufferSize); Q:=JumpIf($74);
  SetResult(0); Done:=Jump; PatchJump(P,CodeSize); PatchJump(Q,CodeSize); SetResult($FFFE);
  PatchJump(Done,CodeSize); Emit($5D); Emit($CA); EmitWord(6);
 End;
@@ -10945,11 +11026,11 @@ Begin
  Emit($06); Emit($56); Emit($53); Emit($51); Emit($52);
  Emit2($B4,$51); Emit2($CD,$21); Emit2($8E,$C3); Emit($BE); EmitWord($81);
  Emit2($31,$C9); Emit($26); Emit2($8A,$0E); EmitWord($80); Emit2($31,$D2);
- LoopStart:=CodeSize; Emit2($09,$C9); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; Emit2($09,$C9); P:=JumpIf($75);
  Emit($26); Emit2($8A,$04); Emit($46); Emit($49);
  Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart); Emit($42);
- K:=CodeSize; Emit2($09,$C9); Emit2($75,3); Q:=Jump;
+ K:=CodeSize; Emit2($09,$C9); Q:=JumpIf($75);
  Emit($26); Emit2($8A,$04); Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart);
  Emit($46); Emit($49); JumpTo(K);
@@ -10961,13 +11042,13 @@ Begin
  Emit($06); Emit($55); Emit($57); Emit($56); Emit($53); Emit($51);
  Emit2($89,$C5); Emit2($C6,$06); DataAddress(StringScratch2); Emit(0);
  Emit2($B4,$51); Emit2($CD,$21); Emit2($8E,$C3);
- Emit2($09,$ED); Emit2($75,3); P:=Jump;
+ Emit2($09,$ED); P:=JumpIf($75);
  Emit($BE); EmitWord($81); Emit2($31,$C9); Emit($26); Emit2($8A,$0E); EmitWord($80);
  LoopStart:=CodeSize; Emit2($09,$C9); Emit2($75,3); ParamEnd;
  Emit($26); Emit2($8A,$04); Emit($46); Emit($49);
  Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart);
- Emit($4E); Emit($41); Emit($4D); Emit2($75,3); R:=Jump;
+ Emit($4E); Emit($41); Emit($4D); R:=JumpIf($75);
  K:=CodeSize; Emit2($09,$C9); Emit2($75,3); ParamEnd;
  Emit($26); Emit2($8A,$04); Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart);
@@ -10976,19 +11057,19 @@ Begin
  Emit2($B4,$30); Emit2($CD,$21); Emit2($3C,3); Emit2($73,3); ParamEnd;
  Emit($26); Emit2($8B,$1E); EmitWord($2C); Emit2($09,$DB); Emit2($75,3); ParamEnd;
  Emit2($8E,$C3); Emit2($31,$F6); Emit($B9); EmitWord($7FFF);
- K:=CodeSize; Emit($26); Emit2($8A,$04); Emit($46); Emit2($08,$C0); Emit2($74,3); Q:=Jump;
- Emit($26); Emit2($80,$3C); Emit(0); Emit2($75,3); S:=Jump;
+ K:=CodeSize; Emit($26); Emit2($8A,$04); Emit($46); Emit2($08,$C0); Q:=JumpIf($74);
+ Emit($26); Emit2($80,$3C); Emit(0); S:=JumpIf($75);
  PatchJump(Q,CodeSize); Emit($E2); Emit(Byte(Longint(K)-CodeSize-1)); ParamEnd;
  PatchJump(S,CodeSize); Emit2($83,$C6); Emit(3); Emit($B9); EmitWord(255);
  Emit2($31,$D2); Q:=Jump;
  PatchJump(R,CodeSize); Emit($BA); EmitWord(1); PatchJump(Q,CodeSize);
  Emit($BF); DataAddress(StringScratch2+1); Emit2($31,$DB);
- K:=CodeSize; Emit2($09,$C9); Emit2($75,3); R:=Jump;
- Emit($26); Emit2($8A,$04); Emit2($08,$C0); Emit2($75,3); S:=Jump;
- Emit2($09,$D2); Emit2($74,3); Q:=Jump;
+ K:=CodeSize; Emit2($09,$C9); R:=JumpIf($75);
+ Emit($26); Emit2($8A,$04); Emit2($08,$C0); S:=JumpIf($75);
+ Emit2($09,$D2); Q:=JumpIf($74);
  P:=Jump; PatchJump(Q,CodeSize);
- Emit2($3C,32); Emit2($75,3); Q:=Jump;
- Emit2($3C,9); Emit2($75,3); LoopStart:=Jump;
+ Emit2($3C,32); Q:=JumpIf($75);
+ Emit2($3C,9); LoopStart:=JumpIf($75);
  PatchJump(P,CodeSize);
  Emit2($88,$05); Emit($47); Emit($46); Emit($43); Emit($49); JumpTo(K);
  PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize); PatchJump(LoopStart,CodeSize);
@@ -10998,21 +11079,21 @@ Begin
  Emit($B8); DataAddress(StringScratch2); Emit2($8C,$DA); Emit($C3);
  RuntimeStandard[6]:=CodeSize; { set element: ES:DI bitmap universel, AX ordinal }
  Emit($50); Emit($53); Emit($51); Emit($52); Emit($57);
- Emit($3D); EmitWord(255); Emit2($76,3); P:=Jump;
+ Emit($3D); EmitWord(255); P:=JumpIf($76);
  Emit2($89,$C3); Emit2($89,$C1); Emit2($80,$E1); Emit(7);
  Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB); Emit2($01,$DF);
  Emit($26); Emit2($08,$15);
  Emit($5F); Emit($5A); Emit($59); Emit($5B); Emit($58); Emit($C3);
  PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError));
  RuntimeStandard[7]:=CodeSize; { set range AX..BX }
- Emit($56); Emit2($39,$D8); Emit2($76,3); P:=Jump;
+ Emit($56); Emit2($39,$D8); P:=JumpIf($76);
  Emit2($89,$DE); Emit2($29,$C6); Emit($46); LoopStart:=CodeSize;
  CallTo(RtlTarget(RuntimeStandard[6])); Emit($40); Emit($4E); Emit2($74,3); JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit($5E); Emit($C3);
  RuntimeStandard[1]:=CodeSize; { Copy: DS:SI, ES:DI, AX=index, CX=count, BX=capacite }
- Emit2($09,$C9); Emit2($7F,3); P:=Jump;
- Emit2($3D,1); Emit(0); Emit2($7D,3); Q:=Jump;
- Emit2($31,$D2); Emit2($8A,$14); Emit($48); Emit2($39,$D0); Emit2($72,3); R:=Jump;
+ Emit2($09,$C9); P:=JumpIf($7F);
+ Emit2($3D,1); Emit(0); Q:=JumpIf($7D);
+ Emit2($31,$D2); Emit2($8A,$14); Emit($48); Emit2($39,$D0); R:=JumpIf($72);
  Emit2($29,$C2); Emit2($39,$D1); Emit2($76,2); Emit2($89,$D1);
  Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
  Emit($26); Emit2($88,$0D); Emit($47); Emit($46); Emit2($01,$C6); Emit2($F3,$A4); Emit($C3);
@@ -11021,11 +11102,11 @@ Begin
 
  RuntimeStandard[2]:=CodeSize; { Pos: DS:SI needle, ES:DI haystack }
  Emit($55); Emit2($31,$C9); Emit2($8A,$0C); Emit2($31,$DB); Emit($26); Emit2($8A,$1D);
- Emit2($09,$C9); Emit2($75,3); P:=Jump;
- Emit2($39,$D9); Emit2($76,3); Q:=Jump;
+ Emit2($09,$C9); P:=JumpIf($75);
+ Emit2($39,$D9); Q:=JumpIf($76);
  Emit2($29,$CB); Emit($43); Emit($46); Emit($47); Emit($BA); EmitWord(1);
  LoopStart:=CodeSize; Emit($51); Emit($56); Emit($57); Emit2($F3,$A6);
- Emit($5F); Emit($5E); Emit($59); Emit2($75,3); R:=Jump;
+ Emit($5F); Emit($5E); Emit($59); R:=JumpIf($75);
  Emit($47); Emit($42); Emit($4B); Emit2($74,3); JumpTo(LoopStart);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); Emit2($31,$C0); S:=Jump;
  PatchJump(R,CodeSize); Emit2($89,$D0); PatchJump(S,CodeSize); Emit($5D); Emit($C3);
@@ -11036,9 +11117,9 @@ Begin
  Emit($26); Emit2($00,$0D); Emit($47); Emit2($01,$C7); Emit2($F3,$A4); Emit($C3);
 
  RuntimeStandard[4]:=CodeSize; { Delete: ES:DI, AX=index, CX=count }
- Emit2($09,$C9); Emit2($7F,3); P:=Jump;
- Emit($3D); EmitWord(1); Emit2($7D,3); Q:=Jump;
- Emit2($31,$DB); Emit($26); Emit2($8A,$1D); Emit($48); Emit2($39,$D8); Emit2($72,3); R:=Jump;
+ Emit2($09,$C9); P:=JumpIf($7F);
+ Emit($3D); EmitWord(1); Q:=JumpIf($7D);
+ Emit2($31,$DB); Emit($26); Emit2($8A,$1D); Emit($48); Emit2($39,$D8); R:=JumpIf($72);
  Emit2($29,$C3); Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
  Emit($26); Emit2($28,$0D); Emit2($29,$CB); Emit($57);
  Emit2($89,$FE); Emit($46); Emit2($01,$C6); Emit2($89,$F2); Emit2($01,$CE); Emit2($89,$D7);
@@ -11066,10 +11147,10 @@ Begin
  Emit2($8B,$46); Emit($FE); Emit2($8E,$D8); Emit2($89,$EC); Emit($5D); Emit($C3);
 
  RuntimeStandard[12]:=CodeSize; { Move: DS:SI to ES:DI, CX bytes }
- Emit2($09,$C9); Emit2($7F,3); P:=Jump;
- Emit2($8C,$D8); Emit2($8C,$C2); Emit2($39,$D0); Emit2($74,3); Q:=Jump;
- Emit2($39,$F7); Emit2($77,3); R:=Jump;
- Emit2($89,$F0); Emit2($01,$C8); Emit2($39,$C7); Emit2($72,3); S:=Jump;
+ Emit2($09,$C9); P:=JumpIf($7F);
+ Emit2($8C,$D8); Emit2($8C,$C2); Emit2($39,$D0); Q:=JumpIf($74);
+ Emit2($39,$F7); R:=JumpIf($77);
+ Emit2($89,$F0); Emit2($01,$C8); Emit2($39,$C7); S:=JumpIf($72);
  Emit2($01,$CE); Emit($4E); Emit2($01,$CF); Emit($4F); Emit($FD); Emit2($F3,$A4); Emit($FC); Emit($C3);
  PatchJump(Q,CodeSize); PatchJump(R,CodeSize); PatchJump(S,CodeSize); Emit($FC); Emit2($F3,$A4);
  PatchJump(P,CodeSize); Emit($FC); Emit($C3);
@@ -11077,11 +11158,11 @@ Begin
  RuntimeStandard[13]:=CodeSize; { comparaison lexicographique de shortstrings }
  Emit2($31,$C0); Emit2($8A,$04); Emit2($31,$DB); Emit($26); Emit2($8A,$1D);
  Emit2($89,$C1); Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
- Emit($46); Emit($47); Emit2($09,$C9); Emit2($75,3); P:=Jump;
- Emit2($F3,$A6); Emit2($74,3); Q:=Jump;
+ Emit($46); Emit($47); Emit2($09,$C9); P:=JumpIf($75);
+ Emit2($F3,$A6); Q:=JumpIf($74);
  PatchJump(P,CodeSize); Emit2($39,$D8);
- PatchJump(Q,CodeSize); Emit2($75,3); R:=Jump;
- Emit2($72,3); S:=Jump; LoadImmediate($FFFF); Emit($C3);
+ PatchJump(Q,CodeSize); R:=JumpIf($75);
+ S:=JumpIf($72); LoadImmediate($FFFF); Emit($C3);
  PatchJump(S,CodeSize); LoadImmediate(1); Emit($C3);
  PatchJump(R,CodeSize); Emit2($31,$C0); Emit($C3);
 
@@ -11091,7 +11172,7 @@ Begin
  Emit2($01,$C7); Emit($58); Emit($5A); Emit2($01,$FA); Emit($5F); Emit($5E); Emit($C3);
 
  RuntimeStandard[15]:=CodeSize; { division signee 32 bits; quotient DX:AX, reste CX:BX }
- Emit($55); Emit2($89,$DE); Emit2($09,$CE); Emit2($75,3); P:=Jump;
+ Emit($55); Emit2($89,$DE); Emit2($09,$CE); P:=JumpIf($75);
  Emit2($31,$F6); Emit2($09,$D2); Emit2($79,10);
  Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA); Emit($BE); EmitWord(3);
  Emit2($09,$C9); Emit2($79,10);
@@ -11099,9 +11180,9 @@ Begin
  Emit($56); Emit2($31,$F6); Emit2($31,$FF); Emit($BD); EmitWord(32);
  LoopStart:=CodeSize;
  Emit2($D1,$E0); Emit2($D1,$D2); Emit2($D1,$D6); Emit2($D1,$D7);
- Emit2($39,$CF); Emit2($76,3); Q:=Jump;
- Emit2($73,3); R:=Jump;
- Emit2($39,$DE); Emit2($73,3); S:=Jump;
+ Emit2($39,$CF); Q:=JumpIf($76);
+ R:=JumpIf($73);
+ Emit2($39,$DE); S:=JumpIf($73);
  PatchJump(Q,CodeSize); Emit2($29,$DE); Emit2($19,$CF); Emit2($83,$C8); Emit(1);
  PatchJump(R,CodeSize); PatchJump(S,CodeSize); Emit($4D); Emit2($74,3); JumpTo(LoopStart);
  Emit2($89,$F3); Emit2($89,$F9); Emit($5D);
@@ -11136,14 +11217,14 @@ Begin
  Emit2($C7,$46); Emit($FE); EmitWord(1);
  Emit2($3C,Ord('-')); Emit2($74,4); Emit2($3C,Ord('+')); Emit2($75,12);
  Emit($46); Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8);
- Emit2($75,3); P:=Jump; Inc(ErrorCount); Errors[ErrorCount]:=P;
+ P:=JumpIf($75); Inc(ErrorCount); Errors[ErrorCount]:=P;
  Emit2($80,$3C); Emit(Ord('$')); Emit2($75,17);
  Emit2($C7,$46); Emit($FC); EmitWord(16); Emit($46);
  Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8); BadIf($74);
  Emit2($31,$C0); Emit2($31,$D2);
  LoopStart:=CodeSize; Emit2($31,$DB); Emit2($8A,$1C);
  Emit2($83,$FB); Emit(Ord('0')); BadIf($72);
- Emit2($83,$FB); Emit(Ord('9')); Emit2($77,3); P:=Jump;
+ Emit2($83,$FB); Emit(Ord('9')); P:=JumpIf($77);
  Emit2($83,$7E); Emit($FC); Emit(16); BadIf($75);
  Emit2($80,$E3); Emit($DF); Emit2($83,$FB); Emit(Ord('A')); BadIf($72);
  Emit2($83,$FB); Emit(Ord('F')); BadIf($77);
@@ -11151,13 +11232,13 @@ Begin
  PatchJump(P,CodeSize); Emit2($83,$EB); Emit(48); PatchJump(Q,CodeSize);
  Emit2($89,$DF); Emit($56); Emit($57); Emit2($89,$C6); Emit2($89,$D7);
  Emit2($8B,$5E); Emit($FC); Emit2($F7,$E3); Emit2($89,$D1); Emit($50);
- Emit2($89,$F8); Emit2($F7,$E3); Emit2($09,$D2); Emit2($74,3); P:=Jump;
- Emit2($01,$C8); Emit2($73,3); Q:=Jump;
+ Emit2($89,$F8); Emit2($F7,$E3); Emit2($09,$D2); P:=JumpIf($74);
+ Emit2($01,$C8); Q:=JumpIf($73);
  Emit2($89,$C2); Emit($58); Emit($5F); Emit($5E); Emit2($01,$F8); Emit2($83,$D2); Emit(0); BadIf($72);
  Emit($46); Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8); Emit2($74,3); JumpTo(LoopStart);
- Emit2($83,$7E); Emit($FC); Emit(16); Emit2($75,3); R:=Jump;
- Emit2($81,$FA); EmitWord($8000); Emit2($73,3); S:=Jump;
- Emit2($74,3); K:=Jump;
+ Emit2($83,$7E); Emit($FC); Emit(16); R:=JumpIf($75);
+ Emit2($81,$FA); EmitWord($8000); S:=JumpIf($73);
+ K:=JumpIf($74);
  Emit2($09,$C0); BadIf($75); Emit2($83,$7E); Emit($FE); Emit(0); BadIf($74);
  PatchJump(S,CodeSize); PatchJump(R,CodeSize);
  Emit2($83,$7E); Emit($FE); Emit(0); Emit2($74,7);
@@ -11171,7 +11252,7 @@ Begin
 
  RuntimeStandard[18]:=CodeSize; { peek stdin, ^Z represente EOF }
  Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($06);
- Emit($A1); DataAddress(InputAhead); Emit($3D); EmitWord($FFFF); Emit2($74,3); P:=Jump;
+ Emit($A1); DataAddress(InputAhead); Emit($3D); EmitWord($FFFF); P:=JumpIf($74);
  CallTo(RtlTarget(RuntimeStandard[48]));
  Emit($A3); DataAddress(InputAhead);
  PatchJump(P,CodeSize); Emit($07); Emit($5F); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($C3);
@@ -11181,12 +11262,12 @@ Begin
 
  RuntimeStandard[20]:=CodeSize; { token entier, sans consommer le separateur final }
  Emit($56); Emit($53); Emit($BE); DataAddress(StringScratch+1); Emit2($31,$DB);
- LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
- Emit($3D); EmitWord(32); Emit2($76,3); Q:=Jump;
+ LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); P:=JumpIf($75);
+ Emit($3D); EmitWord(32); Q:=JumpIf($76);
  CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(LoopStart);
  PatchJump(Q,CodeSize); Q:=CodeSize;
- CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(32); Emit2($77,3); R:=Jump;
- CallTo(RtlTarget(RuntimeStandard[19])); Emit2($81,$FB); EmitWord(255); Emit2($72,3); S:=Jump;
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(32); R:=JumpIf($77);
+ CallTo(RtlTarget(RuntimeStandard[19])); Emit2($81,$FB); EmitWord(255); S:=JumpIf($72);
  Emit2($88,$04); Emit($46); Emit($43); PatchJump(S,CodeSize); JumpTo(Q);
  PatchJump(P,CodeSize); PatchJump(R,CodeSize);
  Emit2($88,$1E); DataAddress(StringScratch); Emit($5B); Emit($5E);
@@ -11194,22 +11275,22 @@ Begin
 
  RuntimeStandard[21]:=CodeSize; { Read string: ne depasse pas la capacite BX }
  Emit($56); Emit($57); Emit($BE); DataAddress(StringScratch+1); Emit2($31,$FF);
- LoopStart:=CodeSize; Emit2($39,$DF); Emit2($72,3); P:=Jump;
- CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
- Emit($3D); EmitWord(13); Emit2($75,3); R:=Jump;
- Emit($3D); EmitWord(10); Emit2($75,3); S:=Jump;
+ LoopStart:=CodeSize; Emit2($39,$DF); P:=JumpIf($72);
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Q:=JumpIf($75);
+ Emit($3D); EmitWord(13); R:=JumpIf($75);
+ Emit($3D); EmitWord(10); S:=JumpIf($75);
  CallTo(RtlTarget(RuntimeStandard[19])); Emit2($88,$04); Emit($46); Emit($47); JumpTo(LoopStart);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); PatchJump(S,CodeSize);
  Emit2($89,$F8); Emit($A2); DataAddress(StringScratch); Emit($5F); Emit($5E);
  Emit($B8); DataAddress(StringScratch); Emit2($8C,$DA); Emit($C3);
 
  RuntimeStandard[22]:=CodeSize; { ReadLn consomme CR/LF ou LF }
- LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
- Emit($3D); EmitWord(10); Emit2($75,3); Q:=Jump;
- Emit($3D); EmitWord(13); Emit2($75,3); R:=Jump;
+ LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); P:=JumpIf($75);
+ Emit($3D); EmitWord(10); Q:=JumpIf($75);
+ Emit($3D); EmitWord(13); R:=JumpIf($75);
  CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(LoopStart);
  PatchJump(R,CodeSize); CallTo(RtlTarget(RuntimeStandard[19])); CallTo(RtlTarget(RuntimeStandard[18]));
- Emit($3D); EmitWord(10); Emit2($74,3); S:=Jump;
+ Emit($3D); EmitWord(10); S:=JumpIf($74);
  PatchJump(Q,CodeSize); CallTo(RtlTarget(RuntimeStandard[19]));
  PatchJump(P,CodeSize); PatchJump(S,CodeSize); Emit($C3);
 
@@ -11226,8 +11307,8 @@ Begin
  Emit2($89,$C3); Emit2($B1,4); Emit2($D3,$EB); Emit($25); EmitWord(15);
  Emit2($74,1); Emit($43); Emit($43); Emit($53);
  Emit($A1); DataAddress(HeapLimit); Emit2($2B,$06); DataAddress(HeapUsed);
- Emit2($39,$C3); Emit2($76,3); P:=Jump;
- Emit2($B4,$48); Emit2($CD,$21); Emit2($73,3); Q:=Jump;
+ Emit2($39,$C3); P:=JumpIf($76);
+ Emit2($B4,$48); Emit2($CD,$21); Q:=JumpIf($73);
  Emit2($8E,$C0); Emit2($31,$FF); Emit($8B); Emit($16); DataAddress(HeapHead);
  Emit($26); Emit2($89,$15); Emit($26); Emit2($C7,$45); Emit(2); EmitWord(0);
  Emit2($8B,$5E); Emit($FC); Emit($26); Emit2($89,$5D); Emit(4);
@@ -11259,8 +11340,8 @@ Begin
  Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($31,$C0); Emit($C3);
  RuntimeStandard[30]:=CodeSize; { Release jusqu'au token Mark }
  Emit($55); Emit2($89,$D5); LoopStart:=CodeSize;
- Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($39,$EA); Emit2($75,3); P:=Jump;
- Emit2($09,$D2); Emit2($75,3); Q:=Jump;
+ Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($39,$EA); P:=JumpIf($75);
+ Emit2($09,$D2); Q:=JumpIf($75);
  Emit($42); Emit2($31,$C0); Emit2($31,$F6); CallTo(RtlTarget(RuntimeStandard[27])); JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit($5D); Emit($C3);
  PatchJump(Q,CodeSize); LoadImmediate(204); CallTo(RtlTarget(RuntimeError));
@@ -11269,8 +11350,8 @@ Begin
  Emit($06); Emit($BB); EmitWord($FFFF); Emit2($B4,$48); Emit2($CD,$21);
  Emit($A1); DataAddress(HeapLimit); Emit2($2B,$06); DataAddress(HeapUsed);
  Emit2($39,$C3); Emit2($76,2); Emit2($89,$C3);
- Emit2($09,$DB); Emit2($75,3); P:=Jump; Emit($4B);
- Emit2($81,$FB); EmitWord(4096); Emit2($72,3); R:=Jump;
+ Emit2($09,$DB); P:=JumpIf($75); Emit($4B);
+ Emit2($81,$FB); EmitWord(4096); R:=JumpIf($72);
  Emit2($89,$D8); Emit2($31,$D2); Emit2($B1,4); Emit2($D3,$E0); Q:=Jump;
  PatchJump(R,CodeSize); LoadImmediate($FFFF); Emit2($31,$D2); R:=Jump;
  PatchJump(P,CodeSize); Emit2($31,$C0); Emit2($31,$D2);
@@ -11279,15 +11360,15 @@ Begin
  Emit($06); Emit($55); Emit($57); Emit($56); Emit($53); Emit($51);
  Emit2($31,$F6); Emit2($31,$FF);
  Emit2($8B,$0E); DataAddress(HeapLimit); Emit2($2B,$0E); DataAddress(HeapUsed);
- LoopStart:=CodeSize; Emit2($09,$C9); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; Emit2($09,$C9); P:=JumpIf($75);
  Emit($BB); EmitWord($FFFF); Emit2($B4,$48); Emit2($CD,$21);
- Emit2($09,$DB); Emit2($75,3); Q:=Jump;
+ Emit2($09,$DB); Q:=JumpIf($75);
  Emit2($39,$CB); Emit2($76,2); Emit2($89,$CB);
- Emit2($B4,$48); Emit2($CD,$21); Emit2($73,3); R:=Jump;
+ Emit2($B4,$48); Emit2($CD,$21); R:=JumpIf($73);
  Emit2($8E,$C0); Emit($26); Emit2($89,$36); EmitWord(0); Emit2($89,$C6);
  Emit2($01,$DF); Emit($4F); Emit2($29,$D9); JumpTo(LoopStart);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
- LoopStart:=CodeSize; Emit2($09,$F6); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; Emit2($09,$F6); P:=JumpIf($75);
  Emit2($8E,$C6); Emit($26); Emit2($8B,$36); EmitWord(0); Emit2($B4,$49); Emit2($CD,$21); JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit2($89,$F8); Emit2($89,$FA); Emit2($B1,12); Emit2($D3,$EA);
  Emit2($B1,4); Emit2($D3,$E0);
@@ -11348,7 +11429,7 @@ Begin
  Emit($53); Emit($51); Emit($52); Emit($1E); EmitLoadDS;
  Emit($A2); DataAddress(OutputByte); Emit2($8B,$1E); DataAddress(OutputHandle);
  Emit($B9); EmitWord(1); Emit($BA); DataAddress(OutputByte); Emit2($B4,$40); Emit2($CD,$21);
- Emit2($73,3); P:=Jump; Emit($1F); Emit($5A); Emit($59); Emit($5B); Emit($C3);
+ P:=JumpIf($73); Emit($1F); Emit($5A); Emit($59); Emit($5B); Emit($C3);
  PatchJump(P,CodeSize); Emit($A3); DataAddress(InputError);
  Emit($1F); Emit($5A); Emit($59); Emit($5B); Emit($C3);
  RuntimeString:=CodeSize;
@@ -11385,7 +11466,7 @@ Begin
  { StackCheck: "call StackCheck; dw N": erreur 202 si SP < N }
  StackCheckAddr:=CodeSize;
  Emit($5B); Emit($2E); Emit2($8B,$07); Emit2($83,$C3); Emit(2); Emit($53); { pop bx; mov ax,cs:[bx]; add bx,2; push bx }
- Emit2($39,$C4); Emit2($73,3); P:=Jump; Emit($C3);                      { cmp sp,ax; jae ok; jmp err; ok: ret }
+ Emit2($39,$C4); P:=JumpIf($73); Emit($C3);                      { cmp sp,ax; jae ok; jmp err; ok: ret }
  PatchJump(P,CodeSize); LoadImmediate(202); JumpTo(RtlTarget(RuntimeError));
  For P:=1 To 17 Do Emit($90);
  EmitStandardRuntime;
@@ -11438,6 +11519,7 @@ Var
  I: Word;
 Begin
  KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047;
+ FillChar(StaticTemps,SizeOf(StaticTemps),0); StaticTempsUnit:=254; LastTempAddr:=0; LastTempLocal:=False;
  CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0; FixupCount:=0;
  DebugCount:=0; DebugCaptured:=[]; RealReady:=False; EmulatorReady:=False;
  RealCodeBase:=0; RealCodeEnd:=0; RealDataBase:=0; RealDataEnd:=0;
@@ -11464,7 +11546,7 @@ Begin
  FPUStartup:=CodeSize; Emit($90); Emit($90); Emit($90);
  EntryFixup:=Jump;
  DataSegVar:=CodeSize; AddSegmentRelocation(CodeSize,3); EmitWord(0);
- EmitRuntime; RuntimeEnd:=CodeSize;
+ Inc(RuntimeDepth); EmitRuntime; Dec(RuntimeDepth); RuntimeEnd:=CodeSize;
  { InOutRes partage l'emplacement de l'erreur d'E/S du runtime. }
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=255) And (Symbols[I].Name='INOUTRES') Then Symbols[I].Addr:=InputError;
  NextToken;
@@ -12231,6 +12313,8 @@ Var
  D: DirStr;
  N: NameStr;
  E: ExtStr;
+ PassNo,PassI: Word;
+ Stable: Boolean;
 
 Function ClockHundredths: Longint;
 Var H,M,S,C: Word;
@@ -12306,20 +12390,48 @@ BEGIN
  Move(Defines,InitialDefines,SizeOf(Defines)); InitialDefineCount:=DefineCount;
  InitialOptions:=OptionBits;
  NoLimit:=GetEnv('TPC_NOLIMIT')<>'';
- AnalysisPass:=True; Overflowed:=False; EdgeCount:=0; CurProc:=0; TotalEmitted:=0;
+ DbgNoJ:=GetEnv('TPC_NOJ')<>''; DbgNoIf:=GetEnv('TPC_NOIF')<>''; DbgNoBack:=GetEnv('TPC_NOBACK')<>'';
+ FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(ForceLong,SizeOf(ForceLong),0);
+ AnalysisPass:=True; Overflowed:=False; EdgeCount:=0; CurProc:=0; TotalEmitted:=0; JumpOrd:=0; JumpOverflow:=False;
+ ReportCount:=0; RuntimeDepth:=0;
  FillChar(DeadProc,SizeOf(DeadProc),0); FillChar(RootProc,SizeOf(RootProc),0);
+ { passe 1 : analyse (sauts longs, graphe d'appels) }
  LoadSource; CompileProgram;
  AnalysisPass:=False;
+ PassNo:=1;
  If Overflowed Then Begin
   { Segment de code trop grand : edition de liens intelligente. Les routines
     inaccessibles depuis le programme (ou, pour une unite, depuis son
-    interface) sont retirees a la recompilation. }
+    interface) sont retirees a la recompilation. Les distances mesurees
+    sur un code qui deborde ne sont pas fiables. }
   SmartLink;
+  FillChar(ShortNext,SizeOf(ShortNext),0);
+  Overflowed:=False;
+ End;
+ { passes suivantes : sauts courts (jcc/jmp rel8) la ou la passe precedente a montre qu'ils tiennent ;
+   le code ne fait que raccourcir donc les distances aussi : convergence en quelques passes }
+ Repeat
+  Inc(PassNo);
+  Move(ShortNext,ShortPred,SizeOf(ShortPred)); FillChar(ShortNext,SizeOf(ShortNext),0);
   Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
+  JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+  LoadSource; CompileProgram;
+  Stable:=True;
+  For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then Stable:=False;
+  If JumpOverflow Then Stable:=False;
+ Until (Stable And Not JumpOverflow) Or (PassNo>=10);
+ If JumpOverflow Then Begin
+  { filet de securite : derniere passe sans saut court }
+  FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0);
+  Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
+  OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+  TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
+  JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
   LoadSource; CompileProgram;
  End;
+ For PassI:=1 To ReportCount Do WriteLn(ReportLines[PassI]);
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);
  LoadObjects;
  If HaveKernel And UnitOutput Then WriteKernelBin Else WriteUnits;
