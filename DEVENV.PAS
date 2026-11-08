@@ -216373,12 +216373,27 @@ End;
 { programme restaient inchanges et une boucle "attendre que le compteur   }
 { change" tournait indefiniment. }
 Procedure Emu_DoInt1A(Var P: TEmulatorPanel);
+Var Yr, Mo, Dy, Wd, Hr, Mn, Sc, Cs: Word;
 Begin
  Case P.CPU.Regs.AH Of
   $00: Begin
    P.CPU.Regs.CX := Emu_ReadWord(P.CPU, $40, $6E); { poids fort }
    P.CPU.Regs.DX := Emu_ReadWord(P.CPU, $40, $6C); { poids faible }
    P.CPU.Regs.AL := 0; { drapeau minuit : non gere }
+  End;
+  { AH=02h : lire l heure RTC (BCD) ; AH=04h : lire la date RTC (BCD) -  }
+  { horloge de la machine hote, comme le CMOS (voir Emu_CMOS_ReadReg).    }
+  $02: Begin
+   GetTime(Hr, Mn, Sc, Cs);
+   P.CPU.Regs.CH := Emu_BCD(Hr); P.CPU.Regs.CL := Emu_BCD(Mn);
+   P.CPU.Regs.DH := Emu_BCD(Sc); P.CPU.Regs.DL := 0;
+   Exclude(P.CPU.Flags.s, EFG_CF);
+  End;
+  $04: Begin
+   GetDate(Yr, Mo, Dy, Wd);
+   P.CPU.Regs.CH := Emu_BCD(Yr Div 100); P.CPU.Regs.CL := Emu_BCD(Yr Mod 100);
+   P.CPU.Regs.DH := Emu_BCD(Mo); P.CPU.Regs.DL := Emu_BCD(Dy);
+   Exclude(P.CPU.Flags.s, EFG_CF);
   End;
  End;
 End;
