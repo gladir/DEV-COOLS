@@ -96297,6 +96297,79 @@ Function Emu_ElToritoFindEntry(CdIdx: Byte;
  Var Entry: TEmuElToritoEntry): Boolean; Forward;
 Function Emu_LoadElToritoBoot(Var C: TEmuCPU; CdIdx: Byte): Boolean; Forward;
 
+{ Extraire dans un fichier temporaire l image d amorcage d une entree El    }
+{ Torito en emulation disquette (types 1/2/3 : 1,2/1,44/2,88 Mo) ou disque   }
+{ dur (type 4 : taille deduite de la table de partition du MBR). Retourne    }
+{ False si la taille est invalide, depasse la fin de l ISO ou si une         }
+{ lecture/ecriture echoue. OutPath = chemin du fichier cree (%TEMP%). }
+Function Emu_ElToritoExtractImage(CdIdx: Byte; Const Entry: TEmuElToritoEntry;
+ Var OutPath: String): Boolean;
+Var
+ SectorBuf: TEmuIsoSector;
+ Total, Avail, Done, N, EndSec, Sz: LongInt;
+ F: File;
+ I: Integer;
+ Ofs: Integer;
+Begin
+ Emu_ElToritoExtractImage := False;
+ Total := 0;
+ Case Entry.MediaType Of
+  1: Total := 1228800;
+  2: Total := 1474560;
+  3: Total := 2949120;
+  4: Begin
+   { disque dur : fin de la derniere partition de la table du MBR }
+   If Not Emu_IsoReadLBA(CdIdx, Entry.BootLBA, SectorBuf) Then Exit;
+   If (SectorBuf[510] <> $55) Or (SectorBuf[511] <> $AA) Then Exit;
+   EndSec := 0;
+   For I := 0 To 3 Do Begin
+    Ofs := $1BE + I * 16;
+    If SectorBuf[Ofs + 4] <> 0 Then Begin
+     Sz := LongInt(SectorBuf[Ofs + 8]) Or (LongInt(SectorBuf[Ofs + 9]) Shl 8)
+      Or (LongInt(SectorBuf[Ofs + 10]) Shl 16);
+     N := Sz + (LongInt(SectorBuf[Ofs + 12]) Or
+      (LongInt(SectorBuf[Ofs + 13]) Shl 8) Or
+      (LongInt(SectorBuf[Ofs + 14]) Shl 16));
+     If N > EndSec Then EndSec := N;
+    End;
+   End;
+   Total := EndSec * 512;
+  End;
+ End;
+ If Total <= 0 Then Exit;
+ Avail := EmuCdrom[CdIdx].IsoSize - Entry.BootLBA * EMU_ISO_SECTOR;
+ If Total > Avail Then Exit;
+ OutPath := GetEnv('TEMP');
+ If OutPath = '' Then OutPath := '.';
+ If OutPath[Length(OutPath)] <> '\' Then OutPath := OutPath + '\';
+ OutPath := OutPath + 'DEVENV_ELTORITO.IMG';
+ Assign(F, OutPath);
+ {$I-}
+ Rewrite(F, 1);
+ {$I+}
+ If IOResult <> 0 Then Exit;
+ Done := 0;
+ While Done < Total Do Begin
+  If Not Emu_IsoReadLBA(CdIdx, Entry.BootLBA + Done Div EMU_ISO_SECTOR,
+   SectorBuf) Then Begin
+   Close(F);
+   Exit;
+  End;
+  N := Total - Done;
+  If N > EMU_ISO_SECTOR Then N := EMU_ISO_SECTOR;
+  {$I-}
+  BlockWrite(F, SectorBuf, Word(N));
+  {$I+}
+  If IOResult <> 0 Then Begin
+   Close(F);
+   Exit;
+  End;
+  Done := Done + N;
+ End;
+ Close(F);
+ Emu_ElToritoExtractImage := True;
+End;
+
 Procedure TermCmd_BOOT(Var TP: TTerminalPanel; ParamStr: String);
 Var
  P, Up, DispName: String;
@@ -96401,14 +96474,11 @@ Begin
    If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
   If Idx = 255 Then Begin
    { Aucun disque/disquette monte : tenter un amorcage El Torito reel si   }
-   { un CD-ROM est monte (2026-09-02, demande explicite de l utilisateur, }
-   { chantier separe annonce lors du correctif precedent - voir            }
-   { Emu_ElToritoFindEntry/Emu_LoadElToritoBoot/                           }
-   { CreateEmulatorElToritoBootTab). Seule l entree "sans emulation"       }
-   { (isolinux/GRUB2, la norme des CD/DVD d installation modernes) est     }
-   { vraiment amorcee - un type d emulation disquette/disque dur est       }
-   { refuse honnetement (voir le commentaire de Emu_LoadElToritoBoot pour  }
-   { le pourquoi). }
+   { un CD-ROM est monte (voir Emu_ElToritoFindEntry/Emu_LoadElToritoBoot/ }
+   { CreateEmulatorElToritoBootTab) : entree "sans emulation" (isolinux,   }
+   { GRUB2) amorcee directement ; emulation disquette/disque dur (types    }
+   { 1-4, ex. MSDOS-0\IMAGE\DOSCD.ISO) : image extraite puis montee       }
+   { sur A: ou C: (Emu_ElToritoExtractImage). }
    CdSlot := -1;
    If EmuCdrom[0].Open Then CdSlot := 0
    Else If EmuCdrom[1].Open Then CdSlot := 1;
@@ -96419,23 +96489,48 @@ Begin
       'd''installation amorcable).');
      Exit;
     End;
-    If ElToritoEntry.MediaType <> 0 Then Begin
-     TermAddLine(TP, 'BOOT : le catalogue El Torito de ce CD-ROM demande ' +
-      'une emulation disquette/disque dur (type ' +
-      IntToStr(ElToritoEntry.MediaType) + '), non prise en charge - seul ' +
-      'le mode "sans emulation" (isolinux/GRUB2) est gere.');
+    If ElToritoEntry.MediaType = 0 Then Begin
+     CreateEmulatorElToritoBootTab(Byte(CdSlot), 'CD-ROM (El Torito)');
      Exit;
     End;
-    CreateEmulatorElToritoBootTab(Byte(CdSlot), 'CD-ROM (El Torito)');
+    { Emulation disquette (types 1-3) ou disque dur (type 4) : l image     }
+    { amorcable du CD est extraite dans un fichier temporaire monte sur   }
+    { A: (DL=00h) ou C: (DL=80h), puis amorcee comme n importe quelle      }
+    { image (secteur de boot en 0000:7C00) - comme le fait un BIOS qui     }
+    { presente l image du CD comme une unite virtuelle. Les ecritures     }
+    { vont dans la copie temporaire, jamais dans l ISO. }
+    If ElToritoEntry.MediaType > 4 Then Begin
+     TermAddLine(TP, 'BOOT : type d''emulation El Torito inconnu (' +
+      IntToStr(ElToritoEntry.MediaType) + ').');
+     Exit;
+    End;
+    If Not Emu_ElToritoExtractImage(Byte(CdSlot), ElToritoEntry, TempPath)
+    Then Begin
+     TermAddLine(TP, 'BOOT : lecture de l''image d''amorcage El Torito ' +
+      'impossible (taille invalide ou ISO tronque).');
+     Exit;
+    End;
+    If ElToritoEntry.MediaType = 4 Then Idx := 2 Else Idx := 0;
+    If Not Emu_MountDiskSlot(Idx, TempPath) Then Begin
+     TermAddLine(TP, 'BOOT : montage de l''image d''amorcage El Torito ' +
+      'impossible : ' + TempPath);
+     Exit;
+    End;
+    If ElToritoEntry.MediaType = 4 Then
+     TermAddLine(TP, 'BOOT : CD-ROM El Torito, emulation disque dur ' +
+      '(image montee sur C:).')
+    Else
+     TermAddLine(TP, 'BOOT : CD-ROM El Torito, emulation disquette ' +
+      '(image montee sur A:).');
+   End Else Begin
+    TermAddLine(TP,
+      'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:i'+'mg] [/DISK80:img] ' +
+     '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
+     '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG'+
+       '_ENFORCE=True|False] [/GUI] [/CMD] ' +
+     '[/DOSINROM]');
     Exit;
    End;
-   TermAddLine(TP,
-     'Syntaxe : BOOT d: [/DISK0:img] [/DISK1:i'+'mg] [/DISK80:img] ' +
-    '[/DISK81:img] [/CDROM:img] [/CDROM0:img] [/CDROM1:img] [/DOS] [/OS2] ' +
-    '[/LINUX] [/LINUXARM] [/LINUXARM64] [/SIG'+
-      '_ENFORCE=True|False] [/GUI] [/CMD] ' +
-    '[/DOSINROM]');
-   Exit;
   End;
   DL := Term_DriveLetterFromIdx(Idx);
  End;
@@ -227812,6 +227907,34 @@ Begin
  FindClose(SR);
 End;
 
+{ /KTBOOTIMG:fichier.iso : monte l ISO comme CD-ROM, lit l entree El Torito }
+{ (emulation disquette/disque dur) et remplace Path par l image extraite. }
+Procedure Kt_ResolveIsoBoot(Var Path: String);
+Var
+ U, Tmp: String;
+ Entry: TEmuElToritoEntry;
+Begin
+ U := UpCaseStr(Path);
+ If (Length(U) < 4) Or (Copy(U, Length(U) - 3, 4) <> '.ISO') Then Exit;
+ Emu_CdromOpenOne(0, Path);
+ If Not EmuCdrom[0].Open Then Begin
+  KtOut('KERNELTEST: ISO illisible : ' + Path); Halt(1);
+ End;
+ If Not Emu_ElToritoFindEntry(0, Entry) Then Begin
+  KtOut('KERNELTEST: pas de catalogue El Torito dans ' + Path); Halt(1);
+ End;
+ If (Entry.MediaType < 1) Or (Entry.MediaType > 4) Then Begin
+  KtOut('KERNELTEST: seule l''emulation disquette/disque dur est geree ' +
+   'ici (type ' + IntToStr(Entry.MediaType) + ')'); Halt(1);
+ End;
+ If Not Emu_ElToritoExtractImage(0, Entry, Tmp) Then Begin
+  KtOut('KERNELTEST: extraction de l''image El Torito impossible'); Halt(1);
+ End;
+ KtOut('KERNELTEST: ' + Path + ' -> image El Torito ' + Tmp +
+  ' (type ' + IntToStr(Entry.MediaType) + ')');
+ Path := Tmp;
+End;
+
 Procedure RunKernelTest;
 Var
  Err, IoPath, ImgPath, Line: String;
@@ -227842,6 +227965,7 @@ Begin
  IoBuf := Nil; IoSize := 0;
  If KtBootImg <> '' Then Begin
   { image fournie : disquette (<= 2,88 Mo) sur 00h, sinon disque dur 80h }
+  Kt_ResolveIsoBoot(KtBootImg);
   ImgPath := KtBootImg;
   Assign(F, ImgPath);
   {$I-} Reset(F, 1); {$I+}

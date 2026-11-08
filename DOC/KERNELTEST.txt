@@ -49,6 +49,11 @@ Syntaxe
                      (VBR ou MBR) est execute en 0000:7C00. Le dossier du
                      parametre /KERNELTEST est alors ignore (IO.SYS vient de
                      l'image). L'image est modifiee par les ecritures du DOS.
+                     Un fichier .ISO est accepte : son catalogue El Torito
+                     (emulation disquette ou disque dur) est lu et l'image
+                     d'amorcage extraite dans %TEMP%\DEVENV_ELTORITO.IMG.
+                     Meme principe pour la commande BOOT du terminal de
+                     l'IDE (devenv /CDROM:fich.iso puis BOOT).
   /KTIMAGE:fich      emplacement de l'image generee (defaut /tmp/kerneltest.img
                      sous Linux, %TEMP%\KERNELTEST.IMG sous Windows).
 
