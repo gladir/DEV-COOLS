@@ -809,7 +809,7 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 		</tr>
 		<tr>
 			<td><b>MSP430.PAS</b></td>
-			<td>Cette commande permet de lancer l'emulateur de microcontroleur MSP430.</td>
+			<td>Cette commande permet de lancer l'emulateur de microcontroleur MSP430 / MSP430X (CPU, peripheriques, desassembleur et debogueur).</td>
 		</tr>
 		<tr>
 			<td><b>NES.PAS</b></td>
