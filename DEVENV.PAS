@@ -15417,7 +15417,7 @@ Begin
 
  { Menu Aide }
  CurMenu := AppendMenu(MainMenuBar, 'Aide');
- AddMenuItem(CurMenu^, 'A propos de DEVENV', '', 900);
+ AddMenuItem(CurMenu^, 'A propos d''Insurrection', '', 900);
  AddMenuItem(CurMenu^, 'Documentation en ligne', 'F1', 901);
  AddMenuSeparator(CurMenu^);
  AddMenuItem(CurMenu^, 'Raccourcis clavier', '', 910);
@@ -15878,6 +15878,7 @@ Procedure CloseDialog(Var Dlg: TDialog); Forward;
 { besoin exact que CloseDialog/InitInputBox/DrawInputBox juste au-dessus/   }
 { dessous, resolu de la meme facon (declaration Forward). }
 Procedure InitDialog(Var Dlg: TDialog; T: String; W, H: Integer); Forward;
+Procedure ShowAboutDialog; Forward;
 Procedure DrawDialogFrame(Var Dlg: TDialog); Forward;
 Procedure DrawDialogButtons(Var Dlg: TDialog); Forward;
 Procedure DrawRect(X1, Y1, X2, Y2: Integer; Color: LongInt); Forward;
@@ -16554,22 +16555,7 @@ Begin
   721: HandleRunCommentTool; { Outils > COMMENT }
   722: HandleRunRePascalTool; { Outils > RePascal }
   900: Begin { Aide > A propos de DEVENV }
-        ShowMessageBox('A propos de DEVENV',
-         'Insurrection - IDE en mode graphique' + #10 +
-         'Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')' + #10 +
-         #10 +
-         'Auteur  : Sylvain Maltais' + #10 +
-         'Web     : https://www.gladir.com/dev-cools' + #10 +
-         'Licence : MIT' + #10 +
-         #10 +
-         'Compilateurs integres :' + #10 +
-         '  C#      (CSC)' + #10 +
-         '  VB.NET  (VBC)' + #10 +
-         '  Pascal  (TPC)' + #10 +
-         #10 +
-         'Cliquez sur Aide > Documentation pour consulter' + #10 +
-         'la documentation detaillee.',
-         MB_OK, MI_INFO);
+        ShowAboutDialog;
         FullRepaintNeeded := True;
        End;
   901: Begin { Aide > Documentation en ligne }
@@ -192113,38 +192099,50 @@ End;
 
 Procedure DrawMessageText(Var MB: TMessageBoxDlg);
 Var
- TX, TY, MaxW, LineY: Integer;
- Remaining, Word, CurLine: String;
- P: Integer;
+ TX, TY, MaxW, LineY, LineH: Integer;
+ Remaining, Para, Word, CurLine: String;
+ P, Q: Integer;
 Begin
  TX := MB.Base.X + DLG_PADDING + DLG_ICON_SIZE + DLG_PADDING;
  TY := MB.Base.Y + DLG_TITLE_HEIGHT + DLG_PADDING;
  MaxW := MB.Base.X + MB.Base.Width - DLG_PADDING - TX;
+ LineH := TextHeight('A') + 4;
  SetColor(CLR_BORDER);
  LineY := TY;
  Remaining := MB.Text;
- CurLine := '';
+ { un paragraphe par #10 : les sauts de ligne explicites sont respectes }
  While Length(Remaining) > 0 Do Begin
-  P := Pos(' ', Remaining);
-  If P = 0 Then Begin
-   Word := Remaining;
+  Q := Pos(#10, Remaining);
+  If Q = 0 Then Begin
+   Para := Remaining;
    Remaining := '';
   End Else Begin
-   Word := Copy(Remaining, 1, P - 1);
-   Remaining := Copy(Remaining, P + 1, Length(Remaining) - P);
+   Para := Copy(Remaining, 1, Q - 1);
+   Remaining := Copy(Remaining, Q + 1, Length(Remaining) - Q);
   End;
-  If CurLine = '' Then
-   CurLine := Word
-  Else If TextWidth(CurLine + ' ' + Word) <= MaxW Then
-   CurLine := CurLine + ' ' + Word
-  Else Begin
-   OutTextXY(TX, LineY, CurLine);
-   LineY := LineY + TextHeight('A') + 4;
-   CurLine := Word;
+  CurLine := '';
+  While Length(Para) > 0 Do Begin
+   P := Pos(' ', Para);
+   If P = 0 Then Begin
+    Word := Para;
+    Para := '';
+   End Else Begin
+    Word := Copy(Para, 1, P - 1);
+    Para := Copy(Para, P + 1, Length(Para) - P);
+   End;
+   If CurLine = '' Then
+    CurLine := Word
+   Else If TextWidth(CurLine + ' ' + Word) <= MaxW Then
+    CurLine := CurLine + ' ' + Word
+   Else Begin
+    OutTextXY(TX, LineY, CurLine);
+    LineY := LineY + LineH;
+    CurLine := Word;
+   End;
   End;
+  If CurLine <> '' Then OutTextXY(TX, LineY, CurLine);
+  LineY := LineY + LineH;
  End;
- If CurLine <> '' Then
-  OutTextXY(TX, LineY, CurLine);
 End;
 
 { --- Dessiner la boite de message complete --- }
@@ -271906,40 +271904,48 @@ Const
 Var
  FireHeat  : Array[0..FIRE_MAXH - 1, 0..FIRE_MAXW - 1] Of Byte;
  FireMask  : Array[0..FIRE_MAXH - 1, 0..FIRE_MAXW - 1] Of Boolean;
- FireW, FireH, FireCell, FireX0, FireS, FireTxtH: Integer;
+ FireW, FireH, FireCell, FireX0, FireY0, FireS, FireTxtH: Integer;
  FireReady : Boolean;
  FireLast  : LongInt;
 
-Procedure FireSetup;
+Procedure FireSetupAt(CenterX, TextTop, S, Head: Integer);
 Var
- CenterX, TxtW, X, Y: Integer;
+ TxtW, X, Y: Integer;
 Begin
- CenterX := GetScreenWidth Div 2;
- FireS := GetScreenWidth Div 130;
- If FireS < 4 Then FireS := 4;
- If FireS > 8 Then FireS := 8;
+ FireS := S;
  FireCell := FireS Div 2;
+ If FireCell < 1 Then FireCell := 1;
  FireTxtH := 8 * FireS;
+ FireY0 := TextTop - Head;
  SetTextStyle(DefaultFont, HorizDir, FireS);
  TxtW := TextWidth(FIRE_TEXT);
  FireW := TxtW Div FireCell + 8;
  If FireW > FIRE_MAXW Then FireW := FIRE_MAXW;
- FireH := (FIRE_TOP + FireTxtH + 2 * FireCell) Div FireCell;
+ FireH := (Head + FireTxtH + 2 * FireCell) Div FireCell;
  If FireH > FIRE_MAXH Then FireH := FIRE_MAXH;
  FireX0 := CenterX - (FireW * FireCell) Div 2;
  { rendu du mot hors animation pour en relever le masque }
- DrawFilledRect(FireX0, 0, FireX0 + FireW * FireCell,
-  FireH * FireCell, CLR_BACKGROUND);
- DrawText(CenterX - TxtW Div 2, FIRE_TOP, FIRE_TEXT, 15);
+ DrawFilledRect(FireX0, FireY0, FireX0 + FireW * FireCell,
+  FireY0 + FireH * FireCell, CLR_BACKGROUND);
+ DrawText(CenterX - TxtW Div 2, TextTop, FIRE_TEXT, 15);
  FillChar(FireHeat, SizeOf(FireHeat), 0);
  For Y := 0 To FireH - 1 Do
   For X := 0 To FireW - 1 Do
    FireMask[Y, X] := GetPixel(FireX0 + X * FireCell + FireCell Div 2,
-    Y * FireCell + FireCell Div 2) = 15;
- DrawFilledRect(FireX0, 0, FireX0 + FireW * FireCell,
-  FireH * FireCell, CLR_BACKGROUND);
+    FireY0 + Y * FireCell + FireCell Div 2) = 15;
+ DrawFilledRect(FireX0, FireY0, FireX0 + FireW * FireCell,
+  FireY0 + FireH * FireCell, CLR_BACKGROUND);
  SetTextStyle(DefaultFont, HorizDir, 1);
  FireReady := True;
+End;
+
+Procedure FireSetup;
+Var S: Integer;
+Begin
+ S := GetScreenWidth Div 130;
+ If S < 4 Then S := 4;
+ If S > 8 Then S := 8;
+ FireSetupAt(GetScreenWidth Div 2, FIRE_TOP, S, FIRE_TOP);
 End;
 
 Function FireColor(H: Integer): LongInt;
@@ -272001,8 +272007,9 @@ Begin
    X1 := X;
    While (X1 + 1 < FireW) And (FireColor(FireHeat[Y, X1 + 1]) = C) Do
     Inc(X1);
-   DrawFilledRect(FireX0 + X * FireCell, Y * FireCell,
-    FireX0 + (X1 + 1) * FireCell - 1, Y * FireCell + FireCell - 1, C);
+   DrawFilledRect(FireX0 + X * FireCell, FireY0 + Y * FireCell,
+    FireX0 + (X1 + 1) * FireCell - 1,
+    FireY0 + Y * FireCell + FireCell - 1, C);
    X := X1 + 1;
   End;
  End;
@@ -272017,6 +272024,62 @@ Begin
  FireLast := Now;
  FireStep;
  FireDraw;
+End;
+
+{ --- Aide > A propos : boite agrandie, titre en flammes --- }
+Procedure ShowAboutDialog;
+Const
+ ABOUT_W = 460;
+ ABOUT_H = 330;
+ ABOUT_LINES = 12;
+Var
+ MB: TMessageBoxDlg;
+ Ev: TEvent;
+ L: Array[1..ABOUT_LINES] Of String;
+ I, TX, TY, BX, BY: Integer;
+ Now: LongInt;
+Begin
+ L[1] := '(DEVENV, une autre approche a Visual Studio)';
+ L[2] := 'Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')';
+ L[3] := '';
+ L[4] := 'Auteur  : Sylvain Maltais';
+ L[5] := 'Web     : https://www.gladir.com/dev-cools';
+ L[6] := 'Licence : MIT';
+ L[7] := '';
+ L[8] := 'Compilateurs integres :';
+ L[9] := '  C# (CSC), VB.NET (VBC), Pascal (TPC)';
+ L[10] := '';
+ L[11] := 'Aide > Documentation : documentation detaillee.';
+ L[12] := '';
+ InitMessageBox(MB, 'A propos d''Insurrection', '', MB_OK, MI_INFO);
+ InitDialog(MB.Base, 'A propos d''Insurrection', ABOUT_W, ABOUT_H);
+ MB.Base.HasCancel := False;
+ TX := MB.Base.X;
+ TY := MB.Base.Y;
+ DrawDialogFrame(MB.Base);
+ FireSetupAt(TX + ABOUT_W Div 2, TY + DLG_TITLE_HEIGHT + 30, 4, 26);
+ FireStep;
+ FireDraw;
+ SetColor(CLR_BORDER);
+ For I := 1 To ABOUT_LINES Do
+  OutTextXY(TX + DLG_PADDING + 10,
+   TY + DLG_TITLE_HEIGHT + 30 + 32 + 16 + (I - 1) * 14, L[I]);
+ BX := TX + (ABOUT_W - DLG_BUTTON_WIDTH) Div 2;
+ BY := TY + ABOUT_H - DLG_PADDING - DLG_BUTTON_HEIGHT;
+ DrawDialogButton(BX, BY, 'OK', True);
+ FireLast := 0;
+ While MB.Base.Visible Do Begin
+  PollEvents(Ev);
+  If Ev.Kind <> EV_NONE Then
+   HandleMessageBoxEvent(MB, Ev);
+  Now := GetTimestamp;
+  If (Now - FireLast) >= 40 Then Begin
+   FireLast := Now;
+   FireStep;
+   FireDraw;
+  End;
+ End;
+ FireReady := False;
 End;
 
 { --- Dessiner la page de demarrage --- }
@@ -275313,14 +275376,7 @@ End;
 { --- Aide > A propos de DEVENV (meme texte que le menu Aide, tag 900) --- }
 Procedure Win95ShowAbout;
 Begin
- ShowMessageBox('A propos de DEVENV',
-  'Insurrection - IDE en mode graphique' + #10 +
-  'Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')' + #10 +
-  #10 +
-  'Auteur  : Sylvain Maltais' + #10 +
-  'Web     : https://www.gladir.com/dev-cools' + #10 +
-  'Licence : MIT',
-  MB_OK, MI_INFO);
+ ShowAboutDialog;
 End;
 
 { --- Clic dans le menu Demarrer / ses sous-menus --- }
