@@ -86,7 +86,7 @@ Program TPC;
 Uses Dos;
 
 Const
- MaxSource = 262144;
+ MaxSource = 1048576;
  MaxImage = 65520;
  MaxSymbols = 4096;
  MaxFixups = 32768;
@@ -249,6 +249,7 @@ Type
   Addr: Word;
   Owner: Byte;
   Exported, HasBody: Boolean;
+  Unresolved: Boolean;       { routine declaree (forward/interface) dont le corps n'est pas encore compile }
   ForwardJump: Word;
   Value: Longint;
   StrValue: TShortString;
@@ -264,6 +265,7 @@ Type
   ByReference, ResultVariable, FarRoutine, ForwardDeclared: Boolean;
   LegacyCall: Boolean;
   AssemblerBody: Boolean;
+  InterruptRoutine, NoFrame: Boolean; { directive interrupt; assembler sans cadre de pile }
   InlineBody: Boolean;       { Procedure X; Inline(...) }
   DebugVisible: Boolean;
   DebugLine, DebugColumn: Word;
@@ -336,6 +338,8 @@ Type
   Checksum: Word;
   CodeBase, DataBase: Word;
   LibraryEntry: Word;
+  Kernel: Boolean;           { unite noyau : segment virtuel de code commencant a l'offset 0 }
+  SegBase: Word;             { debut de l'unite noyau dans le segment de code (multiple de 16) }
  End;
  TLibraryEntry = Record
   Name: String[63];
@@ -396,6 +400,8 @@ Type
   Width, Sym: Word;
   Displacement: Longint;
   Direct, OffsetValue, SegmentValue, CodeValue: Boolean;
+  LabelRef: Boolean;         { adresse = etiquette assembleur locale (+ Displacement) }
+  CodeSym: Word;             { adresse = point d'entree d'une procedure (+ Displacement) }
   Name: String[63];
  End;
  PSourceBuffer = ^TSourceBuffer;
@@ -1904,6 +1910,12 @@ Var
  ExprValue: Longint;
  Fixups: Array[1..MaxFixups] Of TAddressFixup;
  RelativeFixups: Array[1..MaxFixups] Of TRelativeFixup;
+ { References en avant vers une routine dont le corps n'est pas encore connu :
+   appel relatif (E8) ou adresse absolue (offset dans le segment de code). }
+ PendPos, PendSym: Array[1..8192] Of Word;
+ PendAbs: Array[1..8192] Of Boolean;
+ PendAdd: Array[1..8192] Of Longint;
+ PendCount: Word;
  RelativeCount: Word;
  CodeOwners, DataOwners: Array[0..MaxImage-1] Of Byte;
  Defines: Array[1..MaxDefines] Of String[63];
@@ -2636,7 +2648,15 @@ Begin
  '+':Token:=tkPlus; '-':Token:=tkMinus; '*':Token:=tkTimes;
  '/':Token:=tkSlash; '=':Token:=tkEqual; '(':Token:=tkLP;
  ')':Token:=tkRP; '[':Token:=tkLB; ']':Token:=tkRB;
- ',':Token:=tkComma; ';':Token:=tkSemi; '@':Token:=tkAt;
+ ',':Token:=tkComma; ';':Token:=tkSemi;
+ '@':Begin
+  Token:=tkAt;
+  { assembleur : @Etiquette, @01Etiquette, @@1 forment un seul identificateur }
+  If InAssembler And (UpCase(Peek) In ['A'..'Z','0'..'9','_','@']) Then Begin
+   Token:=tkIdent; TokenText:='@'; TokenIsString:=False;
+   While UpCase(Peek) In ['A'..'Z','0'..'9','_','@'] Do Begin AppendChar(TokenText,UpCase(Peek)); Advance End;
+  End;
+ End;
  '^':Begin
   { ^Z est une constante caractere (#26) sauf apres un designateur (P^) ou
     devant un identificateur de type (^String). }
@@ -3248,12 +3268,57 @@ Procedure AddSegmentRelocation(P: Word; Kind: Byte);Begin
  Relocations[RelocationCount].Segm:=0; RelocationKinds[RelocationCount]:=Kind;
 End;
 
+Procedure AddPending(P,Sym: Word; Absolute: Boolean; Add: Longint);
+Begin
+ If PendCount=8192 Then Unsupported('trop de references en avant vers des routines');
+ Inc(PendCount); PendPos[PendCount]:=P; PendSym[PendCount]:=Sym; PendAbs[PendCount]:=Absolute; PendAdd[PendCount]:=Add;
+End;
+
+Function UnitBias(U: Byte): Longint;
+{ Decalage a retirer d'une adresse de code absolue : un segment noyau virtuel
+  commence a l'offset 0 de son propre segment. }
+Begin
+ UnitBias:=0;
+ If (U<>0) And (U<=MaxUnits) Then If Units[U].Kernel Then UnitBias:=Units[U].SegBase;
+End;
+
+Procedure ResolvePending(Sym: Word);
+Var K: Word;
+Begin
+ K:=1;
+ While K<=PendCount Do Begin
+  If PendSym[K]=Sym Then Begin
+   If PendAbs[K] Then PatchWord(PendPos[K],Word(Longint(Symbols[Sym].Addr)+PendAdd[K]))
+   Else PatchJump(PendPos[K],Symbols[Sym].Addr);
+   PendPos[K]:=PendPos[PendCount]; PendSym[K]:=PendSym[PendCount]; PendAbs[K]:=PendAbs[PendCount]; PendAdd[K]:=PendAdd[PendCount];
+   Dec(PendCount);
+  End Else Inc(K);
+ End;
+End;
+
+{ AX := offset du point d'entree d'une routine, DX := CS (adresse absolue). }
+Procedure EmitProcAddress(I: Word; WithSegment: Boolean);
+Var Bias: Longint;
+Begin
+ Bias:=UnitBias(Symbols[I].Owner);
+ Emit($B8);
+ If Symbols[I].Unresolved Then Begin AddPending(CodeSize,I,True,-Bias); EmitWord(0) End
+ Else EmitWord(Word(Longint(Symbols[I].Addr)-Bias));
+ If WithSegment Then Begin
+  Emit2($8C,$CA);
+  { depuis hors du noyau : segment virtuel = CS + debut/16 }
+  If (Bias<>0) And (Symbols[I].Owner<>CurrentUnit) Then Begin Emit2($81,$C2); EmitWord(Word(Bias Shr 4)) End;
+ End;
+End;
+
 Procedure EmitLocalCall(I: Word);
 Begin
- If Symbols[I].Scope=0 Then Emit($55) { le lien statique d'une routine globale est inutilise }
- Else Begin ScopeAddress(Symbols[I].Scope); Emit($53) End;
+ { ABI Turbo Pascal 7 : une routine globale n'a pas de lien statique }
+ If Symbols[I].Scope<>0 Then Begin ScopeAddress(Symbols[I].Scope); Emit($53) End;
  If Symbols[I].FarRoutine Then Emit($0E);
- CallTo(Symbols[I].Addr);
+ If Symbols[I].Unresolved Then Begin
+  Emit($E8); AddPending(CodeSize,I,False,0); EmitWord(0);
+ End Else CallTo(Symbols[I].Addr);
  If Symbols[I].LegacyCall Then Begin Emit2($83,$C4); Emit(2) End;
 End;
 
@@ -3293,9 +3358,15 @@ Begin
  If Symbols[I].AssemblerBody And (Symbols[I].Width=1) Then Begin
   If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
  End;
- Emit2($89,$EC); Emit($5D);
+ If Symbols[I].InterruptRoutine Then Begin
+  { procedure interrupt : le corps assembleur gere les registres, IRET }
+  If Not Symbols[I].NoFrame Then Begin Emit2($89,$EC); Emit($5D) End;
+  Emit($CF); Exit;
+ End;
+ If Not Symbols[I].NoFrame Then Begin Emit2($89,$EC); Emit($5D) End;
  If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
- EmitWord(Symbols[I].ParamBytes+2); { parametres + lien statique local }
+ { parametres (+ lien statique pour une routine imbriquee) }
+ If Symbols[I].Scope<>0 Then EmitWord(Symbols[I].ParamBytes+2) Else EmitWord(Symbols[I].ParamBytes);
 End;
 
 Procedure NativeReference(U, Kind: Byte; Map, Target: Word);Begin
@@ -3325,8 +3396,13 @@ Begin
  NativeReference(Symbols[I].Owner,K,Symbols[I].NativeMap,Symbols[I].Addr);
 End;
 
+Procedure EmitBP(Reg: Byte; D: Integer); Forward;
+
 Procedure ReferencePointer(I: Word);
 Begin
+ If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) Then Begin
+  Emit($C4); EmitBP(7,SmallInt(Symbols[I].Addr)); { les di,[bp+offset] }
+ End Else
  If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope);
   Emit($36); Emit2($C4,$BF); EmitWord(Symbols[I].Addr); { les di,ss:[bx+offset] }
@@ -3432,6 +3508,8 @@ Begin
   NeedNative(Symbols[I].Owner);
   Emit($BA); AddSegmentRelocation(CodeSize,1); EmitWord(0); Emit2($8E,$C2);
   Emit($BF); NativeVarAddress(I);
+ End Else If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) Then Begin
+  Emit($8D); EmitBP(7,SmallInt(Symbols[I].Addr)); Emit($16); Emit($07); { lea di,[bp+offset]; push ss; pop es }
  End Else If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope); Emit2($81,$C3); EmitWord(Symbols[I].Addr);
   Emit2($89,$DF); Emit($16); Emit($07);
@@ -3449,6 +3527,12 @@ Procedure LoadSymbol(I: Word);Begin
  End Else If Symbols[I].ByReference Then Begin
   ReferencePointer(I); Emit($26);
   If Symbols[I].Width=1 Then Emit2($8A,$05) Else Emit2($8B,$05);
+  If Symbols[I].Width=1 Then Begin
+   If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
+  End;
+ End Else If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) Then Begin
+  If Symbols[I].Width=1 Then Emit($8A) Else Emit($8B);
+  EmitBP(0,SmallInt(Symbols[I].Addr));
   If Symbols[I].Width=1 Then Begin
    If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
   End;
@@ -3494,6 +3578,10 @@ Procedure SaveSymbol(I: Word);Begin
   ReferencePointer(I); Emit($26);
   If Symbols[I].Width=1 Then Emit2($88,$05) Else Emit2($89,$05);
   Exit;
+ End;
+ If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) Then Begin
+  If Symbols[I].Width=1 Then Emit($88) Else Emit($89);
+  EmitBP(0,SmallInt(Symbols[I].Addr)); Exit;
  End;
  If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope); Emit($36);
@@ -3623,6 +3711,24 @@ Procedure TrimSet(T,A: Word); Forward;
  Function StringBinary(LeftIsTemp: Boolean): Word; Forward;
  Procedure SetComparison(LeftType,RightType: Word; Op: Byte); Forward;
 
+Procedure AddDI(N: Word);
+{ DI := DI + N, en repliant N dans un "lea di,[bp+d]; push ss; pop es" precedent. }
+Var D: Longint;
+Begin
+ If N=0 Then Exit;
+ If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) Then Begin
+  If (Image[CodeSize-5]=$8D) And (Image[CodeSize-4]=$7E) Then Begin
+   D:=ShortInt(Image[CodeSize-3])+Longint(N);
+   If (D>=-128) And (D<=127) Then Begin Image[CodeSize-3]:=Byte(D); Exit End;
+  End;
+  If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And (Image[CodeSize-5]=$BE) Then Begin
+   D:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256)+Longint(N);
+   If (D>=-32768) And (D<=32767) Then Begin PatchWord(CodeSize-4,Word(D)); Exit End;
+  End;
+ End;
+ If N<=127 Then Begin Emit2($83,$C7); Emit(Byte(N)) End Else Begin Emit2($81,$C7); EmitWord(N) End;
+End;
+
 Function DesignatorTail(T: Word): Word;
 { Suite d'un designateur (^ . [ ]) a partir de ES:DI et du type T. }
 Var F,IndexType,Element: Word; Name: TShortString;
@@ -3642,7 +3748,7 @@ Begin
    F:=TypeExtras[T].FirstField;
    While (F<>0) And (Fields[F].Name<>Name) Do F:=Fields[F].Next;
    If F=0 Then Fail(3,'Champ inconnu: '+Name);
-   If Fields[F].Offset<>0 Then Begin Emit2($81,$C7); EmitWord(Fields[F].Offset) End;
+   AddDI(Fields[F].Offset);
    T:=Fields[F].TypeId; NextToken;
   End Else Begin
    NextToken;
@@ -3728,7 +3834,12 @@ Begin
   NextToken; Emit2($31,$C0); Emit2($31,$D2); T:=ttPointer; ExprType:=8;
  End Else If Token=tkAt Then Begin
   NextToken; If Token<>tkIdent Then Fail(83,'Variable attendue apres @');
-  Name:=TokenText; NextToken; I:=ResolveSymbol(Name); CastType:=Designator(I);
+  Name:=TokenText; NextToken; I:=ResolveSymbol(Name);
+  If Symbols[I].Kind=skProc Then Begin
+   { @Procedure : pointeur CS:offset du point d'entree }
+   EmitProcAddress(I,True); T:=ttPointer; ExprType:=8; ExprKnown:=False; Factor:=T; Exit;
+  End;
+  CastType:=Designator(I);
   Emit2($89,$F8); Emit2($8C,$C2); T:=ttPointer; ExprType:=8;
   { $T+: @ produit un pointeur sur le type de la variable au lieu de Pointer. }
   If (OptionBits And $10000<>0) And (CastType<>0) Then ExprType:=PointerTo(CastType);
@@ -4823,7 +4934,20 @@ Begin
   Need(tkLP); RequireInteger(Expression); Emit($50); Need(tkComma);
   RequireInteger(Expression); Emit($5A); Need(tkRP); StandardFunction:=8;
  End Else If (Name='ADDR') Or (Name='OFS') Or (Name='SEG') Then Begin
-  Need(tkLP); T:=VariableArgument; Need(tkRP);
+  Need(tkLP);
+  If Token=tkIdent Then A:=FindLexicalSymbol(TokenText) Else A:=0;
+  If (A<>0) And (Symbols[A].Kind=skProc) Then Begin
+   { Ofs/Seg/Addr d'une procedure : adresse de son point d'entree }
+   NextToken; Need(tkRP);
+   If Name='SEG' Then Begin
+    Emit2($8C,$C8);
+    If (UnitBias(Symbols[A].Owner)<>0) And (Symbols[A].Owner<>CurrentUnit) Then Begin Emit($05); EmitWord(Word(UnitBias(Symbols[A].Owner) Shr 4)) End;
+   End Else EmitProcAddress(A,Name='ADDR');
+   ExprKnown:=False;
+   If Name='ADDR' Then Begin ExprType:=8; StandardFunction:=8 End Else StandardFunction:=3;
+   Exit;
+  End;
+  T:=VariableArgument; Need(tkRP);
   If Name='SEG' Then Emit2($8C,$C0)
   Else Begin Emit2($89,$F8); If Name='ADDR' Then Emit2($8C,$C2) End;
   If Name='ADDR' Then StandardFunction:=8 Else StandardFunction:=3;
@@ -5319,9 +5443,9 @@ End;
 Procedure AssignToDesignator(Dest: Word);
 { ES:DI = adresse de la destination de type Dest; ":= expression" suit. }
 Var
- T: Byte; SourceType,SourceBuffer,N: Word;
+ T: Byte; SourceType,SourceBuffer,N,StartRhs,FixMark,RelMark,PendMark: Word; Simple: Boolean;
 Begin
- Emit($06); Emit($57);
+ Emit($06); Emit($57); StartRhs:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
  If Dest=0 Then Fail(26,'Affectation a une variable sans type');
  If Types[Dest].Typ In [ttFile,ttText] Then Fail(26,'Un fichier ne peut pas etre affecte');
  Need(tkAssign); T:=Expression;
@@ -5329,7 +5453,17 @@ Begin
   If ExprLiteral Then Begin LiteralToPChar; T:=ttPointer End
   Else If (T=ttArray) And IsCharArray(ExprType) Then Begin T:=ttPointer; ExprType:=12 End;
  End;
- SourceType:=ExprType; Emit($5F); Emit($07);
+ SourceType:=ExprType;
+ { second membre simple (mov ax,imm / mov ax,[bp+d] / xor ax,ax) : ES:DI n'est
+   pas modifie, inutile de le sauver sur la pile }
+ Simple:=(FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And (CodeSize>StartRhs) And
+  (((CodeSize-StartRhs=3) And ((Image[StartRhs]=$B8) Or ((Image[StartRhs]=$8B) And (Image[StartRhs+1]=$46)))) Or
+   ((CodeSize-StartRhs=4) And (Image[StartRhs]=$8B) And (Image[StartRhs+1]=$86)) Or
+   ((CodeSize-StartRhs=2) And (Image[StartRhs]=$31) And (Image[StartRhs+1]=$C0)));
+ If Simple Then Begin
+  For N:=StartRhs To CodeSize-1 Do Image[N-2]:=Image[N];
+  Dec(CodeSize,2);
+ End Else Begin Emit($5F); Emit($07) End;
  If (OptionBits And 2<>0) And (Types[Dest].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then
   RangeBounds(Types[Dest].LowBound,Types[Dest].HighBound,SourceType);
  If Types[Dest].Typ=ttString Then Begin
@@ -5511,14 +5645,14 @@ End;
 Procedure AsmStatement;
 Var Name: TShortString; A,B,C: TAsmOperand; W,K,Op,Group,InstructionLine,I,P: Word;
  LabelCount,RefCount: Word;
- Labels: Array[1..128] Of Record Name: String[63]; Address: Word; Defined: Boolean End;
- References: Array[1..256] Of Record Position,LabelIndex: Word End;
+ Labels: Array[1..1024] Of Record Name: String[63]; Address: Word; Defined: Boolean End;
+ References: Array[1..8192] Of Record Position,LabelIndex: Word; Absolute: Boolean; Addend: Integer End;
  SavedAssembler: Boolean;
 Function LabelIndex(S: TShortString): Word;
 Var J: Word;
 Begin
  For J:=1 To LabelCount Do If Labels[J].Name=S Then Begin LabelIndex:=J; Exit End;
- If LabelCount=128 Then Fail(123,'Trop de labels assembleur');
+ If LabelCount=1024 Then Fail(123,'Trop de labels assembleur');
  Inc(LabelCount); Labels[LabelCount].Name:=S; Labels[LabelCount].Defined:=False; LabelIndex:=LabelCount;
 End;
 Function ReadName: TShortString;
@@ -5535,7 +5669,7 @@ Var Id: Word;
 Begin
  AsmConstStart:=True;
  If Token In [tkConstant,tkLP,tkNot,tkMinus,tkPlus] Then Exit;
- If (TokenText='LOW') Or (TokenText='HIGH') Or (TokenText='TRUE') Or (TokenText='FALSE') Then Exit;
+ If (TokenText='LOW') Or (TokenText='HIGH') Or (TokenText='TRUE') Or (TokenText='FALSE') Or (TokenText='TYPE') Then Exit;
  If (Token=tkIdent) And (Peek<>'.') And (Peek<>'[') Then Begin
   Id:=FindSymbol(TokenText);
   If (Id<>0) And (Symbols[Id].Kind=skConst) Then Exit;
@@ -5583,6 +5717,12 @@ Begin
      Need(tkLP); W:=AsmExpr(0); Need(tkRP);
      If Name='LOW' Then V:=W And $FF Else V:=(W Shr 8) And $FF;
     End Else If Name='TRUE' Then V:=1 Else If Name='FALSE' Then V:=0
+    Else If Name='TYPE' Then Begin
+     { TYPE nom : taille du type ou de la variable }
+     Name:=ReadName; Id:=ResolveSymbol(Name);
+     If Symbols[Id].Kind In [skType,skVar] Then V:=TypeExtras[SymbolType(Id)].Size
+     Else Fail(5,'TYPE assembleur : type ou variable attendu');
+    End
     Else Begin
      Id:=ResolveSymbol(Name);
      If Symbols[Id].Kind<>skConst Then Fail(5,'Constante assembleur attendue');
@@ -5614,6 +5754,26 @@ Begin
   If Symbols[SymbolId].ByReference Then O.Width:=4;
  End;
 End;
+Procedure TypeChain;
+{ Jeton courant = nom d'un type enregistrement (apres le point) : .Type.Champ.Sous }
+Var T2,F2: Word;
+Begin
+ F2:=0; If Token=tkIdent Then F2:=FindSymbol(TokenText);
+ If (F2=0) Or (Symbols[F2].Kind<>skType) Then Fail(3,'Type assembleur inconnu: '+TokenText);
+ T2:=Symbols[F2].TypeId; NextToken;
+ While Token=tkDot Do Begin
+  If Types[T2].Typ<>ttRecord Then Break;
+  NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
+  F2:=TypeExtras[T2].FirstField; While (F2<>0) And (Fields[F2].Name<>TokenText) Do F2:=Fields[F2].Next;
+  If F2=0 Then Fail(3,'Champ assembleur inconnu');
+  Inc(O.Displacement,Fields[F2].Offset); T2:=Fields[F2].TypeId; NextToken;
+ End;
+ If Size=0 Then Begin
+  O.Width:=Types[T2].Width;
+  If Types[T2].Typ=ttArray Then O.Width:=Types[TypeExtras[T2].ElementType].Width;
+  If Types[T2].Typ=ttString Then O.Width:=1;
+ End;
+End;
 Procedure Atom;
 Begin
  If Token=tkConstant Then Begin
@@ -5622,6 +5782,11 @@ Begin
   NextToken;
  End Else Begin
   S:=ReadName; FillChar(R,SizeOf(R),0);
+  If (S[1]='@') And Not AsmRegister(S,R) And (FindSymbol(S)=0) Then Begin
+   { etiquette assembleur locale utilisee comme deplacement : [@Etiquette] }
+   If O.LabelRef Then Fail(5,'Une seule etiquette par operande');
+   O.LabelRef:=True; O.Name:=S;
+  End Else
   If AsmRegister(S,R) Then Begin
    If (R.Kind<>1) Or (R.Width<>2) Or Not (R.Reg In [3,5,6,7]) Or (Sign<0) Then Fail(5,'Registre d''adresse 8086 invalide');
    Case R.Reg Of 3:Id:=1; 5:Id:=2; 6:Id:=4; 7:Id:=8 End;
@@ -5629,6 +5794,12 @@ Begin
   End Else Begin
    Id:=ResolveSymbol(S);
    If Symbols[Id].Kind=skConst Then O.Displacement:=O.Displacement+Sign*Symbols[Id].Value
+   Else If Symbols[Id].Kind=skProc Then Begin
+    { [Proc + BX] : adresse dans le segment de code }
+    If (O.CodeSym<>0) Or (Sign<0) Then Fail(5,'Adresse assembleur invalide');
+    O.CodeSym:=Id;
+    If Token=tkDot Then Begin NextToken; TypeChain End;
+   End
    Else Begin
     If (Symbols[Id].Kind<>skVar) Or (Sign<0) Or (O.Sym<>0) Then Fail(5,'Adresse assembleur invalide');
     If Symbols[Id].Native Then Unsupported('operande assembleur de donnees Borland');
@@ -5683,10 +5854,35 @@ Begin
    O.Kind:=2; Mask:=2; O.Displacement:=SmallInt(Symbols[Id].Addr);
    If Size=0 Then O.Width:=Symbols[Id].Width;
   End Else
-  If Id=0 Then Begin O.Kind:=5; O.Name:=S End
+  If Id=0 Then Begin
+   O.Kind:=5; O.Name:=S;
+   { etiquette.Word[BX], etiquette[BX] : operande memoire dans le segment de code }
+   If (Token=tkDot) Or (Token=tkLB) Or (Size<>0) Or (O.Segment<>0) Then Begin O.Kind:=2; O.LabelRef:=True; O.Name:=S End;
+  End
   Else Begin
    If Not Resolved Then Id:=ResolveSymbol(S);
    If Symbols[Id].Kind=skConst Then Begin O.Kind:=3; O.Displacement:=Sign*Symbols[Id].Value End
+   Else If (Symbols[Id].Kind=skProc) And (Token=tkDot) Then Begin
+    { Proc.Type.Champ : champ d'un enregistrement place dans le code de la procedure }
+    O.Kind:=2; O.CodeSym:=Id; O.Name:=S; T:=0;
+    NextToken; If Token<>tkIdent Then Fail(2,'Type assembleur attendu');
+    F:=FindSymbol(TokenText);
+    If (F<>0) And (Symbols[F].Kind=skType) Then Begin
+     T:=Symbols[F].TypeId; NextToken;
+     While Token=tkDot Do Begin
+      If Types[T].Typ<>ttRecord Then Break;
+      NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
+      F:=TypeExtras[T].FirstField; While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+      If F=0 Then Fail(3,'Champ assembleur inconnu');
+      Inc(O.Displacement,Fields[F].Offset); T:=Fields[F].TypeId; NextToken;
+     End;
+     If Size=0 Then Begin
+      O.Width:=Types[T].Width;
+      If Types[T].Typ=ttArray Then O.Width:=Types[TypeExtras[T].ElementType].Width;
+      If Types[T].Typ=ttString Then O.Width:=1;
+     End;
+    End Else Fail(3,'Type ou champ assembleur inconnu: '+TokenText);
+   End
    Else If Symbols[Id].Kind=skProc Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S End
    Else If Symbols[Id].Kind=skLabel Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S End
    Else If Symbols[Id].Kind=skVar Then Begin
@@ -5722,12 +5918,30 @@ Begin
    While Token In [tkPlus,tkMinus] Do Begin If Token=tkMinus Then Sign:=-1 Else Sign:=1; NextToken; Atom End;
    Need(tkRB); Again:=True;
   End;
-  If (O.Kind=2) And (Token=tkDot) And (Peek In ['B','b','W','w','D','d']) Then Begin
-   { suffixe de taille: [BX].Word, [DI+2].Byte, Var.Word[2] }
+  If (O.Kind=2) And (Token=tkDot) Then Begin
+   { suffixe de taille: [BX].Word, [DI+2].Byte, Var.Word[2] ;
+     ou champ de type : [SI].Type.Champ, [BX].Type.Champ.Sous }
    NextToken;
-   If TokenText='BYTE' Then O.Width:=1 Else If TokenText='WORD' Then O.Width:=2
-   Else If TokenText='DWORD' Then O.Width:=4 Else Fail(5,'Suffixe de taille invalide');
-   NextToken; Again:=True;
+   If TokenText='BYTE' Then Begin O.Width:=1; NextToken End Else If TokenText='WORD' Then Begin O.Width:=2; NextToken End
+   Else If TokenText='DWORD' Then Begin O.Width:=4; NextToken End
+   Else Begin
+    F:=0; If Token=tkIdent Then F:=FindSymbol(TokenText);
+    If (F=0) Or (Symbols[F].Kind<>skType) Then Fail(5,'Suffixe de taille invalide');
+    T:=Symbols[F].TypeId; NextToken;
+    While Token=tkDot Do Begin
+     If Types[T].Typ<>ttRecord Then Break;
+     NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
+     F:=TypeExtras[T].FirstField; While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+     If F=0 Then Fail(3,'Champ assembleur inconnu');
+     Inc(O.Displacement,Fields[F].Offset); T:=Fields[F].TypeId; NextToken;
+    End;
+    If Size=0 Then Begin
+     O.Width:=Types[T].Width;
+     If Types[T].Typ=ttArray Then O.Width:=Types[TypeExtras[T].ElementType].Width;
+     If Types[T].Typ=ttString Then O.Width:=1;
+    End;
+   End;
+   Again:=True;
   End;
  Until Not Again;
  If O.Kind=2 Then Begin
@@ -5741,10 +5955,17 @@ Begin
    O.Kind:=3; O.Width:=2; O.OffsetValue:=ForceOffset; O.SegmentValue:=ForceSegment;
   End Else If ForceOffset And (O.Kind=2) And (O.Sym=0) And (Mask=2) Then Begin
    O.Kind:=3; O.Width:=2;  { OFFSET variable locale: deplacement BP constant (comme TP) }
+  End Else If ForceOffset And (O.Kind=5) And (O.Sym=0) Then Begin
+   O.Kind:=3; O.Width:=2; O.LabelRef:=True;  { OFFSET @etiquette }
+  End Else If ForceOffset And (O.Kind=2) And O.LabelRef Then Begin
+   O.Kind:=3; O.Width:=2;  { OFFSET @etiquette[+n] }
+  End Else If ForceOffset And (O.Kind=2) And (O.CodeSym<>0) Then Begin
+   O.Kind:=3; O.Width:=2; O.CodeValue:=True; O.Sym:=O.CodeSym; { OFFSET Proc.Type.Champ }
   End Else If ForceOffset And (O.Kind=5) And (O.Sym<>0) Then Begin
    O.Kind:=3; O.Width:=2; O.CodeValue:=True;  { OFFSET procedure: adresse dans le code }
   End Else Unsupported('OFFSET/SEG sans variable globale');
  End;
+ If (O.Kind=2) And (O.LabelRef Or (O.CodeSym<>0)) And (O.Segment=0) Then O.Segment:=2; { CS: automatique }
  Operand:=O;
 End;
 Procedure Prefix(O: TAsmOperand);
@@ -5756,22 +5977,35 @@ Begin
  If O.Kind=1 Then Begin Emit($C0+RegField*8+O.Reg); Exit End;
  If O.Kind<>2 Then Fail(5,'Registre ou memoire attendu');
  If O.Direct Then Mode:=0
- Else If O.Sym<>0 Then Mode:=2
+ Else If (O.Sym<>0) Or O.LabelRef Or (O.CodeSym<>0) Then Mode:=2
  Else If (O.Displacement=0) And (O.RM<>6) Then Mode:=0
  Else If (O.Displacement>=-128) And (O.Displacement<=127) Then Mode:=1 Else Mode:=2;
  Emit(Mode*64+RegField*8+O.RM);
  If O.Sym<>0 Then DataAddress(Word(Symbols[O.Sym].Addr+O.Displacement))
+ Else If O.LabelRef Then Begin
+  If RefCount=8192 Then Fail(123,'Trop de references assembleur');
+  Inc(RefCount); References[RefCount].Position:=CodeSize; References[RefCount].LabelIndex:=LabelIndex(O.Name);
+  References[RefCount].Absolute:=True; References[RefCount].Addend:=O.Displacement; EmitWord(0);
+ End
+ Else If O.CodeSym<>0 Then Begin
+  If Symbols[O.CodeSym].Unresolved Then Begin AddPending(CodeSize,O.CodeSym,True,O.Displacement-UnitBias(Symbols[O.CodeSym].Owner)); EmitWord(0) End
+  Else EmitWord(Word(Longint(Symbols[O.CodeSym].Addr)+O.Displacement-UnitBias(Symbols[O.CodeSym].Owner)));
+ End
  Else If O.Direct Or (Mode=2) Then EmitWord(Word(O.Displacement))
  Else If Mode=1 Then Emit(Byte(O.Displacement));
 End;
 Procedure Immediate(O: TAsmOperand; Size: Word);
 Begin
  If O.Kind<>3 Then Fail(5,'Operande immediat attendu');
- If O.SegmentValue Then Begin AddSegmentRelocation(CodeSize,0); EmitWord(0) End
+ If O.LabelRef Then Begin
+  If RefCount=8192 Then Fail(123,'Trop de references assembleur');
+  Inc(RefCount); References[RefCount].Position:=CodeSize; References[RefCount].LabelIndex:=LabelIndex(O.Name);
+  References[RefCount].Absolute:=True; References[RefCount].Addend:=O.Displacement; EmitWord(0);
+ End
+ Else If O.SegmentValue Then Begin AddSegmentRelocation(CodeSize,0); EmitWord(0) End
  Else If O.CodeValue Then Begin
-  If CurrentUnit<>0 Then Unsupported('OFFSET de procedure dans une unite');
-  If Not Symbols[O.Sym].HasBody Then Fail(5,'Procedure non encore definie');
-  EmitWord(Symbols[O.Sym].Addr);
+  If Symbols[O.Sym].Unresolved Then Begin AddPending(CodeSize,O.Sym,True,O.Displacement-UnitBias(Symbols[O.Sym].Owner)); EmitWord(0) End
+  Else EmitWord(Word(Longint(Symbols[O.Sym].Addr)+O.Displacement-UnitBias(Symbols[O.Sym].Owner)));
  End
  Else If O.OffsetValue Then DataAddress(Word(Symbols[O.Sym].Addr+O.Displacement))
  Else If Size=1 Then Begin If (O.Displacement<-128) Or (O.Displacement>255) Then Fail(76,'Immediat byte hors limites'); Emit(Byte(O.Displacement)) End
@@ -5795,8 +6029,8 @@ Begin
  End Else
  If O.Sym<>0 Then Begin If Symbols[O.Sym].Native Then Unsupported('saut assembleur vers Borland'); P:=CodeSize; EmitWord(0); PatchJump(P,Symbols[O.Sym].Addr) End
  Else Begin
-  If RefCount=256 Then Fail(123,'Trop de references assembleur');
-  Inc(RefCount); References[RefCount].Position:=CodeSize; References[RefCount].LabelIndex:=LabelIndex(O.Name); EmitWord(0);
+  If RefCount=8192 Then Fail(123,'Trop de references assembleur');
+  Inc(RefCount); References[RefCount].Position:=CodeSize; References[RefCount].LabelIndex:=LabelIndex(O.Name); References[RefCount].Absolute:=False; EmitWord(0);
  End;
 End;
 Function Condition(S: TShortString): Byte;
@@ -6002,7 +6236,10 @@ Begin
   Else If (Name='DB') Or (Name='DW') Or (Name='DD') Then Begin
    Repeat
     If (Name='DB') And TokenIsString Then Begin For K:=1 To Length(TokenText) Do Emit(Ord(TokenText[K])); NextToken End
-    Else Begin A:=Operand; If A.Kind<>3 Then Fail(7,'Donnee immediat attendue'); If Name='DB' Then Immediate(A,1) Else If Name='DW' Then Immediate(A,2) Else Begin EmitWord(Word(A.Displacement)); EmitWord(Word(A.Displacement Shr 16)) End End;
+    Else Begin A:=Operand;
+     If (A.Kind=5) And (A.Sym=0) Then Begin A.Kind:=3; A.LabelRef:=True; A.Width:=2 End
+     Else If (A.Kind=5) And (A.Sym<>0) And (Symbols[A.Sym].Kind=skProc) Then Begin A.Kind:=3; A.CodeValue:=True; A.Width:=2 End;
+     If A.Kind<>3 Then Fail(7,'Donnee immediat attendue'); If Name='DB' Then Immediate(A,1) Else If Name='DW' Then Immediate(A,2) Else Begin EmitWord(Word(A.Displacement)); EmitWord(Word(A.Displacement Shr 16)) End End;
     If Token<>tkComma Then Break; NextToken;
    Until False;
   End Else If Name[1]='F' Then FPU
@@ -6090,7 +6327,7 @@ Begin
    End;
   End;
  End;
- For I:=1 To RefCount Do Begin K:=References[I].LabelIndex; If Not Labels[K].Defined Then Fail(3,'Label assembleur inconnu: '+Labels[K].Name); PatchJump(References[I].Position,Labels[K].Address) End;
+ For I:=1 To RefCount Do Begin K:=References[I].LabelIndex; If Not Labels[K].Defined Then Fail(3,'Label assembleur inconnu: '+Labels[K].Name); If References[I].Absolute Then PatchWord(References[I].Position,Word(Longint(Labels[K].Address)+References[I].Addend-UnitBias(CurrentUnit))) Else PatchJump(References[I].Position,Labels[K].Address) End;
  InAssembler:=SavedAssembler; Need(tkEnd);
 End;
 
@@ -7276,10 +7513,11 @@ Begin
   { Procedure X; Inline(...): les octets sont inseres a chaque appel. }
   NextToken; Sig.StrValue:=InlineBytes(False); Need(tkSemi); Sig.InlineBody:=True;
  End;
- While (Token=tkIdent) And ((TokenText='FORWARD') Or (TokenText='NEAR') Or (TokenText='FAR') Or (TokenText='EXTERNAL') Or (TokenText='ASSEMBLER')) Do Begin
+ While (Token=tkIdent) And ((TokenText='FORWARD') Or (TokenText='NEAR') Or (TokenText='FAR') Or (TokenText='EXTERNAL') Or (TokenText='ASSEMBLER') Or (TokenText='INTERRUPT')) Do Begin
   If TokenText='FORWARD' Then IsForward:=True
   Else If TokenText='EXTERNAL' Then IsExternal:=True
   Else If TokenText='ASSEMBLER' Then Sig.AssemblerBody:=True
+  Else If TokenText='INTERRUPT' Then Begin Sig.InterruptRoutine:=True; Sig.FarRoutine:=True; HasDistance:=True End
   Else Begin
    If HasDistance Then Fail(5,'Directive de distance dupliquee');
    HasDistance:=True; Sig.FarRoutine:=TokenText='FAR';
@@ -7307,18 +7545,20 @@ Begin
   Symbols[I].ParamCount:=Sig.ParamCount; Symbols[I].ParamBytes:=Sig.ParamBytes;
   Symbols[I].FarRoutine:=Sig.FarRoutine;
   Symbols[I].AssemblerBody:=Sig.AssemblerBody;
+  Symbols[I].InterruptRoutine:=Sig.InterruptRoutine;
   Symbols[I].InlineBody:=Sig.InlineBody; Symbols[I].StrValue:=Sig.StrValue;
   For J:=1 To Sig.ParamCount Do Begin
    Symbols[I].ParamTypeIds[J]:=Sig.ParamTypeIds[J]; Symbols[I].ParamNames[J]:=Sig.ParamNames[J];
    Symbols[I].ParamTypes[J]:=Sig.ParamTypes[J]; Symbols[I].ParamWidths[J]:=Sig.ParamWidths[J];
    Symbols[I].ParamSigned[J]:=Sig.ParamSigned[J]; Symbols[I].ParamFlags[J]:=Sig.ParamFlags[J];
   End;
-  Symbols[I].Addr:=CodeSize; Symbols[I].ForwardJump:=Jump;
+  Symbols[I].Addr:=0; Symbols[I].Unresolved:=True;
  End;
  If Sig.AssemblerBody Then Symbols[I].AssemblerBody:=True;
+ If Sig.InterruptRoutine Then Begin Symbols[I].InterruptRoutine:=True; Symbols[I].FarRoutine:=True End;
  If Sig.InlineBody Then Begin Symbols[I].HasBody:=True; Symbols[I].InlineBody:=True; Symbols[I].StrValue:=Sig.StrValue; Exit End;
  If InInterface Or IsForward Then Begin Symbols[I].ForwardDeclared:=True; Exit End;
- PatchJump(Symbols[I].ForwardJump,CodeSize);
+ Symbols[I].Addr:=CodeSize; Symbols[I].Unresolved:=False; ResolvePending(I);
  Symbols[I].HasBody:=True;
  If IsExternal Then Begin
   If Symbols[I].Typ=ttReal Then Unsupported('resultat Real externe: ABI Borland non portee');
@@ -7331,7 +7571,7 @@ Begin
   Link:=4; If Symbols[I].FarRoutine Then Link:=6;
   J:=Symbols[I].ParamBytes;
   While J<>0 Do Begin
-   Emit2($FF,$B6); EmitWord(Link+J); Dec(J,2);
+   Emit2($FF,$B6); EmitWord(Link+J-2); Dec(J,2);
   End;
   Emit($9A); Inc(ObjectCallCount);
   ObjectCalls[ObjectCallCount].Name:=Name;
@@ -7339,7 +7579,7 @@ Begin
   EmitWord(0); EmitWord(0);
   Emit($5F); Emit($5E); Emit($5B); Emit($07); Emit($1F); Emit($5D);
   If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
-  EmitWord(Symbols[I].ParamBytes+2);
+  EmitWord(Symbols[I].ParamBytes);
   Exit;
  End;
  Parent:=CurrentScope; SavedProcedure:=InProcedure;
@@ -7350,7 +7590,9 @@ Begin
  FillChar(Scopes[CurrentScope].Temps,SizeOf(TTempPool),0);
  If Symbols[I].FarRoutine Then Link:=6 Else Link:=4;
  Scopes[CurrentScope].LinkOffset:=Link;
- ParamOffset:=Link+2+Symbols[I].ParamBytes;
+ { ABI Turbo Pascal 7 : lien statique seulement pour une routine imbriquee }
+ If Symbols[I].Scope<>0 Then ParamOffset:=Link+2+Symbols[I].ParamBytes
+ Else ParamOffset:=Link+Symbols[I].ParamBytes;
  For J:=1 To Symbols[I].ParamCount Do Begin
   Size:=(TypeExtras[Symbols[I].ParamTypeIds[J]].Size+1) And $FFFE;
   If Size<2 Then Size:=2; If Symbols[I].ParamFlags[J]=6 Then Size:=4;
@@ -7367,20 +7609,32 @@ Begin
  End;
  InProcedure:=True;
  If Token=tkAsm Then Symbols[I].AssemblerBody:=True;
- Emit($55); Emit2($89,$E5); StackCheckPatch:=0;
- If OptionBits And 4<>0 Then Begin
-  CallTo(RuntimeStandard[72]); StackCheckPatch:=CodeSize; EmitWord(0);
+ { Comme Turbo Pascal : une routine assembleur sans parametre ni variable
+   locale n'a ni cadre de pile ni prologue (le noyau en depend : les
+   gestionnaires d'interruption recoivent les registres intacts). }
+ Symbols[I].NoFrame:=(Symbols[I].AssemblerBody Or Symbols[I].InterruptRoutine) And
+   (Symbols[I].ParamCount=0) And (Token=tkAsm);
+ StackCheckPatch:=0; FramePatch:=0; Skip:=0;
+ If Not Symbols[I].NoFrame Then Begin
+  Emit($55); Emit2($89,$E5);
+  If OptionBits And 4<>0 Then Begin
+   CallTo(RuntimeStandard[72]); StackCheckPatch:=CodeSize; EmitWord(0);
+  End;
+  Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0);
+  { saut des declarations (routines imbriquees) seulement s'il y en a }
+  If Token In [tkConst,tkType,tkVar,tkProcedure,tkFunction,tkLabel] Then Begin
+   Skip:=Jump; DeclarationPart; PatchJump(Skip,CodeSize);
+  End;
  End;
- Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0);
- Skip:=Jump; DeclarationPart; PatchJump(Skip,CodeSize);
  For J:=1 To SymbolCount Do If (Symbols[J].Owner=CurrentUnit) And
    (Symbols[J].Scope=CurrentScope) And (Symbols[J].Kind=skProc) And
    Not Symbols[J].HasBody Then Fail(59,Symbols[J].Name);
  If Token=tkAsm Then Symbols[I].AssemblerBody:=True;
  Statement; ProcedureExit; CheckLabels(CurrentScope);
  { La taille de la frame inclut les temporaires alloues par les WITH. }
- PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
+ If FramePatch<>0 Then PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
  If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,Scopes[CurrentScope].LocalSize+256);
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',CodeSize-Symbols[I].Addr);
  CurrentScope:=Parent; InProcedure:=SavedProcedure; Need(tkSemi);
 End;
 
@@ -10913,7 +11167,7 @@ Begin
  OverlaySelected:=[];
  InitTypes; ScopeCount:=0; CurrentScope:=0; FillChar(Dictionary,SizeOf(Dictionary),0);
  FillChar(Scopes,SizeOf(Scopes),0);
- RelativeCount:=0; UnitOutput:=False;
+ RelativeCount:=0; UnitOutput:=False; PendCount:=0;
  NativeNeeded:=False; NativeRefCount:=0; RelocationCount:=0; NativeInitCount:=0;
  HeapNeeded:=False;
  ObjectCount:=0; ObjectCallCount:=0; ObjectSegmentCount:=0;
@@ -10981,7 +11235,7 @@ Begin
  If E<>0 Then Fail(15,'Fichier introuvable: '+SourceName);
  SourceSize:=FileSize(F);
  If SourceSize>MaxSource Then Begin
-  Close(F); Fail(48,'source > 256 Ko')
+  Close(F); Fail(48,'source > 1 Mo')
  End;
  E:=ReadWhole(F); {$I-} Close(F); If IOResult<>0 Then E:=1; {$I+}
  If E<>0 Then Fail(15,'Lecture du source impossible');
