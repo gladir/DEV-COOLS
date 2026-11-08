@@ -13282,6 +13282,9 @@ Type
  End;
 Var
  KtDir, KtScriptFile, KtImagePath, KtBootImg: String;
+ KtVScr: Boolean;
+ KtFill: Integer;
+ KtFillOn: Boolean;
  KtSteps: LongInt;
  KtTraceN: Integer;
  KtIntOn: Boolean;
@@ -13392,6 +13395,14 @@ Begin
   { amorcage reel d une image existante (disquette 1,44 Mo ou disque dur) }
   If Val1 = '' Then FatalError('/KTBOOTIMG:fichier.img attendu');
   KtBoot := True; KtBootImg := Val1;
+ End Else If Key = 'KTFILL' Then Begin
+  Val(Val1, KtFill, Err);
+  If (Err <> 0) Or (KtFill < 0) Or (KtFill > 255) Then
+   FatalError('/KTFILL:n attendu (0..255)');
+  KtFillOn := True;
+ End Else If Key = 'KTVSCR' Then Begin
+  { frappes injectees comme le fait l onglet emulateur de l IDE }
+  KtVScr := True;
  End Else If Key = 'KTBOOT' Then Begin
   KtBoot := True; KtHard := True;
  End Else If Key = 'KTIMAGE' Then Begin
@@ -227682,9 +227693,15 @@ Begin
   End;
   { injection des frappes en attente quand le tampon clavier BIOS est vide }
   If (KtKeyHead <> KtKeyTail) And
-     (Emu_ReadWord(P.CPU, $40, $1A) = Emu_ReadWord(P.CPU, $40, $1C)) Then Begin
-   Kt_PushKey(P, EmuKey_AsciiToScan(KtKeys[KtKeyTail]),
-    Ord(KtKeys[KtKeyTail]));
+     (Emu_ReadWord(P.CPU, $40, $1A) = Emu_ReadWord(P.CPU, $40, $1C)) And
+     ((Not KtVScr) Or (Not EmuVScr_HasKey(P))) Then Begin
+   If KtVScr Then
+    { meme chemin que l onglet emulateur de l IDE : file de touches de }
+    { l ecran virtuel, AL=code ASCII sans code de balayage }
+    EmuVScr_PushKey(P, Ord(KtKeys[KtKeyTail]))
+   Else
+    Kt_PushKey(P, EmuKey_AsciiToScan(KtKeys[KtKeyTail]),
+     Ord(KtKeys[KtKeyTail]));
    KtKeyTail := (KtKeyTail + 1) Mod KT_MAXKEYS;
    P.CPU.Halted := False;
   End;
@@ -227946,6 +227963,8 @@ Var
  ScriptF: Text;
  Continue_: Boolean;
  SlotIdx: Byte;
+ FillSeg: Integer;
+ FillOfs: LongInt;
 Begin
  If Not Kt_DirOk(KtDir) Then Begin
   KtOut('KERNELTEST: dossier introuvable : ' + KtDir); Halt(1);
@@ -228028,6 +228047,16 @@ Begin
  If Not EmuPanel.CPU.MemReady Then Begin
   KtOut('KERNELTEST: memoire emulee indisponible'); Halt(1);
  End;
+ { /KTFILL:n : remplit la memoire conventionnelle (hors table des vecteurs }
+ { et BDA) avec l octet hh avant l amorcage - detecte les programmes qui    }
+ { dependent de memoire non initialisee (une machine reelle ou l IDE n a    }
+ { pas toujours de la memoire a zero). }
+ If KtFillOn Then
+  For FillSeg := 0 To 9 Do
+   For FillOfs := 0 To 65535 Do
+    If (FillSeg > 0) Or (FillOfs >= $500) Then
+     Emu_WriteByte(EmuPanel.CPU, Word(FillSeg * $1000), Word(FillOfs),
+      Byte(KtFill));
  EmuBootActive := True;
  EmuFakeDosSuppressed := True;   { INT 21h sans vecteur noyau => CF,
    pas de faux DOS }
