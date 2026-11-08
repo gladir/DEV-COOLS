@@ -6181,7 +6181,12 @@ Begin
    PatchJump(P,CodeSize); Emit2($89,$F0); CallTo(RtlTarget(RuntimeString)); Emit($1F);
   End Else Begin
   Case T Of
-  ttString:Begin Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeString)); Emit($1F) End;
+  ttString:Begin
+   { chaine du segment de donnees ("mov ax,imm16; mov dx,ds") : DS est deja le bon segment, pas de push/pop ds }
+   If (CodeSize>=5) And (Image[CodeSize-5]=$B8) And (Image[CodeSize-2]=$8C) And (Image[CodeSize-1]=$DA) And
+      (LastJumpTarget<CodeSize-2) Then Begin Dec(CodeSize,2); CallTo(RtlTarget(RuntimeString)) End
+   Else Begin Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeString)); Emit($1F) End;
+  End;
   ttChar:CallTo(RtlTarget(RuntimeChar));
   ttPointer,ttArray:Begin
    If (T=ttArray) And (Types[ExprType].Typ=ttArray) And (TypeExtras[ExprType].ElementType=6) And

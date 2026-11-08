@@ -66,6 +66,9 @@ Donnees
 -------
 * Chaines litterales identiques partagees (dans la meme unite).
 * StringArg255 / StringAssign255 : appel sans mots en ligne pour string[255].
+* Write/WriteLn d'une chaine du segment de donnees (litterale ou variable globale) : "mov ax,imm16 ; call RuntimeString"
+  (le push ds / mov ds,dx / pop ds et le mov dx,ds sont supprimes : DS est deja le segment de donnees),
+  6 octets de moins par instruction ; COMMAND.PAS gagne ~2 Ko.
 
 Edition de liens
 ----------------
