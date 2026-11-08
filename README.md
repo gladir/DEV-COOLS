@@ -576,6 +576,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Delphi (Object Pascal) pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>DEVENV.PAS</b></td>
+			<td>Cette commande permet de lancer l'application Insurrection, un clone de Visual Studio.</td>
+		</tr>
+		<tr>
 			<td><b>DEVPAC.PAS</b></td>
 			<td>Cette commande permet de lancer un clone graphique de l'environnement de développement Devpac (HiSoft) pour Atari ST et Commodore Amiga avec assembleur 68000, débogueur et émulateur intégré.</td>
 		</tr>
