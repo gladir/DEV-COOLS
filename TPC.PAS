@@ -2887,6 +2887,33 @@ Begin
  End;
 End;
 
+Function RightLocalWord(PushPos: Word; Var D: Longint): Boolean;
+{ Le membre droit d'une operation binaire se resume a "mov ax,[bp+d]" (mot de la frame) emis
+  juste apres le "push ax" (PushPos-1) : retire le push et le mov, rend d. }
+Begin
+ RightLocalWord:=False;
+ If (PushPos=0) Or (Image[PushPos-1]<>$50) Or (LastJumpTarget>=PushPos) Then Exit;
+ If (CodeSize-PushPos=3) And (Image[PushPos]=$8B) And (Image[PushPos+1]=$46) Then Begin
+  D:=ShortInt(Image[PushPos+2]); CodeSize:=PushPos-1; RightLocalWord:=True;
+ End Else If (CodeSize-PushPos=4) And (Image[PushPos]=$8B) And (Image[PushPos+1]=$86) Then Begin
+  D:=SmallInt(Image[PushPos+2]+Word(Image[PushPos+3])*256); CodeSize:=PushPos-1; RightLocalWord:=True;
+ End;
+End;
+
+Function RightLocalByte(PushPos: Word; Var D: Longint): Boolean;
+{ Idem pour "mov al,[bp+d]; xor ah,ah" (octet non signe de la frame). }
+Begin
+ RightLocalByte:=False;
+ If (PushPos=0) Or (Image[PushPos-1]<>$50) Or (LastJumpTarget>=PushPos) Then Exit;
+ If (CodeSize-PushPos=5) And (Image[PushPos]=$8A) And (Image[PushPos+1]=$46) And
+    (Image[PushPos+3]=$30) And (Image[PushPos+4]=$E4) Then Begin
+  D:=ShortInt(Image[PushPos+2]); CodeSize:=PushPos-1; RightLocalByte:=True;
+ End Else If (CodeSize-PushPos=6) And (Image[PushPos]=$8A) And (Image[PushPos+1]=$86) And
+    (Image[PushPos+4]=$30) And (Image[PushPos+5]=$E4) Then Begin
+  D:=SmallInt(Image[PushPos+2]+Word(Image[PushPos+3])*256); CodeSize:=PushPos-1; RightLocalByte:=True;
+ End;
+End;
+
 Function JumpZeroKeep: Word;Begin
  { AX doit rester le resultat booleen (0) a la cible: pas de raccourci. }
  Emit2($09,$C0); Emit2($75,$03); JumpZeroKeep:=Jump;
@@ -4345,7 +4372,7 @@ End;
 Function Term: Byte;
 Var
  T, R, Op: Byte; RightKnown,MixedWide: Boolean; RightValue: Longint;
- Skip,ShiftLoop,CV: Word; ConstOp: Boolean;
+ Skip,ShiftLoop,CV,PushPos: Word; ConstOp,MemOp: Boolean; MD: Longint;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
  LeftKnown: Boolean; LeftValue: Longint; Check: Real;
@@ -4366,6 +4393,7 @@ Begin
   If ShortCircuit Then Skip:=JumpZeroKeep;
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
   If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
+  PushPos:=CodeSize;
   NextToken; R:=Factor; ExprLiteral:=False;
   RightKnown:=ExprKnown; RightValue:=ExprValue;
   { Word op Integer (signes differents, ni constante positive): Longint comme TP }
@@ -4402,15 +4430,20 @@ Begin
    End;
   End Else Begin
   ConstOp:=(Op=tkAnd) And TailConst(CV);
-  If Not ConstOp Then Begin Emit2($89,$C3); Emit($58) End;
+  MemOp:=False;
+  If Not ConstOp And (Op In [tkAnd,tkTimes]) Then MemOp:=(T=ttInteger) And (R=ttInteger) And (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
+  If Not ConstOp And Not MemOp Then Begin Emit2($89,$C3); Emit($58) End;
   If Op=tkAnd Then Begin
    If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,'Types incompatibles');
-   If ConstOp Then Begin Emit($25); EmitWord(CV) End Else Emit2($21,$D8);
+   If ConstOp Then Begin Emit($25); EmitWord(CV) End Else If MemOp Then Begin Emit($23); EmitBP(0,SmallInt(MD)) End Else Emit2($21,$D8);
   End Else
   Begin
    RequireInteger(T); RequireInteger(R);
    Case Op Of
-   tkTimes:Begin Emit2($F7,$EB); OverflowCheck(LeftUnsigned And ExprUnsigned) End;
+   tkTimes:Begin
+    If MemOp Then Begin Emit($F7); EmitBP(5,SmallInt(MD)) End Else Emit2($F7,$EB);
+    OverflowCheck(LeftUnsigned And ExprUnsigned);
+   End;
    tkDiv,tkMod:
    Begin
     Emit2($09,$DB); Emit2($75,6); LoadImmediate(200); CallTo(RtlTarget(RuntimeError));
@@ -4465,7 +4498,7 @@ End;
 Function SimpleExpression: Byte;
 Var
  T,R,Op,Sign: Byte;
- Skip,CV: Word; ConstOp: Boolean;
+ Skip,CV,PushPos: Word; ConstOp,MemOp: Boolean; MD: Longint;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
  LeftKnown: Boolean; LeftValue: Longint; Check: Real;
@@ -4549,6 +4582,7 @@ Begin
   End;
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
   If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
+  PushPos:=CodeSize;
   NextToken; R:=Term; ExprLiteral:=False;
   RightKnown:=ExprKnown; RightValue:=ExprValue;
   If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And (Op In [tkPlus,tkMinus]) And
@@ -4562,24 +4596,27 @@ Begin
    T:=ttReal; Continue;
   End;
   WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight Or MixedWide;
-  ConstOp:=False;
+  ConstOp:=False; MemOp:=False;
   If WideResult Then Begin
    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
    If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,$D2) Else Emit($99);
   End Else Begin
    ConstOp:=TailConst(CV);
-   If Not ConstOp Then Begin Emit2($89,$C3); Emit($58) End;
+   If Not ConstOp Then MemOp:=(T=ttInteger) And (R=ttInteger) And (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
+   If Not ConstOp And Not MemOp Then Begin Emit2($89,$C3); Emit($58) End;
   End;
   If Op In [tkOr,tkXor] Then Begin
    If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,'Types incompatibles');
    If ConstOp Then Begin If Op=tkOr Then Emit($0D) Else Emit($35); EmitWord(CV) End
+   Else If MemOp Then Begin If Op=tkOr Then Emit($0B) Else Emit($33); EmitBP(0,SmallInt(MD)) End
    Else If Op=tkOr Then Begin Emit2($09,$D8); If WideResult Then Emit2($09,$CA) End
    Else Begin Emit2($31,$D8); If WideResult Then Emit2($31,$CA) End;
   End Else
   Begin
    RequireInteger(T); RequireInteger(R);
    If ConstOp Then Begin If Op=tkPlus Then Emit($05) Else Emit($2D); EmitWord(CV) End
+   Else If MemOp Then Begin If Op=tkPlus Then Emit($03) Else Emit($2B); EmitBP(0,SmallInt(MD)) End
    Else If Op=tkPlus Then Begin Emit2($01,$D8); If WideResult Then Emit2($11,$CA) End
    Else Begin Emit2($29,$D8); If WideResult Then Emit2($19,$CA) End;
    If Not WideResult Then OverflowCheck(LeftUnsigned And ExprUnsigned);
@@ -4607,7 +4644,7 @@ End;
 
 Function Expression: Byte;
 Var T,R,Op,Jcc,HighJcc: Byte; LeftType: Word; LeftUnsigned,WideLeft,WideRight,Wide: Boolean;
- P,Q,H,CV: Word;
+ P,Q,H,CV,PushPos: Word; MD: Longint;
 Begin
  T:=SimpleExpression;
  If Token=tkIn Then Begin
@@ -4635,6 +4672,7 @@ Begin
   WideLeft:=(T=ttPointer) Or ((T=ttInteger) And (Types[LeftType].Width=4));
   Op:=Token;
   If T=ttReal Then PushReal Else Begin If WideLeft Or (T In [ttString,ttSet,ttArray]) Then Emit($52); Emit($50) End;
+  PushPos:=CodeSize;
   NextToken; R:=SimpleExpression; ExprLiteral:=False;
   If (T=ttChar) And (R=ttString) Then Begin
    Emit($58); StringFromChar; Emit($52); Emit($50); T:=ttString; LeftType:=7;
@@ -4705,6 +4743,10 @@ Begin
     T:=ttBoolean; ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=T; Exit;
    End;
    If TailConst(CV) Then Begin Emit($3D); EmitWord(CV) End
+   Else If (T=ttInteger) And (R=ttInteger) And (Types[LeftType].Width=2) And (Types[ExprType].Width=2) And
+           RightLocalWord(PushPos,MD) Then Begin Emit($3B); EmitBP(0,SmallInt(MD)) End
+   Else If (T In [ttChar,ttBoolean,ttEnum]) And (Types[LeftType].Width=1) And (Types[ExprType].Width=1) And
+           RightLocalByte(PushPos,MD) Then Begin Emit($3A); EmitBP(0,SmallInt(MD)) End
    Else Begin Emit2($89,$C3); Emit($58); Emit2($39,$D8) End;
    If (T In [ttChar,ttBoolean,ttEnum]) Or (LeftUnsigned And (ExprUnsigned Or (ExprKnown And (ExprValue>=0)))) Then
     Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76 End;
