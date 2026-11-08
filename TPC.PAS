@@ -5294,7 +5294,7 @@ Begin
 End;
 
 Function StandardFunction(Name: TShortString): Word;
-Var T,A,P,Q: Word; ScopedInput,Lcl: Boolean;
+Var T,A,P,Q,P2: Word; ScopedInput,Lcl: Boolean;
 Begin
  If (Name='SQRT') Or (Name='SIN') Or (Name='COS') Or (Name='ARCTAN') Or (Name='LN') Or (Name='EXP') Then Begin
   Need(tkLP); T:=Expression; Need(tkRP); ToReal(ExprType);
@@ -5350,7 +5350,8 @@ Begin
    Emit($3D); EmitWord(26); Q:=JumpIf($75);
    If Name='SEEKEOF' Then Begin Emit($3D); EmitWord(32); A:=JumpIf($76) End
    Else Begin
-    Emit($3D); EmitWord(32); Emit2($74,8); Emit($3D); EmitWord(9); A:=JumpIf($74);
+    Emit($3D); EmitWord(32); P2:=JumpIf($75); Emit($3D); EmitWord(9); A:=JumpIf($74);
+    PatchJump(P2,CodeSize);
    End;
    CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(P); PatchJump(A,CodeSize); PatchJump(Q,CodeSize);
   End;
@@ -5688,9 +5689,9 @@ Begin
         Emit2($39,$DA); Q:=JumpIf($74);
         If Types[T].Width=1 Then Begin
          Emit($3D); EmitWord(Word(Types[T].LowBound));
-         If Types[T].Signed Then Emit2($7D,3) Else R:=JumpIf($73);
+         If Types[T].Signed Then R:=JumpIf($7D) Else R:=JumpIf($73);
          Emit($3D); EmitWord(Word(Types[T].HighBound));
-         If Types[T].Signed Then Emit2($7E,3) Else A:=JumpIf($76);
+         If Types[T].Signed Then A:=JumpIf($7E) Else A:=JumpIf($76);
         End;
        End;
        Done:=Jump; PatchJump(P,CodeSize); If Q<>0 Then PatchJump(Q,CodeSize);
@@ -5783,7 +5784,8 @@ Begin
   If (Types[T].Width=2) And (OptionBits And 2=0) Then OverflowCheck(Not Types[T].Signed);
   If OptionBits And 2<>0 Then Begin
    If Types[T].Width>=2 Then Begin
-    If Types[T].Signed Then Emit2($71,3) Else P:=JumpIf($73); Q:=Jump;
+    If Types[T].Signed Then P:=JumpIf($71) Else P:=JumpIf($73);
+    Q:=Jump;
     PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError)); PatchJump(Q,CodeSize);
    End;
    If Types[T].Width=1 Then A:=1 Else A:=T;
@@ -5856,9 +5858,9 @@ Begin
    Emit2($39,$DA); P:=JumpIf($74); Q:=0; R:=0;
    If Types[T].Width=1 Then Begin
     Emit($3D); EmitWord(Word(Types[T].LowBound));
-    If Types[T].Signed Then Emit2($7D,3) Else Q:=JumpIf($73);
+    If Types[T].Signed Then Q:=JumpIf($7D) Else Q:=JumpIf($73);
     Emit($3D); EmitWord(Word(Types[T].HighBound));
-    If Types[T].Signed Then Emit2($7E,3) Else R:=JumpIf($76);
+    If Types[T].Signed Then R:=JumpIf($7E) Else R:=JumpIf($76);
    End;
    Done:=Jump; PatchJump(P,CodeSize);
    If Q<>0 Then PatchJump(Q,CodeSize); If R<>0 Then PatchJump(R,CodeSize);
@@ -6895,7 +6897,7 @@ End;
 
 Procedure ForLongint(I: Word);
 { FOR sur une variable Longint: la borne (hi,lo) reste sur la pile. }
-Var Start,P1,P2,P3,Q1,ContinueAt: Word; Direction,Ignored: Byte;
+Var Start,P1,P2,P3,Q1,S1,ContinueAt: Word; Direction,Ignored: Byte;
 Procedure Extend;
 Begin If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End End;
 Begin
@@ -6917,8 +6919,9 @@ Begin
  PatchJump(P1,CodeSize); LoopEnter; Statement;
  ContinueAt:=CodeSize;
  { Egalite avec la borne testee AVANT l'increment (pas de debordement). }
- Load32(I); Emit2($89,$E3); Emit($36); Emit2($3B,$57); Emit(2); Emit2($75,8);
+ Load32(I); Emit2($89,$E3); Emit($36); Emit2($3B,$57); Emit(2); S1:=JumpIf($74);
  Emit($36); Emit2($3B,$07); Q1:=JumpIf($75);
+ PatchJump(S1,CodeSize);
  If Direction=tkTo Then Begin Emit($05); EmitWord(1); Emit2($83,$D2); Emit(0) End
  Else Begin Emit($2D); EmitWord(1); Emit2($83,$DA); Emit(0) End;
  Store32(I); JumpTo(Start);
