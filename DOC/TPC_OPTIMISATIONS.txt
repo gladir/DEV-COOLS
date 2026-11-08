@@ -80,3 +80,36 @@ Correction de comportement (pas une optimisation)
 -------------------------------------------------
 * Un produit de constantes entieres qui deborde 16 bits (30*4096) devient une constante Longint (122880) au lieu d'etre
   tronque a 16 bits (-8192), comme Turbo Pascal 7.
+
+Code de plus de 64 Ko : mode multi-segments
+-------------------------------------------
+Un EXE MZ de TPC n'avait qu'un seul segment de code (65 520 octets, erreur 48 au-dela). Quand le code deborde
+apres l'edition de liens intelligente, TPC bascule automatiquement en mode multi-segments, comme TP 7 qui
+place chaque unite dans son propre segment ; les programmes qui tiennent dans 64 Ko produisent exactement les
+memes EXE qu'avant (le mode n'est jamais active pour eux).
+* Detection : la passe d'analyse deborde (Overflowed) ; apres SmartLink, si une passe deborde encore, le mode
+  est active et les passes reprennent a zero. Variables d'environnement : TPC_NOMULTI (desactive le mode, erreur 48
+  comme avant), TPC_SEGSIZE=n (force le mode, segments d'environ n octets, 2000..65504, pour essayer le
+  mecanisme sur de petits programmes), TPC_SIZES (taille et segment de chaque routine, taille de chaque segment),
+  TPC_PASSES (detail des passes).
+* Routines : toute routine globale (non imbriquee) devient FAR : retour RETF, appel "PUSH CS ; CALL near" dans le
+  segment de la routine, "CALL FAR seg:off" vers un autre segment (segment relocalise par la table MZ, kind 8+n ;
+  une routine pas encore definie est resolue a l'edition de liens par CodeRefs). Les routines imbriquees restent
+  NEAR dans le segment de leur parent. @Proc, Ofs/Seg, adresses en assembleur : offset et segment de la routine
+  visee. Blocs d'initialisation d'unites : RETF, appeles par le segment du corps principal. Crochet de sortie de
+  Crt (CrtHook) : pointeur FAR de 4 octets, appele par "CALL FAR [hook]". Le demarrage (segment 0) saute au corps
+  principal par un JMP FAR.
+* Repartition (une seule passe) : le code est compile une fois ; avant chaque routine globale, si sa taille (mesuree
+  a la passe precedente, plus 6 % + 32 octets) ne tient plus dans le segment courant, le segment est ferme et un
+  nouveau commence par une copie du runtime (octets 0..RuntimeEnd-1, avec leurs fixups de donnees et
+  relocalisations : memes decalages dans chaque segment, donc les appels proches vers le runtime, StackCheck et
+  StringArg lisant leurs mots en ligne, fonctionnent partout). Pas de changement de segment dans le code qui
+  declenche la compilation du runtime Real (SegDepth). Un segment trop petit (SegTooBig) augmente la marge
+  (SegReserve) et refait une passe. Les donnees (un seul segment, DS) ne sont jamais dupliquees.
+* Edition de liens (MultiSegLoad / WriteExecutable) : segments a des frontieres de paragraphe consecutives,
+  fixups de donnees appliques a chaque segment (FinalDataAddress), relocalisations MZ rebasees, puis les donnees.
+  Les erreurs d'execution affichent le segment du code ("Erreur d'execution 200 a 07D8:1C28." : CS - PSP - 16).
+* Limites : pas d'unites TPU natives Borland, d'OBJ ($L), d'overlays, de map (-G) ni d'infos de debogage dans
+  l'EXE dans ce mode (erreur 48 explicite) ; les TPU des unites sources ne sont pas ecrits ; au plus 32 segments ;
+  une routine globale ne peut pas depasser un segment ; les adresses de debogage sont relatives a leur segment.
+* Tests : TESTS/TPC_MULTISEG/run_tests.sh (MSDOS0=chemin pour FDISK, FORMAT et LINK de MSDOS-0).
