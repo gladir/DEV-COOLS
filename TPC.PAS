@@ -5075,7 +5075,8 @@ Begin
      N:=(TypeExtras[T].Size+1) And $FFFE;
      If N<2 Then N:=2;
      { copie sur la pile par le runtime: call StringArg/BlockArg; dw N; dw capacite|taille }
-     If Types[T].Typ=ttString Then Begin CallTo(RtlTarget(RuntimeStandard[79])); EmitWord(N); EmitWord(Types[T].Capacity) End
+     If (Types[T].Typ=ttString) And (Types[T].Capacity=255) Then CallTo(RtlTarget(RuntimeStandard[82]))
+     Else If Types[T].Typ=ttString Then Begin CallTo(RtlTarget(RuntimeStandard[79])); EmitWord(N); EmitWord(Types[T].Capacity) End
      Else Begin CallTo(RtlTarget(RuntimeStandard[80])); EmitWord(N); EmitWord(TypeExtras[T].Size) End;
     End Else Begin
      { variable de la frame : push [bp+d] directement }
@@ -6010,7 +6011,8 @@ Begin
    Emit($26); Emit2($88,$45); Emit(1);
    Emit($26); Emit2($C6,$05); Emit(1);
   End Else If T=ttString Then Begin
-   CallTo(RtlTarget(RuntimeStandard[81])); EmitWord(Types[Dest].Capacity); { StringAssign ES:DI := DX:AX }
+   If Types[Dest].Capacity=255 Then CallTo(RtlTarget(RuntimeStandard[83]))
+   Else Begin CallTo(RtlTarget(RuntimeStandard[81])); EmitWord(Types[Dest].Capacity) End; { StringAssign ES:DI := DX:AX }
   End Else Fail(26,'Chaine attendue');
  End Else If Types[Dest].Typ=ttSet Then Begin
   If Not CompatibleTypes(Dest,SourceType) Then Fail(26,'Affectation set incompatible');
@@ -11809,6 +11811,16 @@ Begin
  Emit($2E); Emit2($8B,$4F); Emit(2); Emit2($83,$C3); Emit(4); Emit($53);
  Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);
  Emit2($F3,$A4); Emit($07); Emit($1F); Emit($C3);
+ { StringArg255 [82] : copie sur la pile d'une chaine de capacite 255 (DX:AX), sans mots en ligne }
+ RuntimeStandard[82]:=CodeSize; Emit($5B); Emit2($89,$C6);
+ Emit2($81,$EC); EmitWord(256); Emit2($89,$E7); Emit($B9); EmitWord(255); Emit($53);
+ Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);
+ Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8); Emit($AA); Emit2($89,$C1);
+ Emit2($F3,$A4); Emit($07); Emit($1F); Emit($C3);
+ { StringAssign255 [83] : ES:DI := chaine DX:AX tronquee a 255 }
+ RuntimeStandard[83]:=CodeSize; Emit($B9); EmitWord(255); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
+ Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8); Emit($AA); Emit2($89,$C1);
+ Emit2($F3,$A4); Emit($1F); Emit($C3);
  RuntimeBodyEnd:=CodeSize;
  PatchJump(BufferedCharPatch,RuntimeStandard[50]);
  PatchJump(BufferedHaltPatch,RuntimeStandard[55]);
