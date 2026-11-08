@@ -262904,6 +262904,9 @@ Begin NesActive := False;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  End;
+ { Amorcage reel (MBR/VBR) : l ecran appartient a la machine invitee, comme apres un POST - on efface les
+   lignes d information de l onglet pour ne pas les melanger avec les messages du systeme amorce. }
+ If EmuBootActive Then EmuVScr_Clear(P);
  { Dumper les bytes bruts du segment de code AVANT execution }
  {$I-} Assign(EmuDumpF, 'EMUCODE.LOG'); Rewrite(EmuDumpF); {$I+}
  If IOResult = 0 Then Begin
