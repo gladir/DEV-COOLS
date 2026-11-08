@@ -3695,6 +3695,34 @@ Begin
  Else Begin Emit($86 Or (Reg Shl 3)); EmitWord(Word(D)) End;
 End;
 
+Function TakeLeaBP: Longint;
+{ Retire le "lea di,[bp+d]; push ss; pop es" qui termine le code et rend d. }
+Var N: Word;
+Begin
+ N:=TailLeaBP;
+ If N=5 Then TakeLeaBP:=ShortInt(Image[CodeSize-3]) Else TakeLeaBP:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256);
+ Dec(CodeSize,N);
+End;
+
+Procedure EmitBPDisp(Opcode,Reg: Byte; D: Longint);
+{ Opcode ModRM[bp+D] ; D hors limites 16 bits : impossible (appelant verifie). }
+Begin
+ Emit(Opcode); EmitBP(Reg,SmallInt(D));
+End;
+
+Function DirectLocalOK(T: Word): Boolean;
+{ La destination/source de type T est accessible directement par [bp+d] ? }
+Var N: Word;
+Begin
+ DirectLocalOK:=False; N:=TailLeaBP;
+ If N=0 Then Exit;
+ If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer]) Or Not (Types[T].Width In [1,2,4]) Then Exit;
+ If N=6 Then Begin
+  If SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256)>32760 Then Exit;
+ End;
+ DirectLocalOK:=True;
+End;
+
 Procedure LoadScalar(I: Word);
 { AX (DX:AX) := variable scalaire simple. }
 Var T: Word; W: Byte;
@@ -4044,10 +4072,18 @@ Begin
 End;
 
 Procedure LoadDesignator(T: Word);
+Var D: Longint;
 Begin
  If T=0 Then Fail(42,'Variable sans type utilisee comme valeur');
  If Types[T].Typ In [ttString,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal] Then Begin
   EmitAddrAXDX;
+ End Else If DirectLocalOK(T) Then Begin
+  { variable de la frame : mov ax,[bp+d] directement }
+  D:=TakeLeaBP;
+  If Types[T].Width=1 Then EmitBPDisp($8A,0,D) Else EmitBPDisp($8B,0,D);
+  If Types[T].Width=1 Then Begin
+   If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
+  End Else If Types[T].Width=4 Then EmitBPDisp($8B,2,D+2);
  End Else Begin
   Emit($26);
   If Types[T].Width=1 Then Emit2($8A,$05) Else Emit2($8B,$05);
@@ -5698,10 +5734,14 @@ End;
 Procedure AssignToDesignator(Dest: Word);
 { ES:DI = adresse de la destination de type Dest; ":= expression" suit. }
 Var
- T: Byte; SourceType,SourceBuffer,N,StartRhs,FixMark,RelMark,PendMark: Word; Simple: Boolean;
+ T: Byte; SourceType,SourceBuffer,N,StartRhs,FixMark,RelMark,PendMark: Word; Simple,Direct: Boolean;
+ DispD: Longint;
 Begin
- Emit($06); Emit($57); StartRhs:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
  If Dest=0 Then Fail(26,'Affectation a une variable sans type');
+ { variable scalaire de la frame : la destination est adressee directement par [bp+d] }
+ Direct:=DirectLocalOK(Dest);
+ If Direct Then DispD:=TakeLeaBP Else Begin Emit($06); Emit($57) End;
+ StartRhs:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
  If Types[Dest].Typ In [ttFile,ttText] Then Fail(26,'Un fichier ne peut pas etre affecte');
  Need(tkAssign); T:=Expression;
  If IsCharPointer(Dest) And ExtendedSyntax Then Begin
@@ -5711,11 +5751,12 @@ Begin
  SourceType:=ExprType;
  { second membre simple (mov ax,imm / mov ax,[bp+d] / xor ax,ax) : ES:DI n'est
    pas modifie, inutile de le sauver sur la pile }
- Simple:=(FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And (CodeSize>StartRhs) And
+ Simple:=Not Direct And (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And (CodeSize>StartRhs) And
   (((CodeSize-StartRhs=3) And ((Image[StartRhs]=$B8) Or ((Image[StartRhs]=$8B) And (Image[StartRhs+1]=$46)))) Or
    ((CodeSize-StartRhs=4) And (Image[StartRhs]=$8B) And (Image[StartRhs+1]=$86)) Or
    ((CodeSize-StartRhs=2) And (Image[StartRhs]=$31) And (Image[StartRhs+1]=$C0)));
- If Simple Then Begin
+ If Direct Then
+ Else If Simple Then Begin
   For N:=StartRhs To CodeSize-1 Do Image[N-2]:=Image[N];
   Dec(CodeSize,2);
  End Else Begin Emit($5F); Emit($07) End;
@@ -5765,7 +5806,10 @@ Begin
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
-  StoreDesignator(Dest);
+  If Direct Then Begin
+   If Types[Dest].Width=1 Then EmitBPDisp($88,0,DispD) Else EmitBPDisp($89,0,DispD);
+   If Types[Dest].Width=4 Then EmitBPDisp($89,2,DispD+2);
+  End Else StoreDesignator(Dest);
  End;
 End;
 
