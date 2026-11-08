@@ -54,6 +54,12 @@ Syntaxe
                      d'amorcage extraite dans %TEMP%\DEVENV_ELTORITO.IMG.
                      Meme principe pour la commande BOOT du terminal de
                      l'IDE (devenv /CDROM:fich.iso puis BOOT).
+  /KTVSCR            injecte les frappes par la file de touches de l'ecran
+                     virtuel (AL=ASCII, comme l'onglet emulateur de l'IDE)
+                     au lieu du tampon clavier BIOS 0040:001E.
+  /KTFILL:n          remplit la memoire conventionnelle (hors vecteurs et
+                     BDA) avec l'octet n (0..255) avant l'amorcage : detecte
+                     les programmes qui dependent de memoire non initialisee.
   /KTIMAGE:fich      emplacement de l'image generee (defaut /tmp/kerneltest.img
                      sous Linux, %TEMP%\KERNELTEST.IMG sous Windows).
 
