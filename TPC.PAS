@@ -4545,8 +4545,9 @@ Var
  Skip,ShiftLoop,CV,PushPos,K: Word; ConstOp,MemOp,ConstBx: Boolean; MD: Longint;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
- LeftKnown: Boolean; LeftValue: Longint; Check: Real;
+ LeftKnown: Boolean; LeftValue: Longint; Check: Real; S0: Word;
 Begin
+ S0:=CodeSize;
  T:=Factor;
  While Token In [tkTimes,tkSlash,tkDiv,tkMod,tkAnd,tkShl,tkShr] Do Begin
   Op:=Token;
@@ -4671,6 +4672,11 @@ Begin
     Check:=LeftValue; Check:=Check*ExprValue;
     If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,'Debordement expression constante');
     ExprValue:=LeftValue*ExprValue;
+    { produit de constantes hors de l'intervalle 16 bits : constante Longint (Word entre 32768 et 65535), comme TP }
+    If (T=ttInteger) And (Types[ExprType].Width<>4) And (CodeSize>S0) And ((ExprValue<-32768) Or (ExprValue>65535)) Then Begin
+     CodeSize:=S0; Emit($B8); EmitWord(Word(ExprValue)); Emit($BA); EmitWord(Word(ExprValue Shr 16));
+     WideResult:=True;
+    End;
    End;
    tkDiv,tkMod:Begin
     If (ExprValue=0) Or ((LeftValue=-2147483647-1) And (ExprValue=-1)) Then ExprKnown:=False

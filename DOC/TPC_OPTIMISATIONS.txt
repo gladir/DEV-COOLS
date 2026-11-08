@@ -75,3 +75,8 @@ Edition de liens
 * Edition de liens intelligente par defaut (comme TP7) : les routines jamais
   appelees (graphe d'appels, racines : programme, initialisations d'unites,
   crochet CRT) ne sont pas liees. Obligatoire quand le segment de code deborde.
+
+Correction de comportement (pas une optimisation)
+-------------------------------------------------
+* Un produit de constantes entieres qui deborde 16 bits (30*4096) devient une constante Longint (122880) au lieu d'etre
+  tronque a 16 bits (-8192), comme Turbo Pascal 7.
