@@ -4149,6 +4149,31 @@ Begin
  BaseVariableAddress(I); Designator:=DesignatorTail(SymbolType(I));
 End;
 
+Procedure EmitDIMem(Opcode,Reg: Byte; D: Longint);
+{ ES:[DI+D] avec registre Reg. }
+Begin
+ Emit($26); Emit(Opcode);
+ If D=0 Then Emit($05 Or (Reg Shl 3))
+ Else If (D>=-128) And (D<=127) Then Begin Emit($45 Or (Reg Shl 3)); Emit(Byte(D)) End
+ Else Begin Emit($85 Or (Reg Shl 3)); EmitWord(Word(D)) End;
+End;
+
+Function TakeAddDI(Skip: Word; Var D: Longint): Boolean;
+{ Le designateur (suivi de Skip octets de second membre) se termine par "add di,imm" : le retire,
+  deplace le second membre et rend l'imm comme deplacement de l'acces final. }
+Var P,Len: Word;
+Begin
+ TakeAddDI:=False;
+ If CodeSize<Skip+3 Then Exit;
+ P:=CodeSize-Skip;
+ If (P>=3) And (Image[P-3]=$83) And (Image[P-2]=$C7) And (Image[P-1]<=127) Then Begin Len:=3; D:=Image[P-1] End
+ Else If (P>=4) And (Image[P-4]=$81) And (Image[P-3]=$C7) And (Image[P-1]<=126) Then Begin Len:=4; D:=Image[P-2]+Word(Image[P-1])*256 End
+ Else Exit;
+ If LastJumpTarget>=P Then Exit;
+ If Skip>0 Then Move(Image[P],Image[P-Len],Skip);
+ Dec(CodeSize,Len); TakeAddDI:=True;
+End;
+
 Procedure LoadDesignator(T: Word);
 Var D: Longint;
 Begin
@@ -4163,19 +4188,33 @@ Begin
    If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
   End Else If Types[T].Width=4 Then EmitBPDisp($8B,2,D+2);
  End Else Begin
-  Emit($26);
-  If Types[T].Width=1 Then Emit2($8A,$05) Else Emit2($8B,$05);
+  D:=0; TakeAddDI(0,D);
+  If Types[T].Width=1 Then EmitDIMem($8A,0,D) Else EmitDIMem($8B,0,D);
   If Types[T].Width=1 Then Begin
    If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
-  End Else If Types[T].Width=4 Then Begin Emit($26); Emit2($8B,$55); Emit(2) End;
+  End Else If Types[T].Width=4 Then EmitDIMem($8B,2,D+2);
  End;
+End;
+
+Procedure StoreDesignatorN(T: Word; Skip: Word);
+{ ES:DI := AX (DX:AX) ; Skip = octets du second membre deja emis apres le designateur. }
+Var D: Longint; V: Word;
+Begin
+ D:=0; TakeAddDI(Skip,D);
+ If (Skip=3) And (CodeSize>=3) And (Image[CodeSize-3]=$B8) And (Types[T].Width<=2) And (LastJumpTarget<CodeSize-2) Then Begin
+  { constante : mov [es:di+d],imm }
+  V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; Dec(CodeSize,3);
+  If Types[T].Width=1 Then Begin EmitDIMem($C6,0,D); Emit(V And 255) End
+  Else Begin EmitDIMem($C7,0,D); EmitWord(V) End;
+  Exit;
+ End;
+ If Types[T].Width=1 Then EmitDIMem($88,0,D) Else EmitDIMem($89,0,D);
+ If Types[T].Width=4 Then EmitDIMem($89,2,D+2);
 End;
 
 Procedure StoreDesignator(T: Word);
 Begin
- Emit($26);
- If Types[T].Width=1 Then Emit2($88,$05) Else Emit2($89,$05);
- If Types[T].Width=4 Then Begin Emit($26); Emit2($89,$55); Emit(2) End;
+ StoreDesignatorN(T,0);
 End;
 
 Procedure RequireInteger(T: Byte);Begin
@@ -5953,7 +5992,8 @@ Begin
   Else If Direct Then Begin
    If Types[Dest].Width=1 Then EmitBPDisp($88,0,DispD) Else EmitBPDisp($89,0,DispD);
    If Types[Dest].Width=4 Then EmitBPDisp($89,2,DispD+2);
-  End Else StoreDesignator(Dest);
+  End Else If Simple Then StoreDesignatorN(Dest,CodeSize-(StartRhs-2))
+  Else StoreDesignator(Dest);
  End;
 End;
 
