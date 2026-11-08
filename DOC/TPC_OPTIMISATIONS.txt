@@ -113,3 +113,17 @@ memes EXE qu'avant (le mode n'est jamais active pour eux).
   l'EXE dans ce mode (erreur 48 explicite) ; les TPU des unites sources ne sont pas ecrits ; au plus 32 segments ;
   une routine globale ne peut pas depasser un segment ; les adresses de debogage sont relatives a leur segment.
 * Tests : TESTS/TPC_MULTISEG/run_tests.sh (MSDOS0=chemin pour FDISK, FORMAT et LINK de MSDOS-0).
+* Validation : FDISK, FORMAT et LINK de MSDOS-0 (88,9 / 87,5 / 99,5 Ko de code, 2 segments) s'executent comme les
+  binaires de reference (FDISK : memes ecrans que BIN16/FDISK.EXE ; LINK : memes EXE et MAP qu'une version Free Pascal
+  native) ; les 27 programmes de la racine qui echouaient en erreur 48 (MASM, LUA86, AWK86, REXX86, QPDF... jusqu'a
+  225 Ko de code, 4 segments) compilent et leurs sorties sont identiques a celles de leur version native ; les 263
+  autres programmes de la racine et 53 de MSDOS-0 donnent des EXE octet pour octet identiques a ceux d'avant.
+* Defaut latent (non corrige en mode normal pour garder des EXE identiques) : JumpZero fusionne une comparaison
+  booleenne quand CondTail=CodeSize ; CondTail n'etait pas invalidee apres usage, et une valeur perimee pouvait
+  coincider plus tard avec CodeSize (un appel FAR de 9 octets remplacant une sequence de meme longueur) et faire
+  retirer 7 octets d'un code sans rapport. En mode multi-segments, toute emission invalide CondTail.
+* Segment de donnees (FASTOPEN.PAS, erreur 49) : le programme declare 64 055 octets de globaux (tableau de
+  TDriveCache 63 778 + 277), mais TPC ajoute ~5,6 Ko de donnees de runtime (anneau de chaines 2 048 + brouillons 512
+  alloues meme sans fonction chaine, tables d'overlays 1 330 meme sans l'unite Overlay, TextRec Input/Output 512,
+  litteraux en DS au lieu du segment de code de TP7...) : 69 609 octets au total pour 65 520 permis. Meme sans les
+  tables d'overlays ni l'anneau, il resterait environ 200 octets de trop : non corrige.

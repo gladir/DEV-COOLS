@@ -30,6 +30,8 @@ Program TPC;
    - messages du compilateur en francais, numeros d'erreurs de la table de
      Turbo Pascal 7.0, affichage FICHIER(ligne) et resume
      "n lignes, s secondes, c octets de code, d octets de donnees";
+   - code de plus de 64 Ko : mode multi-segments active automatiquement (routines globales FAR reparties en
+     segments de code, runtime recopie dans chacun ; voir DOC/TPC_OPTIMISATIONS.txt) ;
    - unites standard CRT, DOS, STRINGS et PRINTER integrees (sources Pascal
      embarques, compiles a la demande quand aucune TPU n'est trouvee);
    - disposition memoire de TP: code en CS, constantes et chaines en DS,
