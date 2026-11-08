@@ -264068,7 +264068,49 @@ Begin
     End;
   End;
   DOS_RunOneChunk(P);
-  DrawEmulatorPanel(P);
+  { BOGUE REEL (2026-11-08, "l emulateur DOS flashe sans arret") : ce      }
+  { redessin INCONDITIONNEL apres chaque tranche repeignait tout l ecran   }
+  { des centaines de fois par seconde meme sans le moindre changement. On  }
+  { ne redessine plus que si l ecran texte a change (ou, en mode           }
+  { graphique, au plus toutes les 40 ms). }
+  CurBlink := ((GetTimestamp Div 500) Mod 2) = 0;
+  FrameChanged := (Not P.PrevDrawValid) Or P.NeedRepaint Or
+   (P.CursorX <> P.PrevDrawCursorX) Or (P.CursorY <> P.PrevDrawCursorY) Or
+   (P.CursorOn <> P.PrevDrawCursorOn) Or (CurBlink <> P.PrevDrawBlink) Or
+   (P.StatusMsg <> P.PrevDrawStatusMsg) Or (P.Running <> P.PrevDrawRunning) Or
+   (P.Fault <> P.PrevDrawFault);
+  If Not FrameChanged Then Begin
+   YChk := 0;
+   While (Not FrameChanged) And (YChk <= 24) Do Begin
+    XChk := 0;
+    While (Not FrameChanged) And (XChk <= 131) Do Begin
+     If (P.VRAM[YChk, XChk].Ch <> P.PrevDrawVRAM[YChk, XChk].Ch) Or
+        (P.VRAM[YChk, XChk].Fg <> P.PrevDrawVRAM[YChk, XChk].Fg) Or
+        (P.VRAM[YChk, XChk].Bg <> P.PrevDrawVRAM[YChk, XChk].Bg) Then
+      FrameChanged := True;
+     Inc(XChk);
+    End;
+    Inc(YChk);
+   End;
+  End;
+  If EmuVideo.IsGraphic Then Begin
+   NowTS := GetTimestamp;
+   FrameChanged := (NowTS - DOSAsync_LastDraw) >= 40;
+   If FrameChanged Then DOSAsync_LastDraw := NowTS;
+  End;
+  If FrameChanged Then Begin
+   DrawEmulatorPanel(P);
+   P.PrevDrawVRAM := P.VRAM;
+   P.PrevDrawCursorX := P.CursorX;
+   P.PrevDrawCursorY := P.CursorY;
+   P.PrevDrawCursorOn := P.CursorOn;
+   P.PrevDrawBlink := CurBlink;
+   P.PrevDrawStatusMsg := P.StatusMsg;
+   P.PrevDrawRunning := P.Running;
+   P.PrevDrawFault := P.Fault;
+   P.PrevDrawValid := True;
+   P.NeedRepaint := False;
+  End;
   { BOGUE REEL signale par l utilisateur (2026-08-19) : la fenetre du
     Debogueur devrait rester ouverte et se mettre a jour EN DIRECT
     (registres + desassemblage) pendant qu on tourne librement (G/F5),
