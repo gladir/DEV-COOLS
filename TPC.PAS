@@ -1922,7 +1922,7 @@ Var
  { Sauts courts : les passes successives memorisent pour chaque saut (ordinal) s'il tient en 8 bits ;
    la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
  JumpOrd: Word;
- DbgNoJ, DbgNoIf, DbgNoBack, KeepES: Boolean;
+ DbgNoJ, DbgNoIf, DbgNoBack, KeepES, TailIndexed, DirIndexed: Boolean;
  ProcOrd: Word; FramePred, FrameNext, FrameForce: Array[1..8000] Of Boolean;
  ReportLines: Array[1..64] Of String[120];
  ReportCount: Word;
@@ -3701,12 +3701,16 @@ End;
 Function Designator(I: Word): Word; Forward;
 
 Function TailLeaBP: Word;
-{ Longueur (5 ou 6) du "lea di,[bp+d]; push ss; pop es" qui termine le code, 0 sinon. }
+{ Longueur (5 ou 6) du "lea di,[bp+d]" ou "lea di,[bp+di+d]" suivi de "push ss; pop es" qui termine
+  le code, 0 sinon. TailIndexed := la forme [bp+di+d]. }
 Begin
- TailLeaBP:=0;
- If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) Then Begin
-  If (Image[CodeSize-5]=$8D) And (Image[CodeSize-4]=$7E) And (LastJumpTarget<>CodeSize) Then TailLeaBP:=5
-  Else If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And (Image[CodeSize-5]=$BE) And (LastJumpTarget<>CodeSize) Then TailLeaBP:=6;
+ TailLeaBP:=0; TailIndexed:=False;
+ If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) And (LastJumpTarget<>CodeSize) Then Begin
+  If (Image[CodeSize-5]=$8D) And ((Image[CodeSize-4]=$7E) Or (Image[CodeSize-4]=$7B)) Then Begin
+   TailLeaBP:=5; TailIndexed:=Image[CodeSize-4]=$7B;
+  End Else If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And ((Image[CodeSize-5]=$BE) Or (Image[CodeSize-5]=$BB)) Then Begin
+   TailLeaBP:=6; TailIndexed:=Image[CodeSize-5]=$BB;
+  End;
  End;
 End;
 
@@ -3717,7 +3721,7 @@ Begin
  N:=TailLeaBP;
  If N<>0 Then Begin
   Dec(CodeSize,2);
-  If N=5 Then Image[CodeSize-2]:=$46 Else Image[CodeSize-3]:=$86;
+  If N=5 Then Image[CodeSize-2]:=Image[CodeSize-2] And $C7 Else Image[CodeSize-3]:=Image[CodeSize-3] And $C7;
   Emit($16); Emit($5A);
  End Else Begin Emit2($89,$F8); Emit2($8C,$C2) End;
 End;
@@ -3777,23 +3781,28 @@ Function TakeLeaBP: Longint;
 { Retire le "lea di,[bp+d]; push ss; pop es" qui termine le code et rend d. }
 Var N: Word;
 Begin
- N:=TailLeaBP;
+ N:=TailLeaBP; DirIndexed:=TailIndexed;
  If N=5 Then TakeLeaBP:=ShortInt(Image[CodeSize-3]) Else TakeLeaBP:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256);
  Dec(CodeSize,N);
 End;
 
 Procedure EmitBPDisp(Opcode,Reg: Byte; D: Longint);
-{ Opcode ModRM[bp+D] ; D hors limites 16 bits : impossible (appelant verifie). }
+{ Opcode ModRM[bp+D] ou [bp+di+D] (DirIndexed) ; D hors limites 16 bits : impossible (appelant verifie). }
 Begin
- Emit(Opcode); EmitBP(Reg,SmallInt(D));
+ Emit(Opcode);
+ If DirIndexed Then Begin
+  If (D>=-128) And (D<=127) Then Begin Emit($43 Or (Reg Shl 3)); Emit(Byte(D)) End
+  Else Begin Emit($83 Or (Reg Shl 3)); EmitWord(Word(D)) End;
+ End Else EmitBP(Reg,SmallInt(D));
 End;
 
-Function DirectLocalOK(T: Word): Boolean;
+Function DirectLocalOK(T: Word; AllowIndexed: Boolean): Boolean;
 { La destination/source de type T est accessible directement par [bp+d] ? }
 Var N: Word;
 Begin
  DirectLocalOK:=False; N:=TailLeaBP;
  If N=0 Then Exit;
+ If TailIndexed And Not AllowIndexed Then Exit;
  If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer]) Or Not (Types[T].Width In [1,2,4]) Then Exit;
  If N=6 Then Begin
   If SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256)>32760 Then Exit;
@@ -4062,11 +4071,11 @@ Var D: Longint;
 Begin
  If N=0 Then Exit;
  If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) Then Begin
-  If (Image[CodeSize-5]=$8D) And (Image[CodeSize-4]=$7E) Then Begin
+  If (Image[CodeSize-5]=$8D) And ((Image[CodeSize-4]=$7E) Or (Image[CodeSize-4]=$7B)) Then Begin
    D:=ShortInt(Image[CodeSize-3])+Longint(N);
    If (D>=-128) And (D<=127) Then Begin Image[CodeSize-3]:=Byte(D); Exit End;
   End;
-  If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And (Image[CodeSize-5]=$BE) Then Begin
+  If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And ((Image[CodeSize-5]=$BE) Or (Image[CodeSize-5]=$BB)) Then Begin
    D:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256)+Longint(N);
    If (D>=-32768) And (D<=32767) Then Begin PatchWord(CodeSize-4,Word(D)); Exit End;
   End;
@@ -4076,7 +4085,8 @@ End;
 
 Function DesignatorTail(T: Word): Word;
 { Suite d'un designateur (^ . [ ]) a partir de ES:DI et du type T. }
-Var F,IndexType,Element,StartIdx,FixMark,RelMark,PendMark: Word; Name: TShortString;
+Var F,IndexType,Element,StartIdx,FixMark,RelMark,PendMark,LeaLen: Word; Name: TShortString;
+ LocalBase: Boolean; LD: Longint;
 Begin
  While Token In [tkLB,tkDot,tkCaret] Do Begin
   If Token=tkCaret Then Begin
@@ -4102,7 +4112,11 @@ Begin
     Else If Types[T].Typ=ttArray Then Begin
      IndexType:=TypeExtras[T].IndexType; Element:=TypeExtras[T].ElementType;
     End Else Fail(26,'Tableau ou chaine attendu');
-    Emit($06); Emit($57); StartIdx:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
+    { base locale simple ("lea di,[bp+d]; push ss; pop es") : on la retire pendant le calcul de l'index
+      et on la refait avec l'index : lea di,[bp+di+d] }
+    LeaLen:=TailLeaBP; LocalBase:=(LeaLen<>0) And Not TailIndexed;
+    If LocalBase Then LD:=TakeLeaBP Else Begin Emit($06); Emit($57) End;
+    StartIdx:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
     RequireOrdinal(Expression);
     If Not CompatibleTypes(IndexType,ExprType) Then Fail(26,'Type de l''index');
     If ExprKnown And (Types[T].Typ=ttArray) And
@@ -4112,13 +4126,22 @@ Begin
        (OptionBits And 2=0) And ExprKnown And (CodeSize-StartIdx=3) And (Image[StartIdx]=$B8) And
        (Types[ExprType].Width<=2) And ((Token<>tkComma) Or True) Then Begin
      { index constant : deplacement replie dans DI, sans PUSH/POP ni multiplication }
+     If LocalBase Then Begin
+      CodeSize:=StartIdx;
+      If Types[T].Typ=ttArray Then LD:=LD+SmallInt((ExprValue-Types[IndexType].LowBound)*TypeExtras[Element].Size)
+      Else LD:=LD+SmallInt(ExprValue*TypeExtras[Element].Size);
+      LD:=SmallInt(LD);
+      Emit($8D); EmitBP(7,SmallInt(LD)); Emit($16); Emit($07);
+     End Else Begin
      CodeSize:=StartIdx-2;
      If Types[T].Typ=ttArray Then AddDI(Word((ExprValue-Types[IndexType].LowBound)*TypeExtras[Element].Size))
      Else AddDI(Word(ExprValue*TypeExtras[Element].Size));
+     End;
      T:=Element;
      If Token<>tkComma Then Break; NextToken; Continue;
     End;
-    If (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And (CodeSize-StartIdx=3) And
+    If LocalBase Then
+    Else If (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And (CodeSize-StartIdx=3) And
        ((Image[StartIdx]=$B8) Or ((Image[StartIdx]=$8B) And (Image[StartIdx+1]=$46))) Then Begin
      { index simple : ES:DI n'est pas modifie par le calcul de l'index }
      For StartIdx:=StartIdx To CodeSize-1 Do Image[StartIdx-2]:=Image[StartIdx];
@@ -4135,7 +4158,13 @@ Begin
     If TypeExtras[Element].Size<>1 Then Begin
      Emit($BB); EmitWord(TypeExtras[Element].Size); Emit2($F7,$E3);
     End;
-    Emit2($01,$C7); T:=Element;
+    If LocalBase Then Begin
+     Emit2($89,$C7);                                            { mov di,ax }
+     Emit($8D);                                                 { lea di,[bp+di+d] }
+     If (LD>=-128) And (LD<=127) Then Begin Emit($7B); Emit(Byte(LD)) End Else Begin Emit($BB); EmitWord(Word(LD)) End;
+     Emit($16); Emit($07);
+    End Else Emit2($01,$C7);
+    T:=Element;
     If Token<>tkComma Then Break; NextToken;
    Until False;
    Need(tkRB);
@@ -4180,7 +4209,7 @@ Begin
  If T=0 Then Fail(42,'Variable sans type utilisee comme valeur');
  If Types[T].Typ In [ttString,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal] Then Begin
   EmitAddrAXDX;
- End Else If DirectLocalOK(T) Then Begin
+ End Else If DirectLocalOK(T,True) Then Begin
   { variable de la frame : mov ax,[bp+d] directement }
   D:=TakeLeaBP;
   If Types[T].Width=1 Then EmitBPDisp($8A,0,D) Else EmitBPDisp($8B,0,D);
@@ -5920,8 +5949,8 @@ Var
 Begin
  If Dest=0 Then Fail(26,'Affectation a une variable sans type');
  { variable scalaire de la frame : la destination est adressee directement par [bp+d] }
- Direct:=DirectLocalOK(Dest);
- If Direct Then DispD:=TakeLeaBP Else Begin Emit($06); Emit($57) End;
+ Direct:=DirectLocalOK(Dest,False);
+ If Direct Then Begin DispD:=TakeLeaBP; DirIndexed:=False End Else Begin Emit($06); Emit($57) End;
  StartRhs:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
  If Types[Dest].Typ In [ttFile,ttText] Then Fail(26,'Un fichier ne peut pas etre affecte');
  Need(tkAssign); T:=Expression;
@@ -5990,6 +6019,7 @@ Begin
   If Direct And (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And
      ConstToLocal(StartRhs,DispD,Types[Dest].Width) Then
   Else If Direct Then Begin
+   DirIndexed:=False;
    If Types[Dest].Width=1 Then EmitBPDisp($88,0,DispD) Else EmitBPDisp($89,0,DispD);
    If Types[Dest].Width=4 Then EmitBPDisp($89,2,DispD+2);
   End Else If Simple Then StoreDesignatorN(Dest,CodeSize-(StartRhs-2))
