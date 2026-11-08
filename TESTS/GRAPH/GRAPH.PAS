@@ -6,8 +6,10 @@ Unit Graph;
   mises a l'echelle). Extension : VGA, mode 3 = 320x200 en 256 couleurs (13h). }
 Interface
 Const
- grOk=0; grNoInitGraph=-1; grNotDetected=-2; grFileNotFound=-3; grInvalidDriver=-4;
- grNoLoadMem=-5; grNoScanMem=-6; grNoFloodMem=-7; grFontNotFound=-8; grNoFontMem=-9;
+ grOk=0; grNoInitGraph=-1; grNotDetected=-2; grFileNotFound=-3;
+   grInvalidDriver=-4;
+ grNoLoadMem=-5; grNoScanMem=-6; grNoFloodMem=-7; grFontNotFound=-8;
+   grNoFontMem=-9;
  grInvalidMode=-10; grError=-11; grIOerror=-12; grInvalidFont=-13;
  grInvalidFontNum=-14; grInvalidDeviceNum=-15; grInvalidVersion=-18;
  Detect=0; CGA=1; MCGA=2; EGA=3; EGA64=4; EGAMono=5; IBM8514=6; HercMono=7;
@@ -87,8 +89,10 @@ Procedure GraphDefaults;
 Function GraphErrorMsg(ErrorCode: Integer): String;
 Function GraphResult: Integer;
 Function ImageSize(X1,Y1,X2,Y2: Integer): Word;
-Procedure InitGraph(Var GraphDriver: Integer; Var GraphMode: Integer; PathToDriver: String);
-Function InstallUserDriver(DriverFileName: String; AutoDetectPtr: Pointer): Integer;
+Procedure InitGraph(Var GraphDriver: Integer; Var GraphMode: Integer;
+  PathToDriver: String);
+Function InstallUserDriver(DriverFileName: String;
+  AutoDetectPtr: Pointer): Integer;
 Function InstallUserFont(FontFileName: String): Integer;
 Procedure Line(X1,Y1,X2,Y2: Integer);
 Procedure LineRel(Dx,Dy: Integer);
@@ -241,7 +245,8 @@ Begin
   If MonoEGA Then Begin GraphDriver:=EGAMono; GraphMode:=EGAMonoHi End
   Else Begin GraphDriver:=EGA; GraphMode:=EGAHi End
  End
- Else If (Mem[$40:$10] And $30)=$30 Then Begin GraphDriver:=HercMono; GraphMode:=HercMonoHi End
+ Else If (Mem[$40:$10] And $30)=$30 Then Begin GraphDriver:=HercMono;
+   GraphMode:=HercMonoHi End
  Else Begin GraphDriver:=CGA; GraphMode:=CGAHi End;
 End;
 
@@ -265,22 +270,29 @@ Begin
  SetModeInfo:=True;
  PageLen:=0; NPages:=1;
  If ((D=CGA) Or (D=MCGA)) And (M>=0) And (M<=3) Then Begin
-  BiosMode:=4; Kind:=1; ScrW:=320; ScrH:=200; MaxCol:=3; AspX:=8333; AspY:=10000;
+  BiosMode:=4; Kind:=1; ScrW:=320; ScrH:=200; MaxCol:=3; AspX:=8333;
+    AspY:=10000;
  End Else If ((D=CGA) Or (D=MCGA)) And (M=4) Then Begin
-  BiosMode:=6; Kind:=2; ScrW:=640; ScrH:=200; MaxCol:=1; AspX:=4167; AspY:=10000;
+  BiosMode:=6; Kind:=2; ScrW:=640; ScrH:=200; MaxCol:=1; AspX:=4167;
+    AspY:=10000;
   If D=CGA Then AspX:=5200;
  End Else If (D=MCGA) And (M=5) Then Begin
-  BiosMode:=$11; Kind:=3; ScrW:=640; ScrH:=480; MaxCol:=1; AspX:=10000; AspY:=10000;
+  BiosMode:=$11; Kind:=3; ScrW:=640; ScrH:=480; MaxCol:=1; AspX:=10000;
+    AspY:=10000;
  End Else If ((D=EGA) Or (D=VGA)) And (M=0) Then Begin
-  BiosMode:=$E; Kind:=0; ScrW:=640; ScrH:=200; MaxCol:=15; AspX:=4400; AspY:=10000;
+  BiosMode:=$E; Kind:=0; ScrW:=640; ScrH:=200; MaxCol:=15; AspX:=4400;
+    AspY:=10000;
   NPages:=4; PageLen:=$4000;
  End Else If ((D=EGA) Or (D=VGA)) And (M=1) Then Begin
-  BiosMode:=$10; Kind:=0; ScrW:=640; ScrH:=350; MaxCol:=15; AspX:=7750; AspY:=10000;
+  BiosMode:=$10; Kind:=0; ScrW:=640; ScrH:=350; MaxCol:=15; AspX:=7750;
+    AspY:=10000;
   NPages:=2; PageLen:=$8000;
  End Else If (D=VGA) And (M=2) Then Begin
-  BiosMode:=$12; Kind:=0; ScrW:=640; ScrH:=480; MaxCol:=15; AspX:=10000; AspY:=10000;
+  BiosMode:=$12; Kind:=0; ScrW:=640; ScrH:=480; MaxCol:=15; AspX:=10000;
+    AspY:=10000;
  End Else If (D=VGA) And (M=3) Then Begin
-  BiosMode:=$13; Kind:=4; ScrW:=320; ScrH:=200; MaxCol:=255; AspX:=8333; AspY:=10000;
+  BiosMode:=$13; Kind:=4; ScrW:=320; ScrH:=200; MaxCol:=255; AspX:=8333;
+    AspY:=10000;
  End Else SetModeInfo:=False;
 End;
 
@@ -391,7 +403,8 @@ Procedure SetPalette(ColorNum: Word; Color: ShortInt);
 Var R,G,B: Word;
 Begin
  If Not Active Then Begin GErr:=grNoInitGraph; Exit End;
- If (ColorNum>MaxCol) Or (Color<-1) Or (Color>63) Then Begin GErr:=grError; Exit End;
+ If (ColorNum>MaxCol) Or (Color<-1) Or (Color>63) Then Begin GErr:=grError;
+   Exit End;
  If Color=-1 Then Exit;
  If ColorNum<16 Then Pal.Colors[ColorNum]:=Color;
  Case Kind Of
@@ -434,7 +447,8 @@ Begin
   Int10($1007,ColorNum,0,0);   { registre palette -> index DAC }
   Idx:=Hi(RB);
  End Else If Kind<>4 Then Exit;
- DacSet(Idx,(RedValue And 255) Shr 2,(GreenValue And 255) Shr 2,(BlueValue And 255) Shr 2);
+ DacSet(Idx,(RedValue And 255) Shr 2,(GreenValue And 255) Shr 2,
+   (BlueValue And 255) Shr 2);
  DacDirty:=True;
 End;
 
@@ -459,7 +473,8 @@ Begin
  If Not Active Then Begin GErr:=grNoInitGraph; Exit End;
  Palette.Size:=Pal.Size;
  For I:=0 To 15 Do
-  If (Kind=0) Or (Kind=4) Then Palette.Colors[I]:=DefPal[I] Else Palette.Colors[I]:=I;
+  If (Kind=0) Or (Kind=4) Then Palette.Colors[I]:=DefPal[I] Else
+    Palette.Colors[I]:=I;
 End;
 
 Function GetPaletteSize: Integer;
@@ -477,7 +492,8 @@ Begin
   For I:=0 To 15 Do Pal.Colors[I]:=DefPal[I];
   For I:=0 To 15 Do ACSet(I,DefPal[I]);
   If HaveVGA And DacDirty Then
-   For I:=0 To 15 Do Begin EGAtoRGB(DefPal[I],R,G,B); DacSet(DefPal[I],R,G,B) End;
+   For I:=0 To 15 Do Begin EGAtoRGB(DefPal[I],R,G,B); DacSet(DefPal[I],R,G,
+     B) End;
  End Else If Kind=4 Then Begin
   Pal.Size:=16;
   If DacDirty Then Begin
@@ -647,7 +663,8 @@ Begin
   End;
  End Else
   For X:=X1 To X2 Do
-   If (PB And ($80 Shr (X And 7)))<>0 Then PixPlot(X,Y,FillColor) Else PixPlot(X,Y,0);
+   If (PB And ($80 Shr (X And 7)))<>0 Then PixPlot(X,Y,
+     FillColor) Else PixPlot(X,Y,0);
 End;
 
 Procedure ClearRect(X1,Y1,X2,Y2: Integer);
@@ -677,7 +694,8 @@ Begin
  While Go Do Begin
   Bit:=1;
   If LnPat<>$FFFF Then Bit:=LnPat And (Word($8000) Shr (Cnt And 15));
-  If (Bit<>0) And ((Cnt>0) Or Not Skip1) And Not (SkipLast And (X=X2) And (Y=Y2)) Then Begin
+  If (Bit<>0) And ((Cnt>0) Or Not Skip1) And Not (SkipLast And (X=X2) And
+    (Y=Y2)) Then Begin
    Plot(X,Y,CurColor);
    If LnThick>1 Then
     If Mostly Then Begin Plot(X,Y-1,CurColor); Plot(X,Y+1,CurColor) End
@@ -754,7 +772,8 @@ Begin
  CurColor:=MaxCol; FillStyle:=SolidFill; FillColor:=MaxCol;
  For I:=1 To 8 Do Begin FillPat[I]:=$FF; UserPat[I]:=$FF End;
  LnStyle:=SolidLn; LnPat:=$FFFF; LnThick:=NormWidth;
- TxFont:=DefaultFont; TxDir:=HorizDir; TxSize:=1; TxHoriz:=LeftText; TxVert:=TopText;
+ TxFont:=DefaultFont; TxDir:=HorizDir; TxSize:=1; TxHoriz:=LeftText;
+   TxVert:=TopText;
  UMX:=1; UDX:=1; UMY:=1; UDY:=1;
  WMode:=CopyPut;
 End;
@@ -771,7 +790,8 @@ Begin
  Int10(BiosMode,0,0,0);
  PageBase:=0;
  If Kind=1 Then Begin
-  { palette CGA : C0 vert/rouge/brun, C1 cyan/magenta/blanc ; C0 et C1 intenses }
+  { palette CGA : C0 vert/rouge/brun, C1 cyan/magenta/blanc ;
+    C0 et C1 intenses }
   If (CurMode And 1)=0 Then Int10($0B01,0,0,0) Else Int10($0B01,1,0,0);
   If CurMode<2 Then Int10($0B00,$10,0,0) Else Int10($0B00,0,0,0);
  End;
@@ -781,7 +801,8 @@ Begin
  GraphDefaultsInt;
 End;
 
-Procedure InitGraph(Var GraphDriver: Integer; Var GraphMode: Integer; PathToDriver: String);
+Procedure InitGraph(Var GraphDriver: Integer; Var GraphMode: Integer;
+  PathToDriver: String);
 Var D,M: Integer;
 Begin
  Active:=False; GErr:=grOk;
@@ -791,11 +812,13 @@ Begin
   DetectGraph(D,M);
   GraphMode:=M;
  End;
- If (D<0) Or (D>PC3270) Or (D=EGA64) Or (D=EGAMono) Or (D=IBM8514) Or (D=HercMono) Or
+ If (D<0) Or (D>PC3270) Or (D=EGA64) Or (D=EGAMono) Or (D=IBM8514) Or
+   (D=HercMono) Or
     (D=ATT400) Or (D=PC3270) Then Begin
   GraphDriver:=grInvalidDriver; GErr:=grInvalidDriver; Exit;
  End;
- If ((D=VGA) And Not HaveVGA) Or ((D=EGA) And Not HaveEGA) Or ((D=MCGA) And Not (HaveMCGA Or HaveVGA)) Then Begin
+ If ((D=VGA) And Not HaveVGA) Or ((D=EGA) And Not HaveEGA) Or ((D=MCGA) And Not
+   (HaveMCGA Or HaveVGA)) Then Begin
   GraphDriver:=grNotDetected; GErr:=grNotDetected; Exit;
  End;
  If Not SetModeInfo(D,M) Then Begin
@@ -862,7 +885,8 @@ End;
 Procedure SetViewPort(X1,Y1,X2,Y2: Integer; Clip: Boolean);
 Begin
  If Not Active Then Begin GErr:=grNoInitGraph; Exit End;
- If (X1<0) Or (Y1<0) Or (X2<X1) Or (Y2<Y1) Or (X2>=ScrW) Or (Y2>=ScrH) Then Begin
+ If (X1<0) Or (Y1<0) Or (X2<X1) Or (Y2<Y1) Or (X2>=ScrW) Or (Y2>=ScrH) Then
+   Begin
   GErr:=grError; Exit;
  End;
  VX1:=X1; VY1:=Y1; VX2:=X2; VY2:=Y2; VClip:=Clip;
@@ -919,7 +943,8 @@ Begin
  RegisterBGIfont:=TriplexFont;
 End;
 
-Function InstallUserDriver(DriverFileName: String; AutoDetectPtr: Pointer): Integer;
+Function InstallUserDriver(DriverFileName: String;
+  AutoDetectPtr: Pointer): Integer;
 Begin
  InstallUserDriver:=grInvalidDriver; GErr:=grError;
 End;
@@ -952,7 +977,8 @@ End;
 Procedure SetLineStyle(LineStyle: Word; Pattern: Word; Thickness: Word);
 Begin
  If Not Active Then Begin GErr:=grNoInitGraph; Exit End;
- If (LineStyle>UserBitLn) Or ((Thickness<>NormWidth) And (Thickness<>ThickWidth)) Then Begin
+ If (LineStyle>UserBitLn) Or ((Thickness<>NormWidth) And
+   (Thickness<>ThickWidth)) Then Begin
   GErr:=grError; Exit;
  End;
  LnStyle:=LineStyle; LnThick:=Thickness;
@@ -967,7 +993,8 @@ End;
 
 Procedure GetLineSettings(Var LineInfo: LineSettingsType);
 Begin
- LineInfo.LineStyle:=LnStyle; LineInfo.Pattern:=LnPat; LineInfo.Thickness:=LnThick;
+ LineInfo.LineStyle:=LnStyle; LineInfo.Pattern:=LnPat;
+   LineInfo.Thickness:=LnThick;
 End;
 
 Procedure SetFillStyle(Pattern: Word; Color: Word);
@@ -1097,7 +1124,8 @@ Begin
  Closed:=(N>2) And (P^[0].X=P^[N-1].X) And (P^[0].Y=P^[N-1].Y);
  PixSetup(WriteOp);
  For I:=1 To N-1 Do
-  LineAbs(P^[I-1].X+OX,P^[I-1].Y+OY,P^[I].X+OX,P^[I].Y+OY,I>1,Closed And (I=N-1));
+  LineAbs(P^[I-1].X+OX,P^[I-1].Y+OY,P^[I].X+OX,P^[I].Y+OY,I>1,
+    Closed And (I=N-1));
  PixDone;
 End;
 
@@ -1240,7 +1268,8 @@ Begin
  Sz:=Longint((FW+7) Shr 3)*H;
  MaxSeeds:=4096;
  If MemAvail<Sz+MaxSeeds*4+4096 Then MaxSeeds:=1024;
- If (Sz>65000) Or (MemAvail<Sz+MaxSeeds*4+64) Or (MaxAvail<Sz+64) Then Begin GErr:=grNoFloodMem; Exit End;
+ If (Sz>65000) Or (MemAvail<Sz+MaxSeeds*4+64) Or (MaxAvail<Sz+64) Then Begin
+   GErr:=grNoFloodMem; Exit End;
  GetMem(FVis,Sz); GetMem(Seeds,MaxSeeds*4);
  ClearBytes(FVis,Sz);
  Seeds^[0].X:=X; Seeds^[0].Y:=Y; SP:=1;
@@ -1249,8 +1278,10 @@ Begin
   Dec(SP); PX:=Seeds^[SP].X; PY:=Seeds^[SP].Y;
   If Not Seen(PX,PY) And (PixGet(PX,PY)<>Border) Then Begin
    XL:=PX; XR:=PX;
-   While (XL>CX1) And Not Seen(XL-1,PY) And (PixGet(XL-1,PY)<>Border) Do Dec(XL);
-   While (XR<CX2) And Not Seen(XR+1,PY) And (PixGet(XR+1,PY)<>Border) Do Inc(XR);
+   While (XL>CX1) And Not Seen(XL-1,PY) And (PixGet(XL-1,
+     PY)<>Border) Do Dec(XL);
+   While (XR<CX2) And Not Seen(XR+1,PY) And (PixGet(XR+1,
+     PY)<>Border) Do Inc(XR);
    MarkSpan(XL,XR,PY);
    SpanFill(XL,XR,PY);
    For Dir:=-1 To 1 Do If Dir<>0 Then Begin
@@ -1260,7 +1291,8 @@ Begin
      While XX<=XR Do Begin
       If Not Seen(XX,NY) And (PixGet(XX,NY)<>Border) Then Begin
        If Not Run Then Begin
-        If SP<MaxSeeds Then Begin Seeds^[SP].X:=XX; Seeds^[SP].Y:=NY; Inc(SP) End
+        If SP<MaxSeeds Then Begin Seeds^[SP].X:=XX; Seeds^[SP].Y:=NY;
+          Inc(SP) End
         Else GErr:=grNoFloodMem;
         Run:=True;
        End;
@@ -1323,13 +1355,15 @@ Procedure DrawArcPoly(N: Integer);
 Var I: Integer; SaveP: Word; Full: Boolean;
 Begin
  SaveP:=LnPat; LnPat:=$FFFF;
- Full:=(N>=360) Or ((N>2) And (PolyBuf[0].X=PolyBuf[N].X) And (PolyBuf[0].Y=PolyBuf[N].Y));
+ Full:=(N>=360) Or ((N>2) And (PolyBuf[0].X=PolyBuf[N].X) And
+   (PolyBuf[0].Y=PolyBuf[N].Y));
  PixSetup(WriteOp);
  If N=0 Then Plot(PolyBuf[0].X,PolyBuf[0].Y,CurColor)
  Else
   For I:=1 To N Do
    If (PolyBuf[I].X<>PolyBuf[I-1].X) Or (PolyBuf[I].Y<>PolyBuf[I-1].Y) Then
-    LineAbs(PolyBuf[I-1].X,PolyBuf[I-1].Y,PolyBuf[I].X,PolyBuf[I].Y,I>1,Full And (I=N));
+    LineAbs(PolyBuf[I-1].X,PolyBuf[I-1].Y,PolyBuf[I].X,PolyBuf[I].Y,I>1,
+      Full And (I=N));
  PixDone;
  LnPat:=SaveP;
 End;
@@ -1409,7 +1443,8 @@ End;
 Function CharW: Word;
 Var W: Longint;
 Begin
- If TxSize=UserCharSize Then W:=(8*Longint(UMX)) Div UDX Else W:=8*Longint(TxSize);
+ If TxSize=UserCharSize Then W:=(8*Longint(UMX)) Div UDX Else
+   W:=8*Longint(TxSize);
  If W<1 Then W:=1;
  CharW:=W;
 End;
@@ -1417,7 +1452,8 @@ End;
 Function CharH: Word;
 Var H: Longint;
 Begin
- If TxSize=UserCharSize Then H:=(8*Longint(UMY)) Div UDY Else H:=8*Longint(TxSize);
+ If TxSize=UserCharSize Then H:=(8*Longint(UMY)) Div UDY Else
+   H:=8*Longint(TxSize);
  If H<1 Then H:=1;
  CharH:=H;
 End;
@@ -1557,7 +1593,8 @@ Begin
  For J:=0 To H-1 Do
   For I:=0 To W-1 Do Begin
    V:=0;
-   If (X1+I>=0) And (X1+I<ScrW) And (Y1+J>=0) And (Y1+J<ScrH) Then V:=PixGet(X1+I,Y1+J);
+   If (X1+I>=0) And (X1+I<ScrW) And (Y1+J>=0) And (Y1+J<ScrH) Then
+     V:=PixGet(X1+I,Y1+J);
    If Kind=4 Then P^[4+Longint(J)*W+I]:=V
    Else If V<>0 Then
     For PL:=0 To PlanesOf-1 Do

@@ -175,7 +175,8 @@ End;
 Procedure StringTest;
 Var S:String; I:Integer;
 Begin
- S:=Cat('ab','cd'); WriteLn(S,' ',Length(S),' ',Pos('c',S),' ',Copy(S,2,3),' ',UpCase(S[1]));
+ S:=Cat('ab','cd'); WriteLn(S,' ',Length(S),' ',Pos('c',S),' ',Copy(S,2,3),' ',
+   UpCase(S[1]));
  Insert('XY',S,3); WriteLn(S); Delete(S,1,2); WriteLn(S);
  Str(12345,S); WriteLn(S); Val('789',I,G); WriteLn(I,' ',G);
  WriteLn(Names[2],' ',Names[3]:8,' ',Primes[5]);
@@ -203,9 +204,11 @@ Begin
  Trace('case'); For G:=0 To 10 Do CaseTest(G); WriteLn;
  Trace('files'); UseFiles;
  Trace('heap'); Heap;
- Trace('set'); St:=[1,5,9]; Include(St,200); WriteLn(Ord(5 In St),Ord(6 In St),Ord(200 In St));
+ Trace('set'); St:=[1,5,9]; Include(St,200); WriteLn(Ord(5 In St),Ord(6 In St),
+   Ord(200 In St));
  Trace('env'); WriteLn(ParamCount, '/', ParamStr(1));
- Trace('rec'); Rec.A:=-5; Rec.B:=200; Rec.S:='champ'; Rec.R:=-0.125; Rec.L:=-70000;
+ Trace('rec'); Rec.A:=-5; Rec.B:=200; Rec.S:='champ'; Rec.R:=-0.125;
+   Rec.L:=-70000;
  WriteLn(Rec.A,' ',Rec.B,' ',Rec.S,' ',Rec.R:0:3,' ',Rec.L);
  Trace('int'); SetIntVec($60,@Handler); Hits:=0; Inline($CD/$60); WriteLn(Hits);
  If ParamCount>=1 Then Begin GS:=ParamStr(1); ErrHalt(Ord(GS[1])-48) End;

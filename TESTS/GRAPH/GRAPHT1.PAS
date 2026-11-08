@@ -1,14 +1,18 @@
 { Test de l'unite Graph integree a TPC (primitives de base en VGA 640x480).
-  Compiler : tpc GRAPHT1.PAS   puis executer sous DOSBox (ex. : mount c <dossier>, GRAPHT1.EXE).
-  Resultat : RES.TXT (une ligne "ok ..." ou "ECHEC ..." par controle, puis "Echecs: n"). }
+  Compiler : tpc GRAPHT1.PAS   puis executer sous DOSBox (ex. : mount c
+    <dossier>, GRAPHT1.EXE).
+  Resultat : RES.TXT (une ligne "ok ..." ou "ECHEC ..." par controle,
+    puis "Echecs: n"). }
 Program GRAPHT1;
 Uses Graph;
-Var D,M,I,Fails: Integer; F: Text; P: Pointer; Sz: Word; S: Array[0..99] of Byte;
+Var D,M,I,Fails: Integer; F: Text; P: Pointer; Sz: Word;
+  S: Array[0..99] of Byte;
     Img: File; Row: Array[0..639] of Byte; X,Y: Integer; Old: Word;
     A: ArcCoordsType; Pts: Array[0..3] of PointType;
 Procedure Chk(Name: String; Got, Want: LongInt);
 Begin
- If Got<>Want Then Begin Inc(Fails); WriteLn(F,'ECHEC ',Name,' obtenu=',Got,' attendu=',Want) End
+ If Got<>Want Then Begin Inc(Fails); WriteLn(F,'ECHEC ',Name,' obtenu=',Got,
+   ' attendu=',Want) End
  Else WriteLn(F,'ok ',Name);
 End;
 Begin
@@ -17,12 +21,14 @@ Begin
  InitGraph(D,M,'');
  Chk('initgraph',GraphResult,0);
  Chk('driver',D,VGA); Chk('mode',M,VGAHi);
- Chk('maxx',GetMaxX,639); Chk('maxy',GetMaxY,479); Chk('maxcolor',GetMaxColor,15);
+ Chk('maxx',GetMaxX,639); Chk('maxy',GetMaxY,479); Chk('maxcolor',GetMaxColor,
+   15);
  Chk('getcolor',GetColor,15);
  Chk('palsize',GetPaletteSize,16);
  SetColor(Red);
  Line(0,0,100,100);
- Chk('line mid',GetPixel(50,50),4); Chk('line start',GetPixel(0,0),4); Chk('line end',GetPixel(100,100),4);
+ Chk('line mid',GetPixel(50,50),4); Chk('line start',GetPixel(0,0),4);
+   Chk('line end',GetPixel(100,100),4);
  Chk('line off',GetPixel(51,50),0);
  PutPixel(200,10,9); Chk('putpixel',GetPixel(200,10),9);
  SetColor(Yellow);
@@ -40,7 +46,8 @@ Begin
  Chk('flood border',GetPixel(350,200),10); Chk('flood out',GetPixel(360,200),0);
  SetFillStyle(SolidFill,Magenta);
  Bar(400,100,450,150);
- Chk('bar in',GetPixel(425,125),5); Chk('bar edge',GetPixel(400,100),5); Chk('bar edge2',GetPixel(450,150),5);
+ Chk('bar in',GetPixel(425,125),5); Chk('bar edge',GetPixel(400,100),5);
+   Chk('bar edge2',GetPixel(450,150),5);
  Chk('bar out',GetPixel(451,150),0);
  SetFillStyle(LineFill,Cyan);
  Bar(500,100,527,115);
@@ -74,9 +81,11 @@ Begin
  { arc coords }
  Arc(300,200,0,90,50);
  GetArcCoords(A);
- Chk('arc x',A.X,300); Chk('arc xs',A.XStart,350); Chk('arc ys',A.YStart,200); Chk('arc xe',A.XEnd,300); Chk('arc ye',A.YEnd,150);
+ Chk('arc x',A.X,300); Chk('arc xs',A.XStart,350); Chk('arc ys',A.YStart,200);
+   Chk('arc xe',A.XEnd,300); Chk('arc ye',A.YEnd,150);
  { polygone }
- Pts[0].X:=500; Pts[0].Y:=300; Pts[1].X:=600; Pts[1].Y:=300; Pts[2].X:=550; Pts[2].Y:=400; Pts[3].X:=500; Pts[3].Y:=300;
+ Pts[0].X:=500; Pts[0].Y:=300; Pts[1].X:=600; Pts[1].Y:=300; Pts[2].X:=550;
+   Pts[2].Y:=400; Pts[3].X:=500; Pts[3].Y:=300;
  SetFillStyle(SolidFill,Red); SetColor(White);
  FillPoly(4,Pts);
  Chk('poly in',GetPixel(550,320),4); Chk('poly edge',GetPixel(500,300),15);

@@ -13070,18 +13070,30 @@ Procedure ShowHelp;Begin
    'oir DOC/TESTUNIT.txt),');
  ConRawWriteLn('                              affiche Succ'+#138+
    's/Echec pour chaque test, puis quitte.');
- ConRawWriteLn('  /KERNELTEST,dossier         Banc d''essai headless d''un noyau DOS : cree une');
- ConRawWriteLn('                              disquette FAT12 1,44 Mo A: depuis le dossier,');
- ConRawWriteLn('                              charge IO.SYS (binaire brut) a 0070:0000 et');
- ConRawWriteLn('                              l''execute; affiche ecran texte et registres.');
- ConRawWriteLn('                              Options: /KTSTEPS:n (max d''instructions),');
- ConRawWriteLn('                              /KTSCRIPT:fich (run/type/screen/regs...),');
- ConRawWriteLn('                              /KTINT[:21,13] (journal des INT), /KTTRACE:n,');
- ConRawWriteLn('                              /KTBREAK:seg:ofs, /KTLOAD:seg, /KTSTACK:seg:ofs,');
- ConRawWriteLn('                              /KTDRIVE:A|C (disquette A: ou disque dur 80h),');
- ConRawWriteLn('                              /KTIMAGE:fich.img, /KTBOOT (amorcage reel MBR/VBR');
- ConRawWriteLn('                              d''une image FAT16 comme Start-KernelDos;');
- ConRawWriteLn('                              IO.SYS et MSDOS.SYS requis; voir DOC/KERNELTEST.txt).');
+ ConRawWriteLn('  /KERNELTEST,dossier         Banc d''essai headless d''un ' +
+   'noyau DOS : cree une');
+ ConRawWriteLn('                              disquette FAT12 1,44 Mo A: ' +
+   'depuis le dossier,');
+ ConRawWriteLn('                              charge IO.SYS (binaire brut) a ' +
+   '0070:0000 et');
+ ConRawWriteLn('                              l''execute; affiche ecran ' +
+   'texte et registres.');
+ ConRawWriteLn('                              Options: /KTSTEPS:n (max ' +
+   'd''instructions),');
+ ConRawWriteLn('                              /KTSCRIPT:fich ' +
+   '(run/type/screen/regs...),');
+ ConRawWriteLn('                              /KTINT[:21,13] (journal des ' +
+   'INT), /KTTRACE:n,');
+ ConRawWriteLn('                              /KTBREAK:seg:ofs, /KTLOAD:seg, ' +
+   '/KTSTACK:seg:ofs,');
+ ConRawWriteLn('                              /KTDRIVE:A|C (disquette A: ou ' +
+   'disque dur 80h),');
+ ConRawWriteLn('                              /KTIMAGE:fich.img, /KTBOOT ' +
+   '(amorcage reel MBR/VBR');
+ ConRawWriteLn('                              d''une image FAT16 comme ' +
+   'Start-KernelDos;');
+ ConRawWriteLn('                              IO.SYS et MSDOS.SYS requis; ' +
+   'voir DOC/KERNELTEST.txt).');
  ConRawWriteLn('  /NC                         Ouvrir le '+
    'Terminal en Norton Commander');
  ConRawWriteLn('                              d'+#138+'s le d'+#130+'marrage');
@@ -13288,8 +13300,10 @@ Var
  KtPend: Array[0..KT_MAXPEND - 1] Of TKtPend;
  KtPendN: Integer;
  KtLogActive: Boolean;
- KtBoot: Boolean;    { /KTBOOT : amorcage reel MBR/VBR d une image FAT16 (comme Start-KernelDos) }
- KtHard: Boolean;    { /KTDRIVE:C : image montee comme disque dur 80h au lieu de A: }
+ KtBoot: Boolean;
+   { /KTBOOT : amorcage reel MBR/VBR d une image FAT16 (comme Start-KernelDos) }
+ KtHard: Boolean;
+   { /KTDRIVE:C : image montee comme disque dur 80h au lieu de A: }
 
 Procedure RunKernelTest; Forward;
 
@@ -225929,7 +225943,8 @@ Begin
 End;
 
 { Lit une chaine ASCIIZ (max 48 car.) a Seg:Ofs de la memoire emulee. }
-Function Kt_ReadAsciiz(Var P: TEmulatorPanel; Seg, Ofs: Word; Term: Byte): String;
+Function Kt_ReadAsciiz(Var P: TEmulatorPanel; Seg, Ofs: Word;
+  Term: Byte): String;
 Var S: String; B: Byte; I: Integer;
 Begin
  S := '';
@@ -227172,7 +227187,8 @@ Const
  KT_SPF     = 9;      { secteurs par FAT }
  KT_ROOTENT = 224;    { entrees du repertoire racine }
  KT_ROOTSEC = 14;     { secteurs du repertoire racine }
- KT_DATA0   = 33;     { 1 reserve + 2x9 FAT + 14 racine = 1er secteur de donnees }
+ KT_DATA0   = 33;
+   { 1 reserve + 2x9 FAT + 14 racine = 1er secteur de donnees }
  KT_MAXCLU  = 2848;   { dernier numero de grappe valide (1 secteur/grappe) }
  {$IFDEF UNIX}
  KT_SEP = '/';
@@ -227269,7 +227285,8 @@ Begin
  Base := 512;
  If (C And 1) = 0 Then Begin
   Img[Base + Off] := Byte(V And $FF);
-  Img[Base + Off + 1] := Byte((Img[Base + Off + 1] And $F0) Or ((V Shr 8) And $0F));
+  Img[Base + Off + 1] := Byte((Img[Base + Off + 1] And $F0) Or ((V Shr 8) And
+    $0F));
  End Else Begin
   Img[Base + Off] := Byte((Img[Base + Off] And $0F) Or ((V And $0F) Shl 4));
   Img[Base + Off + 1] := Byte((V Shr 4) And $FF);
@@ -227358,13 +227375,15 @@ Begin
    KdosEntries[I].StartClu := 0; KdosEntries[I].NumClu := 0;
   End Else Begin
    If NextClu + Need - 1 > KT_MAXCLU Then Begin
-    Err := 'contenu de ' + Folder + ' trop volumineux pour une disquette 1,44 Mo (a '
+    Err := 'contenu de ' + Folder +
+      ' trop volumineux pour une disquette 1,44 Mo (a '
      + KdosEntries[I].FName + ')';
     Dispose(Img); Exit;
    End;
    KdosEntries[I].StartClu := Word(NextClu);
    KdosEntries[I].NumClu := Word(Need);
-   For J := 0 To Need - 2 Do Kt_SetFat12(Img^, Word(NextClu + J), Word(NextClu + J + 1));
+   For J := 0 To Need - 2 Do Kt_SetFat12(Img^, Word(NextClu + J),
+     Word(NextClu + J + 1));
    Kt_SetFat12(Img^, Word(NextClu + Need - 1), $FFF);
    Inc(NextClu, Need);
   End;
@@ -227614,11 +227633,13 @@ Begin
     sfInvalidCode: KtOut('        opcode invalide ' + HexByte(P.CPU.LastBadOp) +
      ' a ' + HexWord(P.CPU.LastBadCS) + ':' + HexWord(P.CPU.LastBadIP));
     sfInvalidIntr: KtOut('        interruption non geree');
-    sfEndProgram: KtOut('        fin de programme (INT 20h / 4Ch non accroche, ou CS=0)');
+    sfEndProgram:
+      KtOut('        fin de programme (INT 20h / 4Ch non accroche, ou CS=0)');
     sfHLT: KtOut('        HLT');
    End;
   End;
-  KTR_HALT: KtOut('[arret] HLT avec interruptions masquees (CPU arrete) apres ' +
+  KTR_HALT: KtOut('[arret] HLT avec interruptions masquees (CPU arrete) apres '
+    +
    IntToStr(KtTotalDone) + ' instructions');
   KTR_BREAK: KtOut('[arret] point d''arret atteint apres ' +
    IntToStr(KtTotalDone) + ' instructions');
@@ -227687,7 +227708,8 @@ Begin
   Budget := KtSteps - KtTotalDone;
   If A1 <> '' Then Begin
    Val(A1, L, Err);
-   If (Err <> 0) Or (L < 0) Then Begin KtOut('script: run N attendu'); Exit; End;
+   If (Err <> 0) Or (L < 0) Then Begin KtOut('script: run N attendu'); Exit;
+     End;
    If L < Budget Then Budget := L;
   End;
   If KtStopReason <> KTR_COUNT Then Begin
@@ -227741,11 +227763,13 @@ Begin
   While I < L Do Begin
    S := HexWord(SegV) + ':' + HexWord(Word(OfsV + I)) + '  ';
    For Sz := 0 To 15 Do
-    If I + Sz < L Then S := S + HexByte(Emu_ReadByte(P.CPU, SegV, Word(OfsV + I + Sz))) + ' '
+    If I + Sz < L Then S := S + HexByte(Emu_ReadByte(P.CPU, SegV,
+      Word(OfsV + I + Sz))) + ' '
     Else S := S + '   ';
    S := S + ' ';
    For Sz := 0 To 15 Do
-    If I + Sz < L Then S := S + Kt_Printable(Emu_ReadByte(P.CPU, SegV, Word(OfsV + I + Sz)));
+    If I + Sz < L Then S := S + Kt_Printable(Emu_ReadByte(P.CPU, SegV,
+      Word(OfsV + I + Sz)));
    KtOut(S);
    Inc(I, 16);
   End;
@@ -227812,8 +227836,10 @@ Begin
   {$ENDIF}
  End;
  If KtBoot Then Begin
-  If Not Emu_BuildKernelDosImage(KtDir, ImgPath, 'IO.SYS', 'MSDOS.SYS', Err) Then Begin
-   KtOut('KERNELTEST: echec de construction de l''image FAT16 : ' + Err); Halt(1);
+  If Not Emu_BuildKernelDosImage(KtDir, ImgPath, 'IO.SYS', 'MSDOS.SYS',
+    Err) Then Begin
+   KtOut('KERNELTEST: echec de construction de l''image FAT16 : ' + Err);
+     Halt(1);
   End;
  End Else If Not Kt_BuildFat12(KtDir, ImgPath, Err) Then Begin
   KtOut('KERNELTEST: echec de construction de l''image : ' + Err); Halt(1);
@@ -227861,7 +227887,8 @@ Begin
   KtOut('KERNELTEST: memoire emulee indisponible'); Halt(1);
  End;
  EmuBootActive := True;
- EmuFakeDosSuppressed := True;   { INT 21h sans vecteur noyau => CF, pas de faux DOS }
+ EmuFakeDosSuppressed := True;   { INT 21h sans vecteur noyau => CF,
+   pas de faux DOS }
  EmuPanel.CPU.Fault := sfNone;
  EmuStepsToTick := EmuStepsPerTick;
  Emu_InitBDA(EmuPanel);
@@ -227881,7 +227908,8 @@ Begin
  Emu_DpmiInit(EmuPanel);
  EmuDpmi.Active := False;
  Emu_DefaultVectorsInit(EmuPanel);
- { --- chargement d IO.SYS a KtLoadSeg:0000 (convention des VBR MS-DOS : 0070) --- }
+ { --- chargement d IO.SYS a KtLoadSeg:0000 (convention des VBR MS-DOS : 0070)
+   --- }
  If Not KtBoot Then
   Emu_WriteBlock(EmuPanel.CPU, KtLoadSeg, 0, IoBuf^, Word(IoSize));
  Dispose(IoBuf);
@@ -227896,14 +227924,17 @@ Begin
   EmuPanel.CPU.Segs.SS := 0;          { pile du secteur d amorcage : 0000:7C00 }
   EmuPanel.CPU.Regs.SP := $7C00;
  End Else Begin
-  EmuPanel.CPU.Segs.SS := $9000;      { noyau trop gros pour 0070:0 .. 0000:7C00 }
+  EmuPanel.CPU.Segs.SS := $9000;
+    { noyau trop gros pour 0070:0 .. 0000:7C00 }
   EmuPanel.CPU.Regs.SP := $FFFE;
  End;
  EmuPanel.CPU.Regs.AX := 0; EmuPanel.CPU.Regs.BX := 0;
  EmuPanel.CPU.Regs.CX := 0; EmuPanel.CPU.Regs.SI := 0;
  EmuPanel.CPU.Regs.DI := 0; EmuPanel.CPU.Regs.BP := 0;
- EmuPanel.CPU.Regs.DL := Emu_DLFromDiskIdx(SlotIdx);  { unite d amorcage : 00h (A:) ou 80h (C:) }
- EmuPanel.CPU.Regs.CH := $F0;          { descripteur de media (convention MS-DOS) }
+ EmuPanel.CPU.Regs.DL := Emu_DLFromDiskIdx(SlotIdx);
+   { unite d amorcage : 00h (A:) ou 80h (C:) }
+ EmuPanel.CPU.Regs.CH := $F0;
+   { descripteur de media (convention MS-DOS) }
  EmuPanel.CPU.Flags.Base := $0202;     { IF=1 }
  EmuPanel.TotalSteps := 0;
  KtTotalDone := 0; KtStopReason := KTR_COUNT; KtTraceCnt := 0; KtPendN := 0;
@@ -227919,7 +227950,8 @@ Begin
   EmuPanel.CPU.Flags.Base := $0202;
  End;
  KtOut('KERNELTEST: IO.SYS ' + IntToStr(IoSize) + ' octets charge a ' +
-  HexWord(KtLoadSeg) + ':0000, image ' + ImgPath + ' sur DL=' + HexByte(EmuPanel.CPU.Regs.DL) + ', SS:SP=' +
+  HexWord(KtLoadSeg) + ':0000, image ' + ImgPath + ' sur DL=' +
+    HexByte(EmuPanel.CPU.Regs.DL) + ', SS:SP=' +
   HexWord(EmuPanel.CPU.Segs.SS) + ':' + HexWord(EmuPanel.CPU.Regs.SP) +
   ', max ' + IntToStr(KtSteps) + ' instructions');
  { --- execution --- }
@@ -227936,7 +227968,8 @@ Begin
   While (Not Eof(ScriptF)) And Continue_ Do Begin
    ReadLn(ScriptF, Line);
    { retire un eventuel CR final (script ecrit sous Windows) }
-   While (Line <> '') And (Line[Length(Line)] = #13) Do Delete(Line, Length(Line), 1);
+   While (Line <> '') And (Line[Length(Line)] = #13) Do Delete(Line,
+     Length(Line), 1);
    Continue_ := Kt_ExecCmd(EmuPanel, Line);
   End;
   Close(ScriptF);
@@ -262904,8 +262937,10 @@ Begin NesActive := False;
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
   EmuVScr_PutChar(P, #13); EmuVScr_PutChar(P, #10);
  End;
- { Amorcage reel (MBR/VBR) : l ecran appartient a la machine invitee, comme apres un POST - on efface les
-   lignes d information de l onglet pour ne pas les melanger avec les messages du systeme amorce. }
+ { Amorcage reel (MBR/VBR) : l ecran appartient a la machine invitee,
+   comme apres un POST - on efface les
+   lignes d information de l onglet pour ne pas les melanger avec les messages
+     du systeme amorce. }
  If EmuBootActive Then EmuVScr_Clear(P);
  { Dumper les bytes bruts du segment de code AVANT execution }
  {$I-} Assign(EmuDumpF, 'EMUCODE.LOG'); Rewrite(EmuDumpF); {$I+}
