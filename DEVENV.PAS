@@ -2248,8 +2248,8 @@ Const
  MRU_MAX_ENTRIES       = 16;              { nombre max de fichiers recents }
  MRU_FILENAME          = 'DEVENV.MRU';    { fichier MRU                    }
  START_PAGE_TITLE_Y    = 40;              { position Y du titre            }
- START_PAGE_LIST_Y     = 160;             { position Y de la liste         }
- START_PAGE_BTN_Y      = 60;              { position Y des boutons         }
+ START_PAGE_LIST_Y     = 220;             { position Y de la liste         }
+ START_PAGE_BTN_Y      = 130;             { position Y des boutons         }
  START_PAGE_BTN_WIDTH  = 140;             { largeur bouton demarrage       }
  START_PAGE_BTN_HEIGHT = 28;              { hauteur bouton demarrage       }
  START_PAGE_ITEM_HEIGHT= 20;              { hauteur element liste recents  }
@@ -271892,6 +271892,133 @@ Begin
  SP.FocusedBtn := 0;  { Nouveau projet par defaut }
 End;
 
+{ --- Titre "INSURRECTION" en flammes (animation de feu) ---------------- }
+{ Une grille de chaleur (cellules de FireCell pixels) est ensemencee par le }
+{ masque du mot ; la chaleur monte en se refroidissant (algorithme de feu   }
+{ classique) puis est convertie en rouge / orange / jaune. En 256 couleurs  }
+{ (-maxscreen) un vrai degrade est programme dans la palette (indices      }
+{ 224..255), en 16 couleurs on utilise rouge / rouge clair / brun / jaune. }
+Const
+ FIRE_MAXW = 520;
+ FIRE_MAXH = 60;
+ FIRE_TEXT = 'INSURRECTION';
+ FIRE_TOP  = 70;
+Var
+ FireHeat  : Array[0..FIRE_MAXH - 1, 0..FIRE_MAXW - 1] Of Byte;
+ FireMask  : Array[0..FIRE_MAXH - 1, 0..FIRE_MAXW - 1] Of Boolean;
+ FireW, FireH, FireCell, FireX0, FireS, FireTxtH: Integer;
+ FireReady : Boolean;
+ FireLast  : LongInt;
+
+Procedure FireSetup;
+Var
+ CenterX, TxtW, X, Y: Integer;
+Begin
+ CenterX := GetScreenWidth Div 2;
+ FireS := GetScreenWidth Div 130;
+ If FireS < 4 Then FireS := 4;
+ If FireS > 8 Then FireS := 8;
+ FireCell := FireS Div 2;
+ FireTxtH := 8 * FireS;
+ SetTextStyle(DefaultFont, HorizDir, FireS);
+ TxtW := TextWidth(FIRE_TEXT);
+ FireW := TxtW Div FireCell + 8;
+ If FireW > FIRE_MAXW Then FireW := FIRE_MAXW;
+ FireH := (FIRE_TOP + FireTxtH + 2 * FireCell) Div FireCell;
+ If FireH > FIRE_MAXH Then FireH := FIRE_MAXH;
+ FireX0 := CenterX - (FireW * FireCell) Div 2;
+ { rendu du mot hors animation pour en relever le masque }
+ DrawFilledRect(FireX0, 0, FireX0 + FireW * FireCell,
+  FireH * FireCell, CLR_BACKGROUND);
+ DrawText(CenterX - TxtW Div 2, FIRE_TOP, FIRE_TEXT, 15);
+ FillChar(FireHeat, SizeOf(FireHeat), 0);
+ For Y := 0 To FireH - 1 Do
+  For X := 0 To FireW - 1 Do
+   FireMask[Y, X] := GetPixel(FireX0 + X * FireCell + FireCell Div 2,
+    Y * FireCell + FireCell Div 2) = 15;
+ DrawFilledRect(FireX0, 0, FireX0 + FireW * FireCell,
+  FireH * FireCell, CLR_BACKGROUND);
+ SetTextStyle(DefaultFont, HorizDir, 1);
+ FireReady := True;
+End;
+
+Function FireColor(H: Integer): LongInt;
+Begin
+ If H < 10 Then FireColor := CLR_BACKGROUND
+ Else If GetMaxColor >= 255 Then FireColor := 224 + (H Shr 3)
+ Else If H < 45 Then FireColor := CLR_BACKGROUND
+ Else If H < 125 Then FireColor := 4
+ Else If H < 200 Then FireColor := 12
+ Else FireColor := 14;
+End;
+
+Procedure FireStep;
+Var
+ X, Y, V, Xs: Integer;
+Begin
+ For Y := 0 To FireH - 2 Do
+  For X := 0 To FireW - 1 Do Begin
+   Xs := X + Random(3) - 1;
+   If Xs < 0 Then Xs := 0;
+   If Xs >= FireW Then Xs := FireW - 1;
+   V := FireHeat[Y + 1, Xs] * 2;
+   If X > 0 Then V := V + FireHeat[Y + 1, X - 1]
+   Else V := V + FireHeat[Y + 1, X];
+   If X < FireW - 1 Then V := V + FireHeat[Y + 1, X + 1]
+   Else V := V + FireHeat[Y + 1, X];
+   V := V Div 4 - Random(14);
+   If V < 0 Then V := 0;
+   If V > 120 Then V := 120;
+   FireHeat[Y, X] := V;
+  End;
+ For Y := 0 To FireH - 1 Do
+  For X := 0 To FireW - 1 Do
+   If FireMask[Y, X] Then Begin
+    If GetMaxColor >= 255 Then FireHeat[Y, X] := 170 + Random(70)
+    Else FireHeat[Y, X] := 135 + Random(55);
+   End;
+End;
+
+Procedure FireDraw;
+Var
+ X, Y, X1: Integer;
+ C, C1, C2: LongInt;
+Begin
+ If GetMaxColor >= 255 Then
+  For X := 0 To 31 Do Begin
+   Y := X * 8 + 4;
+   C1 := Y * 2;
+   If C1 > 255 Then C1 := 255;
+   C2 := (Y - 90) * 2;
+   If C2 < 0 Then C2 := 0;
+   If C2 > 255 Then C2 := 255;
+   SetRGBPalette(224 + X, C1, C2, 0);
+  End;
+ For Y := 0 To FireH - 1 Do Begin
+  X := 0;
+  While X < FireW Do Begin
+   C := FireColor(FireHeat[Y, X]);
+   X1 := X;
+   While (X1 + 1 < FireW) And (FireColor(FireHeat[Y, X1 + 1]) = C) Do
+    Inc(X1);
+   DrawFilledRect(FireX0 + X * FireCell, Y * FireCell,
+    FireX0 + (X1 + 1) * FireCell - 1, Y * FireCell + FireCell - 1, C);
+   X := X1 + 1;
+  End;
+ End;
+End;
+
+Procedure StartPageFireTick;
+Var Now: LongInt;
+Begin
+ If Not FireReady Then Exit;
+ Now := GetTimestamp;
+ If (Now - FireLast) < 40 Then Exit;
+ FireLast := Now;
+ FireStep;
+ FireDraw;
+End;
+
 { --- Dessiner la page de demarrage --- }
 
 Procedure DrawStartPage(Var SP: TStartPage;
@@ -271904,15 +272031,15 @@ Begin
  ScreenW := GetScreenWidth;
  CenterX := ScreenW Div 2;
  { Titre }
- Title := 'INSURRECTION';
- SetTextStyle(DefaultFont, HorizDir, 5);
- DrawText(CenterX - (TextWidth(Title) Div 2), START_PAGE_TITLE_Y - 24,
-  Title, 15);
- SetTextStyle(DefaultFont, HorizDir, 1);
- { Sous-titre }
+ If Not FireReady Then FireSetup;
+ FireStep;
+ FireDraw;
+ { Sous-titres }
+ Y := FIRE_TOP + FireTxtH + 2 * FireCell + 4;
+ Title := '(DEVENV, une autre approche a Visual Studio)';
+ DrawText(CenterX - (Length(Title) * 8 Div 2), Y, Title, 15);
  Title := 'DEV-COOLS v' + IDE_VERSION;
- DrawText(CenterX - (Length(Title) * 8 Div 2),
-  START_PAGE_TITLE_Y + 24, Title, 8);
+ DrawText(CenterX - (Length(Title) * 8 Div 2), Y + 16, Title, 8);
  { Bouton Nouveau projet (0) }
  If SP.FocusedBtn = 0 Then
   DrawFilledRect(CenterX - START_PAGE_BTN_WIDTH - 10,
@@ -281570,6 +281697,10 @@ Begin
    { bloquante interne a ShowEmulatorPanel. Voir StepEmulator. }
    If EmuPanel.Base.Visible And EmuPanel.Loaded And EmuPanel.Running Then
     StepEmulator(EmuPanel);
+   If StartPage.Visible And (Not MenuActive) And (Not CtxMenu.Visible) And
+      (Not (Opts.TaskbarWin95 And
+       (Win95ActiveTask <> WIN95_ACTIVETASK_DEVENV))) Then
+    StartPageFireTick;
    { Meme motif que StepEmulator ci-dessus, pour l'onglet navigateur Web
      ACTIF uniquement (phase F) - un onglet WK_BROWSER en arriere-plan ne
      doit pas voir son setTimeout se declencher, comme un vrai navigateur
