@@ -267,6 +267,7 @@ Type
   AssemblerBody: Boolean;
   InterruptRoutine, NoFrame, SkipSub: Boolean; { directive interrupt; assembler sans cadre de pile; frame sans variable locale }
   InlineBody: Boolean;       { Procedure X; Inline(...) }
+  IsMethod: Boolean;         { methode d'objet : premier parametre implicite Self (var) }
   DebugVisible: Boolean;
   DebugLine, DebugColumn: Word;
   DebugFile: TShortString;
@@ -402,7 +403,7 @@ Type
   Kind, Reg, RM, Segment: Byte;
   Width, Sym: Word;
   Displacement: Longint;
-  Direct, OffsetValue, SegmentValue, CodeValue: Boolean;
+  Direct, OffsetValue, SegmentValue, CodeValue, DataSegment: Boolean;
   LabelRef: Boolean;         { adresse = etiquette assembleur locale (+ Displacement) }
   CodeSym: Word;             { adresse = point d'entree d'une procedure (+ Displacement) }
   Name: String[63];
@@ -1923,6 +1924,9 @@ Var
    la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
  JumpOrd: Word;
  DbgNoJ, DbgNoIf, DbgNoBack, KeepES, TailIndexed, DirIndexed, KernelSeen: Boolean;
+ InObjectDecl, ObjectFieldsMode, MethodCalled, SelfPushed: Boolean;
+ ObjectDeclName, TypeNameBeingDeclared, CurObjName: TShortString;
+ ObjectDeclType: Word;
  LitAddr, LitEnd: Array[1..1500] Of Word; LitUnit: Array[1..1500] Of Byte; LitCount: Word;
  ProcOrd: Word; FramePred, FrameNext, FrameForce: Array[1..8000] Of Boolean;
  ReportLines: Array[1..64] Of String[120];
@@ -3206,6 +3210,11 @@ Begin
   Scope:=Scopes[Scope].Parent;
  Until False;
  FindSymbol:=0;
+ { dans une methode : les autres methodes de l'objet sont visibles sans qualification }
+ If (CurObjName<>'') And Not Qualified Then Begin
+  I:=FindAtScope(CurObjName+'.'+S,CurrentUnit,0);
+  If I<>0 Then Begin FindSymbol:=I; Exit End;
+ End;
  For J:=ImportCount Downto 1 Do
  Begin
  If ((S='FILEMODE') Or (S='INPUT') Or (S='OUTPUT') Or (S='RANDSEED') Or (S='MAXINT') Or (S='REAL') Or
@@ -3329,6 +3338,8 @@ Begin
  TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[12].ElementType:=6; { PChar = ^Char }
  TypeCount:=NewType(ttBoolean,2,0,False,0,1,5); { WordBool }
  TypeCount:=NewType(ttBoolean,4,0,False,0,1,5); { LongBool }
+ TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[15].ElementType:=2; { PByte = ^Byte }
+ TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[16].ElementType:=3; { PWord = ^Word }
 End;
 
 Function BuiltinType(S: TShortString): Word;
@@ -3368,11 +3379,11 @@ End;
 Function StoreReal(V: Double): Word; Forward;
 
 Procedure InstallStandardTypes;
-Const Names: Array[1..14] Of String[8]=('INTEGER','BYTE','WORD','SHORTINT','BOOLEAN','CHAR','STRING','POINTER','LONGINT','TEXT','REAL','PCHAR','WORDBOOL','LONGBOOL');
+Const Names: Array[1..16] Of String[8]=('INTEGER','BYTE','WORD','SHORTINT','BOOLEAN','CHAR','STRING','POINTER','LONGINT','TEXT','REAL','PCHAR','WORDBOOL','LONGBOOL','PBYTE','PWORD');
 Var T,I: Word;
 Begin
  CurrentUnit:=255;
- For T:=1 To 14 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType; ApplyType(I,T) End;
+ For T:=1 To 16 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType; ApplyType(I,T) End;
  CurrentUnit:=0; FileModeAddress:=AllocData(1); Data[FileModeAddress]:=2;
  CurrentUnit:=255; I:=NewSymbol('FILEMODE'); Symbols[I].Kind:=skVar; ApplyType(I,2); Symbols[I].Addr:=FileModeAddress;
  CurrentUnit:=0; StandardInputAddress:=AllocData(256); StandardOutputAddress:=AllocData(256);
@@ -4107,6 +4118,8 @@ Procedure AllocateVariable(I: Word); Forward;
 Procedure CheckLabels(Scope: Word); Forward;
 Function NativeCall(I: Word): Byte;Forward;
 Function UserCall(I: Word): Byte;Forward;
+Procedure ProcedureDeclaration; Forward;
+
 Function ReadType: Word; Forward;
  Procedure RequireOrdinal(T: Byte); Forward;
  Function StandardFunction(Name: TShortString): Word; Forward;
@@ -4165,6 +4178,15 @@ Begin
    NextToken; If Token<>tkIdent Then Fail(2,'Champ attendu'); Name:=TokenText;
    F:=TypeExtras[T].FirstField;
    While (F<>0) And (Fields[F].Name<>Name) Do F:=Fields[F].Next;
+   If (F=0) And (Types[T].IdentityName<>'') Then Begin
+    { methode d'objet : Objet.Methode(args) }
+    F:=FindAtScope(Types[T].IdentityName+'.'+Name,CurrentUnit,0);
+    If (F<>0) And (Symbols[F].Kind=skProc) And Symbols[F].IsMethod Then Begin
+     NextToken; Emit($06); Emit($57); SelfPushed:=True;
+     UserCall(F); MethodCalled:=True; DesignatorTail:=ExprType; Exit;
+    End;
+    F:=0;
+   End;
    If F=0 Then Fail(3,'Champ inconnu: '+Name);
    AddDI(Fields[F].Offset);
    T:=Fields[F].TypeId; NextToken;
@@ -4365,6 +4387,11 @@ Begin
    If (TokenValue>65535) Or (TokenValue<-32768) Then Begin ExprType:=9; Emit($BA); EmitWord(Word(TokenValue Shr 16)) End;
   End;
   NextToken;
+  If (T=ttString) And (Token=tkLB) Then Begin
+   { 'constante'[i] : caractere d'une chaine litterale }
+   Emit2($8E,$C2); Emit2($89,$C7);
+   ExprType:=DesignatorTail(7); LoadDesignator(ExprType); T:=Types[ExprType].Typ; ExprLiteral:=False; Lit:=False;
+  End;
  End Else If Token=tkLP Then Begin
   NextToken; T:=Expression; Need(tkRP);
   If (Token=tkCaret) And (T=ttPointer) Then Begin
@@ -4411,10 +4438,24 @@ Begin
   If (Token=tkLP) And (CastType<>0) Then Begin
    NextToken;
    If Types[CastType].Typ In [ttRecord,ttArray,ttString,ttSet] Then Begin
-    { Transtypage de variable structuree: TRec(Pointer(P)^), TTab(Rec) }
+    { Transtypage de variable structuree: TRec(Pointer(P)^), TTab(Rec), PtrRec(P).Ofs }
+    I:=0; If Token=tkIdent Then I:=FindLexicalSymbol(TokenText);
+    If (I<>0) And (Symbols[I].Kind=skVar) And Not Symbols[I].ResultVariable Then Begin
+     { variable : sa memoire est reinterpretee avec le type du transtypage }
+     ExprType:=VariableArgument; Need(tkRP);
+     ExprType:=CastType;
+     If Token In [tkLB,tkDot] Then ExprType:=DesignatorTail(CastType);
+     LoadDesignator(ExprType); T:=Types[ExprType].Typ; ExprKnown:=False; ExprLiteral:=False;
+    End Else Begin
     I:=CastTarget; CastTarget:=CastType; T:=Expression; CastTarget:=I; Need(tkRP);
     If T<>Types[CastType].Typ Then Fail(61,'Transtypage structure invalide');
     ExprType:=CastType; ExprKnown:=False; ExprLiteral:=False;
+    If Token In [tkLB,tkDot] Then Begin
+     { TTab(Variable)[i] ou TRec(Variable).champ : adresse DX:AX -> ES:DI puis suite du designateur }
+     Emit2($8E,$C2); Emit2($89,$C7);
+     ExprType:=DesignatorTail(CastType); LoadDesignator(ExprType); T:=Types[ExprType].Typ;
+    End;
+    End;
    End Else Begin
    T:=Expression; Need(tkRP);
    If Types[CastType].Typ=ttReal Then Begin ToReal(ExprType); T:=ttReal; ExprType:=11 End
@@ -4536,7 +4577,12 @@ Begin
     If (Symbols[I].Kind=skVar) And SimpleScalar(I) And Not (Token In [tkLB,tkDot,tkCaret]) Then Begin
      ExprType:=SymbolType(I); T:=Types[ExprType].Typ; LoadScalar(I);
     End Else If Symbols[I].Kind=skVar Then Begin
-     ExprType:=Designator(I); T:=Types[ExprType].Typ; LoadDesignator(ExprType);
+     ExprType:=Designator(I);
+     If (ExprType=0) And (CastTarget<>0) Then ExprType:=CastTarget;
+     If MethodCalled Then Begin
+      { appel de methode : le resultat est deja dans AX / DX:AX }
+      MethodCalled:=False; T:=Types[ExprType].Typ; If ExprType=0 Then Fail(42,'Fonction attendue');
+     End Else Begin T:=Types[ExprType].Typ; LoadDesignator(ExprType) End;
     End Else Begin
      T:=Symbols[I].Typ; ExprType:=SymbolType(I); LoadSymbol(I);
      If T=ttString Then Emit2($8C,$DA);
@@ -5068,14 +5114,26 @@ Begin
 End;
 
 Function UserCall(I: Word): Byte;
-Var J,V,T,N,A: Word; Kind: Byte; Name: TShortString;
+Var J,V,T,N,A,First: Word; Kind: Byte; Name: TShortString;
 Begin
  StackRoom(Symbols[I].ParamBytes+268);
  If KeepES Then Emit($06); { preserve ES: indirect var accesses use LES }
- If Symbols[I].ParamCount<>0 Then Begin
+ First:=1;
+ If Symbols[I].IsMethod Then Begin
+  { methode : le premier parametre (Self) est deja empile par l'appelant ou, a l'interieur d'une
+    methode, repris du Self courant }
+  First:=2;
+  If SelfPushed Then SelfPushed:=False
+  Else Begin
+   V:=FindLexicalSymbol('SELF');
+   If V=0 Then Fail(3,'Methode appelee sans objet : '+Symbols[I].Name);
+   PushVariableAddress(V);
+  End;
+ End;
+ If Symbols[I].ParamCount>=First Then Begin
   Need(tkLP);
-  For J:=1 To Symbols[I].ParamCount Do Begin
-   If J<>1 Then Need(tkComma);
+  For J:=First To Symbols[I].ParamCount Do Begin
+   If J<>First Then Need(tkComma);
    T:=Symbols[I].ParamTypeIds[J];
    If Symbols[I].ParamFlags[J]=7 Then Begin
     { Tableau ouvert: adresse du tableau puis High, reordonnes sur la pile. }
@@ -5099,6 +5157,10 @@ Begin
    If Symbols[I].ParamFlags[J]=6 Then Begin
     If Token<>tkIdent Then Fail(20,'Variable pour parametre var attendue');
     If IsMemPort(TokenText) And (TokenText[1]='M') And (FindLexicalSymbol(TokenText)=0) Then Begin
+     ExprType:=VariableArgument; Emit($06); Emit($57);
+    End Else If ((FindLexicalSymbol(TokenText)<>0) And (Symbols[FindLexicalSymbol(TokenText)].Kind=skType)) Or
+                ((FindLexicalSymbol(TokenText)=0) And (BuiltinType(TokenText)<>0)) Then Begin
+     { Type(Variable) ou TPtr(expression)^ passe en parametre var }
      ExprType:=VariableArgument; Emit($06); Emit($57);
     End Else Begin
     Name:=TokenText; NextToken; V:=ResolveSymbol(Name);
@@ -5201,7 +5263,15 @@ Begin
  If (J<>0) And (Symbols[J].Kind=skType) Then T:=Symbols[J].TypeId Else If J=0 Then T:=BuiltinType(Name);
  If (T<>0) And (Token=tkLP) Then Begin
   { Transtypage d'une variable: Word(X) designe X vu comme un Word. }
-  NextToken; I:=VariableArgument; Need(tkRP); VariableArgument:=T; Exit;
+  NextToken;
+  If Types[T].Typ=ttPointer Then Begin
+   { TPtr(expression)^... : la valeur du pointeur donne l'adresse de la variable }
+   I:=Expression; Need(tkRP);
+   If Token<>tkCaret Then Fail(61,'Transtypage de variable invalide');
+   NextToken; Emit2($8E,$C2); Emit2($89,$C7);
+   VariableArgument:=DesignatorTail(TypeExtras[T].ElementType); Exit;
+  End;
+  I:=VariableArgument; Need(tkRP); VariableArgument:=T; Exit;
  End;
  I:=ResolveSymbol(Name); VariableArgument:=Designator(I);
 End;
@@ -6042,7 +6112,9 @@ Begin
      ConstToLocal(RhsPos,SmallInt(Symbols[I].Addr),Types[Dest].Width) Then Exit;
   StoreScalar(I); Exit;
  End;
- Dest:=Designator(I); AssignToDesignator(Dest);
+ Dest:=Designator(I);
+ If MethodCalled Then Begin MethodCalled:=False; Exit End;
+ AssignToDesignator(Dest);
 End;
 
 Procedure AssignToDesignator(Dest: Word);
@@ -6586,6 +6658,8 @@ Begin
    O.Kind:=3; O.Width:=2; O.CodeValue:=True; O.Sym:=O.CodeSym; { OFFSET Proc.Type.Champ }
   End Else If ForceOffset And (O.Kind=5) And (O.Sym<>0) Then Begin
    O.Kind:=3; O.Width:=2; O.CodeValue:=True;  { OFFSET procedure: adresse dans le code }
+  End Else If ForceSegment And (O.Kind=5) And (O.Sym=0) And (O.Name='@DATA') Then Begin
+   O.Kind:=3; O.Width:=2; O.DataSegment:=True;  { SEG @Data : segment de donnees }
   End Else Unsupported('OFFSET/SEG sans variable globale');
  End;
  If (O.Kind=2) And (O.LabelRef Or (O.CodeSym<>0)) And (O.Segment=0) Then O.Segment:=2; { CS: automatique }
@@ -6625,6 +6699,7 @@ Begin
   Inc(RefCount); References[RefCount].Position:=CodeSize; References[RefCount].LabelIndex:=LabelIndex(O.Name);
   References[RefCount].Absolute:=True; References[RefCount].Addend:=O.Displacement; EmitWord(0);
  End
+ Else If O.DataSegment Then Begin AddSegmentRelocation(CodeSize,3); EmitWord(0) End
  Else If O.SegmentValue Then Begin AddSegmentRelocation(CodeSize,0); EmitWord(0) End
  Else If O.CodeValue Then Begin
   If Symbols[O.Sym].Unresolved Then Begin AddPending(CodeSize,O.Sym,True,O.Displacement-UnitBias(Symbols[O.Sym].Owner)); EmitWord(0) End
@@ -7337,7 +7412,9 @@ Begin
   If (Token=tkLP) And (((I<>0) And (Symbols[I].Kind=skType)) Or ((I=0) And (BuiltinType(Name)<>0))) Then Begin
    { Type(Variable) := expression : transtypage de variable en destination }
    If I<>0 Then P:=Symbols[I].TypeId Else P:=BuiltinType(Name);
-   NextToken; Q:=VariableArgument; Need(tkRP); AssignToDesignator(P);
+   NextToken; Q:=VariableArgument; Need(tkRP);
+   If Token In [tkLB,tkDot] Then P:=DesignatorTail(P);
+   AssignToDesignator(P);
   End Else
   If (I=0) And (Token=tkLB) And IsMemPort(Name) Then MemPortStore(Name)
   Else If (I=0) And (Token<>tkDot) And StandardProcedure(Name) Then
@@ -7649,7 +7726,7 @@ Var Names: Array[1..32] Of TShortString; Count,J,Component,Tag,I: Word;
  BaseOffset,ArmOffset,MaxOffset: Longint; TagName: TShortString;
  LabelValue: TConstValue; Labels: Array[1..256] Of Longint; LabelCount: Word;
 Begin
- While Token<>StopToken Do Begin
+ While (Token<>StopToken) And Not (ObjectFieldsMode And (Token In [tkProcedure,tkFunction])) Do Begin
   If Token=tkCase Then Begin
    NextToken; TagName:='';
    If Token<>tkIdent Then Fail(2,'Type ou champ discriminant attendu');
@@ -7694,8 +7771,8 @@ Begin
 End;
 Begin
  If Token=tkPacked Then NextToken;
- If Token In [tkObject,tkProcedure,tkFunction] Then
-  Unsupported('objet ou type procedural');
+ If Token In [tkProcedure,tkFunction] Then
+  Unsupported('type procedural');
  If (Token=tkIdent) And ((TokenText='SINGLE') Or (TokenText='DOUBLE') Or (TokenText='EXTENDED') Or (TokenText='COMP')) Then
   Unsupported('type: '+TokenText);
  If Token=tkFile Then Begin
@@ -7755,6 +7832,20 @@ Begin
   NextToken; T:=NewType(ttRecord,0,0,False,0,0,0); Size:=0;
   RecordFields(Size,tkEnd);
   Need(tkEnd); TypeExtras[T].Size:=Size;
+ End Else If Token=tkObject Then Begin
+  { objet sans heritage ni methode virtuelle : un enregistrement dont les methodes recoivent Self }
+  If TypeNameBeingDeclared='' Then Unsupported('objet anonyme');
+  If CurrentScope<>0 Then Unsupported('objet local');
+  NextToken;
+  If Token=tkLP Then Unsupported('heritage d''objet');
+  T:=NewType(ttRecord,0,0,False,0,0,0); Size:=0;
+  ObjectFieldsMode:=True; RecordFields(Size,tkEnd); ObjectFieldsMode:=False;
+  TypeExtras[T].Size:=Size;
+  ObjectDeclName:=TypeNameBeingDeclared; ObjectDeclType:=T; TypeNameBeingDeclared:='';
+  InObjectDecl:=True;
+  While Token In [tkProcedure,tkFunction] Do ProcedureDeclaration;
+  InObjectDecl:=False;
+  Need(tkEnd);
  End Else If Token=tkString Then Begin
   NextToken; T:=7;
   If Token=tkLB Then Begin
@@ -7825,7 +7916,8 @@ Begin
  NextToken;
  While Token=tkIdent Do Begin
   I:=NewSymbol(TokenText); Symbols[I].Kind:=skType; NextToken; Need(tkEqual);
-  T:=ReadType;
+  TypeNameBeingDeclared:=Symbols[I].Name;
+  T:=ReadType; TypeNameBeingDeclared:='';
   If (Types[T].Typ In [ttEnum,ttArray,ttRecord,ttPointer]) And (Types[T].IdentityName='') Then Begin
    If CurrentUnit=0 Then Types[T].IdentityUnit:='$PROGRAM'
    Else If CurrentUnit=254 Then Types[T].IdentityUnit:='$REAL'
@@ -8084,22 +8176,40 @@ Var
  I,Parent,FramePatch,StackCheckPatch,Skip,J,K,T,V,ParamOffset,Size,Link: Word;
  SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,IsExternal,IsConst,DeadHere: Boolean;
  MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur: Word; MTot: Longint;
- Sig: TSymbol; Name: TShortString; MyOrd: Word;
+ Sig: TSymbol; Name,ShortName,SavedObjName: TShortString; MyOrd,MethodObj,SelfSym,FieldIdx: Word;
  Names: Array[1..MaxNativeParams] Of String[63]; N: Byte;
 Begin
  IsFunction:=Token=tkFunction; MyOrd:=0; FillChar(Sig,SizeOf(Sig),0);
  Sig.Kind:=skProc; Sig.Typ:=ttVoid;
  NextToken;
  If Token<>tkIdent Then Fail(2,'Nom de procedure attendu');
- Name:=TokenText;
- I:=FindOwnSymbol(TokenText);
+ Name:=TokenText; ShortName:=Name; MethodObj:=0;
+ If InObjectDecl Then Begin
+  { entete d'une methode dans la declaration de l'objet }
+  Name:=ObjectDeclName+'.'+TokenText; MethodObj:=ObjectDeclType; NextToken;
+ End Else Begin
+  NextToken;
+  If Token=tkDot Then Begin
+   { Procedure Objet.Methode : implementation d'une methode }
+   I:=FindSymbol(Name);
+   If (I=0) Or (Symbols[I].Kind<>skType) Or (Types[Symbols[I].TypeId].Typ<>ttRecord) Then Fail(26,'Objet attendu : '+Name);
+   MethodObj:=Symbols[I].TypeId; NextToken;
+   If Token<>tkIdent Then Fail(2,'Nom de methode attendu');
+   ShortName:=TokenText; Name:=Name+'.'+TokenText; NextToken;
+  End;
+ End;
+ I:=FindOwnSymbol(Name);
  Existing:=I<>0;
  If Existing Then Begin
   If (Symbols[I].Kind<>skProc) Or Symbols[I].HasBody Then      Fail(4,
-  'Identificateur duplique: '+TokenText);
+  'Identificateur duplique: '+Name);
  End;
- NextToken;
  FullHeading:=Token=tkLP;
+ If MethodObj<>0 Then Begin
+  { parametre implicite Self (var) }
+  Sig.ParamCount:=1; Sig.ParamNames[1]:='SELF'; Sig.ParamTypeIds[1]:=MethodObj; Sig.ParamTypes[1]:=ttRecord;
+  Sig.ParamWidths[1]:=0; Sig.ParamSigned[1]:=False; Sig.ParamFlags[1]:=6; Sig.ParamBytes:=4; Sig.IsMethod:=True;
+ End;
  If Token=tkLP Then Begin
   NextToken;
   While Token<>tkRP Do Begin
@@ -8168,6 +8278,7 @@ Begin
   End;
   NextToken; Need(tkSemi);
  End;
+ If InObjectDecl Then IsForward:=True;
  If IsExternal And IsForward Then Fail(5,'EXTERNAL et FORWARD incompatibles');
  If Existing Then Begin
   If IsFunction<>(Symbols[I].Typ<>ttVoid) Then Fail(131,'Procedure/fonction differente');
@@ -8189,7 +8300,7 @@ Begin
   Symbols[I].ParamCount:=Sig.ParamCount; Symbols[I].ParamBytes:=Sig.ParamBytes;
   Symbols[I].FarRoutine:=Sig.FarRoutine;
   Symbols[I].AssemblerBody:=Sig.AssemblerBody;
-  Symbols[I].InterruptRoutine:=Sig.InterruptRoutine;
+  Symbols[I].InterruptRoutine:=Sig.InterruptRoutine; Symbols[I].IsMethod:=Sig.IsMethod;
   Symbols[I].InlineBody:=Sig.InlineBody; Symbols[I].StrValue:=Sig.StrValue;
   For J:=1 To Sig.ParamCount Do Begin
    Symbols[I].ParamTypeIds[J]:=Sig.ParamTypeIds[J]; Symbols[I].ParamNames[J]:=Sig.ParamNames[J];
@@ -8254,8 +8365,23 @@ Begin
   Symbols[V].Local:=True; Symbols[V].Addr:=ParamOffset;
   Symbols[V].ByReference:=Symbols[I].ParamFlags[J] In [6,7];
  End;
+ SavedObjName:=CurObjName;
+ If Symbols[I].IsMethod Then Begin
+  { les champs de l'objet sont visibles comme dans un WITH Self }
+  CurObjName:=Copy(Name,1,Pos('.',Name)-1);
+  SelfSym:=FindOwnSymbol('SELF');
+  FieldIdx:=TypeExtras[Symbols[I].ParamTypeIds[1]].FirstField;
+  While FieldIdx<>0 Do Begin
+   If FindOwnSymbol(Fields[FieldIdx].Name)=0 Then Begin
+    V:=NewSymbol(Fields[FieldIdx].Name); Symbols[V].Kind:=skVar; ApplyType(V,Fields[FieldIdx].TypeId);
+    Symbols[V].Local:=True; Symbols[V].ByReference:=True; Symbols[V].Addr:=Symbols[SelfSym].Addr;
+    Symbols[V].WithOffset:=Fields[FieldIdx].Offset; Symbols[V].DebugVisible:=False;
+   End;
+   FieldIdx:=Fields[FieldIdx].Next;
+  End;
+ End;
  If IsFunction Then Begin
-  V:=NewSymbol(Name); Symbols[V].Kind:=skVar; ApplyType(V,Symbols[I].TypeId);
+  V:=NewSymbol(ShortName); Symbols[V].Kind:=skVar; ApplyType(V,Symbols[I].TypeId);
   AllocateVariable(V); Symbols[V].ResultVariable:=True; Symbols[V].RoutineSymbol:=I;
   Symbols[I].ResultSymbol:=V;
  End;
@@ -8303,7 +8429,7 @@ Begin
  End;
  If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,Scopes[CurrentScope].LocalSize+256);
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',CodeSize-Symbols[I].Addr);
- CurProc:=SavedCur;
+ CurProc:=SavedCur; CurObjName:=SavedObjName;
  If DeadHere Then Begin
   CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat; RelocationCount:=MReloc;
   ObjectCallCount:=MObj; PendCount:=MPend; DebugCount:=MDbg; LabelJumpCount:=MLab; DataFixupCount:=MDataFix;
