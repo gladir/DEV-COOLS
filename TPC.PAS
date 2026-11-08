@@ -2599,6 +2599,8 @@ Begin
  Val(S,N,E); If E<>0 Then Fail(7,'Constante assembleur invalide'); ReadAssemblyNumber:=N;
 End;
 
+Function FindLexicalSymbol(S: TShortString): Word;Forward;
+
 Procedure NextToken;
 Var
  C: Char;
@@ -2630,6 +2632,8 @@ Begin
   If (TokenText='SYSTEM') And (Peek='.') And (UpCase(PeekNext) In ['A'..'Z','_']) Then Begin
    Advance; TokenText:='';
    While UpCase(Peek) In ['A'..'Z','0'..'9','_'] Do Begin AppendChar(TokenText,UpCase(Peek)); Advance End;
+   { un nom local qui masque le symbole de System : System.Nom doit viser System, pas le nom local }
+   If FindLexicalSymbol(TokenText)<>0 Then TokenText:='SYSTEM.'+TokenText;
   End;
   Token:=Keyword(TokenText); Exit;
  End;
@@ -3189,8 +3193,12 @@ Function FindSymbol(S: TShortString): Word;
 Var
  I: Word;
  J: Integer; Scope: Word;
+ Qualified: Boolean;
 Begin
  Scope:=CurrentScope;
+ Qualified:=(Length(S)>7) And (Copy(S,1,7)='SYSTEM.');
+ If Qualified Then Begin S:=Copy(S,8,Length(S)-7); Scope:=0; End
+  Else
  Repeat
   I:=FindAtScope(S,CurrentUnit,Scope);
   If I<>0 Then Begin FindSymbol:=I; Exit End;
@@ -4316,7 +4324,7 @@ Function Factor: Byte;
 Var
  T: Byte;
  I,CastType: Word;
- Name: TShortString;
+ Name,FullName: TShortString;
  Bound: Longint;
  Lit: Boolean;
 Begin
@@ -4380,8 +4388,10 @@ Begin
    ; If Types[ExprType].Width=4 Then Emit2($F7,$D2)
   End;
  End Else If Token=tkIdent Then Begin
-  Name:=TokenText; NextToken;
+  Name:=TokenText; NextToken; FullName:=Name;
   I:=FindLexicalSymbol(Name);
+  { System.Nom : fonction standard masquee par un nom local }
+  If (I=0) And (Copy(Name,1,7)='SYSTEM.') Then Name:=Copy(Name,8,Length(Name)-7);
   If (I=0) And (Token=tkLB) And IsMemPort(Name) Then Begin
    ExprType:=MemPortLoad(Name); T:=Types[ExprType].Typ; ExprKnown:=False;
    ExprUnsigned:=Not Types[ExprType].Signed; ExprLiteral:=False; Factor:=T; Exit;
@@ -4513,7 +4523,7 @@ Begin
     ExprKnown:=False;
   End Else
   Begin
-   I:=ResolveSymbol(Name);
+   I:=ResolveSymbol(FullName);
   If Symbols[I].ResultVariable And (Token=tkLP) Then I:=Symbols[I].RoutineSymbol;
    If Symbols[I].Kind=skProc Then Begin
    If Symbols[I].Typ=ttVoid Then Fail(42,'Procedure utilisee comme fonction');
@@ -4898,6 +4908,18 @@ Begin
    If R<>ttArray Then Begin Emit2($80,$FB); Emit(TypeExtras[LeftType].Size); Emit2($75,2) End;
    Emit2($F3,$A6); Emit($1F);                                    { repe cmpsb; pop ds }
    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76; tkNE:Jcc:=$75 Else Jcc:=$74 End;
+   LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize; CondJcc:=Jcc;
+   ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean; Exit;
+  End;
+  If (T=ttString) And (R=ttArray) And (TypeExtras[ExprType].ElementType=6) Then Begin
+   { Chaine comparee a un tableau de Char (meme longueur) : symetrique du cas precedent }
+   Emit($5F); Emit($07); Emit2($89,$C6);                          { di,es = chaine ; si = tableau }
+   Emit($1E); Emit2($8E,$DA);                                     { push ds; ds = segment du tableau }
+   Emit($26); Emit2($8A,$1D); Emit($47);                          { bl = longueur; di++ }
+   Emit($B9); EmitWord(TypeExtras[ExprType].Size);
+   Emit2($80,$FB); Emit(TypeExtras[ExprType].Size); Emit2($75,2);
+   Emit2($F3,$A6); Emit($1F);                                     { repe cmpsb; pop ds }
+   Case Op Of tkGreater:Jcc:=$72; tkLess:Jcc:=$77; tkGE:Jcc:=$76; tkLE:Jcc:=$73; tkNE:Jcc:=$75 Else Jcc:=$74 End;
    LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize; CondJcc:=Jcc;
    ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean; Exit;
   End;
