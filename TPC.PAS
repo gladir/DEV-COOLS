@@ -30,6 +30,8 @@ Program TPC;
    - messages du compilateur en francais, numeros d'erreurs de la table de
      Turbo Pascal 7.0, affichage FICHIER(ligne) et resume
      "n lignes, s secondes, c octets de code, d octets de donnees";
+   - code de plus de 64 Ko : mode multi-segments active automatiquement (routines globales FAR reparties en
+     segments de code, runtime recopie dans chacun ; voir DOC/TPC_OPTIMISATIONS.txt) ;
    - unites standard CRT, DOS, STRINGS, PRINTER et GRAPH integrees (sources Pascal
      embarques, compiles a la demande quand aucune TPU n'est trouvee);
    - disposition memoire de TP: code en CS, constantes et chaines en DS,
@@ -90,6 +92,8 @@ Const
  MaxImage = 65520;
  MaxSymbols = 4096;
  MaxFixups = 32768;
+ MaxSegs = 32;           { segments de code au plus (mode multi-segments) }
+ MaxCodeRefs = 8192;
  MaxDefines = 128;
  MaxUnits = 64;
  MaxLibraryUnits = 256;
@@ -195,7 +199,7 @@ Const
  MaxScopes=1024;
  MaxTemps=32;                 { temporaires chaine/reel simultanes par instruction }
  MaxNativeParams = 16;
- MaxNativeRefs = 4096;
+ MaxNativeRefs = 16384;
  MaxObjects = 64;
  MaxObjSegments = 256;
  MaxObjNames = 512;
@@ -331,6 +335,7 @@ Type
  { 1 = compilation en cours; 2 = compilee }
   InterfaceReady, HasInit: Boolean;
   InitAddress: Word;
+  InitSeg: Byte;             { segment de code du bloc d'initialisation (mode multi-segments) }
   FromSource, Embedded: Boolean;
   Path: TShortString;
   Dependencies: TUnitSet;
@@ -358,6 +363,29 @@ Type
  End;
  TMZRelocation = Packed Record
   Offs, Segm: Word
+ End;
+ { Mode multi-segments (programme de plus de 64 Ko de code) : chaque segment de code
+   ferme est conserve avec ses fixups de donnees, ses relocalisations MZ et ses references
+   de code a resoudre a l'edition de liens. }
+ PImageBuf = ^TImageBuf;
+ TFixTable = Array[1..MaxFixups] Of TAddressFixup;
+ PFixTable = ^TFixTable;
+ TRelocTable = Array[1..MaxNativeRefs] Of TMZRelocation;
+ PRelocTable = ^TRelocTable;
+ TKindTable = Array[1..MaxNativeRefs] Of Byte;
+ PKindTable = ^TKindTable;
+ TCodeRef = Record
+  Pos, Sym: Word;
+  Kind: Byte;                { 0 = offset de la routine, 1 = segment de la routine }
+  Add: Longint
+ End;
+ TCodeRefTable = Array[1..MaxCodeRefs] Of TCodeRef;
+ PCodeRefTable = ^TCodeRefTable;
+ TCodeSegment = Record
+  Img: PImageBuf; Size: Word;
+  Fix: PFixTable; FixN: Word;
+  Rel: PRelocTable; Kinds: PKindTable; RelN: Word;
+  Refs: PCodeRefTable; RefN: Word;
  End;
  TLinkedImage = Array[0..MaxLinkedImage-1] Of Byte;
  PLinkedImage = ^TLinkedImage;
@@ -3601,6 +3629,23 @@ Var
    d'analyse tolerant le debordement du segment de code, puis recompilation
    sans les routines jamais referencees. }
  AnalysisPass, Overflowed, NoLimit: Boolean;
+ { Mode multi-segments : active seulement quand le code deborde de 64 Ko apres l'edition de
+   liens intelligente. Toutes les routines globales deviennent FAR ; le code est reparti en
+   segments en une seule passe (le segment courant est ferme quand la routine suivante ne
+   tient plus) et chaque segment recoit une copie du runtime (memes decalages 0..RuntimeEnd). }
+ MultiSeg, AllowMulti, SegTooBig, InDeadBody: Boolean;
+ CurSeg, SegCount, SegDepth, RtlFix, RtlReloc, CodeRefCount, SegReserve: Word;
+ MainSeg, MainOff, CrtHookSeg, SegSavedCount: Word;
+ CrtHookSet: Boolean;
+ SegCap: Word;                 { taille maximale visee d'un segment (TPC_SEGSIZE pour les essais) }
+ SegParas: Array[0..MaxSegs-1] Of Word;   { paragraphe de chaque segment dans l'image liee }
+ MultiCodeBytes: Longint;
+ SegSaved: Array[0..MaxSegs-1] Of TCodeSegment;
+ CodeRefs: Array[1..MaxCodeRefs] Of TCodeRef;
+ SymSeg: Array[1..MaxSymbols] Of Byte;
+ SegFar: Array[1..MaxSymbols] Of Boolean;
+ RoutSize: Array[1..MaxSymbols] Of Word;     { taille de chaque routine globale a la passe precedente }
+ MainSizeEst: Word;                           { taille du corps principal a la passe precedente }
  { Segment noyau : l'unite qui declare BEGIN_KERNEL est compilee dans une image
    separee (offset 0 = debut), avec ses donnees et les routines de runtime
    necessaires recopiees dans son propre segment (DS=CS a l'execution). }
@@ -4439,8 +4484,19 @@ End;
 
 Procedure Emit(B: Byte);Begin
  Inc(TotalEmitted);
+ { Multi-segments : toute emission invalide la fin de la derniere sequence de comparaison. Sinon une valeur perimee
+   (sequence deja consommee par JumpZero) peut coincider plus tard avec CodeSize, par exemple quand un appel FAR
+   de 9 octets remplace une sequence de meme longueur, et faire retirer 7 octets d'un code sans rapport.
+   (Defaut latent aussi en mode normal ; il n'y est pas corrige pour garder des EXE identiques.) }
+ If MultiSeg Then CondTail:=0;
+
+ { multi-segments : un corps annule ou un segment plein ne perd que des octets (positions figees) }
+ If (MultiSeg Or InDeadBody) And (CodeSize>=MaxImage-16) Then Begin
+  If Not InDeadBody Then SegTooBig:=True;
+  Exit;
+ End;
  If CodeSize>=MaxImage-1 Then Begin
-  If AnalysisPass Or NoLimit Then Begin Overflowed:=True; CodeSize:=0 End
+  If AnalysisPass Or NoLimit Or AllowMulti Then Begin Overflowed:=True; CodeSize:=0 End
   Else Fail(48,'Segment de code trop grand');
  End;
  CodeOwners[CodeSize]:=CurrentUnit;
@@ -5071,7 +5127,7 @@ Begin
  CurrentUnit:=0; I:=StoreReal(Pi); CurrentUnit:=255;
  T:=NewSymbol('PI'); Symbols[T].Kind:=skConst; ApplyType(T,11); Symbols[T].Addr:=I;
  Symbols[T].StrValue[0]:=#6; Move(Data[I],Symbols[T].StrValue[1],6);
- CurrentUnit:=0; CrtHook:=AllocData(2); PrefixSeg:=AllocData(2);
+ CurrentUnit:=0; If MultiSeg Then CrtHook:=AllocData(4) Else CrtHook:=AllocData(2); PrefixSeg:=AllocData(2);
  CurrentUnit:=255;
  I:=NewSymbol('PREFIXSEG'); Symbols[I].Kind:=skVar; ApplyType(I,3); Symbols[I].Addr:=PrefixSeg;
  I:=NewSymbol('INOUTRES'); Symbols[I].Kind:=skVar; ApplyType(I,1); Symbols[I].Addr:=InputError;
@@ -5240,6 +5296,7 @@ Begin
 End;
 
 Procedure AddSegmentRelocation(P: Word; Kind: Byte);Begin
+ If MultiSeg And (Kind=0) Then Kind:=8+CurSeg;   { segment de code courant }
  If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
  Inc(RelocationCount); Relocations[RelocationCount].Offs:=P;
  Relocations[RelocationCount].Segm:=0; RelocationKinds[RelocationCount]:=Kind;
@@ -5287,6 +5344,40 @@ Begin
  End;
 End;
 
+Procedure AddCodeRef(P,Sym: Word; Kind: Byte; Add: Longint);
+{ Multi-segments : mot du code a completer a l'edition de liens avec l'adresse (Kind 0) ou le
+  segment (Kind 1) d'une routine dont le corps n'est pas encore compile. }
+Begin
+ If CodeRefCount=MaxCodeRefs Then Unsupported('trop de references de code entre segments');
+ Inc(CodeRefCount); CodeRefs[CodeRefCount].Pos:=P; CodeRefs[CodeRefCount].Sym:=Sym;
+ CodeRefs[CodeRefCount].Kind:=Kind; CodeRefs[CodeRefCount].Add:=Add;
+End;
+
+Function CrossSegment(I: Word): Boolean;
+{ Vrai si la routine I doit etre atteinte par un appel FAR vers un autre segment (ou un segment
+  encore inconnu) : routine globale du mode multi-segments, non encore definie ou d'un autre segment. }
+Begin
+ CrossSegment:=MultiSeg And SegFar[I] And (Symbols[I].Unresolved Or (SymSeg[I]<>CurSeg));
+End;
+
+Procedure EmitProcOffsetWord(I: Word; Add: Longint);
+{ Mot : offset du point d'entree de la routine I (+ Add), dans le segment de la routine. }
+Begin
+ If Symbols[I].Unresolved Then Begin
+  If MultiSeg And SegFar[I] Then AddCodeRef(CodeSize,I,0,Add)
+  Else AddPending(CodeSize,I,True,Add);
+  EmitWord(0);
+ End Else EmitWord(Word(Longint(Symbols[I].Addr)+Add));
+End;
+
+Procedure EmitProcSegmentWord(I: Word);
+{ Mot : segment de la routine I (relocalise par la table MZ) ; apres Emit($B8+registre). }
+Begin
+ If Symbols[I].Unresolved Then AddCodeRef(CodeSize,I,1,0)
+ Else AddSegmentRelocation(CodeSize,8+SymSeg[I]);
+ EmitWord(0);
+End;
+
 { AX := offset du point d'entree d'une routine, DX := CS (adresse absolue). }
 Procedure EmitProcAddress(I: Word; WithSegment: Boolean);
 Var Bias: Longint;
@@ -5294,13 +5385,15 @@ Begin
  NoteRef(I);
  Bias:=UnitBias(Symbols[I].Owner);
  Emit($B8);
- If Symbols[I].Unresolved Then Begin AddPending(CodeSize,I,True,-Bias); EmitWord(0) End
+ If CrossSegment(I) Then EmitProcOffsetWord(I,0)
+ Else If Symbols[I].Unresolved Then Begin AddPending(CodeSize,I,True,-Bias); EmitWord(0) End
  Else EmitWord(Word(Longint(Symbols[I].Addr)-Bias));
  If WithSegment Then Begin
   If KernelSymbol(I) Then Begin
    { depuis hors du noyau : segment du noyau, relocalise par la table MZ }
    Emit($BA); AddSegmentRelocation(CodeSize,4); EmitWord(0);
-  End Else Emit2($8C,$CA);
+  End Else If CrossSegment(I) Then Begin Emit($BA); EmitProcSegmentWord(I) End
+  Else Emit2($8C,$CA);
  End;
 End;
 
@@ -5310,14 +5403,19 @@ Begin
  If KernelSymbol(I) Then Fail(72,'Un programme ne peut pas appeler directement une routine du noyau : '+Symbols[I].Name);
  { ABI Turbo Pascal 7 : une routine globale n'a pas de lien statique }
  If Symbols[I].Scope<>0 Then Begin ScopeAddress(Symbols[I].Scope); Emit($53) End;
- If Symbols[I].FarRoutine Then Emit($0E);
- If Symbols[I].Unresolved Then Begin
-  Emit($E8); AddPending(CodeSize,I,False,0); EmitWord(0);
- End Else CallTo(Symbols[I].Addr);
+ If CrossSegment(I) Then Begin
+  { appel FAR direct vers un autre segment de code (ou un segment encore inconnu) }
+  Emit($9A);
+  EmitProcOffsetWord(I,0);
+  EmitProcSegmentWord(I);
+ End Else Begin
+  If Symbols[I].FarRoutine Then Emit($0E);
+  If Symbols[I].Unresolved Then Begin
+   Emit($E8); AddPending(CodeSize,I,False,0); EmitWord(0);
+  End Else CallTo(Symbols[I].Addr);
+ End;
  If Symbols[I].LegacyCall Then Begin Emit2($83,$C4); Emit(2) End;
 End;
-
-
 
 Procedure ProcedureExit;
 Var I,A,V: Word; Done,ZeroKnown: Boolean;
@@ -7268,7 +7366,8 @@ Begin
    { Ofs/Seg/Addr d'une procedure : adresse de son point d'entree }
    NextToken; Need(tkRP);
    If Name='SEG' Then Begin
-    If KernelSymbol(A) Then Begin Emit($B8); AddSegmentRelocation(CodeSize,4); EmitWord(0) End Else Emit2($8C,$C8);
+    If KernelSymbol(A) Then Begin Emit($B8); AddSegmentRelocation(CodeSize,4); EmitWord(0) End
+    Else If CrossSegment(A) Then Begin Emit($B8); EmitProcSegmentWord(A) End Else Emit2($8C,$C8);
    End Else EmitProcAddress(A,Name='ADDR');
    ExprKnown:=False;
    If Name='ADDR' Then Begin ExprType:=8; StandardFunction:=8 End Else StandardFunction:=3;
@@ -8362,7 +8461,8 @@ Begin
   References[RefCount].Absolute:=True; References[RefCount].Addend:=O.Displacement; EmitWord(0);
  End
  Else If O.CodeSym<>0 Then Begin
-  If Symbols[O.CodeSym].Unresolved Then Begin AddPending(CodeSize,O.CodeSym,True,O.Displacement-UnitBias(Symbols[O.CodeSym].Owner)); EmitWord(0) End
+  If CrossSegment(O.CodeSym) Then EmitProcOffsetWord(O.CodeSym,O.Displacement)
+  Else If Symbols[O.CodeSym].Unresolved Then Begin AddPending(CodeSize,O.CodeSym,True,O.Displacement-UnitBias(Symbols[O.CodeSym].Owner)); EmitWord(0) End
   Else EmitWord(Word(Longint(Symbols[O.CodeSym].Addr)+O.Displacement-UnitBias(Symbols[O.CodeSym].Owner)));
  End
  Else If O.Direct Or (Mode=2) Then EmitWord(Word(O.Displacement))
@@ -8379,7 +8479,8 @@ Begin
  Else If O.DataSegment Then Begin AddSegmentRelocation(CodeSize,3); EmitWord(0) End
  Else If O.SegmentValue Then Begin AddSegmentRelocation(CodeSize,0); EmitWord(0) End
  Else If O.CodeValue Then Begin
-  If Symbols[O.Sym].Unresolved Then Begin AddPending(CodeSize,O.Sym,True,O.Displacement-UnitBias(Symbols[O.Sym].Owner)); EmitWord(0) End
+  If CrossSegment(O.Sym) Then EmitProcOffsetWord(O.Sym,O.Displacement)
+  Else If Symbols[O.Sym].Unresolved Then Begin AddPending(CodeSize,O.Sym,True,O.Displacement-UnitBias(Symbols[O.Sym].Owner)); EmitWord(0) End
   Else EmitWord(Word(Longint(Symbols[O.Sym].Addr)+O.Displacement-UnitBias(Symbols[O.Sym].Owner)));
  End
  Else If O.OffsetValue Then DataAddress(Word(Symbols[O.Sym].Addr+O.Displacement))
@@ -9106,7 +9207,7 @@ Begin
    CallTo(RtlTarget(RuntimeHalt));
   End Else If (I=0) And (Token<>tkDot) And (Name='EXIT') Then Begin
    If Not InProcedure Then Begin LoadImmediate(0); CallTo(RtlTarget(RuntimeHalt)) End
-   Else If RealScope(CurrentScope)<>0 Then ProcedureExit Else Emit($C3);
+   Else If RealScope(CurrentScope)<>0 Then ProcedureExit Else If MultiSeg Then Emit($CB) Else Emit($C3);
   End Else If (I=0) And (Token<>tkDot) And ((Name='INC') Or (Name='DEC')) Then Begin
    Need(tkLP);
    If Token<>tkIdent Then Fail(2,'Variable attendue');
@@ -9848,11 +9949,66 @@ End;
 Procedure DeclarationPart; Forward;
 Procedure FlushKernelData; Forward;
 
+Procedure SegSave;
+{ Mode multi-segments : conserve le segment de code courant (image, fixups de donnees, relocalisations
+  MZ, references de code a resoudre a l'edition de liens). }
+Begin
+ With SegSaved[CurSeg] Do Begin
+  GetMem(Img,CodeSize+1); Move(Image,Img^,CodeSize); Size:=CodeSize;
+  FixN:=FixupCount; GetMem(Fix,(Longint(FixN)+1)*SizeOf(TAddressFixup));
+  Move(Fixups,Fix^,Longint(FixN)*SizeOf(TAddressFixup));
+  RelN:=RelocationCount; GetMem(Rel,(Longint(RelN)+1)*SizeOf(TMZRelocation)); GetMem(Kinds,RelN+1);
+  Move(Relocations,Rel^,Longint(RelN)*SizeOf(TMZRelocation)); Move(RelocationKinds,Kinds^,RelN);
+  RefN:=CodeRefCount; GetMem(Refs,(Longint(RefN)+1)*SizeOf(TCodeRef));
+  Move(CodeRefs,Refs^,Longint(RefN)*SizeOf(TCodeRef));
+ End;
+ SegSavedCount:=CurSeg+1;
+End;
+
+Procedure SegFreeAll;
+Var K: Word;
+Begin
+ For K:=1 To SegSavedCount Do With SegSaved[K-1] Do Begin
+  FreeMem(Img,Size+1); FreeMem(Fix,(Longint(FixN)+1)*SizeOf(TAddressFixup));
+  FreeMem(Rel,(Longint(RelN)+1)*SizeOf(TMZRelocation)); FreeMem(Kinds,RelN+1);
+  FreeMem(Refs,(Longint(RefN)+1)*SizeOf(TCodeRef));
+ End;
+ SegSavedCount:=0;
+End;
+
+Procedure SegNext;
+{ Ferme le segment de code courant et en ouvre un nouveau qui commence par une copie du runtime
+  (octets 0..RuntimeEnd-1 de l'image, avec leurs fixups et relocalisations). }
+Begin
+ If CurSeg+1>=MaxSegs Then Fail(48,'Trop de segments de code (maximum '+NumText(MaxSegs)+')');
+ If PendCount<>0 Then Unsupported('reference en avant non resolue a la frontiere de segment');
+ SegSave;
+ Inc(CurSeg); SegCount:=CurSeg+1;
+ { le debut de l'image (runtime) est intact : seul le reste est a reprendre }
+ CodeSize:=RuntimeEnd; FixupCount:=RtlFix; RelocationCount:=RtlReloc; RelativeCount:=0; CodeRefCount:=0;
+ LastJumpTarget:=CodeSize; CondTail:=0;
+End;
+
+Procedure SegRoom(Need: Word);
+{ Segment suivant si Need octets ne tiennent plus dans le segment courant. }
+Begin
+ If (CodeSize>RuntimeEnd) And (Longint(CodeSize)+Need>Longint(SegCap)-SegReserve) Then SegNext;
+End;
+
+Procedure EmitInitCall(U: Byte);
+{ Appel du bloc d'initialisation d'une unite. }
+Begin
+ If Not MultiSeg Then CallTo(Units[U].InitAddress)
+ Else If Units[U].InitSeg=CurSeg Then Begin Emit($0E); CallTo(Units[U].InitAddress) End
+ Else Begin Emit($9A); EmitWord(Units[U].InitAddress); AddSegmentRelocation(CodeSize,8+Units[U].InitSeg); EmitWord(0) End;
+End;
+
 Procedure ProcedureDeclaration;
 Var
  I,Parent,FramePatch,StackCheckPatch,Skip,J,K,T,V,ParamOffset,Size,Link: Word;
  SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,IsExternal,IsConst,DeadHere: Boolean;
- MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur: Word; MTot: Longint;
+ MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur,MRefs: Word; MTot: Longint;
+ SavedDead: Boolean;
  Sig: TSymbol; Name,ShortName,SavedObjName: TShortString; MyOrd,MethodObj,SelfSym,FieldIdx: Word;
  Names: Array[1..MaxNativeParams] Of String[63]; N: Byte;
 Begin
@@ -9968,7 +10124,7 @@ Begin
       (Sig.ParamTypeIds[J]<>Symbols[I].ParamTypeIds[J]) Or
       (Sig.ParamFlags[J]<>Symbols[I].ParamFlags[J]) Then Fail(131,'Signature de parametre differente');
   End;
-  If HasDistance And (Sig.FarRoutine<>Symbols[I].FarRoutine) Then Fail(131,'Distance near/far differente');
+  If HasDistance And (Sig.FarRoutine<>Symbols[I].FarRoutine) And Not (MultiSeg And SegFar[I]) Then Fail(131,'Distance near/far differente');
   If InInterface Or IsForward Then Fail(4,'Declaration de routine dupliquee');
  End Else Begin
   I:=NewSymbol(Name);
@@ -9991,10 +10147,22 @@ Begin
  If InInterface Then RootProc[I]:=True;
  If Sig.InterruptRoutine Then Begin Symbols[I].InterruptRoutine:=True; Symbols[I].FarRoutine:=True End;
  If Sig.InlineBody Then Begin Symbols[I].HasBody:=True; Symbols[I].InlineBody:=True; Symbols[I].StrValue:=Sig.StrValue; Exit End;
+ { mode multi-segments : toute routine globale devient FAR (retour RETF, appel PUSH CS/CALL dans le
+   segment, CALL FAR entre segments) ; les routines imbriquees restent NEAR dans le segment de leur parent }
+ If MultiSeg And (CurrentScope=0) Then Begin
+  If IsExternal Then Unsupported('routine EXTERNAL en mode multi-segments (code > 64 Ko)');
+  Symbols[I].FarRoutine:=True; SegFar[I]:=True;
+ End;
  If InInterface Or IsForward Then Begin Symbols[I].ForwardDeclared:=True; Exit End;
  { routine imbriquee : le parent saute par-dessus son corps (une seule fois) }
  If (CurrentScope<>0) And (Scopes[CurrentScope].SkipJump=0) Then Scopes[CurrentScope].SkipJump:=Jump;
+ If MultiSeg And (SegDepth=0) And Not DeadProc[I] Then Begin
+  { routine globale : segment suivant si le corps (taille de la passe precedente) ne tient plus }
+  If RoutSize[I]=0 Then V:=256 Else V:=RoutSize[I]+RoutSize[I] Div 16+32;
+  SegRoom(V);
+ End;
  Symbols[I].Addr:=CodeSize; Symbols[I].Unresolved:=False; ResolvePending(I);
+ SymSeg[I]:=CurSeg;
  Symbols[I].HasBody:=True;
  If IsExternal Then Begin
   If Symbols[I].Typ=ttReal Then Unsupported('resultat Real externe: ABI Borland non portee');
@@ -10023,6 +10191,8 @@ Begin
  SavedCur:=CurProc; CurProc:=I; MTot:=TotalEmitted;
  MCode:=CodeSize; MFix:=FixupCount; MRel:=RelativeCount; MNat:=NativeRefCount; MReloc:=RelocationCount;
  MObj:=ObjectCallCount; MPend:=PendCount; MDbg:=DebugCount; MLab:=LabelJumpCount; MData:=DataSize; MDataFix:=DataFixupCount;
+ MRefs:=CodeRefCount; SavedDead:=InDeadBody; Inc(SegDepth);
+ If DeadHere And MultiSeg Then InDeadBody:=True;
  Parent:=CurrentScope; SavedProcedure:=InProcedure;
  If ScopeCount=MaxScopes Then Unsupported('plus de 128 portees');
  Inc(ScopeCount); CurrentScope:=ScopeCount;
@@ -10106,10 +10276,15 @@ Begin
   If MyOrd<>0 Then FrameForce[MyOrd]:=True; JumpOverflow:=True;
  End;
  If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,Scopes[CurrentScope].LocalSize+256);
- If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',CodeSize-Symbols[I].Addr);
- CurProc:=SavedCur; CurObjName:=SavedObjName;
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',CodeSize-Symbols[I].Addr,' seg=',CurSeg,' at=',Symbols[I].Addr);
+ { taille mesuree pour repartir les routines en segments a la passe suivante }
+ If Not DeadHere Then Begin
+  If MultiSeg And (CodeSize>=MCode) Then RoutSize[I]:=CodeSize-MCode
+  Else If TotalEmitted-MTot>65000 Then RoutSize[I]:=65000 Else RoutSize[I]:=TotalEmitted-MTot;
+ End;
+ CurProc:=SavedCur; Dec(SegDepth); InDeadBody:=SavedDead; CurObjName:=SavedObjName;
  If DeadHere Then Begin
-  CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat; RelocationCount:=MReloc;
+  CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat; RelocationCount:=MReloc; CodeRefCount:=MRefs;
   ObjectCallCount:=MObj; PendCount:=MPend; DebugCount:=MDbg; LabelJumpCount:=MLab; DataFixupCount:=MDataFix;
   If DataSize>MData Then FillChar(Data[MData],DataSize-MData,0);
   DataSize:=MData; TrimLiterals(DataSize);
@@ -10298,9 +10473,12 @@ Begin
  For I:=1 To SymbolCount Do    If (Symbols[I].Owner=U) And (Symbols[I].Kind=skProc) And
  Not Symbols[I].HasBody Then Fail(59,Symbols[I].Name);
  If Token=tkBegin Then Begin
-  Units[U].HasInit:=True; Units[U].InitAddress:=CodeSize;
+  Units[U].HasInit:=True;
+  If MultiSeg And (SegDepth=0) Then SegRoom(1024);
+  Units[U].InitAddress:=CodeSize; Units[U].InitSeg:=CurSeg;
     { EXIT dans le bloc d'initialisation revient a l'appelant. }
-  InProcedure:=True; Statement; InProcedure:=False; Emit($C3);
+  InProcedure:=True; Statement; InProcedure:=False;
+  If MultiSeg Then Emit($CB) Else Emit($C3);   { RETF : appele depuis le segment du programme principal }
  End Else Need(tkEnd);
  Need(tkDot);
  If Units[U].Kernel Then Begin
@@ -10315,6 +10493,7 @@ Begin
   For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And (Symbols[I].Scope=0) And
    (Symbols[I].Kind=skProc) And (Symbols[I].Name='CRTWRITE') Then Begin
    Data[CrtHook]:=Symbols[I].Addr And 255; Data[CrtHook+1]:=Symbols[I].Addr Shr 8;
+   If MultiSeg Then Begin CrtHookSet:=True; CrtHookSeg:=SymSeg[I] End;   { pointeur FAR : segment relocalise a l'edition de liens }
    Inc(EdgeCount); EdgeFrom[EdgeCount]:=0; EdgeTo[EdgeCount]:=I; { le crochet Crt est une racine }
   End;
  If Not Units[U].Embedded Then ReportSource;
@@ -11576,7 +11755,9 @@ Begin
   Move(S[1],Source[SourceSize+1],Length(S)); Inc(SourceSize,Length(S));
   Inc(SourceSize); Source[SourceSize]:=#10;
  End;
+ Inc(SegDepth);   { jamais de changement de segment au milieu du code qui declenche cette compilation }
  NextToken; DeclarationPart;
+ Dec(SegDepth);
  If Token<>tkEOF Then Fail(10,'Declaration runtime interne incomplete');
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=CurrentUnit) And
   (Symbols[I].Kind=skProc) And Not Symbols[I].HasBody Then Fail(59,Symbols[I].Name);
@@ -12781,7 +12962,7 @@ Begin
  Emit($26); Emit2($83,$3D); Emit(1); ErrorMode:=JumpIf($74);
  Emit($06); Emit($57); Emit($51);                            { push es,di,cx }
  Emit2($89,$E3); Emit($36); Emit2($FF,$77); Emit(6);         { push ss:[bx+6] = segment du tampon }
- Emit($52); Emit($51); Emit2($FF,$16); DataAddress(CrtHook); { push dx,cx; call [hook] (ABI TP7 : pas de lien statique) }
+ Emit($52); Emit($51); If MultiSeg Then Emit2($FF,$1E) Else Emit2($FF,$16); DataAddress(CrtHook); { push dx,cx; call [hook] (ABI TP7 : pas de lien statique) ; FAR en multi-segments }
  Emit($59); Emit($5F); Emit($07); Emit($1F);                 { pop cx,di,es,ds }
  Emit2($89,$C8); Emit($F8); LoopStart:=Jump;                 { ax=cx; clc }
  PatchJump(ErrorClosed,CodeSize); PatchJump(ErrorMode,CodeSize); Emit($1F);
@@ -13617,6 +13798,17 @@ Begin
  Emit2($88,$05); Emit($4F);                                 { mov [di],al; dec di }
  For K:=1 To 4 Do Emit2($D1,$EB);                           { shr bx,1 }
  Emit($E2); Emit(Byte(Longint(L2)-CodeSize-1));
+ If MultiSeg Then Begin
+  { multi-segments : segment du code en cours, relatif au debut du programme (CS - PSP - 16) }
+  Emit2($8C,$CB); Emit2($2B,$1E); DataAddress(PrefixSeg); Emit2($83,$EB); Emit($10);   { mov bx,cs; sub bx,[PrefixSeg]; sub bx,16 }
+  Emit($BF); DataAddress(RuntimeErrorText+28); Emit($B9); EmitWord(4);
+  L2:=CodeSize;
+  Emit2($88,$D8); Emit2($24,$0F); Emit2($04,Ord('0'));
+  Emit2($3C,Ord('9')); Emit2($76,2); Emit2($04,7);
+  Emit2($88,$05); Emit($4F);
+  For K:=1 To 4 Do Emit2($D1,$EB);
+  Emit($E2); Emit(Byte(Longint(L2)-CodeSize-1));
+ End;
  { Comme TP, le numero est affiche sur trois chiffres ("Runtime error 002 at ...") }
  Emit2($B4,$40); Emit($BB); EmitWord(1); Emit($B9); EmitWord(Length(Msg));
  Emit($BA); DataAddress(RuntimeErrorText); Emit2($CD,$21);
@@ -13737,9 +13929,12 @@ End;
 
 Procedure CompileProgram;
 Var
- I: Word;
+ I: Word; MTotMain: Longint;
 Begin
  KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047; LitCount:=0;
+ If MultiSeg Then FillChar(Data,SizeOf(Data),0);   { la disposition des donnees change entre les passes mono-segment et multi-segments }
+ SegFreeAll; SegCount:=1; CurSeg:=0; CodeRefCount:=0; InDeadBody:=False; SegDepth:=0; SegTooBig:=False; CrtHookSet:=False;
+ FillChar(SegFar,SizeOf(SegFar),0); FillChar(SymSeg,SizeOf(SymSeg),0);
  FillChar(StaticTemps,SizeOf(StaticTemps),0); StaticTempsUnit:=254; LastTempAddr:=0; LastTempLocal:=False;
  CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0; FixupCount:=0;
  DebugCount:=0; DebugCaptured:=[]; RealReady:=False; EmulatorReady:=False;
@@ -13765,9 +13960,11 @@ Begin
    (mov di,N; mov cx,M; xor ax,ax; rep stosb), valeurs fixees par WriteExecutable. }
  BssPatch:=CodeSize; Emit($BF); EmitWord(0); Emit($B9); EmitWord(0); Emit2($31,$C0); Emit2($F3,$AA);
  FPUStartup:=CodeSize; Emit($90); Emit($90); Emit($90);
- EntryFixup:=Jump;
+ If MultiSeg Then Begin EntryFixup:=CodeSize; Emit($EA); EmitWord(0); EmitWord(0) End   { JMP FAR vers le corps principal, complete a l'edition de liens }
+ Else EntryFixup:=Jump;
  DataSegVar:=CodeSize; AddSegmentRelocation(CodeSize,3); EmitWord(0);
  Inc(RuntimeDepth); EmitRuntime; Dec(RuntimeDepth); RuntimeEnd:=CodeSize;
+ RtlFix:=FixupCount; RtlReloc:=RelocationCount;
  { InOutRes partage l'emplacement de l'erreur d'E/S du runtime. }
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=255) And (Symbols[I].Name='INOUTRES') Then Symbols[I].Addr:=InputError;
  NextToken;
@@ -13794,14 +13991,22 @@ Begin
  DeclarationPart;
   For I:=1 To SymbolCount Do If (Symbols[I].Owner=0) And (Symbols[I].Scope=0) And
     (Symbols[I].Kind=skProc) And Not Symbols[I].HasBody Then Fail(59,Symbols[I].Name);
- MainEntry:=CodeSize;
- PatchJump(EntryFixup,CodeSize);
- For I:=1 To InitCount Do CallTo(Units[InitOrder[I]].InitAddress);
+ If MultiSeg Then Begin
+  { corps principal : dans le segment courant s'il y tient, sinon dans un nouveau segment }
+  SegRoom(MainSizeEst+MainSizeEst Div 16+32+16*InitCount);
+  MainSeg:=CurSeg; MainOff:=CodeSize;
+ End;
+ MainEntry:=CodeSize; MTotMain:=TotalEmitted;
+ If Not MultiSeg Then PatchJump(EntryFixup,CodeSize);
+ For I:=1 To InitCount Do EmitInitCall(InitOrder[I]);
  Need(tkBegin); StatementList(tkEnd); Need(tkEnd);
  If Token<>tkDot Then Need(tkDot);
  { Comme TP, tout ce qui suit "END." est ignore. }
  LoadImmediate(0); CallTo(RtlTarget(RuntimeHalt)); CheckLabels(0);
+ If MultiSeg Then MainSizeEst:=CodeSize-MainOff
+ Else If TotalEmitted-MTotMain>65000 Then MainSizeEst:=65000 Else MainSizeEst:=TotalEmitted-MTotMain;
  ReportSource;
+ If MultiSeg Then SegSave;
 End;
 
 Procedure LoadSource;
@@ -14197,6 +14402,50 @@ Begin
  Dispose(B);
 End;
 
+Procedure MultiSegLoad;
+{ Mode multi-segments : place les segments de code a des frontieres de paragraphe consecutives,
+  applique les fixups de donnees des segments 1.., resout les references de code entre segments,
+  reunit les relocalisations MZ (rebasees sur chaque segment) et recharge le segment 0 dans
+  Image/Fixups pour que la suite de WriteExecutable s'applique a lui comme avant. }
+Var K,J,Sg,W: Word; Total: Longint; P: PImageBuf;
+Procedure AddReloc(Segm,Offs: Word; Kind: Byte);
+Begin
+ If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
+ Inc(RelocationCount); Relocations[RelocationCount].Segm:=Segm; Relocations[RelocationCount].Offs:=Offs;
+ RelocationKinds[RelocationCount]:=Kind;
+End;
+Begin
+ If NativeNeeded Or (ObjectCount>0) Or (OverlaySelected<>[]) Or (MapMode<>0) Or DebugInExe Then
+  Unsupported('unites TPU natives, OBJ, overlays, map ou debogage dans l''EXE avec un code de plus de 64 Ko (mode multi-segments)');
+ If SegSavedCount<>SegCount Then Fail(72,'Segments de code incoherents');
+ Total:=0;
+ For K:=0 To SegCount-1 Do Begin SegParas[K]:=Total Div 16; Inc(Total,Align16(SegSaved[K].Size)) End;
+ MultiCodeBytes:=Total;
+ RelocationCount:=0;
+ { saut FAR du demarrage vers le corps principal }
+ P:=SegSaved[0].Img;
+ P^[EntryFixup+1]:=MainOff And 255; P^[EntryFixup+2]:=MainOff Shr 8;
+ AddReloc(SegParas[0],EntryFixup+3,8+MainSeg);
+ For K:=0 To SegCount-1 Do With SegSaved[K] Do Begin
+  For J:=1 To RelN Do AddReloc(SegParas[K]+Rel^[J].Segm,Rel^[J].Offs,Kinds^[J]);
+  For J:=1 To RefN Do Begin
+   Sg:=Refs^[J].Sym;
+   If Not Symbols[Sg].HasBody Then Fail(59,Symbols[Sg].Name);
+   If Refs^[J].Kind=0 Then Begin
+    W:=Word(Longint(Symbols[Sg].Addr)+Refs^[J].Add);
+    Img^[Refs^[J].Pos]:=W And 255; Img^[Refs^[J].Pos+1]:=W Shr 8;
+   End Else AddReloc(SegParas[K],Refs^[J].Pos,8+SymSeg[Sg]);
+  End;
+  If K>0 Then For J:=1 To FixN Do Begin
+   W:=FinalDataAddress(Fix^[J].DataOffset);
+   Img^[Fix^[J].Position]:=W And 255; Img^[Fix^[J].Position+1]:=W Shr 8;
+  End;
+ End;
+ { le segment 0 redevient le segment courant }
+ CodeSize:=SegSaved[0].Size; Move(SegSaved[0].Img^,Image,CodeSize);
+ FixupCount:=SegSaved[0].FixN; Move(SegSaved[0].Fix^,Fixups,Longint(FixupCount)*SizeOf(TAddressFixup));
+End;
+
 Procedure WriteExecutable;
 Var
  H: Array[0..15] Of Word;
@@ -14210,7 +14459,9 @@ Var
  D: DirStr;
  Name: NameStr;
  Ext: ExtStr;
+ CodeBytes: Longint;
 Begin
+ If MultiSeg Then Begin MultiSegLoad; CodeBytes:=MultiCodeBytes End Else CodeBytes:=CodeSize;
  Base:=CodeSize;
  For I:=0 To UnitCount Do If UnitFeatures[I] And 1<>0 Then Begin
   Image[FPUStartup]:=$9B; Image[FPUStartup+1]:=$DB; Image[FPUStartup+2]:=$E3;
@@ -14228,8 +14479,8 @@ Begin
  { Le code est en CS:0000 et les donnees dans leur propre segment, place au
    paragraphe suivant la fin du code (comme TP: CS puis DS puis pile). }
  { Le segment du noyau (s'il existe) suit le code : CS, noyau, DS }
- KernelParas:=Align16(CodeSize) Div 16;
- LinkedDataBase:=Align16(CodeSize);
+ KernelParas:=Align16(CodeBytes) Div 16;
+ LinkedDataBase:=Align16(CodeBytes);
  If HaveKernel Then LinkedDataBase:=LinkedDataBase+Align16(KSize);
  DataParas:=LinkedDataBase Div 16;
  { Comme TP, seules les donnees initialisees sont stockees dans l'EXE: la
@@ -14248,6 +14499,12 @@ Begin
  Size:=LinkedDataBase+StoredData;
  New(LinkedImage); FillChar(LinkedImage^,SizeOf(TLinkedImage),0);
  For I:=1 To FixupCount Do    PatchWord(Fixups[I].Position,FinalDataAddress(Fixups[I].DataOffset));
+ If MultiSeg And CrtHookSet Then Begin
+  { crochet de sortie Crt : pointeur FAR dans le segment de donnees }
+  If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
+  Inc(RelocationCount); Relocations[RelocationCount].Segm:=DataParas;
+  Relocations[RelocationCount].Offs:=CrtHook+2; RelocationKinds[RelocationCount]:=8+CrtHookSeg;
+ End;
  For I:=1 To DataFixupCount Do Begin
   { Constante typee PChar: le segment est relocalise par la table MZ. }
   If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
@@ -14255,6 +14512,7 @@ Begin
   Relocations[RelocationCount].Offs:=DataFixups[I]+2; RelocationKinds[RelocationCount]:=2;
  End;
  Move(Image,LinkedImage^,CodeSize);
+ If MultiSeg Then For I:=1 To SegCount-1 Do Move(SegSaved[I].Img^,LinkedImage^[Longint(SegParas[I])*16],SegSaved[I].Size);
  If HaveKernel Then Move(KImage^,LinkedImage^[Longint(KernelParas)*16],KSize);
  If StoredData<>0 Then Move(Data,LinkedImage^[LinkedDataBase],StoredData);
  NativeSegment:=0;
@@ -14272,6 +14530,7 @@ Begin
    1:LinkedWord(Location,NativeSegment);
    2,3:LinkedWord(Location,DataParas);
    4:LinkedWord(Location,KernelParas);
+   8..8+MaxSegs-1:LinkedWord(Location,SegParas[RelocationKinds[I]-8]);   { segment de code numero n (multi-segments) }
   Else LinkedWord(Location,0);
   End;
  End;
@@ -14624,6 +14883,16 @@ BEGIN
  LoadSource; CompileProgram;
  AnalysisPass:=False;
  PassNo:=1;
+ { Mode multi-segments : possible seulement pour un programme (pas une unite ni un noyau) dont le code deborde.
+   TPC_SEGSIZE=n force le mode (segments d'environ n octets) pour essayer le mecanisme sur de petits programmes. }
+ SegCap:=MaxImage-16; SegReserve:=0; MultiSeg:=False; InDeadBody:=False; MainSizeEst:=0;
+ FillChar(RoutSize,SizeOf(RoutSize),0);
+ AllowMulti:=Overflowed And Not UnitOutput And Not HaveKernel And Not NoLimit And (GetEnv('TPC_NOMULTI')='');
+ If (GetEnv('TPC_SEGSIZE')<>'') And Not UnitOutput And Not HaveKernel Then Begin
+  Val(GetEnv('TPC_SEGSIZE'),SegCap,PassI);
+  If (PassI<>0) Or (SegCap<2000) Or (SegCap>MaxImage-16) Then CLIError('TPC_SEGSIZE invalide (2000..65504)');
+  AllowMulti:=True; MultiSeg:=True;
+ End;
  If Overflowed Or (GetEnv('TPC_NOSMART')='') Then Begin
   { Edition de liens intelligente (comme TP 7 : les routines inutilisees ne sont pas liees), obligatoire
     si le segment de code est trop grand : edition de liens intelligente. Les routines
@@ -14644,12 +14913,38 @@ BEGIN
   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+  Overflowed:=False; SegTooBig:=False;
   LoadSource; CompileProgram;
-  Stable:=True;
-  For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then Stable:=False;
-  For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then Stable:=False;
-  If JumpOverflow Then Stable:=False;
- Until (Stable And Not JumpOverflow) Or (PassNo>=10);
+  If MultiSeg And (NativeNeeded Or (ObjectCount>0) Or (OverlaySelected<>[]) Or (MapMode<>0) Or DebugInExe) Then
+   Fail(48,'Segment de code trop grand (le mode multi-segments ne gere pas les unites TPU Borland, les OBJ, les overlays, les map ni les infos de debogage)');
+  If AllowMulti And Not MultiSeg And Overflowed Then Begin
+   { le code deborde de 64 Ko malgre l'edition de liens intelligente : mode multi-segments, les passes
+     reprennent a zero (les mesures de la passe tronquee ne sont pas fiables) }
+   MultiSeg:=True; PassNo:=1; Overflowed:=False;
+   FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(FrameNext,SizeOf(FrameNext),0);
+   FillChar(ForceLong,SizeOf(ForceLong),0); FillChar(FrameForce,SizeOf(FrameForce),0);
+   Stable:=False;
+  End Else Begin
+   Stable:=True;
+   For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then Stable:=False;
+   For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then Stable:=False;
+   If JumpOverflow Then Stable:=False;
+   If GetEnv('TPC_PASSES')<>'' Then Begin
+    Write(StdErr,'  passe ',PassNo,' segments=',SegCount,' stable=',Stable,' jmpovf=',JumpOverflow,' tropgrand=',SegTooBig,' tailles:');
+    For PassI:=0 To SegCount-1 Do Write(StdErr,' ',SegSaved[PassI].Size);
+    WriteLn(StdErr);
+    Write(StdErr,'   diff ordinaux:');
+    For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then Write(StdErr,' ',PassI,'=',ShortNext[PassI]);
+    For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then Write(StdErr,' F',PassI,'=',FrameNext[PassI]);
+    WriteLn(StdErr);
+   End;
+   If SegTooBig Then Begin
+    { une routine plus grande que prevu : plus de marge a la repartition en segments }
+    If SegReserve>30000 Then Fail(48,'Segment de code trop grand');
+    Inc(SegReserve,SegReserve Div 2+256); Stable:=False;
+   End;
+  End;
+ Until (Stable And Not JumpOverflow And Not SegTooBig) Or (PassNo>=10+4*Ord(MultiSeg));
  If JumpOverflow Then Begin
   { filet de securite : derniere passe sans saut court }
   FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0);
@@ -14658,15 +14953,35 @@ BEGIN
   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+  Overflowed:=False; SegTooBig:=False;
   LoadSource; CompileProgram;
+  { multi-segments : le code sans saut court est plus grand que prevu, plus de marge a la repartition }
+  While SegTooBig And (SegReserve<=30000) Do Begin
+   Inc(SegReserve,SegReserve Div 2+256); SegTooBig:=False;
+   FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0);
+   FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),0); ProcOrd:=0;
+   Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
+   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
+   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+   LoadSource; CompileProgram;
+  End;
+  If Overflowed And Not MultiSeg Then Fail(48,'Segment de code trop grand');
  End;
- If GetEnv('TPC_PASSES')<>'' Then WriteLn(StdErr,'PASSES ',PassNo,' overflow=',JumpOverflow);
+ If SegTooBig Then Fail(48,'Segment de code trop grand');
+ If GetEnv('TPC_PASSES')<>'' Then WriteLn(StdErr,'PASSES ',PassNo,' overflow=',JumpOverflow,' segments=',SegCount);
  For PassI:=1 To ReportCount Do WriteLn(ReportLines[PassI]);
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);
  LoadObjects;
- If HaveKernel And UnitOutput Then WriteKernelBin Else WriteUnits;
+ If HaveKernel And UnitOutput Then WriteKernelBin Else If Not MultiSeg Then WriteUnits;
  If Not UnitOutput Then Begin
   LinkNative; PrepareOverlays; WriteExecutable
  End;
- Summary(CodeSize,DataSize+BssSize);
+ If MultiSeg Then Begin
+  Summary(MultiCodeBytes,DataSize+BssSize);
+  If GetEnv('TPC_SIZES')<>'' Then Begin
+   For PassI:=0 To SegCount-1 Do WriteLn(StdErr,'SEGMENT ',PassI,' ',SegSaved[PassI].Size,' octets, paragraphe ',SegParas[PassI]);
+   WriteLn(StdErr,'CORPS PRINCIPAL segment ',MainSeg,' offset ',MainOff,' ; RuntimeEnd=',RuntimeEnd);
+  End;
+ End Else Summary(CodeSize,DataSize+BssSize);
 END.
