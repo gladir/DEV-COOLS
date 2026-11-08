@@ -346,6 +346,8 @@ Type
   Offset, Size: Longint;
   Header: TUnitHeader;
  End;
+ TImageBuf = Array[0..MaxImage-1] Of Byte;
+ TRelTable = Array[1..MaxFixups] Of TRelativeFixup;
  TBinaryBuffer = Array[0..262143] Of Byte;
  PBinaryBuffer = ^TBinaryBuffer;
  TNativeRef = Record
@@ -1885,7 +1887,7 @@ Var
  OverlayBufferSize,OverlayBankCount: Word;
  OverlaySelected: TUnitSet;
  ObjectDirs: TShortString;
- Image, Data: Array[0..MaxImage-1] Of Byte;
+ Image, Data: TImageBuf;
  Symbols: Array[1..MaxSymbols] Of TSymbol;
  Types: Array[0..MaxTypes] Of TTypeInfo;
  TypeExtras: Array[0..MaxTypes] Of TTypeExtra;
@@ -1920,6 +1922,22 @@ Var
    d'analyse tolerant le debordement du segment de code, puis recompilation
    sans les routines jamais referencees. }
  AnalysisPass, Overflowed, NoLimit: Boolean;
+ { Segment noyau : l'unite qui declare BEGIN_KERNEL est compilee dans une image
+   separee (offset 0 = debut), avec ses donnees et les routines de runtime
+   necessaires recopiees dans son propre segment (DS=CS a l'execution). }
+ KernelMode, HaveKernel: Boolean;
+ StringRingMask: Word;
+ RuntimeEnd, RuntimeBodyEnd: Word;
+ KUnit: Byte;
+ KImage, SavedImg: ^TImageBuf;
+ SavedRel: ^TRelTable;
+ SavedOwn: ^TImageBuf;
+ KSize: Word;
+ KDataStart, KDataFlushed, KFixBase, SCode, SFix, SRel, SNat, SReloc, SObj, SPend, SDbg, SLab, SDataFix, SRing, SRingPos: Word;
+ ChunkLo, ChunkHi, ChunkAt: Array[1..1024] Of Word;
+ ChunkCount: Word;
+ CloneSrc, CloneDst: Array[1..128] Of Word;
+ CloneCount: Word;
  CurProc: Word;
  EdgeFrom, EdgeTo: Array[1..32768] Of Word;
  EdgeCount: Word;
@@ -1927,7 +1945,7 @@ Var
  TotalEmitted: Longint;
  LastJumpTarget: Word;
  RelativeCount: Word;
- CodeOwners, DataOwners: Array[0..MaxImage-1] Of Byte;
+ CodeOwners, DataOwners: TImageBuf;
  Defines: Array[1..MaxDefines] Of String[63];
  Conditions: Array[1..32] Of TCondition;
  SourceSize, SourcePos: Longint;
@@ -2806,11 +2824,78 @@ Function JumpZero: Word;Begin
  JumpZero:=Jump;
 End;
 
+Function RtlTarget(T: Word): Word; Forward;
+
 Procedure CallTo(Target: Word);
 Var
  P: Word;
 Begin
  Emit($E8); P:=CodeSize; EmitWord(0); PatchJump(P,Target)
+End;
+
+
+Function StdIndex(T: Word): Word;
+Var K: Word;
+Begin
+ StdIndex:=0;
+ For K:=1 To 96 Do If RuntimeStandard[K]=T Then StdIndex:=K;
+End;
+
+Function NumText(W: Word): String;
+Var S: String;
+Begin Str(W,S); NumText:=S End;
+
+Function RtlTarget(T: Word): Word;
+{ Hors noyau : T. Dans le noyau : copie (une fois) de la routine de runtime T
+  dans le segment du noyau et rend son adresse locale. Le code du runtime
+  recopie ne doit ni utiliser de donnees ni du segment de donnees. }
+Var
+ Entries: Array[1..110] Of Word; N,K,J,EndAddr,Start,Over,Dst: Word;
+ Rel: Array[1..64] Of Word; RelCount: Word;
+Begin
+ RtlTarget:=T;
+ If Not KernelMode Then Exit;
+ For K:=1 To CloneCount Do If CloneSrc[K]=T Then Begin RtlTarget:=CloneDst[K]; Exit End;
+ If CloneCount=128 Then Fail(123,'Trop de routines de runtime dans le noyau');
+ { routine d'erreur/arret : le noyau s'arrete (HLT) }
+ If (T=RuntimeError) Or (T=RuntimeHalt) Then Begin
+  Over:=Jump; Start:=CodeSize; Emit($F4); Emit2($EB,$FD); PatchJump(Over,CodeSize);
+  Inc(CloneCount); CloneSrc[CloneCount]:=T; CloneDst[CloneCount]:=Start; RtlTarget:=Start; Exit;
+ End;
+ N:=0;
+ For K:=1 To 96 Do If RuntimeStandard[K]<>0 Then Begin Inc(N); Entries[N]:=RuntimeStandard[K] End;
+ Inc(N); Entries[N]:=RuntimeString; Inc(N); Entries[N]:=RuntimeInteger; Inc(N); Entries[N]:=RuntimeChar;
+ Inc(N); Entries[N]:=RuntimeRawChar; Inc(N); Entries[N]:=RuntimeBoolean; Inc(N); Entries[N]:=RuntimeUnsigned;
+ Inc(N); Entries[N]:=RuntimeCopy; Inc(N); Entries[N]:=RuntimeError; Inc(N); Entries[N]:=RuntimeHalt;
+ Inc(N); Entries[N]:=RuntimeBodyEnd;
+ EndAddr:=RuntimeBodyEnd; J:=0;
+ For K:=1 To N Do If Entries[K]=T Then J:=1;
+ If J=0 Then Fail(72,'Le noyau appelle une routine de runtime inconnue (adresse '+NumText(T)+')');
+ For K:=1 To N Do If (Entries[K]>T) And (Entries[K]<EndAddr) Then EndAddr:=Entries[K];
+ { le runtime recopie ne doit pas toucher aux donnees }
+ If GetEnv('TPC_RTLDBG')<>'' Then WriteLn(StdErr,'CLONE ',T,'..',EndAddr,' std=',StdIndex(T));
+ For K:=1 To SFix Do If (Fixups[K].Position>=T) And (Fixups[K].Position<EndAddr) Then
+  Fail(72,'Le noyau appelle une routine du runtime SYSTEM qui utilise des donnees (adresse '+NumText(T)+', RuntimeStandard['+NumText(StdIndex(T))+'])');
+ For K:=T To EndAddr-3 Do
+  If (SavedImg^[K]=$2E) And (SavedImg^[K+1]=$8E) And (SavedImg^[K+2]=$1E) Then
+   Fail(72,'Le noyau appelle une routine du runtime SYSTEM qui change DS (adresse '+NumText(T)+')');
+ Over:=Jump; Start:=CodeSize;
+ Inc(CloneCount); CloneSrc[CloneCount]:=T; CloneDst[CloneCount]:=Start;
+ For K:=T To EndAddr-1 Do Emit(SavedImg^[K]);
+ { appels/sauts relatifs vers l'exterieur de la routine : recopier aussi la cible }
+ RelCount:=0;
+ For K:=1 To SRel Do
+  If (SavedRel^[K].Position>=T) And (SavedRel^[K].Position<EndAddr) And
+     ((SavedRel^[K].Target<T) Or (SavedRel^[K].Target>=EndAddr)) Then Begin
+   If RelCount=64 Then Fail(123,'Trop de references dans une routine de runtime');
+   Inc(RelCount); Rel[RelCount]:=K;
+  End;
+ For K:=1 To RelCount Do Begin
+  Dst:=RtlTarget(SavedRel^[Rel[K]].Target);
+  PatchJump(Start+SavedRel^[Rel[K]].Position-T,Dst);
+ End;
+ PatchJump(Over,CodeSize);
+ RtlTarget:=Start;
 End;
 
 Procedure LoadImmediate(W: Word);Begin
@@ -2825,7 +2910,16 @@ Procedure EmitLoadES;Begin
  Emit($2E); Emit2($8E,$06); EmitWord(DataSegVar); { mov es,cs:[DataSegVar] }
 End;
 
-Procedure DataAddress(Offs: Word);Begin
+Procedure DataAddress(Offs: Word);
+Var K: Word;
+Begin
+ If KernelMode Then Begin
+  { donnee du noyau : adresse finale si deja placee dans le segment du noyau }
+  For K:=1 To ChunkCount Do If (Offs>=ChunkLo[K]) And (Offs<ChunkHi[K]) Then Begin
+   EmitWord(ChunkAt[K]+Offs-ChunkLo[K]); Exit;
+  End;
+  If Offs<KDataStart Then Fail(72,'Le noyau ne peut pas utiliser une donnee du runtime SYSTEM');
+ End;
  If FixupCount=MaxFixups Then Unsupported('trop de references de donnees');
  Inc(FixupCount); Fixups[FixupCount].Position:=CodeSize;
  Fixups[FixupCount].DataOffset:=Offs; EmitWord(0);
@@ -3255,7 +3349,7 @@ End;
 Procedure TempPointerDI(A: Word; Local: Boolean);  { ES:DI := adresse du temporaire }
 Begin
  If Local Then Begin Emit2($8D,$BE); EmitWord(A); Emit($16); Emit($07) End
- Else Begin Emit($BF); DataAddress(A); CallTo(RuntimeStandard[71]) End;
+ Else Begin Emit($BF); DataAddress(A); CallTo(RtlTarget(RuntimeStandard[71])) End;
 End;
 
 Procedure TempClear(A: Word; Local: Boolean);      { octet de longueur := 0 }
@@ -3295,6 +3389,14 @@ Begin
  Inc(PendCount); PendPos[PendCount]:=P; PendSym[PendCount]:=Sym; PendAbs[PendCount]:=Absolute; PendAdd[PendCount]:=Add;
 End;
 
+Function KernelSymbol(I: Word): Boolean;
+{ Vrai pour une routine du noyau referencee depuis hors du noyau. }
+Begin
+ KernelSymbol:=False;
+ If (Symbols[I].Owner<>0) And (Symbols[I].Owner<=MaxUnits) Then
+  KernelSymbol:=Units[Symbols[I].Owner].Kernel And Not KernelMode;
+End;
+
 Function UnitBias(U: Byte): Longint;
 { Decalage a retirer d'une adresse de code absolue : un segment noyau virtuel
   commence a l'offset 0 de son propre segment. }
@@ -3327,15 +3429,17 @@ Begin
  If Symbols[I].Unresolved Then Begin AddPending(CodeSize,I,True,-Bias); EmitWord(0) End
  Else EmitWord(Word(Longint(Symbols[I].Addr)-Bias));
  If WithSegment Then Begin
-  Emit2($8C,$CA);
-  { depuis hors du noyau : segment virtuel = CS + debut/16 }
-  If (Bias<>0) And (Symbols[I].Owner<>CurrentUnit) Then Begin Emit2($81,$C2); EmitWord(Word(Bias Shr 4)) End;
+  If KernelSymbol(I) Then Begin
+   { depuis hors du noyau : segment du noyau, relocalise par la table MZ }
+   Emit($BA); AddSegmentRelocation(CodeSize,4); EmitWord(0);
+  End Else Emit2($8C,$CA);
  End;
 End;
 
 Procedure EmitLocalCall(I: Word);
 Begin
  NoteRef(I);
+ If KernelSymbol(I) Then Fail(72,'Un programme ne peut pas appeler directement une routine du noyau : '+Symbols[I].Name);
  { ABI Turbo Pascal 7 : une routine globale n'a pas de lien statique }
  If Symbols[I].Scope<>0 Then Begin ScopeAddress(Symbols[I].Scope); Emit($53) End;
  If Symbols[I].FarRoutine Then Emit($0E);
@@ -3357,7 +3461,7 @@ Begin
      l'anneau; DX:AX = adresse du tampon. }
    Emit2($8B,$1E); DataAddress(StringRingPos);                 { mov bx,[pos] }
    Emit2($8D,$BF); DataAddress(StringRing);                    { lea di,[bx+anneau] }
-   Emit2($81,$C3); EmitWord(256); Emit2($81,$E3); EmitWord(2047); { add bx,256; and bx,2047 }
+   Emit2($81,$C3); EmitWord(256); Emit2($81,$E3); EmitWord(StringRingMask); { add bx,256; and bx,masque }
    Emit2($89,$1E); DataAddress(StringRingPos);                 { mov [pos],bx }
    Emit($1E); Emit($07); Emit($57);                            { push ds; pop es; push di }
    Emit2($8D,$B6); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr); { lea si,[bp+resultat] }
@@ -3439,10 +3543,39 @@ End;
 
 Function Designator(I: Word): Word; Forward;
 
-Procedure PushVariableAddress(I: Word);
-Var T: Word;
+Function TailLeaBP: Word;
+{ Longueur (5 ou 6) du "lea di,[bp+d]; push ss; pop es" qui termine le code, 0 sinon. }
 Begin
- T:=Designator(I); ExprType:=T; Emit($06); Emit($57);
+ TailLeaBP:=0;
+ If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) Then Begin
+  If (Image[CodeSize-5]=$8D) And (Image[CodeSize-4]=$7E) And (LastJumpTarget<>CodeSize) Then TailLeaBP:=5
+  Else If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And (Image[CodeSize-5]=$BE) And (LastJumpTarget<>CodeSize) Then TailLeaBP:=6;
+ End;
+End;
+
+Procedure EmitAddrAXDX;
+{ DX:AX := ES:DI ; si le code finit par "lea di,[bp+d]; push ss; pop es" : lea ax,[bp+d]; push ss; pop dx }
+Var N: Word;
+Begin
+ N:=TailLeaBP;
+ If N<>0 Then Begin
+  Dec(CodeSize,2);
+  If N=5 Then Image[CodeSize-2]:=$46 Else Image[CodeSize-3]:=$86;
+  Emit($16); Emit($5A);
+ End Else Begin Emit2($89,$F8); Emit2($8C,$C2) End;
+End;
+
+Procedure PushVariableAddress(I: Word);
+Var T,N: Word;
+Begin
+ T:=Designator(I); ExprType:=T;
+ N:=TailLeaBP;
+ If N<>0 Then Begin
+  { lea di,[bp+d]; push ss; pop es; push es; push di  ->  push ss; lea di,[bp+d]; push di }
+  Dec(CodeSize,2); Image[CodeSize]:=0; { retire "push ss; pop es" }
+  Move(Image[CodeSize-(N-2)],Image[CodeSize-(N-2)+1],N-2);
+  Image[CodeSize-(N-2)]:=$16; Inc(CodeSize); Emit($57);
+ End Else Begin Emit($06); Emit($57) End;
 End;
 
 Procedure RangeBounds(LowBound,HighBound: Longint; SourceType: Word);
@@ -3460,7 +3593,7 @@ Begin
  Emit($3D); EmitWord(Word(HighBound)); Emit2($76,3); Bad[4]:=Jump;
  PatchJump(Q,CodeSize); Done:=Jump;
  For K:=1 To 4 Do PatchJump(Bad[K],CodeSize);
- LoadImmediate(201); CallTo(RuntimeError); PatchJump(Done,CodeSize);
+ LoadImmediate(201); CallTo(RtlTarget(RuntimeError)); PatchJump(Done,CodeSize);
 End;
 
 Function SimpleScalar(I: Word): Boolean;
@@ -3835,7 +3968,7 @@ Procedure LoadDesignator(T: Word);
 Begin
  If T=0 Then Fail(42,'Variable sans type utilisee comme valeur');
  If Types[T].Typ In [ttString,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal] Then Begin
-  Emit2($89,$F8); Emit2($8C,$C2);
+  EmitAddrAXDX;
  End Else Begin
   Emit($26);
   If Types[T].Width=1 Then Emit2($8A,$05) Else Emit2($8B,$05);
@@ -3884,7 +4017,7 @@ Begin
    EmitProcAddress(I,True); T:=ttPointer; ExprType:=8; ExprKnown:=False; Factor:=T; Exit;
   End;
   CastType:=Designator(I);
-  Emit2($89,$F8); Emit2($8C,$C2); T:=ttPointer; ExprType:=8;
+  EmitAddrAXDX; T:=ttPointer; ExprType:=8;
   { $T+: @ produit un pointeur sur le type de la variable au lieu de Pointer. }
   If (OptionBits And $10000<>0) And (CastType<>0) Then ExprType:=PointerTo(CastType);
  End Else If Token=tkConstant Then Begin
@@ -4054,7 +4187,7 @@ Begin
      End Else If Not ExprUnsigned Then Begin Emit2($09,$C0); Emit2($79,$02); Emit2($F7,$D8) End;
     End;
     If Name='SQR' Then Begin
-     If Types[ExprType].Width=4 Then Begin Emit2($89,$C3); Emit2($89,$D1); CallTo(RuntimeStandard[14]) End
+     If Types[ExprType].Width=4 Then Begin Emit2($89,$C3); Emit2($89,$D1); CallTo(RtlTarget(RuntimeStandard[14])) End
      Else Emit2($F7,$E8);
     End;
     If Name='SUCC' Then Begin Emit($05); EmitWord(1); If Types[ExprType].Width=4 Then Begin Emit2($83,$D2); Emit(0) End End;
@@ -4138,9 +4271,9 @@ Begin
    If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,$D2) Else Emit($99);
    RequireInteger(T); RequireInteger(R);
    Case Op Of
-    tkTimes:CallTo(RuntimeStandard[14]);
+    tkTimes:CallTo(RtlTarget(RuntimeStandard[14]));
     tkDiv,tkMod:Begin
-     CallTo(RuntimeStandard[15]);
+     CallTo(RtlTarget(RuntimeStandard[15]));
      If Op=tkMod Then Begin Emit2($89,$D8); Emit2($89,$CA) End;
     End;
     tkAnd:Begin Emit2($21,$D8); Emit2($21,$CA) End;
@@ -4165,11 +4298,11 @@ Begin
    tkTimes:Begin Emit2($F7,$EB); OverflowCheck(LeftUnsigned And ExprUnsigned) End;
    tkDiv,tkMod:
    Begin
-    Emit2($09,$DB); Emit2($75,6); LoadImmediate(200); CallTo(RuntimeError);
+    Emit2($09,$DB); Emit2($75,6); LoadImmediate(200); CallTo(RtlTarget(RuntimeError));
     If LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>0))) Then Begin Emit2($31,$D2); Emit2($F7,$F3) End
     Else Begin
      Emit($3D); EmitWord($8000); Emit2($75,12);
-     Emit2($81,$FB); EmitWord($FFFF); Emit2($75,6); LoadImmediate(200); CallTo(RuntimeError);
+     Emit2($81,$FB); EmitWord($FFFF); Emit2($75,6); LoadImmediate(200); CallTo(RtlTarget(RuntimeError));
      Emit($99); Emit2($F7,$FB);
     End;
     If Op=tkMod Then Emit2($89,$D0);
@@ -4423,7 +4556,7 @@ Begin
    ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=ttBoolean; Exit;
   End Else If T=ttString Then Begin
    Emit2($89,$C7); Emit2($8E,$C2); Emit($5E); Emit($5A);
-   Emit($1E); Emit2($8E,$DA); CallTo(RuntimeStandard[13]); Emit($1F); Emit2($09,$C0);
+   Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[13])); Emit($1F); Emit2($09,$C0);
   End Else If T=ttPointer Then Begin
    If Op In [tkEqual,tkNE] Then Begin
     Emit2($89,$C3); Emit($58); Emit($59); Emit2($31,$D8); Emit2($31,$D1); Emit2($09,$C8);
@@ -4475,13 +4608,13 @@ Begin
  If OptionBits And $8000=0 Then Exit;
  If Unsigned Then Emit2($73,3) Else Emit2($71,3);
  Bad:=Jump; Done:=Jump;
- PatchJump(Bad,CodeSize); LoadImmediate(215); CallTo(RuntimeError); PatchJump(Done,CodeSize);
+ PatchJump(Bad,CodeSize); LoadImmediate(215); CallTo(RtlTarget(RuntimeError)); PatchJump(Done,CodeSize);
 End;
 
 Procedure StackRoom(Needed: Word);
 Begin
  If OptionBits And 4=0 Then Exit;
- CallTo(RuntimeStandard[72]); EmitWord(Needed); { call StackCheck; dw besoin }
+ CallTo(RtlTarget(RuntimeStandard[72])); EmitWord(Needed); { call StackCheck; dw besoin }
 End;
 
 Function NativeCall(I: Word): Byte;
@@ -4617,8 +4750,8 @@ Begin
      N:=(TypeExtras[T].Size+1) And $FFFE;
      If N<2 Then N:=2;
      { copie sur la pile par le runtime: call StringArg/BlockArg; dw N; dw capacite|taille }
-     If Types[T].Typ=ttString Then Begin CallTo(RuntimeStandard[79]); EmitWord(N); EmitWord(Types[T].Capacity) End
-     Else Begin CallTo(RuntimeStandard[80]); EmitWord(N); EmitWord(TypeExtras[T].Size) End;
+     If Types[T].Typ=ttString Then Begin CallTo(RtlTarget(RuntimeStandard[79])); EmitWord(N); EmitWord(Types[T].Capacity) End
+     Else Begin CallTo(RtlTarget(RuntimeStandard[80])); EmitWord(N); EmitWord(TypeExtras[T].Size) End;
     End Else Begin
      If Types[T].Width=4 Then Emit($52); Emit($50);
     End;
@@ -4688,7 +4821,7 @@ Begin
  Emit($AC); Emit2($08,$C0); Emit2($75,3); Done:=Jump; { lodsb; or al,al; jnz suite; jmp fin }
  Emit2($30,$E4); Emit($1E); Emit($56);                { xor ah,ah; push ds; push si }
  Emit2($8B,$DC); Emit($36); Emit2($8E,$5F); Emit(4);  { mov bx,sp; mov ds,ss:[bx+4] }
- CallTo(RuntimeChar);
+ CallTo(RtlTarget(RuntimeChar));
  Emit($5E); Emit($1F); JumpTo(LoopStart);             { pop si; pop ds; jmp boucle }
  PatchJump(Done,CodeSize); Emit($1F);                 { pop ds }
 End;
@@ -4734,7 +4867,7 @@ Begin
    If ExprKnown And ((ExprValue<0) Or (ExprValue>255)) Then Fail(76,'Borne set hors 0..255');
    Emit2($89,$C3); Emit($58);
   End Else Begin Emit($58); Emit2($89,$C3) End;
-  Emit($1E); Emit($07); Emit($BF); DataAddress(A); CallTo(RuntimeStandard[7]);
+  Emit($1E); Emit($07); Emit($BF); DataAddress(A); CallTo(RtlTarget(RuntimeStandard[7]));
   If Token<>tkComma Then Break; NextToken;
  End;
  Need(tkRB); If First Then TypeExtras[T].ElementType:=0;
@@ -4812,11 +4945,11 @@ Begin
   Emit($52); Emit($50);                                            { sauver droite }
   Emit2($89,$E3); Emit($36); Emit2($8B,$77); Emit(4); Emit($36); Emit2($8B,$57); Emit(6);
   Emit($1E); Emit2($8E,$DA); TempPointerDI(A,L);                    { DS:SI gauche, ES:DI temp }
-  LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB); EmitWord(255); CallTo(RuntimeStandard[1]); Emit($1F);
+  LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB); EmitWord(255); CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
   Emit($58); Emit($5A);                                            { droite -> DX:AX }
  End;
  Emit2($89,$C6); Emit($1E); Emit2($8E,$DA); TempPointerDI(A,L);     { ajouter DS:SI a ES:DI }
- Emit($BB); EmitWord(255); CallTo(RuntimeStandard[3]); Emit($1F);
+ Emit($BB); EmitWord(255); CallTo(RtlTarget(RuntimeStandard[3])); Emit($1F);
  Emit2($83,$C4); Emit(4);                                          { depiler la gauche }
  TempPointerAX(A,L); LastTempAddr:=A; LastTempLocal:=L; StringBinary:=7;
 End;
@@ -4845,7 +4978,7 @@ Procedure RandomWord;
 Var P,Q: Word;
 Begin
   Emit($A1); DataAddress(RandomSeed); Emit2($8B,$16); DataAddress(RandomSeed+2);
-  Emit($BB); EmitWord($660D); Emit($B9); EmitWord($19); CallTo(RuntimeStandard[14]);
+  Emit($BB); EmitWord($660D); Emit($B9); EmitWord($19); CallTo(RtlTarget(RuntimeStandard[14]));
   Emit($05); EmitWord($F35F); Emit2($81,$D2); EmitWord($3C6E);
   Emit($A3); DataAddress(RandomSeed); Emit2($89,$16); DataAddress(RandomSeed+2); Emit($5B);
   Emit2($09,$DB); Emit2($75,3); P:=Jump;
@@ -4874,16 +5007,16 @@ Begin
  StandardFunction:=0;
  If Name='PARAMCOUNT' Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
-  CallTo(RuntimeStandard[31]); StandardFunction:=3;
+  CallTo(RtlTarget(RuntimeStandard[31])); StandardFunction:=3;
  End Else If Name='PARAMSTR' Then Begin
   Need(tkLP); RequireInteger(Expression); Need(tkRP);
-  CallTo(RuntimeStandard[32]); StandardFunction:=7;
+  CallTo(RtlTarget(RuntimeStandard[32])); StandardFunction:=7;
  End Else If (Name='FILEPOS') Or (Name='FILESIZE') Then Begin
   Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'FilePos/Size exige File');
   Need(tkRP); If Name='FILEPOS' Then LoadImmediate(0) Else LoadImmediate(1);
-  CallTo(RuntimeStandard[38]); Emit($52); Emit($50); Emit2($09,$C9); Emit2($75,3); P:=Jump;
-  Emit2($89,$C8); CallTo(RuntimeStandard[24]); PatchJump(P,CodeSize);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]); Emit($58); Emit($5A); StandardFunction:=9;
+  CallTo(RtlTarget(RuntimeStandard[38])); Emit($52); Emit($50); Emit2($09,$C9); Emit2($75,3); P:=Jump;
+  Emit2($89,$C8); CallTo(RtlTarget(RuntimeStandard[24])); PatchJump(P,CodeSize);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25])); Emit($58); Emit($5A); StandardFunction:=9;
  End Else If (Name='EOF') Or (Name='EOLN') Or (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
   ScopedInput:=False;
   If Token=tkLP Then Begin
@@ -4891,29 +5024,29 @@ Begin
    Begin
     T:=VariableArgument;
     If (Types[T].Typ=ttFile) And (Name='EOF') Then Begin
-     Need(tkRP); CallTo(RuntimeStandard[45]);
-     If OptionBits And 1<>0 Then Begin Emit($50); CallTo(RuntimeStandard[25]); Emit($58) End;
+     Need(tkRP); CallTo(RtlTarget(RuntimeStandard[45]));
+     If OptionBits And 1<>0 Then Begin Emit($50); CallTo(RtlTarget(RuntimeStandard[25])); Emit($58) End;
      StandardFunction:=5; Exit;
     End;
     If Types[T].Typ<>ttText Then Fail(26,'Eof/Eoln exige Text');
     Emit2($89,$F8); Emit2($8C,$C2);
-    CallTo(RuntimeStandard[41]); Emit($52); Emit($50); ScopedInput:=True;
+    CallTo(RtlTarget(RuntimeStandard[41])); Emit($52); Emit($50); ScopedInput:=True;
    End;
    Need(tkRP);
   End;
   If Not ScopedInput Then Begin
    Emit($B8); DataAddress(StandardInputAddress); Emit2($8C,$DA);
-   CallTo(RuntimeStandard[41]); Emit($52); Emit($50); ScopedInput:=True;
+   CallTo(RtlTarget(RuntimeStandard[41])); Emit($52); Emit($50); ScopedInput:=True;
   End;
   P:=CodeSize;
-  CallTo(RuntimeStandard[18]);
+  CallTo(RtlTarget(RuntimeStandard[18]));
   If (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
    Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
    If Name='SEEKEOF' Then Begin Emit($3D); EmitWord(32); Emit2($76,3); A:=Jump End
    Else Begin
     Emit($3D); EmitWord(32); Emit2($74,8); Emit($3D); EmitWord(9); Emit2($74,3); A:=Jump;
    End;
-   CallTo(RuntimeStandard[19]); JumpTo(P); PatchJump(A,CodeSize); PatchJump(Q,CodeSize);
+   CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(P); PatchJump(A,CodeSize); PatchJump(Q,CodeSize);
   End;
   If (Name='EOF') Or (Name='SEEKEOF') Then Begin
    Emit($3D); EmitWord(26); LoadImmediate(1); Emit2($74,2); Emit2($31,$C0);
@@ -4925,18 +5058,18 @@ Begin
   End;
   If ScopedInput Then Begin
    Emit2($89,$C3); Emit($58); Emit($5A); Emit($53);
-   CallTo(RuntimeStandard[41]); Emit($58);
+   CallTo(RtlTarget(RuntimeStandard[41])); Emit($58);
   End;
-  If OptionBits And 1<>0 Then Begin Emit($50); CallTo(RuntimeStandard[25]); Emit($58) End;
+  If OptionBits And 1<>0 Then Begin Emit($50); CallTo(RtlTarget(RuntimeStandard[25])); Emit($58) End;
   StandardFunction:=5;
  End Else If (Name='MAXAVAIL') Or (Name='MEMAVAIL') Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
   HeapNeeded:=True;
-  If Name='MEMAVAIL' Then CallTo(RuntimeStandard[46]) Else CallTo(RuntimeStandard[33]);
+  If Name='MEMAVAIL' Then CallTo(RtlTarget(RuntimeStandard[46])) Else CallTo(RtlTarget(RuntimeStandard[33]));
   StandardFunction:=9;
  End Else If Name='IORESULT' Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
-  CallTo(RuntimeStandard[23]); StandardFunction:=3;
+  CallTo(RtlTarget(RuntimeStandard[23])); StandardFunction:=3;
  End Else If (Name='ODD') Or (Name='SWAP') Or (Name='LO') Or (Name='HI') Or (Name='UPCASE') Then Begin
   Need(tkLP); T:=Expression; Need(tkRP);
   If Name='UPCASE' Then Begin
@@ -4984,8 +5117,7 @@ Begin
    { Ofs/Seg/Addr d'une procedure : adresse de son point d'entree }
    NextToken; Need(tkRP);
    If Name='SEG' Then Begin
-    Emit2($8C,$C8);
-    If (UnitBias(Symbols[A].Owner)<>0) And (Symbols[A].Owner<>CurrentUnit) Then Begin Emit($05); EmitWord(Word(UnitBias(Symbols[A].Owner) Shr 4)) End;
+    If KernelSymbol(A) Then Begin Emit($B8); AddSegmentRelocation(CodeSize,4); EmitWord(0) End Else Emit2($8C,$C8);
    End Else EmitProcAddress(A,Name='ADDR');
    ExprKnown:=False;
    If Name='ADDR' Then Begin ExprType:=8; StandardFunction:=8 End Else StandardFunction:=3;
@@ -5000,18 +5132,18 @@ Begin
   RequireInteger(Expression); Emit($50); Need(tkComma); RequireInteger(Expression);
   Emit2($89,$C1); Emit($58); Emit($5E); Emit($5A); Need(tkRP);
   A:=TempAlloc(256); Emit($1E); Emit2($8E,$DA); TempPointerDI(A,TempLocal);
-  Emit($BB); EmitWord(255); CallTo(RuntimeStandard[1]); Emit($1F);
+  Emit($BB); EmitWord(255); CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
   TempPointerAX(A,TempLocal); StandardFunction:=7;
  End Else If Name='POS' Then Begin
   Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma); StringExpression;
   Emit2($89,$C7); Emit2($8E,$C2); Emit($5E); Emit($5A); Need(tkRP);
-  Emit($1E); Emit2($8E,$DA); CallTo(RuntimeStandard[2]); Emit($1F); StandardFunction:=1;
+  Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[2])); Emit($1F); StandardFunction:=1;
  End Else If Name='CONCAT' Then Begin
   A:=TempAlloc(256); Lcl:=TempLocal; TempClear(A,Lcl); Need(tkLP);
   Repeat
    StringExpression; Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
    TempPointerDI(A,Lcl); Emit($BB); EmitWord(255);
-   CallTo(RuntimeStandard[3]); Emit($1F);
+   CallTo(RtlTarget(RuntimeStandard[3])); Emit($1F);
    If Token<>tkComma Then Break; NextToken;
   Until False;
   Need(tkRP); TempPointerAX(A,Lcl); StandardFunction:=7;
@@ -5031,10 +5163,10 @@ Var P,Q,R: Word;
 Begin
  Emit2($09,$D2); Emit2($74,3); P:=Jump;
  Emit($3D); EmitWord(Count); Emit2($75,3); Q:=Jump;
- LoadImmediate(100+Op); CallTo(RuntimeStandard[24]); R:=Jump;
- PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RuntimeStandard[24]);
+ LoadImmediate(100+Op); CallTo(RtlTarget(RuntimeStandard[24])); R:=Jump;
+ PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RtlTarget(RuntimeStandard[24]));
  PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
- If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+ If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
 End;
 
 Procedure BinaryFileWrite(FileType,ValueType: Word);
@@ -5055,8 +5187,8 @@ Begin
  End;
  If Types[Element].Typ=ttString Then Begin
   A:=AllocData(TypeExtras[Element].Size); Emit2($89,$C6); Emit($1E); Emit2($8E,$DA);
-  CallTo(RuntimeStandard[71]); Emit($BF); DataAddress(A); LoadImmediate(1);
-  Emit($BB); EmitWord(Types[Element].Capacity); Emit2($89,$D9); CallTo(RuntimeStandard[1]); Emit($1F);
+  CallTo(RtlTarget(RuntimeStandard[71])); Emit($BF); DataAddress(A); LoadImmediate(1);
+  Emit($BB); EmitWord(Types[Element].Capacity); Emit2($89,$D9); CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
   Emit($B8); DataAddress(A); Emit2($8C,$DA);
  End;
  If Types[Element].Typ In [ttArray,ttRecord,ttString,ttSet,ttReal] Then Begin
@@ -5070,7 +5202,7 @@ Begin
  End;
  Emit2($89,$E3); Emit($36); Emit2($8B,$7F); Emit(N+2);
  Emit($36); Emit2($8B,$47); Emit(N+4); Emit2($8E,$C0);
- Emit($B9); EmitWord(1); LoadImmediate(1); CallTo(RuntimeStandard[36]); Emit($1F);
+ Emit($B9); EmitWord(1); LoadImmediate(1); CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
  If N<>0 Then Begin Emit2($83,$C4); Emit(N) End;
  FileTransferResult(1,1);
 End;
@@ -5087,35 +5219,35 @@ Begin
   If Token=tkComma Then Begin NextToken; RequireInteger(Expression) End
   Else Begin If A=0 Then Fail(26,'Taille du buffer requise'); LoadImmediate(TypeExtras[A].Size) End;
   Need(tkRP); Emit2($89,$C1); Emit($58); Emit($5A); Emit($5F); Emit($07);
-  CallTo(RuntimeStandard[51]); If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  CallTo(RtlTarget(RuntimeStandard[51])); If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='RUNERROR' Then Begin
   LoadImmediate(0);
   If Token=tkLP Then Begin NextToken; RequireInteger(Expression); Need(tkRP) End;
-  CallTo(RuntimeStandard[47]);
+  CallTo(RtlTarget(RuntimeStandard[47]));
  End Else If Name='GETDIR' Then Begin
   Need(tkLP); RequireInteger(Expression); Emit($50); Need(tkComma);
   T:=VariableArgument; If Types[T].Typ<>ttString Then Fail(26,'GetDir exige une chaine variable');
-  Need(tkRP); Emit($58); Emit($06); Emit($57); CallTo(RuntimeStandard[44]);
+  Need(tkRP); Emit($58); Emit($06); Emit($57); CallTo(RtlTarget(RuntimeStandard[44]));
   Emit($5F); Emit($07); Emit2($89,$C6); Emit($1E); Emit2($8E,$DA);
   LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB); EmitWord(Types[T].Capacity);
-  CallTo(RuntimeStandard[1]); Emit($1F);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='MKDIR') Or (Name='RMDIR') Or (Name='CHDIR') Then Begin
   Need(tkLP); StringExpression; Need(tkRP);
   A:=AllocData(256); Emit($1E); Emit($06); Emit2($89,$C6); Emit2($8E,$DA);
-  CallTo(RuntimeStandard[71]); Emit($BF); DataAddress(A); Emit2($31,$C9); Emit($AC);
+  CallTo(RtlTarget(RuntimeStandard[71])); Emit($BF); DataAddress(A); Emit2($31,$C9); Emit($AC);
   Emit2($88,$C1); Emit2($F3,$A4); Emit2($31,$C0); Emit($AA); Emit($07); Emit($1F);
   Emit($BA); DataAddress(A);
   If Name='MKDIR' Then Op:=$39 Else If Name='RMDIR' Then Op:=$3A Else Op:=$3B;
-  Emit2($B4,Op); CallTo(RuntimeStandard[43]);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  Emit2($B4,Op); CallTo(RtlTarget(RuntimeStandard[43]));
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='RENAME' Then Begin
   Need(tkLP); T:=VariableArgument;
   If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,'Variable fichier attendue');
   Emit($06); Emit($57); Need(tkComma); StringExpression; Need(tkRP);
   Emit2($89,$C6); Emit($1E); Emit2($8E,$DA); Emit($5B); { ancienne DS }
-  Emit($5F); Emit($07); Emit($53); CallTo(RuntimeStandard[42]); Emit($1F);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  Emit($5F); Emit($07); Emit($53); CallTo(RtlTarget(RuntimeStandard[42])); Emit($1F);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='ASSIGN' Then Begin
   Need(tkLP); T:=VariableArgument;
   If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,'Variable fichier attendue');
@@ -5124,7 +5256,7 @@ Begin
   A:=TypeExtras[T].ElementType;
   If Types[T].Typ=ttText Then Begin A:=1; LoadImmediate(1) End
   Else Begin If A=0 Then A:=128 Else A:=TypeExtras[A].Size; LoadImmediate(0) End;
-  Emit($BB); EmitWord(A); CallTo(RuntimeStandard[34]); Emit($1F);
+  Emit($BB); EmitWord(A); CallTo(RtlTarget(RuntimeStandard[34])); Emit($1F);
  End Else If (Name='RESET') Or (Name='REWRITE') Or (Name='APPEND') Or (Name='CLOSE') Or
              (Name='ERASE') Or (Name='FLUSH') Or (Name='TRUNCATE') Then Begin
   Need(tkLP); T:=VariableArgument;
@@ -5141,13 +5273,13 @@ Begin
   Need(tkRP); Op:=1;
   If Name='REWRITE' Then Op:=2 Else If Name='APPEND' Then Op:=3 Else If Name='CLOSE' Then Op:=4
   Else If Name='ERASE' Then Op:=5 Else If Name='FLUSH' Then Op:=6 Else If Name='TRUNCATE' Then Op:=7;
-  LoadImmediate(Op); CallTo(RuntimeStandard[35]); If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  LoadImmediate(Op); CallTo(RtlTarget(RuntimeStandard[35])); If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='SEEK' Then Begin
   Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'Seek exige File');
   Emit($06); Emit($57); Need(tkComma); RequireInteger(Expression);
   If ExprKnown And (ExprValue<0) Then Fail(76,'Position Seek negative');
   If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
-  Need(tkRP); Emit($5F); Emit($07); CallTo(RuntimeStandard[37]); If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  Need(tkRP); Emit($5F); Emit($07); CallTo(RtlTarget(RuntimeStandard[37])); If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='BLOCKREAD') Or (Name='BLOCKWRITE') Then Begin
   Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'BlockRead/Write exige File');
   Emit($06); Emit($57); Need(tkComma); A:=VariableArgument; Emit($06); Emit($57);
@@ -5163,30 +5295,30 @@ Begin
   Emit2($8B,$46); Emit(10); Emit2($8E,$D8); Emit2($8B,$56); Emit(8);
   Emit2($8B,$46); Emit(14); Emit2($8E,$C0); Emit2($8B,$7E); Emit(12);
   Emit2($8B,$4E); Emit(6);
-  Op:=0; If Name='BLOCKWRITE' Then Op:=1; LoadImmediate(Op); CallTo(RuntimeStandard[36]); Emit($1F);
+  Op:=0; If Name='BLOCKWRITE' Then Op:=1; LoadImmediate(Op); CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
   Emit($50); Emit2($09,$D2); Emit2($74,3); P:=Jump;
   If Not HasResult Then Begin
    Emit2($3B,$46); Emit(6); Emit2($75,3); Q:=Jump;
-   LoadImmediate(100+Op); CallTo(RuntimeStandard[24]); R:=Jump;
+   LoadImmediate(100+Op); CallTo(RtlTarget(RuntimeStandard[24])); R:=Jump;
    PatchJump(Q,CodeSize);
   End Else R:=Jump;
-  Done:=Jump; PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RuntimeStandard[24]);
+  Done:=Jump; PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RtlTarget(RuntimeStandard[24]));
   PatchJump(R,CodeSize); PatchJump(Done,CodeSize); Emit($58);
   If HasResult Then Begin Emit2($C4,$7E); Emit(2); Emit($26); Emit2($89,$05) End;
   Emit2($89,$EC); Emit($5D); Emit2($83,$C4); Emit(14);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='NEW') Or (Name='GETMEM') Or (Name='MARK') Then Begin
   HeapNeeded:=True; Need(tkLP); T:=VariableArgument;
   If Types[T].Typ<>ttPointer Then Fail(26,'Variable pointeur attendue');
   Emit($06); Emit($57);
   If Name='NEW' Then Begin
    A:=TypeExtras[T].ElementType; If A=0 Then Fail(26,'New exige un pointeur type');
-   LoadImmediate(TypeExtras[A].Size); CallTo(RuntimeStandard[26]);
+   LoadImmediate(TypeExtras[A].Size); CallTo(RtlTarget(RuntimeStandard[26]));
   End Else If Name='GETMEM' Then Begin
    Need(tkComma); RequireInteger(Expression);
    If ExprKnown And ((ExprValue<0) Or (ExprValue>65535)) Then Fail(76,'Taille GetMem hors limites');
-   CallTo(RuntimeStandard[26]);
-  End Else CallTo(RuntimeStandard[29]);
+   CallTo(RtlTarget(RuntimeStandard[26]));
+  End Else CallTo(RtlTarget(RuntimeStandard[29]));
   Need(tkRP); Emit($5F); Emit($07); StoreDesignator(T);
  End Else If (Name='DISPOSE') Or (Name='FREEMEM') Or (Name='RELEASE') Then Begin
   HeapNeeded:=True; Need(tkLP); A:=Expression;
@@ -5196,9 +5328,9 @@ Begin
    Emit2($89,$C3); Emit($58); Emit($5A); Emit($BE); EmitWord(1);
   End Else Emit2($31,$F6);
   Need(tkRP);
-  If Name='RELEASE' Then CallTo(RuntimeStandard[30]) Else CallTo(RuntimeStandard[27]);
+  If Name='RELEASE' Then CallTo(RtlTarget(RuntimeStandard[30])) Else CallTo(RtlTarget(RuntimeStandard[27]));
  End Else If (Name='READ') Or (Name='READLN') Then Begin
-  CallTo(RuntimeStandard[76]); { ReadBegin }
+  CallTo(RtlTarget(RuntimeStandard[76])); { ReadBegin }
   FirstInput:=True; BinaryType:=0;
   If Token=tkLP Then Begin
    NextToken;
@@ -5209,8 +5341,8 @@ Begin
     T:=VariableArgument;
     If FirstInput And (Types[T].Typ In [ttFile,ttText]) Then Begin
      If Types[T].Typ=ttText Then Begin
-      Emit2($89,$F8); Emit2($8C,$C2); CallTo(RuntimeStandard[41]);
-      If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+      Emit2($89,$F8); Emit2($8C,$C2); CallTo(RtlTarget(RuntimeStandard[41]));
+      If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
      End Else Begin
       If (Name='READLN') Or (TypeExtras[T].ElementType=0) Then Fail(26,'Read exige File type, ReadLn exige Text');
       BinaryType:=T; Emit($06); Emit($57);
@@ -5221,28 +5353,28 @@ Begin
      Emit2($89,$F8); Emit2($8C,$C2); Emit($1E); Emit2($8E,$DA); Emit2($89,$C2);
      Emit2($89,$E3); Emit($36); Emit2($8B,$7F); Emit(2);
      Emit($36); Emit2($8B,$47); Emit(4); Emit2($8E,$C0);
-     Emit($B9); EmitWord(1); LoadImmediate(0); CallTo(RuntimeStandard[36]); Emit($1F);
+     Emit($B9); EmitWord(1); LoadImmediate(0); CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
      FileTransferResult(0,1);
     End Else Begin
      Emit($06); Emit($57);
      Case Types[T].Typ Of
       ttReal:Begin
-       CallTo(RuntimeStandard[20]); Emit2($8C,$DA); RealParseText;
+       CallTo(RtlTarget(RuntimeStandard[20])); Emit2($8C,$DA); RealParseText;
        Emit($52); Emit($50);
        Emit2($09,$C9); Emit2($74,3); P:=Jump; Q:=Jump;
-       PatchJump(P,CodeSize); LoadImmediate(106); CallTo(RuntimeStandard[24]);
+       PatchJump(P,CodeSize); LoadImmediate(106); CallTo(RtlTarget(RuntimeStandard[24]));
        PatchJump(Q,CodeSize); Emit($58); Emit($5A);
       End;
-      ttChar:CallTo(RuntimeStandard[19]);
-      ttString:Begin Emit($BB); EmitWord(Types[T].Capacity); CallTo(RuntimeStandard[21]) End;
+      ttChar:CallTo(RtlTarget(RuntimeStandard[19]));
+      ttString:Begin Emit($BB); EmitWord(Types[T].Capacity); CallTo(RtlTarget(RuntimeStandard[21])) End;
       ttArray:Begin
        { tableau de Char a base zero ($X+): chaine lue (DX:AX) copiee avec zero terminal }
        If Not (IsCharArray(T) And ExtendedSyntax) Then Fail(26,'Type non lisible');
        N:=TypeExtras[T].Size-1; If N>255 Then N:=255;
-       Emit($BB); EmitWord(N); CallTo(RuntimeStandard[21]);
+       Emit($BB); EmitWord(N); CallTo(RtlTarget(RuntimeStandard[21]));
       End;
       ttInteger:Begin
-       CallTo(RuntimeStandard[20]); Emit2($89,$C6); CallTo(RuntimeStandard[17]);
+       CallTo(RtlTarget(RuntimeStandard[20])); Emit2($89,$C6); CallTo(RtlTarget(RuntimeStandard[17]));
        Emit2($09,$C9); Emit2($74,3); P:=Jump; Q:=0; R:=0; A:=0;
        If Types[T].Width<>4 Then Begin
         If Types[T].Signed Then Begin Emit2($89,$C3); Emit2($B1,15); Emit2($D3,$FB) End
@@ -5257,7 +5389,7 @@ Begin
        End;
        Done:=Jump; PatchJump(P,CodeSize); If Q<>0 Then PatchJump(Q,CodeSize);
        If R<>0 Then PatchJump(R,CodeSize); If A<>0 Then PatchJump(A,CodeSize);
-       LoadImmediate(106); CallTo(RuntimeStandard[24]); Emit2($31,$C0); Emit2($31,$D2);
+       LoadImmediate(106); CallTo(RtlTarget(RuntimeStandard[24])); Emit2($31,$C0); Emit2($31,$D2);
        PatchJump(Done,CodeSize);
       End;
      Else Fail(26,'Type non lisible');
@@ -5270,7 +5402,7 @@ Begin
      End Else If Types[T].Typ=ttArray Then Begin
       Emit2($89,$C6); Emit2($31,$C9); Emit2($8A,$0C); Emit($46); Emit2($F3,$A4); Emit2($30,$C0); Emit($AA);
      End Else StoreDesignator(T);
-     If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+     If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
     End;
     FirstInput:=False;
     If Token<>tkComma Then Break; NextToken;
@@ -5278,8 +5410,8 @@ Begin
    Need(tkRP);
   End Else If Name='READ' Then Fail(88,'Parametres Read manquants');
   If BinaryType<>0 Then Begin Emit2($83,$C4); Emit(4) End;
-  If Name='READLN' Then CallTo(RuntimeStandard[78]) Else CallTo(RuntimeStandard[77]); { ReadLnEnd / ReadEnd }
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  If Name='READLN' Then CallTo(RtlTarget(RuntimeStandard[78])) Else CallTo(RtlTarget(RuntimeStandard[77])); { ReadLnEnd / ReadEnd }
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='INC') Or (Name='DEC') Then Begin
   Need(tkLP);
   If Token=tkIdent Then T:=FindLexicalSymbol(TokenText) Else T:=0;
@@ -5346,7 +5478,7 @@ Begin
   If OptionBits And 2<>0 Then Begin
    If Types[T].Width>=2 Then Begin
     If Types[T].Signed Then Emit2($71,3) Else Emit2($73,3); P:=Jump; Q:=Jump;
-    PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RuntimeError); PatchJump(Q,CodeSize);
+    PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError)); PatchJump(Q,CodeSize);
    End;
    If Types[T].Width=1 Then A:=1 Else A:=T;
    RangeBounds(Types[T].LowBound,Types[T].HighBound,A);
@@ -5387,7 +5519,7 @@ Begin
   If Token=tkColon Then Begin NextToken; RequireInteger(Expression) End Else LoadImmediate(0);
   Emit($50); Need(tkComma); T:=VariableArgument;
   If Types[T].Typ<>ttString Then Fail(66,'Destination Str non string'); Need(tkRP);
-  Emit($59); Emit($58); Emit($5A); Emit($51); Emit($06); Emit($57); CallTo(RuntimeStandard[16]);
+  Emit($59); Emit($58); Emit($5A); Emit($51); Emit($06); Emit($57); CallTo(RtlTarget(RuntimeStandard[16]));
   Emit($5F); Emit($07); Emit($59); Emit2($89,$C6); Emit($BB); EmitWord(Types[T].Capacity);
   Emit2($09,$C9); Emit2($79,2); Emit2($31,$C9);
   Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
@@ -5410,7 +5542,7 @@ Begin
   End Else Begin
   Emit($1E);
   Emit2($8B,$46); Emit(12); Emit2($8E,$D8); Emit2($8B,$76); Emit(10);
-  CallTo(RuntimeStandard[17]); Emit($1F);
+  CallTo(RtlTarget(RuntimeStandard[17])); Emit($1F);
   If Types[T].Width<>4 Then Begin
    If Types[T].Signed Then Begin
     Emit2($89,$C3); Emit($51); Emit2($B1,15); Emit2($D3,$FB); Emit($59);
@@ -5435,14 +5567,14 @@ Begin
   If Types[T].Typ<>ttString Then Fail(66,'Chaine variable attendue');
   Emit($06); Emit($57); Need(tkComma); RequireInteger(Expression); Emit($50);
   Need(tkComma); RequireInteger(Expression); Emit2($89,$C1);
-  Emit($58); Emit($5F); Emit($07); Need(tkRP); CallTo(RuntimeStandard[4]);
+  Emit($58); Emit($5F); Emit($07); Need(tkRP); CallTo(RtlTarget(RuntimeStandard[4]));
  End Else If Name='INSERT' Then Begin
   Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma);
   T:=VariableArgument; If Types[T].Typ<>ttString Then Fail(66,'Chaine variable attendue');
   Emit($06); Emit($57); Need(tkComma); RequireInteger(Expression); Need(tkRP);
   Emit($5F); Emit($07); Emit($5E); Emit($5A);
   Emit($1E); Emit2($8E,$DA); Emit($BB); EmitWord(Types[T].Capacity);
-  CallTo(RuntimeStandard[5]); Emit($1F);
+  CallTo(RtlTarget(RuntimeStandard[5])); Emit($1F);
  End Else If Name='FILLCHAR' Then Begin
   Need(tkLP); T:=VariableArgument; Emit($06); Emit($57);
   Need(tkComma); RequireInteger(Expression); Emit($50);
@@ -5453,7 +5585,7 @@ Begin
   Need(tkComma); T:=VariableArgument; Emit($06); Emit($57);
   Need(tkComma); RequireInteger(Expression); Need(tkRP);
   Emit2($89,$C1); Emit($5F); Emit($07); Emit($5E); Emit($5A);
-  Emit($1E); Emit2($8E,$DA); CallTo(RuntimeStandard[12]); Emit($1F);
+  Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[12])); Emit($1F);
  End Else StandardProcedure:=False;
 End;
 
@@ -5515,7 +5647,7 @@ Begin
    Emit($26); Emit2($88,$45); Emit(1);
    Emit($26); Emit2($C6,$05); Emit(1);
   End Else If T=ttString Then Begin
-   CallTo(RuntimeStandard[81]); EmitWord(Types[Dest].Capacity); { StringAssign ES:DI := DX:AX }
+   CallTo(RtlTarget(RuntimeStandard[81])); EmitWord(Types[Dest].Capacity); { StringAssign ES:DI := DX:AX }
   End Else Fail(26,'Chaine attendue');
  End Else If Types[Dest].Typ=ttSet Then Begin
   If Not CompatibleTypes(Dest,SourceType) Then Fail(26,'Affectation set incompatible');
@@ -5581,7 +5713,7 @@ End;
 Procedure WriteStatement(NewLine: Boolean);
 Var T: Byte; P,Q,A,B,BinaryType,FileType: Word; First: Boolean;
 Begin
- CallTo(RuntimeStandard[73]); { WriteBegin: selection de Output, contexte empile }
+ CallTo(RtlTarget(RuntimeStandard[73])); { WriteBegin: selection de Output, contexte empile }
  BinaryType:=0; First:=True;
  If Token=tkLP Then Begin
   NextToken;
@@ -5598,16 +5730,16 @@ Begin
      BinaryType:=FileType; Emit($52); Emit($50);
     End Else Begin
      Emit2($89,$C7); Emit2($8E,$C2);
-     CallTo(RuntimeStandard[49]);
+     CallTo(RtlTarget(RuntimeStandard[49]));
      Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
      Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); Q:=Jump;
      Emit($26); Emit2($83,$7D); Emit(4); Emit(1); Emit2($75,3); A:=Jump;
-     Emit($26); Emit2($8B,$05); CallTo(RuntimeStandard[40]); B:=Jump;
+     Emit($26); Emit2($8B,$05); CallTo(RtlTarget(RuntimeStandard[40])); B:=Jump;
      PatchJump(P,CodeSize); LoadImmediate(105); P:=Jump; { non assigne: 105 comme TP }
      PatchJump(Q,CodeSize); LoadImmediate(103); Q:=Jump;
      PatchJump(A,CodeSize); LoadImmediate(105); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
-     CallTo(RuntimeStandard[24]); PatchJump(B,CodeSize);
-     If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+     CallTo(RtlTarget(RuntimeStandard[24])); PatchJump(B,CodeSize);
+     If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
     End;
    End Else Begin
     First:=False;
@@ -5619,7 +5751,7 @@ Begin
    Case T Of
     ttInteger:Begin
      If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
-     CallTo(RuntimeStandard[16]);
+     CallTo(RtlTarget(RuntimeStandard[16]));
     End;
     ttChar:StringFromChar;
     ttBoolean:Begin
@@ -5635,17 +5767,17 @@ Begin
    Emit2($89,$C1); Emit($58); Emit($5A); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
    Emit2($31,$DB); Emit2($8A,$1C); Emit2($89,$C8); Emit2($29,$D8);
    Emit2($7F,2); Emit2($31,$C0); Emit2($89,$C1); Emit2($09,$C9); Emit2($75,3); P:=Jump;
-   Q:=CodeSize; LoadImmediate(32); CallTo(RuntimeChar); Emit($E2); Emit(Byte(Longint(Q)-CodeSize-1));
-   PatchJump(P,CodeSize); Emit2($89,$F0); CallTo(RuntimeString); Emit($1F);
+   Q:=CodeSize; LoadImmediate(32); CallTo(RtlTarget(RuntimeChar)); Emit($E2); Emit(Byte(Longint(Q)-CodeSize-1));
+   PatchJump(P,CodeSize); Emit2($89,$F0); CallTo(RtlTarget(RuntimeString)); Emit($1F);
   End Else Begin
   Case T Of
-  ttString:Begin Emit($1E); Emit2($8E,$DA); CallTo(RuntimeString); Emit($1F) End;
-  ttChar:CallTo(RuntimeChar);
+  ttString:Begin Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeString)); Emit($1F) End;
+  ttChar:CallTo(RtlTarget(RuntimeChar));
   ttPointer,ttArray:Begin
    If (T=ttArray) And (Types[ExprType].Typ=ttArray) And (TypeExtras[ExprType].ElementType=6) And
       Not IsCharArray(ExprType) Then Begin
     { Tableau de caracteres non base a zero: imprime comme une chaine de sa taille. }
-    CharArrayToString(ExprType); Emit($1E); Emit2($8E,$DA); CallTo(RuntimeString); Emit($1F);
+    CharArrayToString(ExprType); Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeString)); Emit($1F);
    End Else Begin
     If Not (((T=ttPointer) And IsCharPointer(ExprType)) Or ((T=ttArray) And IsCharArray(ExprType))) Or
        Not ExtendedSyntax Then Fail(64,'Type non imprimable');
@@ -5653,10 +5785,10 @@ Begin
    End;
   End;
   ttInteger:Begin
-   If Types[ExprType].Width=4 Then Begin CallTo(RuntimeStandard[16]); CallTo(RuntimeString) End
-   Else If ExprUnsigned Then CallTo(RuntimeUnsigned) Else CallTo(RuntimeInteger);
+   If Types[ExprType].Width=4 Then Begin CallTo(RtlTarget(RuntimeStandard[16])); CallTo(RtlTarget(RuntimeString)) End
+   Else If ExprUnsigned Then CallTo(RtlTarget(RuntimeUnsigned)) Else CallTo(RtlTarget(RuntimeInteger));
   End;
-  ttBoolean:CallTo(RuntimeBoolean);
+  ttBoolean:CallTo(RtlTarget(RuntimeBoolean));
   Else Unsupported('type non imprimable');
  End;
  End;
@@ -5668,8 +5800,8 @@ Begin
   Need(tkRP);
  End;
  If BinaryType<>0 Then Begin Emit2($83,$C4); Emit(4) End;
- If NewLine Then CallTo(RuntimeStandard[75]) Else CallTo(RuntimeStandard[74]); { WriteLnEnd / WriteEnd }
- If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+ If NewLine Then CallTo(RtlTarget(RuntimeStandard[75])) Else CallTo(RtlTarget(RuntimeStandard[74])); { WriteLnEnd / WriteEnd }
+ If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
 End;
 
 Function AsmRegister(Name: TShortString; var O: TAsmOperand): Boolean;
@@ -6751,9 +6883,9 @@ Begin
     NextToken; RequireInteger(Expression); Need(tkRP)
    End
    Else LoadImmediate(0);
-   CallTo(RuntimeHalt);
+   CallTo(RtlTarget(RuntimeHalt));
   End Else If (I=0) And (Token<>tkDot) And (Name='EXIT') Then Begin
-   If Not InProcedure Then Begin LoadImmediate(0); CallTo(RuntimeHalt) End
+   If Not InProcedure Then Begin LoadImmediate(0); CallTo(RtlTarget(RuntimeHalt)) End
    Else If RealScope(CurrentScope)<>0 Then ProcedureExit Else Emit($C3);
   End Else If (I=0) And (Token<>tkDot) And ((Name='INC') Or (Name='DEC')) Then Begin
    Need(tkLP);
@@ -7479,6 +7611,7 @@ Begin
 End;
 
 Procedure DeclarationPart; Forward;
+Procedure FlushKernelData; Forward;
 
 Procedure ProcedureDeclaration;
 Var
@@ -7671,7 +7804,7 @@ Begin
  If Not Symbols[I].NoFrame Then Begin
   Emit($55); Emit2($89,$E5);
   If OptionBits And 4<>0 Then Begin
-   CallTo(RuntimeStandard[72]); StackCheckPatch:=CodeSize; EmitWord(0);
+   CallTo(RtlTarget(RuntimeStandard[72])); StackCheckPatch:=CodeSize; EmitWord(0);
   End;
   Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0);
   { saut des declarations (routines imbriquees) seulement s'il y en a }
@@ -7695,7 +7828,10 @@ Begin
   If DataSize>MData Then FillChar(Data[MData],DataSize-MData,0);
   DataSize:=MData;
   Symbols[I].Addr:=MCode; TotalEmitted:=MTot;
+  { copies de runtime emises dans le corps annule }
+  While (CloneCount>0) And KernelMode And (CloneDst[CloneCount]>=MCode) Do Dec(CloneCount);
  End;
+ If KernelMode And (Parent=0) Then FlushKernelData;
  CurrentScope:=Parent; InProcedure:=SavedProcedure; Need(tkSemi);
 End;
 
@@ -7769,6 +7905,80 @@ Procedure RestoreParser(P: PParserState);Begin
  Dispose(P^.Buffer); Dispose(P);
 End;
 
+Function SourceHasKernel: Boolean;
+{ Vrai si le source declare "Procedure BEGIN_KERNEL". }
+Const Key='BEGIN_KERNEL';
+Var I,K,J: Longint; Ok: Boolean;
+Begin
+ SourceHasKernel:=False;
+ For I:=1 To SourceSize-Length(Key)-10 Do
+  If UpCase(Source[I])='B' Then Begin
+   Ok:=True;
+   For K:=1 To Length(Key) Do If UpCase(Source[I+K-1])<>Key[K] Then Begin Ok:=False; Break End;
+   If Ok Then Begin
+    J:=I-1; While (J>0) And (Source[J]=' ') Do Dec(J);
+    If (J>=9) And (UpCase(Source[J])='E') And (UpCase(Source[J-1])='R') And (UpCase(Source[J-2])='U') And
+       (UpCase(Source[J-3])='D') And (UpCase(Source[J-4])='E') Then Begin SourceHasKernel:=True; Exit End;
+   End;
+  End;
+End;
+
+Procedure FlushKernelData;
+{ Place dans le segment du noyau (apres la routine qui vient d'etre
+  compilee) les donnees allouees depuis le dernier appel : chaines, constantes
+  typees, tampons. Les references en attente sont alors resolues. }
+Var Lo,Hi,At,K,J: Word;
+Begin
+ If DataSize<=KDataFlushed Then Exit;
+ If ChunkCount=1024 Then Fail(123,'Trop de blocs de donnees dans le noyau');
+ Lo:=KDataFlushed; Hi:=DataSize; At:=CodeSize;
+ For K:=Lo To Hi-1 Do Emit(Data[K]);
+ Inc(ChunkCount); ChunkLo[ChunkCount]:=Lo; ChunkHi[ChunkCount]:=Hi; ChunkAt[ChunkCount]:=At;
+ K:=KFixBase+1;
+ While K<=FixupCount Do Begin
+  If (Fixups[K].DataOffset>=Lo) And (Fixups[K].DataOffset<Hi) Then Begin
+   PatchWord(Fixups[K].Position,At+Fixups[K].DataOffset-Lo);
+   Fixups[K]:=Fixups[FixupCount]; Dec(FixupCount);
+  End Else Inc(K);
+ End;
+ KDataFlushed:=Hi;
+End;
+
+Procedure EnterKernel(U: Byte);
+Begin
+ Units[U].Kernel:=True; KUnit:=U;
+ New(SavedImg); Move(Image,SavedImg^,SizeOf(Image));
+ New(SavedOwn); Move(CodeOwners,SavedOwn^,SizeOf(CodeOwners));
+ New(SavedRel); Move(RelativeFixups,SavedRel^,SizeOf(RelativeFixups));
+ SCode:=CodeSize; SFix:=FixupCount; SRel:=RelativeCount; SNat:=NativeRefCount; SReloc:=RelocationCount;
+ SObj:=ObjectCallCount; SPend:=PendCount; SDbg:=DebugCount; SLab:=LabelJumpCount; SDataFix:=DataFixupCount;
+ CodeSize:=0; RelativeCount:=0; KFixBase:=FixupCount;
+ KDataStart:=DataSize; KDataFlushed:=DataSize; ChunkCount:=0; CloneCount:=0;
+ SRing:=StringRing; SRingPos:=StringRingPos;
+ StringRingMask:=1023; { 4 tampons de 256 octets dans le noyau }
+ StringRing:=AllocData(1024); StringRingPos:=AllocData(2);
+ KDataStart:=StringRing; KDataFlushed:=StringRing; { donnees du noyau : a partir du tampon de chaines }
+ KernelMode:=True;
+End;
+
+Procedure LeaveKernel(U: Byte);
+Begin
+ FlushKernelData;
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'NOYAU octets emis (passe courante) ',TotalEmitted);
+ If FixupCount<>KFixBase Then Fail(72,'Le noyau contient une reference a une donnee non resolue');
+ KernelMode:=False;
+ New(KImage); Move(Image,KImage^,SizeOf(Image)); KSize:=CodeSize; HaveKernel:=True;
+ Move(SavedImg^,Image,SizeOf(Image)); Dispose(SavedImg);
+ Move(SavedOwn^,CodeOwners,SizeOf(CodeOwners)); Dispose(SavedOwn);
+ Move(SavedRel^,RelativeFixups,SizeOf(RelativeFixups)); Dispose(SavedRel);
+ CodeSize:=SCode; FixupCount:=SFix; RelativeCount:=SRel; NativeRefCount:=SNat; RelocationCount:=SReloc;
+ ObjectCallCount:=SObj; PendCount:=SPend; DebugCount:=SDbg; LabelJumpCount:=SLab; DataFixupCount:=SDataFix;
+ { les donnees du noyau sont maintenant dans son segment }
+ FillChar(Data[KDataStart-0],DataSize-KDataStart,0);
+ StringRing:=SRing; StringRingPos:=SRingPos; StringRingMask:=2047;
+ DataSize:=SRing; { memes allocations que celles reservees avant l'unite }
+End;
+
 Procedure CompileSourceUnit(U: Byte; Path: TShortString);
 Var
  P: PParserState;
@@ -7785,6 +7995,8 @@ Begin
  OptionBits:=InitialOptions;
  If OptionBits And $800<>0 Then UnitFeatures[U]:=UnitFeatures[U] Or 4;
  LoadSource;
+ { unite noyau : celle qui declare la procedure BEGIN_KERNEL }
+ If SourceHasKernel Then EnterKernel(U);
  ImportLibrarySystem;
  NextToken; Need(tkUnit);
  If Token<>tkIdent Then Fail(2,'Nom d''unite attendu');
@@ -7803,6 +8015,10 @@ Begin
   InProcedure:=True; Statement; InProcedure:=False; Emit($C3);
  End Else Need(tkEnd);
  Need(tkDot);
+ If Units[U].Kernel Then Begin
+  If Units[U].HasInit Then Fail(72,'Une unite noyau ne peut pas avoir de bloc d''initialisation');
+  LeaveKernel(U);
+ End;
  Units[U].State:=2;
  If Units[U].HasInit Then Begin
   Inc(InitCount); InitOrder[InitCount]:=U
@@ -9000,13 +9216,13 @@ Var
  U, V: Byte;
 Begin
   { Checksums connus avant l'ecriture pour les cycles d'implementation. }
- For U:=1 To UnitCount Do If Units[U].FromSource Then    Units[U].Checksum:=
+ For U:=1 To UnitCount Do If Units[U].FromSource And Not Units[U].Kernel Then    Units[U].Checksum:=
  InterfaceChecksum(U);
  For U:=1 To UnitCount Do
  For V:=1 To UnitCount Do    If (Units[U].DependencyChecks[V]<>0) And
  (Units[U].DependencyChecks[V]<>Units[V].Checksum) Then      Fail(70,Units[U].Name+' / '+
  Units[V].Name);
- For U:=1 To UnitCount Do If Units[U].FromSource And Not Units[U].Embedded Then WriteCompiledUnit(U);
+ For U:=1 To UnitCount Do If Units[U].FromSource And Not Units[U].Embedded And Not Units[U].Kernel Then WriteCompiledUnit(U);
 End;
 Procedure LoadCompiledUnit(U: Byte; Path: TShortString);Forward;
 Function DecodeNativeType(U: Byte; Offset: Word): Word; Forward;
@@ -10256,7 +10472,7 @@ Begin
  Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
  Emit2($09,$C9); Emit2($75,3); Q:=Jump;
  Emit($26); Emit2($89,$45); Emit(96); Emit($26); Emit2($89,$55); Emit(98);
- Emit($26); Emit2($89,$4D); Emit(100); CallTo(RuntimeStandard[53]);
+ Emit($26); Emit2($89,$4D); Emit(100); CallTo(RtlTarget(RuntimeStandard[53]));
  Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit($C3);
  PatchJump(P,CodeSize); LoadImmediate(102); P:=Jump;
  PatchJump(Q,CodeSize); LoadImmediate(106); PatchJump(P,CodeSize);
@@ -10274,7 +10490,7 @@ Begin
  Emit($26); Emit2($83,$3D); Emit(1); Emit2($74,3); ErrorMode:=Jump;
  Emit($06); Emit($57); Emit($51);                            { push es,di,cx }
  Emit2($89,$E3); Emit($36); Emit2($FF,$77); Emit(6);         { push ss:[bx+6] = segment du tampon }
- Emit($52); Emit($51); Emit($53); Emit2($FF,$16); DataAddress(CrtHook); { push dx,cx,lien; call [hook] }
+ Emit($52); Emit($51); Emit2($FF,$16); DataAddress(CrtHook); { push dx,cx; call [hook] (ABI TP7 : pas de lien statique) }
  Emit($59); Emit($5F); Emit($07); Emit($1F);                 { pop cx,di,es,ds }
  Emit2($89,$C8); Emit($F8); LoopStart:=Jump;                 { ax=cx; clc }
  PatchJump(ErrorClosed,CodeSize); PatchJump(ErrorMode,CodeSize); Emit($1F);
@@ -10293,32 +10509,32 @@ Begin
  Emit($53); Emit($51); Emit($52); Emit($56);
  EmitLoadDS; Emit2($C4,$3E); DataAddress(OutputFilePointer);
  Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); Emit2($75,3); P:=Jump;
- CallTo(RuntimeStandard[54]);
+ CallTo(RtlTarget(RuntimeStandard[54]));
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); ErrorClosed:=Jump;
  Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($74,3); ErrorMode:=Jump;
  Emit($26); Emit2($8B,$5D); Emit(106); Emit($26); Emit2($3B,$5D); Emit(100);
- Emit2($73,3); Q:=Jump; CallTo(RuntimeStandard[52]); Emit2($09,$C0); Emit2($74,3); R:=Jump;
+ Emit2($73,3); Q:=Jump; CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); Emit2($74,3); R:=Jump;
  PatchJump(Q,CodeSize); Emit($26); Emit2($8B,$75); Emit(106);
  Emit($26); Emit2($8B,$5D); Emit(96); Emit($26); Emit2($8B,$55); Emit(98);
  Emit($06); Emit($57); Emit2($8E,$C2); Emit2($89,$DF); Emit2($01,$F7);
  Emit2($8B,$46); Emit($FE); Emit($26); Emit2($88,$05); Emit($5F); Emit($07);
  Emit($26); Emit2($FF,$45); Emit(106);
  Emit($26); Emit2($8B,$5D); Emit(106); Emit($26); Emit2($3B,$5D); Emit(100);
- Emit2($73,3); Q:=Jump; CallTo(RuntimeStandard[52]); S:=Jump;
+ Emit2($73,3); Q:=Jump; CallTo(RtlTarget(RuntimeStandard[52])); S:=Jump;
  PatchJump(Q,CodeSize); Emit2($31,$C0); Q:=Jump;
  PatchJump(ErrorClosed,CodeSize); LoadImmediate(103); ErrorClosed:=Jump;
  PatchJump(ErrorMode,CodeSize); LoadImmediate(105);
  PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize); PatchJump(ErrorClosed,CodeSize);
  Emit2($09,$C0); Emit2($75,3); Q:=Jump; Emit($A3); DataAddress(InputError);
  PatchJump(Q,CodeSize); Done:=Jump;
- PatchJump(P,CodeSize); Emit2($8B,$46); Emit($FE); CallTo(RuntimeRawChar);
+ PatchJump(P,CodeSize); Emit2($8B,$46); Emit($FE); CallTo(RtlTarget(RuntimeRawChar));
  PatchJump(Done,CodeSize); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($5F); Emit($07); Emit($58); Emit($5D); Emit($C3);
 
  RuntimeStandard[48]:=CodeSize; { prochain octet du Text actif, 26=EOF }
  Emit($06); Emit($57); Emit($1E); Emit($53); Emit($51); Emit($52); Emit($56);
  EmitLoadDS; Emit2($C4,$3E); DataAddress(InputFilePointer);
  Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); Emit2($75,3); P:=Jump;
- CallTo(RuntimeStandard[54]);
+ CallTo(RtlTarget(RuntimeStandard[54]));
  Emit($26); Emit2($8B,$5D); Emit(102); Emit($26); Emit2($3B,$5D); Emit(104);
  Emit2($73,3); Q:=Jump;
  Emit($26); Emit2($8B,$4D); Emit(100); Emit($26); Emit2($8B,$55); Emit(96);
@@ -10339,9 +10555,9 @@ Begin
  Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($5F); Emit($07); Emit($C3);
  RuntimeStandard[56]:=CodeSize; { finaliser le Text Output local }
  Emit($50); Emit($06); Emit($57); Emit($1E); EmitLoadDS; Emit($1E); Emit($07);
- Emit($BF); DataAddress(StandardOutputAddress); CallTo(RuntimeStandard[52]);
+ Emit($BF); DataAddress(StandardOutputAddress); CallTo(RtlTarget(RuntimeStandard[52]));
  Emit($1F); Emit($5F); Emit($07); Emit($58); Emit($C3);
- RuntimeStandard[55]:=CodeSize; CallTo(RuntimeStandard[56]); Emit2($B4,$4C); Emit2($CD,$21);
+ RuntimeStandard[55]:=CodeSize; CallTo(RtlTarget(RuntimeStandard[56])); Emit2($B4,$4C); Emit2($CD,$21);
 End;
 
 Procedure EmitFileRuntime;
@@ -10360,7 +10576,7 @@ Begin Emit($06); Emit($1F); Emit2($89,$FA); Emit2($83,$C2); Emit(16) End;
 Procedure OpenResult(Mode: Word);
 Begin
  Emit2($89,$05); Emit2($C7,$45); Emit(4); EmitWord(Mode);
- Emit2($C7,$45); Emit(6); EmitWord($FFFF); CallTo(RuntimeStandard[53]); Emit2($31,$C0); FinishIO;
+ Emit2($C7,$45); Emit(6); EmitWord($FFFF); CallTo(RtlTarget(RuntimeStandard[53])); Emit2($31,$C0); FinishIO;
 End;
 Begin
  { Layout local File/Text: handle, record size, mode, lookahead, text flag,
@@ -10373,7 +10589,7 @@ Begin
  Emit2($09,$C0); Emit2($75,3); P:=Jump;
  Emit2($89,$F8); Emit($05); EmitWord(128);
  Emit($26); Emit2($89,$45); Emit(96); Emit2($8C,$C0); Emit($26); Emit2($89,$45); Emit(98);
- Emit($26); Emit2($C7,$45); Emit(100); EmitWord(128); CallTo(RuntimeStandard[53]);
+ Emit($26); Emit2($C7,$45); Emit(100); EmitWord(128); CallTo(RtlTarget(RuntimeStandard[53]));
  PatchJump(P,CodeSize);
  Emit2($31,$C9); Emit2($8A,$0C); Emit($46); Emit2($83,$F9); Emit(79); Emit2($76,3);
  Emit($B9); EmitWord(79); Emit2($83,$C7); Emit(16); Emit2($F3,$A4);
@@ -10398,7 +10614,7 @@ Begin
  Emit2($80,$7D); Emit(16); Emit(0); Emit2($75,5); Emit2($31,$C0); P:=Jump;
  Emit2($B4,$3D); Emit2($CD,$21); FailIf($72,0); PatchJump(P,CodeSize);
  Emit2($89,$05); Emit2($8B,$4E); Emit($F4); Emit($41); Emit2($89,$4D); Emit(4);
- Emit2($C7,$45); Emit(6); EmitWord($FFFF); CallTo(RuntimeStandard[53]); Emit2($31,$C0); FinishIO;
+ Emit2($C7,$45); Emit(6); EmitWord($FFFF); CallTo(RtlTarget(RuntimeStandard[53])); Emit2($31,$C0); FinishIO;
 
  PatchJump(Dispatch[2],CodeSize); { Rewrite }
  Emit2($09,$DB); Emit2($74,4); Emit($26); Emit2($89,$5D); Emit(2); FileName;
@@ -10415,7 +10631,7 @@ Begin
 
  PatchJump(Dispatch[4],CodeSize); { Close }
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
- CallTo(RuntimeStandard[52]); Emit2($09,$C0); FailIf($75,0);
+ CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); FailIf($75,0);
  Emit($26); Emit2($8B,$1D); Emit2($83,$FB); Emit(3); Emit2($73,3); P:=Jump;
  Emit2($B4,$3E); Emit2($CD,$21); FailIf($72,0); PatchJump(P,CodeSize);
  Emit($26); Emit2($C7,$45); Emit(4); EmitWord(0); Emit2($31,$C0); FinishIO;
@@ -10426,7 +10642,7 @@ Begin
  PatchJump(Dispatch[6],CodeSize); { Flush }
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(2); FailIf($75,105);
- CallTo(RuntimeStandard[52]); Emit2($09,$C0); FailIf($75,0);
+ CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); FailIf($75,0);
  Emit2($B4,$0D); Emit2($CD,$21); Emit2($31,$C0); FinishIO;
 
  PatchJump(Dispatch[7],CodeSize); { Truncate }
@@ -10477,7 +10693,7 @@ Begin
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57);
  Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
- Emit($26); Emit2($8B,$5D); Emit(2); Emit2($31,$C9); CallTo(RuntimeStandard[14]);
+ Emit($26); Emit2($8B,$5D); Emit(2); Emit2($31,$C9); CallTo(RtlTarget(RuntimeStandard[14]));
  Emit2($89,$D1); Emit2($89,$C2); Emit($26); Emit2($8B,$1D);
  LoadImmediate($4200); Emit2($CD,$21); FailIf($72,0);
  Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit2($31,$C0); FinishIO;
@@ -10503,7 +10719,7 @@ Begin
  Emit2($8B,$4E); Emit($F2); Emit2($8B,$56); Emit($F4); LoadImmediate($4200); Emit2($CD,$21); FailIf($72,0);
  Emit2($8B,$46); Emit($F0); Emit2($8B,$56); Emit($EE);
  PatchJump(P,CodeSize); Emit2($F6,$46); Emit($FE); Emit(2); Emit2($75,8); { en octets: pas de division }
- Emit2($8B,$5E); Emit($FC); Emit2($31,$C9); CallTo(RuntimeStandard[15]);
+ Emit2($8B,$5E); Emit($FC); Emit2($31,$C9); CallTo(RtlTarget(RuntimeStandard[15]));
  Emit2($31,$C9); FinishIO;
  For I:=1 To ErrorCount Do Begin
   PatchJump(ErrorAddresses[I],CodeSize); If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]);
@@ -10535,12 +10751,12 @@ Begin
  PatchJump(Q,CodeSize); LoadImmediate(102); Q:=Jump;
  PatchJump(R,CodeSize); LoadImmediate(3);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(S,CodeSize); PatchJump(Done,CodeSize);
- EmitLoadDS; CallTo(RuntimeStandard[24]);
+ EmitLoadDS; CallTo(RtlTarget(RuntimeStandard[24]));
  Emit($5E); Emit($1F); Emit($5F); Emit($07); Emit($5D); Emit($C3);
 
  RuntimeStandard[43]:=CodeSize; { DOS directory operation AH, DS:DX ASCIIZ }
  Emit2($CD,$21); Emit2($73,3); P:=Jump; Emit($C3);
- PatchJump(P,CodeSize); CallTo(RuntimeStandard[24]); Emit($C3);
+ PatchJump(P,CodeSize); CallTo(RtlTarget(RuntimeStandard[24])); Emit($C3);
 
  RuntimeStandard[44]:=CodeSize; { GetDir AX drive -> shortstring DX:AX }
  Emit($06); Emit($57); Emit($56); Emit($53); Emit($51);
@@ -10558,14 +10774,14 @@ Begin
  R:=CodeSize; Emit($AC); Emit2($08,$C0); Emit2($75,3); S:=Jump;
  Emit($AA); Emit($41); JumpTo(R);
  PatchJump(S,CodeSize); Emit2($88,$0E); DataAddress(StringScratch2); Done:=Jump;
- PatchJump(P,CodeSize); LoadImmediate(15); PatchJump(Q,CodeSize); CallTo(RuntimeStandard[24]);
+ PatchJump(P,CodeSize); LoadImmediate(15); PatchJump(Q,CodeSize); CallTo(RtlTarget(RuntimeStandard[24]));
  PatchJump(Done,CodeSize); Emit($59); Emit($5B); Emit($5E); Emit($5F); Emit($07);
  Emit($B8); DataAddress(StringScratch2); Emit2($8C,$DA); Emit($C3);
 
  RuntimeStandard[45]:=CodeSize; { Eof(File): compare la position et la taille en octets (comme TP:
    un dernier record incomplet n'est pas la fin du fichier) }
- LoadImmediate(2); CallTo(RuntimeStandard[38]); Emit2($09,$C9); Emit2($74,3); P:=Jump;
- Emit($52); Emit($50); LoadImmediate(3); CallTo(RuntimeStandard[38]);
+ LoadImmediate(2); CallTo(RtlTarget(RuntimeStandard[38])); Emit2($09,$C9); Emit2($74,3); P:=Jump;
+ Emit($52); Emit($50); LoadImmediate(3); CallTo(RtlTarget(RuntimeStandard[38]));
  Emit2($89,$D6); Emit($5B); Emit($5A); Emit2($09,$C9); Emit2($74,3); Q:=Jump;
  Emit2($39,$F2); Emit2($73,3); R:=Jump;
  Emit2($74,3); S:=Jump;
@@ -10573,7 +10789,7 @@ Begin
  PatchJump(S,CodeSize); LoadImmediate(1); Emit($C3);
  PatchJump(R,CodeSize); PatchJump(Done,CodeSize); LoadImmediate(0); Emit($C3);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); Emit2($89,$C8);
- CallTo(RuntimeStandard[24]); LoadImmediate(1); Emit($C3);
+ CallTo(RtlTarget(RuntimeStandard[24])); LoadImmediate(1); Emit($C3);
 
  RuntimeStandard[41]:=CodeSize; { input DX:AX, nil=stdin; rend l'ancien descripteur }
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57); Emit($56); Emit($53); Emit($50); Emit($52);
@@ -10596,7 +10812,7 @@ Begin
  PatchJump(Q,CodeSize); LoadImmediate(104); Q:=Jump; { non assigne: 104 comme TP }
  PatchJump(R,CodeSize); LoadImmediate(103); R:=Jump;
  PatchJump(S,CodeSize); LoadImmediate(104); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
- CallTo(RuntimeStandard[24]); Emit2($C7,$06); DataAddress(InputAhead); EmitWord(26);
+ CallTo(RtlTarget(RuntimeStandard[24])); Emit2($C7,$06); DataAddress(InputAhead); EmitWord(26);
  PatchJump(P,CodeSize); PatchJump(Done,CodeSize);
  Emit2($8B,$46); Emit($F2); Emit2($8B,$56); Emit($F0);
  Emit2($8B,$5E); Emit($F8); Emit2($8B,$76); Emit($FA);
@@ -10623,7 +10839,7 @@ Begin
  Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit($5E); Emit($59); Emit($C3);
 
  RuntimeStandard[64]:=CodeSize; { ouvrir/valider le fichier OVR, AX=0 succes }
- BadCount:=0; Emit($53); Emit($51); Emit($52); CallTo(RuntimeStandard[63]);
+ BadCount:=0; Emit($53); Emit($51); Emit($52); CallTo(RtlTarget(RuntimeStandard[63]));
  Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
  Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF);
  Emit($BA); DataAddress(OverlayFileName); LoadImmediate($3D00); Emit2($CD,$21); FailIf($72);
@@ -10649,7 +10865,7 @@ Begin
  LoopStart:=CodeSize; Emit2($D1,$C3); Emit2($8A,$04); Emit2($30,$E4); Emit2($01,$C3); Emit($46);
  Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit2($89,$5E); Emit($F2);
  Emit($5E); Emit($5B); Emit($58); Emit($C3);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); SetResult($FFFF); LoadImmediate(209); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); SetResult($FFFF); LoadImmediate(209); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[57]:=CodeSize; { charger la region AX; preserve registres et flags }
  BadCount:=0; Emit($9C); Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(14);
@@ -10658,24 +10874,24 @@ Begin
  Emit2($83,$3C); Emit(1); Emit2($75,3); Done:=Jump;
  Emit2($83,$7C); Emit(6); Emit(1); FailIf($75);
  Emit2($83,$3E); DataAddress(OverlayHandle); Emit($FF); Emit2($74,3); P:=Jump;
- CallTo(RuntimeStandard[64]); Emit2($09,$C0); Emit2($74,3); Q:=Jump;
- S:=Jump; PatchJump(Q,CodeSize); LoadImmediate(208); CallTo(RuntimeError); PatchJump(S,CodeSize);
+ CallTo(RtlTarget(RuntimeStandard[64])); Emit2($09,$C0); Emit2($74,3); Q:=Jump;
+ S:=Jump; PatchJump(Q,CodeSize); LoadImmediate(208); CallTo(RtlTarget(RuntimeError)); PatchJump(S,CodeSize);
  PatchJump(P,CodeSize); Emit2($8B,$76); Emit($FC);
  Emit2($8B,$54); Emit(2); Emit2($8B,$4C); Emit(4); Emit2($8B,$1E); DataAddress(OverlayHandle);
  LoadImmediate($4200); Emit2($CD,$21); FailIf($72);
  Emit2($C7,$46); Emit($F2); EmitWord(0); Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch);
- CallTo(RuntimeStandard[65]); Emit($A1); DataAddress(OverlayScratch); Emit2($8B,$76); Emit($FC);
+ CallTo(RtlTarget(RuntimeStandard[65])); Emit($A1); DataAddress(OverlayScratch); Emit2($8B,$76); Emit($FC);
  Emit2($3B,$44); Emit(14); FailIf($75); Emit2($89,$46); Emit($FA);
  LoopStart:=CodeSize; Emit2($83,$7E); Emit($FA); Emit(0); Emit2($75,3); R:=Jump;
- Emit($B9); EmitWord(6); Emit($BA); DataAddress(OverlayScratch); CallTo(RuntimeStandard[65]);
+ Emit($B9); EmitWord(6); Emit($BA); DataAddress(OverlayScratch); CallTo(RtlTarget(RuntimeStandard[65]));
  Emit2($8B,$16); DataAddress(OverlayScratch); Emit2($89,$56); Emit($F6);
  Emit2($8B,$0E); DataAddress(OverlayScratch+2); Emit2($09,$C9); FailIf($74); Emit2($89,$4E); Emit($F4);
  Emit2($8B,$76); Emit($FC); Emit2($3B,$54); Emit(8); FailIf($72);
  Emit2($89,$D0); Emit2($01,$C8); FailIf($72); Emit2($3B,$44); Emit(10); FailIf($77);
  Emit($A1); DataAddress(OverlayScratch+4); Emit2($89,$46); Emit($F8);
- CallTo(RuntimeStandard[65]);
+ CallTo(RtlTarget(RuntimeStandard[65]));
  P:=CodeSize; Emit2($83,$7E); Emit($F8); Emit(0); Emit2($75,3); Q:=Jump;
- Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch); CallTo(RuntimeStandard[65]);
+ Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch); CallTo(RtlTarget(RuntimeStandard[65]));
  Emit($A1); DataAddress(OverlayScratch); Emit2($89,$C3); Emit2($83,$C0); Emit(2); FailIf($72);
  Emit2($3B,$46); Emit($F4); FailIf($77); Emit2($03,$5E); Emit($F6);
  Emit2($8C,$D8); Emit2($01,$07); Emit2($FF,$4E); Emit($F8); JumpTo(P);
@@ -10685,19 +10901,19 @@ Begin
  PatchJump(Done,CodeSize); Emit($07); Emit($1F); Emit($5F); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($58);
  Emit2($89,$EC); Emit($5D); Emit($9D); Emit($C3);
  For K:=1 To BadCount Do PatchJump(Bad[K],CodeSize);
- SetResult($FFFF); LoadImmediate(209); CallTo(RuntimeError);
+ SetResult($FFFF); LoadImmediate(209); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[58]:=CodeSize; { OvrInit(String), ABI Pascal far locale }
  Emit($55); Emit2($89,$E5); Emit($1E); Emit($06); Emit($56); Emit($57); Emit($51);
  Emit($16); Emit($1F); EmitLoadES; Emit2($8D,$76); Emit(8); Emit2($31,$C9); Emit($AC); Emit2($88,$C1);
  Emit($BF); DataAddress(OverlayFileName); Emit2($F3,$A4); Emit2($31,$C0); Emit($AA);
- EmitLoadDS; CallTo(RuntimeStandard[64]); Emit($59); Emit($5F); Emit($5E); Emit($07); Emit($1F); Emit($5D);
+ EmitLoadDS; CallTo(RtlTarget(RuntimeStandard[64])); Emit($59); Emit($5F); Emit($5E); Emit($07); Emit($1F); Emit($5D);
  Emit($CA); EmitWord(258);
  RuntimeStandard[59]:=CodeSize; { OvrDone }
  Emit($53); Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
- Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF); CallTo(RuntimeStandard[63]); SetResult(0);
+ Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF); CallTo(RtlTarget(RuntimeStandard[63])); SetResult(0);
  Emit($5B); Emit($CA); EmitWord(2);
- RuntimeStandard[60]:=CodeSize; CallTo(RuntimeStandard[63]); SetResult(0); Emit($CA); EmitWord(2);
+ RuntimeStandard[60]:=CodeSize; CallTo(RtlTarget(RuntimeStandard[63])); SetResult(0); Emit($CA); EmitWord(2);
  RuntimeStandard[61]:=CodeSize; Emit($A1); DataAddress(OverlayBufferSize); Emit2($31,$D2); Emit($CA); EmitWord(2);
  RuntimeStandard[62]:=CodeSize; { OvrSetBuf: regions fixes; autre taille -> ovrNoMemory }
  Emit($55); Emit2($89,$E5); Emit2($83,$7E); Emit(10); Emit(0); Emit2($74,3); P:=Jump;
@@ -10787,11 +11003,11 @@ Begin
  Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB); Emit2($01,$DF);
  Emit($26); Emit2($08,$15);
  Emit($5F); Emit($5A); Emit($59); Emit($5B); Emit($58); Emit($C3);
- PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError));
  RuntimeStandard[7]:=CodeSize; { set range AX..BX }
  Emit($56); Emit2($39,$D8); Emit2($76,3); P:=Jump;
  Emit2($89,$DE); Emit2($29,$C6); Emit($46); LoopStart:=CodeSize;
- CallTo(RuntimeStandard[6]); Emit($40); Emit($4E); Emit2($74,3); JumpTo(LoopStart);
+ CallTo(RtlTarget(RuntimeStandard[6])); Emit($40); Emit($4E); Emit2($74,3); JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit($5E); Emit($C3);
  RuntimeStandard[1]:=CodeSize; { Copy: DS:SI, ES:DI, AX=index, CX=count, BX=capacite }
  Emit2($09,$C9); Emit2($7F,3); P:=Jump;
@@ -10836,17 +11052,17 @@ Begin
  Emit2($39,$D0); Emit2($76,2); Emit2($89,$D0); Emit2($89,$46); Emit($F6);
  Emit2($89,$C1); Emit($49); LoadImmediate(1);
  Emit2($8B,$76); Emit($F8); Emit($06); Emit($1F); EmitLoadES;
- Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[1]);
+ Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[1]));
  Emit2($8B,$46); Emit($FE); Emit2($8E,$D8); Emit2($8B,$76); Emit($FC);
- Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[3]);
+ Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[3]));
  Emit2($8B,$46); Emit($FA); Emit2($8E,$D8); Emit2($8B,$76); Emit($F8);
  Emit($BF); DataAddress(StringScratch2); Emit2($8B,$46); Emit($F6);
- Emit($B9); EmitWord(255); Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[1]);
+ Emit($B9); EmitWord(255); Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[1]));
  EmitLoadDS; Emit($BE); DataAddress(StringScratch2); Emit($BF); DataAddress(StringScratch);
- Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[3]);
+ Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[3]));
  Emit2($8B,$46); Emit($FA); Emit2($8E,$C0); Emit2($8B,$7E); Emit($F8);
  Emit($BE); DataAddress(StringScratch); LoadImmediate(1); Emit($B9); EmitWord(255);
- Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[1]);
+ Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[1]));
  Emit2($8B,$46); Emit($FE); Emit2($8E,$D8); Emit2($89,$EC); Emit($5D); Emit($C3);
 
  RuntimeStandard[12]:=CodeSize; { Move: DS:SI to ES:DI, CX bytes }
@@ -10892,7 +11108,7 @@ Begin
  Emit2($F7,$C5); EmitWord(1); Emit2($74,7); Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA);
  Emit2($F7,$C5); EmitWord(2); Emit2($74,7); Emit2($F7,$DB); Emit2($83,$D1); Emit(0); Emit2($F7,$D9);
  Emit($5D); Emit($C3);
- PatchJump(P,CodeSize); LoadImmediate(200); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); LoadImmediate(200); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[16]:=CodeSize; { decimal signed DX:AX -> shortstring dans StringScratch2 }
  Emit($55); Emit($57); Emit($56); Emit2($31,$ED); Emit2($09,$D2); Emit2($79,10);
@@ -10956,21 +11172,21 @@ Begin
  RuntimeStandard[18]:=CodeSize; { peek stdin, ^Z represente EOF }
  Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($06);
  Emit($A1); DataAddress(InputAhead); Emit($3D); EmitWord($FFFF); Emit2($74,3); P:=Jump;
- CallTo(RuntimeStandard[48]);
+ CallTo(RtlTarget(RuntimeStandard[48]));
  Emit($A3); DataAddress(InputAhead);
  PatchJump(P,CodeSize); Emit($07); Emit($5F); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($C3);
  RuntimeStandard[19]:=CodeSize; { consume stdin }
- CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($74,6);
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($74,6);
  Emit2($C7,$06); DataAddress(InputAhead); EmitWord($FFFF); Emit($C3);
 
  RuntimeStandard[20]:=CodeSize; { token entier, sans consommer le separateur final }
  Emit($56); Emit($53); Emit($BE); DataAddress(StringScratch+1); Emit2($31,$DB);
- LoopStart:=CodeSize; CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
  Emit($3D); EmitWord(32); Emit2($76,3); Q:=Jump;
- CallTo(RuntimeStandard[19]); JumpTo(LoopStart);
+ CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(LoopStart);
  PatchJump(Q,CodeSize); Q:=CodeSize;
- CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(32); Emit2($77,3); R:=Jump;
- CallTo(RuntimeStandard[19]); Emit2($81,$FB); EmitWord(255); Emit2($72,3); S:=Jump;
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(32); Emit2($77,3); R:=Jump;
+ CallTo(RtlTarget(RuntimeStandard[19])); Emit2($81,$FB); EmitWord(255); Emit2($72,3); S:=Jump;
  Emit2($88,$04); Emit($46); Emit($43); PatchJump(S,CodeSize); JumpTo(Q);
  PatchJump(P,CodeSize); PatchJump(R,CodeSize);
  Emit2($88,$1E); DataAddress(StringScratch); Emit($5B); Emit($5E);
@@ -10979,22 +11195,22 @@ Begin
  RuntimeStandard[21]:=CodeSize; { Read string: ne depasse pas la capacite BX }
  Emit($56); Emit($57); Emit($BE); DataAddress(StringScratch+1); Emit2($31,$FF);
  LoopStart:=CodeSize; Emit2($39,$DF); Emit2($72,3); P:=Jump;
- CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
  Emit($3D); EmitWord(13); Emit2($75,3); R:=Jump;
  Emit($3D); EmitWord(10); Emit2($75,3); S:=Jump;
- CallTo(RuntimeStandard[19]); Emit2($88,$04); Emit($46); Emit($47); JumpTo(LoopStart);
+ CallTo(RtlTarget(RuntimeStandard[19])); Emit2($88,$04); Emit($46); Emit($47); JumpTo(LoopStart);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); PatchJump(S,CodeSize);
  Emit2($89,$F8); Emit($A2); DataAddress(StringScratch); Emit($5F); Emit($5E);
  Emit($B8); DataAddress(StringScratch); Emit2($8C,$DA); Emit($C3);
 
  RuntimeStandard[22]:=CodeSize; { ReadLn consomme CR/LF ou LF }
- LoopStart:=CodeSize; CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
  Emit($3D); EmitWord(10); Emit2($75,3); Q:=Jump;
  Emit($3D); EmitWord(13); Emit2($75,3); R:=Jump;
- CallTo(RuntimeStandard[19]); JumpTo(LoopStart);
- PatchJump(R,CodeSize); CallTo(RuntimeStandard[19]); CallTo(RuntimeStandard[18]);
+ CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(LoopStart);
+ PatchJump(R,CodeSize); CallTo(RtlTarget(RuntimeStandard[19])); CallTo(RtlTarget(RuntimeStandard[18]));
  Emit($3D); EmitWord(10); Emit2($74,3); S:=Jump;
- PatchJump(Q,CodeSize); CallTo(RuntimeStandard[19]);
+ PatchJump(Q,CodeSize); CallTo(RtlTarget(RuntimeStandard[19]));
  PatchJump(P,CodeSize); PatchJump(S,CodeSize); Emit($C3);
 
  RuntimeStandard[23]:=CodeSize; { IOResult, lecture et remise a zero }
@@ -11003,7 +11219,7 @@ Begin
  Emit2($83,$3E); DataAddress(InputError); Emit(0); Emit2($75,3);
  Emit($A3); DataAddress(InputError); Emit($C3);
  RuntimeStandard[25]:=CodeSize; { controle $I+ }
- Emit($A1); DataAddress(InputError); Emit2($09,$C0); Emit2($74,3); JumpTo(RuntimeError); Emit($C3);
+ Emit($A1); DataAddress(InputError); Emit2($09,$C0); Emit2($74,3); JumpTo(RtlTarget(RuntimeError)); Emit($C3);
 
  RuntimeStandard[26]:=CodeSize; { GetMem: DOS blocs, header prive 16 octets }
  Emit($55); Emit2($89,$E5); Emit($06); Emit($50);
@@ -11022,7 +11238,7 @@ Begin
  Emit($26); Emit2($A3,2); Emit(0);
  Emit($A3); DataAddress(HeapHead); Emit2($89,$C2); Emit($42); Emit2($31,$C0);
  Emit2($8B,$4E); Emit($FE); Emit2($8E,$C1); Emit2($89,$EC); Emit($5D); Emit($C3);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(203); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(203); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[27]:=CodeSize; { Dispose/FreeMem, verifie le header et retire de la liste }
  ErrorCount:=0; Emit($06); Emit2($09,$C0); BadIf($75); Emit2($09,$D2); BadIf($74);
@@ -11037,7 +11253,7 @@ Begin
  Emit2($3B,$16); DataAddress(HeapHead); Emit2($75,4); Emit2($89,$1E); DataAddress(HeapHead);
  Emit2($8E,$C2); Emit2($B4,$49); Emit2($CD,$21); BadIf($72); Emit($07); Emit($C3);
  For K:=1 To ErrorCount Do PatchJump(Errors[K],CodeSize);
- LoadImmediate(204); CallTo(RuntimeError);
+ LoadImmediate(204); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[29]:=CodeSize; { Mark, token prive de la liste d'allocations }
  Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($31,$C0); Emit($C3);
@@ -11045,9 +11261,9 @@ Begin
  Emit($55); Emit2($89,$D5); LoopStart:=CodeSize;
  Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($39,$EA); Emit2($75,3); P:=Jump;
  Emit2($09,$D2); Emit2($75,3); Q:=Jump;
- Emit($42); Emit2($31,$C0); Emit2($31,$F6); CallTo(RuntimeStandard[27]); JumpTo(LoopStart);
+ Emit($42); Emit2($31,$C0); Emit2($31,$F6); CallTo(RtlTarget(RuntimeStandard[27])); JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit($5D); Emit($C3);
- PatchJump(Q,CodeSize); LoadImmediate(204); CallTo(RuntimeError);
+ PatchJump(Q,CodeSize); LoadImmediate(204); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[33]:=CodeSize; { MaxAvail: plus grand bloc DOS, limite quota et Word }
  Emit($06); Emit($BB); EmitWord($FFFF); Emit2($B4,$48); Emit2($CD,$21);
@@ -11078,7 +11294,7 @@ Begin
  Emit($59); Emit($5B); Emit($5E); Emit($5F); Emit($5D); Emit($07); Emit($C3);
 
  RuntimeStandard[47]:=CodeSize; { RunError(N): message et terminaison }
- JumpTo(RuntimeError);
+ JumpTo(RtlTarget(RuntimeError));
  EmitFileRuntime;
  EmitOverlayRuntime;
 End;
@@ -11095,7 +11311,7 @@ Begin
  For K:=1 To Length(Msg) Do Data[RuntimeErrorText+K-1]:=Ord(Msg[K]);
  PatchJump(RuntimeErrorPatch,CodeSize);
  Emit($5B); EmitLoadDS; Emit($50); Emit($53);             { pop bx; ds=donnees; push ax; push bx }
- CallTo(RuntimeStandard[56]);                               { vider Output }
+ CallTo(RtlTarget(RuntimeStandard[56]));                               { vider Output }
  Emit($5B); Emit($58); Emit($50);                           { pop bx; pop ax; push ax }
  Emit($BF); DataAddress(RuntimeErrorText+21); Emit($B9); EmitWord(3);
  L1:=CodeSize;
@@ -11139,25 +11355,25 @@ Begin
  Emit2($89,$C6); Emit2($31,$C9); Emit2($8A,$0C); Emit($46);
  Emit2($09,$C9); Emit2($75,$03); P:=Jump;
  LoopStart:=CodeSize;
- Emit($AC); CallTo(RuntimeChar); Emit($E2);
+ Emit($AC); CallTo(RtlTarget(RuntimeChar)); Emit($E2);
  Emit(Byte(Longint(LoopStart)-CodeSize-1));
  PatchJump(P,CodeSize); Emit($C3);
  RuntimeInteger:=CodeSize;
  Emit2($09,$C0); Emit2($79,$0A); Emit($50);
- LoadImmediate(Ord('-')); CallTo(RuntimeChar); Emit($58); Emit2($F7,$D8);
+ LoadImmediate(Ord('-')); CallTo(RtlTarget(RuntimeChar)); Emit($58); Emit2($F7,$D8);
  RuntimeUnsigned:=CodeSize;
  Emit($BF); DataAddress(NumberBuffer+6); Emit($BB); EmitWord(10);
  Emit2($31,$C9); LoopStart:=CodeSize;
  Emit2($31,$D2); Emit2($F7,$F3); Emit2($80,$C2); Emit(Ord('0'));
  Emit($4F); Emit2($88,$15); Emit($41); Emit2($09,$C0); Emit2($75,0);
  Image[CodeSize-1]:=Byte(Longint(LoopStart)-CodeSize);
- Emit2($89,$FE); LoopStart:=CodeSize; Emit($AC); CallTo(RuntimeChar);
+ Emit2($89,$FE); LoopStart:=CodeSize; Emit($AC); CallTo(RtlTarget(RuntimeChar));
  Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit($C3);
  RuntimeBoolean:=CodeSize;
  Emit2($09,$C0); Emit2($74,$06);
  Emit($B8); DataAddress(TrueText); Q:=Jump;
  Emit($B8); DataAddress(FalseText); PatchJump(Q,CodeSize);
- JumpTo(RuntimeString);
+ JumpTo(RtlTarget(RuntimeString));
  RuntimeCopy:=CodeSize;      { DS:SI source, ES:DI dest, CX capacite }
  Emit($06); Emit($1E); Emit($07); { ES=DS, restaurer l'ES de l'appelant }
  Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02);
@@ -11170,29 +11386,29 @@ Begin
  StackCheckAddr:=CodeSize;
  Emit($5B); Emit($2E); Emit2($8B,$07); Emit2($83,$C3); Emit(2); Emit($53); { pop bx; mov ax,cs:[bx]; add bx,2; push bx }
  Emit2($39,$C4); Emit2($73,3); P:=Jump; Emit($C3);                      { cmp sp,ax; jae ok; jmp err; ok: ret }
- PatchJump(P,CodeSize); LoadImmediate(202); JumpTo(RuntimeError);
+ PatchJump(P,CodeSize); LoadImmediate(202); JumpTo(RtlTarget(RuntimeError));
  For P:=1 To 17 Do Emit($90);
  EmitStandardRuntime;
  { EmitStandardRuntime remet la table a zero: inscrire ces entrees apres. }
  RuntimeStandard[70]:=LoadDSAddr; RuntimeStandard[71]:=LoadESAddr; RuntimeStandard[72]:=StackCheckAddr;
  { WriteBegin [73]: laisse 3 mots de contexte sur la pile de l'appelant }
  RuntimeStandard[73]:=CodeSize; Emit($5B);
- Emit($B8); DataAddress(StandardOutputAddress); Emit2($8C,$DA); CallTo(RuntimeStandard[49]); Emit($52); Emit($50);
- Emit($A1); DataAddress(StandardOutputAddress); CallTo(RuntimeStandard[40]); Emit($50);
+ Emit($B8); DataAddress(StandardOutputAddress); Emit2($8C,$DA); CallTo(RtlTarget(RuntimeStandard[49])); Emit($52); Emit($50);
+ Emit($A1); DataAddress(StandardOutputAddress); CallTo(RtlTarget(RuntimeStandard[40])); Emit($50);
  Emit($53); Emit($C3);
  { WriteEnd [74] / WriteLnEnd [75]: CR LF puis restauration du contexte }
  RuntimeStandard[75]:=CodeSize; Emit($5B);
- LoadImmediate(13); CallTo(RuntimeChar); LoadImmediate(10); CallTo(RuntimeChar); Emit($53);
+ LoadImmediate(13); CallTo(RtlTarget(RuntimeChar)); LoadImmediate(10); CallTo(RtlTarget(RuntimeChar)); Emit($53);
  RuntimeStandard[74]:=CodeSize; Emit($5B);
- Emit($58); CallTo(RuntimeStandard[40]); Emit($58); Emit($5A); CallTo(RuntimeStandard[49]);
+ Emit($58); CallTo(RtlTarget(RuntimeStandard[40])); Emit($58); Emit($5A); CallTo(RtlTarget(RuntimeStandard[49]));
  Emit($53); Emit($C3);
  { ReadBegin [76], ReadEnd [77], ReadLnEnd [78] }
  RuntimeStandard[76]:=CodeSize; Emit($5B);
- Emit($B8); DataAddress(StandardInputAddress); Emit2($8C,$DA); CallTo(RuntimeStandard[41]); Emit($52); Emit($50);
+ Emit($B8); DataAddress(StandardInputAddress); Emit2($8C,$DA); CallTo(RtlTarget(RuntimeStandard[41])); Emit($52); Emit($50);
  Emit($53); Emit($C3);
- RuntimeStandard[78]:=CodeSize; Emit($5B); CallTo(RuntimeStandard[22]); Emit($53);
+ RuntimeStandard[78]:=CodeSize; Emit($5B); CallTo(RtlTarget(RuntimeStandard[22])); Emit($53);
  RuntimeStandard[77]:=CodeSize; Emit($5B);
- Emit($58); Emit($5A); CallTo(RuntimeStandard[41]); Emit($53); Emit($C3);
+ Emit($58); Emit($5A); CallTo(RtlTarget(RuntimeStandard[41])); Emit($53); Emit($C3);
  { StringArg [79] / BlockArg [80]: copie DX:AX dans N octets reserves sur la pile;
    mots apres l'appel: N puis capacite (chaine) ou taille (bloc). }
  RuntimeStandard[79]:=CodeSize; Emit($5B); Emit2($89,$C6);            { pop bx; mov si,ax }
@@ -11211,6 +11427,7 @@ Begin
  Emit($2E); Emit2($8B,$4F); Emit(2); Emit2($83,$C3); Emit(4); Emit($53);
  Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);
  Emit2($F3,$A4); Emit($07); Emit($1F); Emit($C3);
+ RuntimeBodyEnd:=CodeSize;
  PatchJump(BufferedCharPatch,RuntimeStandard[50]);
  PatchJump(BufferedHaltPatch,RuntimeStandard[55]);
  EmitRuntimeError;
@@ -11220,6 +11437,7 @@ Procedure CompileProgram;
 Var
  I: Word;
 Begin
+ KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047;
  CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0; FixupCount:=0;
  DebugCount:=0; DebugCaptured:=[]; RealReady:=False; EmulatorReady:=False;
  RealCodeBase:=0; RealCodeEnd:=0; RealDataBase:=0; RealDataEnd:=0;
@@ -11246,7 +11464,7 @@ Begin
  FPUStartup:=CodeSize; Emit($90); Emit($90); Emit($90);
  EntryFixup:=Jump;
  DataSegVar:=CodeSize; AddSegmentRelocation(CodeSize,3); EmitWord(0);
- EmitRuntime;
+ EmitRuntime; RuntimeEnd:=CodeSize;
  { InOutRes partage l'emplacement de l'erreur d'E/S du runtime. }
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=255) And (Symbols[I].Name='INOUTRES') Then Symbols[I].Addr:=InputError;
  NextToken;
@@ -11279,7 +11497,7 @@ Begin
  Need(tkBegin); StatementList(tkEnd); Need(tkEnd);
  If Token<>tkDot Then Need(tkDot);
  { Comme TP, tout ce qui suit "END." est ignore. }
- LoadImmediate(0); CallTo(RuntimeHalt); CheckLabels(0);
+ LoadImmediate(0); CallTo(RtlTarget(RuntimeHalt)); CheckLabels(0);
  ReportSource;
 End;
 
@@ -11513,7 +11731,7 @@ Var K,Position: Word;
 Begin
  For K:=1 To ThunkCount Do If Thunks[K].Target=Address Then Begin ThunkFor:=Thunks[K].Address; Exit End;
  If ThunkCount=MaxSymbols Then Fail(123,'Trop de ponts overlay');
- Position:=CodeSize; Emit($50); LoadImmediate(Owner); CallTo(RuntimeStandard[57]); Emit($58); JumpTo(Address);
+ Position:=CodeSize; Emit($50); LoadImmediate(Owner); CallTo(RtlTarget(RuntimeStandard[57])); Emit($58); JumpTo(Address);
  Inc(ThunkCount); Thunks[ThunkCount].Target:=Address; Thunks[ThunkCount].Address:=Position; ThunkFor:=Position;
 End;
 Begin
@@ -11681,7 +11899,7 @@ Var
  H: Array[0..15] Of Word;
  F: File;
  Size, FullSize, AllocParas, HeaderBytes, Location, Written, Chunk: Longint;
- I, Base, StackSeg, Pad, N, DataParas, StoredData, TotalData: Word;
+ I, Base, StackSeg, Pad, N, DataParas, StoredData, TotalData, KernelParas: Word;
  E: Integer;
  Path: TShortString;
  NativeSegment: Word;
@@ -11706,7 +11924,11 @@ Begin
  End;
  { Le code est en CS:0000 et les donnees dans leur propre segment, place au
    paragraphe suivant la fin du code (comme TP: CS puis DS puis pile). }
- LinkedDataBase:=Align16(CodeSize); DataParas:=LinkedDataBase Div 16;
+ { Le segment du noyau (s'il existe) suit le code : CS, noyau, DS }
+ KernelParas:=Align16(CodeSize) Div 16;
+ LinkedDataBase:=Align16(CodeSize);
+ If HaveKernel Then LinkedDataBase:=LinkedDataBase+Align16(KSize);
+ DataParas:=LinkedDataBase Div 16;
  { Comme TP, seules les donnees initialisees sont stockees dans l'EXE: la
    fin nulle du segment de donnees est reservee par e_minalloc et remise a
    zero par le code de demarrage. }
@@ -11730,6 +11952,7 @@ Begin
   Relocations[RelocationCount].Offs:=DataFixups[I]+2; RelocationKinds[RelocationCount]:=2;
  End;
  Move(Image,LinkedImage^,CodeSize);
+ If HaveKernel Then Move(KImage^,LinkedImage^[Longint(KernelParas)*16],KSize);
  If StoredData<>0 Then Move(Data,LinkedImage^[LinkedDataBase],StoredData);
  NativeSegment:=0;
  If NativeNeeded Then Begin
@@ -11745,6 +11968,7 @@ Begin
   Case RelocationKinds[I] Of
    1:LinkedWord(Location,NativeSegment);
    2,3:LinkedWord(Location,DataParas);
+   4:LinkedWord(Location,KernelParas);
   Else LinkedWord(Location,0);
   End;
  End;
@@ -12045,6 +12269,19 @@ Begin
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SMARTLINK routines retirees: ',Changed);
 End;
 
+Procedure WriteKernelBin;
+{ Unite noyau compilee seule : image brute <UNITE>.BIN (offset 0 = BEGIN_KERNEL). }
+Var F: File; D: DirStr; N: NameStr; E: ExtStr; Path: TShortString; Len: Word; K: Word;
+Begin
+ FSplit(SourceName,D,N,E);
+ If OutputDir='' Then Path:=D+N+'.BIN' Else Path:=JoinPath(OutputDir,N+'.BIN');
+ Len:=KSize;
+ Assign(F,Path); {$I-} Rewrite(F,1); {$I+}
+ If IOResult<>0 Then Fail(16,'Creation impossible: '+Path);
+ {$I-} BlockWrite(F,KImage^,Len); Close(F); {$I+}
+ If IOResult<>0 Then Fail(16,'Ecriture impossible: '+Path);
+End;
+
 BEGIN
   { Structures fixes du format TPU, verifier avant toute lecture binaire. }
  CheckLayout;
@@ -12084,7 +12321,8 @@ BEGIN
   LoadSource; CompileProgram;
  End;
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);
- LoadObjects; WriteUnits;
+ LoadObjects;
+ If HaveKernel And UnitOutput Then WriteKernelBin Else WriteUnits;
  If Not UnitOutput Then Begin
   LinkNative; PrepareOverlays; WriteExecutable
  End;
