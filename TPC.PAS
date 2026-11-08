@@ -8257,6 +8257,7 @@ Begin
   For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And (Symbols[I].Scope=0) And
    (Symbols[I].Kind=skProc) And (Symbols[I].Name='CRTWRITE') Then Begin
    Data[CrtHook]:=Symbols[I].Addr And 255; Data[CrtHook+1]:=Symbols[I].Addr Shr 8;
+   Inc(EdgeCount); EdgeFrom[EdgeCount]:=0; EdgeTo[EdgeCount]:=I; { le crochet Crt est une racine }
   End;
  If Not Units[U].Embedded Then ReportSource;
  RestoreParser(P);
@@ -12498,7 +12499,10 @@ Begin
  Changed:=0;
  For K:=1 To SymbolCount Do
   If (Symbols[K].Kind=skProc) And Symbols[K].HasBody And Not Symbols[K].Native And Not Symbols[K].InlineBody And
-     Not Live[K] And (Symbols[K].Owner<>255) Then Begin DeadProc[K]:=True; Inc(Changed) End;
+     Not Live[K] And (Symbols[K].Owner<>255) Then Begin
+   DeadProc[K]:=True; Inc(Changed);
+   If GetEnv('TPC_SHOWDEAD')<>'' Then WriteLn(StdErr,'DEAD ',Symbols[K].Name);
+  End;
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SMARTLINK routines retirees: ',Changed);
 End;
 
@@ -12549,7 +12553,7 @@ BEGIN
  LoadSource; CompileProgram;
  AnalysisPass:=False;
  PassNo:=1;
- If Overflowed Or (HaveKernel And (GetEnv('TPC_NOSMART')='')) Or (GetEnv('TPC_SMART')<>'') Then Begin
+ If Overflowed Or (GetEnv('TPC_NOSMART')='') Then Begin
   { Edition de liens intelligente (comme TP 7 : les routines inutilisees ne sont pas liees), obligatoire
     si le segment de code est trop grand : edition de liens intelligente. Les routines
     inaccessibles depuis le programme (ou, pour une unite, depuis son
