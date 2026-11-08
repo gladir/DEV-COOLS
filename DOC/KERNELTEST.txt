@@ -1,0 +1,137 @@
+KERNELTEST - Banc d'essai headless d'un noyau DOS dans l'emulateur de DEVENV
+============================================================================
+
+But
+---
+Amorcer, sans interface graphique et depuis la ligne de commande, un noyau DOS
+maison (ex. IO.SYS produit par MSDOS-0\KERNEL\MAKER.PAS : octets bruts du
+segment de code, point d'entree = offset 0) accompagne de COMMAND.EXE et
+d'autres fichiers, executer N instructions, injecter des frappes clavier, puis
+afficher l'ecran texte emule et l'etat du CPU. Pense pour une boucle de mise au
+point (modifier le noyau, recompiler, relancer).
+
+Syntaxe
+-------
+  DEVENV /KERNELTEST,dossier [options]
+
+  dossier            contient IO.SYS (obligatoire, 1..65535 octets), COMMAND.EXE
+                     et tout autre fichier ou sous-dossier (copie recursive).
+
+  /KTSTEPS:n         nombre maximal d'instructions (defaut 2000000). Avec un
+                     script, c'est le budget total de toutes les commandes run.
+  /KTSCRIPT:fich     script de commandes (voir plus bas). Sans script : un seul
+                     run de /KTSTEPS instructions.
+  /KTINT[:21,13,..]  journal des interruptions listees (hexa, defaut 21) :
+                     fonction AH, registres, chaine DS:DX pour les fonctions de
+                     fichiers, appelant, "[noyau]" si le vecteur est accroche
+                     par le programme teste ou "[BIOS/HLE]" si c'est
+                     l'emulateur qui repond, puis resultat (AX, CF) au retour.
+                     Les appels identiques consecutifs (attente de touche) sont
+                     regroupes ("repete N fois").
+  /KTTRACE:n         garde les n dernieres instructions (max 8192), affichees a
+                     la fin et par la commande "trace".
+  /KTBREAK:seg:ofs   arret quand CS:IP atteint cette adresse (hexa).
+  /KTLOAD:seg        segment de chargement d'IO.SYS (hexa, defaut 0070).
+  /KTSTACK:seg:ofs   pile initiale (defaut 0000:7C00, ou 9000:FFFE si IO.SYS est
+                     trop gros pour tenir sous 0000:7C00).
+  /KTDRIVE:A|C       A (defaut) : image montee comme disquette 00h ;
+                     C : meme image montee comme disque dur 80h (geometrie CHS
+                     2 tetes x 18 secteurs, sans MBR).
+  /KTBOOT            amorcage REEL : construit l'image FAT16 de 256 Mo (MBR + VBR,
+                     IO.SYS et MSDOS.SYS requis a la racine du dossier, comme
+                     Start-KernelDos), la monte comme disque dur 80h et execute le
+                     secteur 0 en 0000:7C00 au lieu de charger IO.SYS directement.
+                     Permet de verifier le chargeur d'IO.SYS et le decalage de
+                     partition (63 secteurs caches).
+  /KTBOOTIMG:fich    amorcage REEL d'une image existante (par ex. MSDOS-0\IMAGE\
+                     DOS144A.IMG) : image <= 2 949 120 octets montee comme
+                     disquette 00h, sinon comme disque dur 80h ; le secteur 0
+                     (VBR ou MBR) est execute en 0000:7C00. Le dossier du
+                     parametre /KERNELTEST est alors ignore (IO.SYS vient de
+                     l'image). L'image est modifiee par les ecritures du DOS.
+  /KTIMAGE:fich      emplacement de l'image generee (defaut /tmp/kerneltest.img
+                     sous Linux, %TEMP%\KERNELTEST.IMG sous Windows).
+
+Code de sortie : 0 normal (limite atteinte, HLT, point d'arret), 1 erreur de
+preparation (dossier, IO.SYS, image), 2 faute CPU (opcode invalide, etc.).
+
+Ce qui est fait au demarrage
+----------------------------
+1. Construction d'une disquette FAT12 1,44 Mo "superfloppy" (BPB au secteur 0,
+   aucun MBR, 512 o/secteur, 1 secteur/grappe, 2 FAT de 9 secteurs, racine de
+   224 entrees, descripteur F0h, 18 secteurs/piste, 2 tetes) avec tout le
+   contenu du dossier, sous-dossiers compris (ordre alphabetique, fichiers
+   contigus, date 10/03/1993). Le secteur 0 n'est PAS amorcable : IO.SYS est
+   charge directement par DEVENV (pas de VBR, pas de MSDOS.SYS requis).
+2. Machine PC complete (BDA, IVT par defaut, EMS/XMS/DPMI desactives, etc.) :
+   meme initialisation que l'onglet emulateur DOS. "Faux DOS" supprime : un
+   INT 21h sans vecteur installe par le programme teste renvoie CF=1 (comme
+   BOOT sans /DOSINROM).
+3. IO.SYS est ecrit a 0070:0000 (octets bruts) et execute depuis CS:IP =
+   0070:0000 avec : DL = unite (00h ou 80h), CH = F0h, AX=BX=CX=SI=DI=BP=0,
+   DS=ES=0, SS:SP = 0000:7C00, FLAGS = 0202 (IF=1).
+
+Le BIOS emule fournit (traite par l'emulateur tant que le vecteur n'est pas
+accroche par le programme teste, sinon l'appel est chaine vers lui, y compris
+pour INT 08h/1Ch) : INT 10h (teletype, modes, curseur, defilement, memoire
+video B800:0000), INT 11h, 12h, 13h (CHS : reset, statut, lecture, ecriture,
+verification, parametres, type de disque), INT 14h, 15h (AT), 16h (clavier,
+tampon BDA 0040:001E), 17h, 1Ah (heure/date), horloge 18,2 Hz (compteur
+0040:006C et IRQ0), INT 25h/26h/20h/27h/29h/2Fh par defaut si non accroches.
+Un noyau qui installe ses propres vecteurs 20h/21h/25h/26h/28h/2Ah/2Fh/33h dans
+l'IVT (0000:0000) est appele a leur place.
+
+Script (/KTSCRIPT)
+------------------
+Une commande par ligne ; lignes vides ou commencant par # ou ; ignorees.
+  run [n]            execute n instructions de plus (defaut : le budget restant)
+  runto seg:ofs [n]  execute jusqu'a CS:IP = seg:ofs (hexa), au plus n instr.
+  type texte         tape texte puis Entree (echappements : \n \r \e \t \b \\
+                     \xHH)
+  keys texte         idem sans Entree
+  screen             affiche l'ecran 80x25 (B800:0000 s'il est non vide, sinon
+                     l'ecran virtuel de l'emulateur)
+  regs               registres, drapeaux et instruction courante
+  peek seg:ofs [len] dump hexa+ASCII de la memoire (max 512 octets)
+  disasm seg:ofs [n] desassemble n instructions
+  trace [n]          dernieres instructions (necessite /KTTRACE)
+  say texte          affiche une ligne de repere
+  quit               arrete le script
+Les frappes sont envoyees dans le tampon clavier BIOS une par une, des qu'il est
+vide. Apres un arret (faute CPU, HLT definitif) les commandes run sont ignorees
+mais screen/regs/peek restent utilisables. En fin d'execution sont toujours
+affiches : trace (si demandee), registres et ecran.
+
+Exemple (boucle de mise au point du noyau MSDOS-0)
+-------------------------------------------------
+  mkdir boot ; cp IO.SYS COMMAND.EXE boot/
+  cat > t.txt <<EOT
+  run 3000000
+  screen
+  type ver
+  run 500000
+  type dir
+  run 1000000
+  EOT
+  devenv /KERNELTEST,boot /KTSCRIPT:t.txt /KTINT:21 /KTTRACE:30
+
+Compilation et execution sous Linux
+-----------------------------------
+DEVENV.PAS est ecrit pour Windows (API kernel32/ws2_32...). Pour obtenir un
+executable Linux il faut remplacer les declarations 'StdCall; External ...dll'
+par des stubs, ajouter l'unite cthreads, compiler avec Free Pascal 3.2 avec
+PtcGraph (fp-units-gfx) et lier X11 :
+  fpc -Mtp -O- -dWINDOWS -Fu<ptc> -Fu<graph> DEVENV.PAS
+PtcCrt/PtcGraph initialisent X11 au demarrage meme pour ce mode console :
+lancer sous Xvfb (xvfb-run -a devenv /KERNELTEST,...). Sous Windows, aucune
+fenetre n'est necessaire.
+
+Limites connues
+---------------
+- IO.SYS limite a 65535 octets ; un seul disque (A: ou C:), pas de MBR/VBR.
+- Pas de MSDOS.SYS ni de secteur d'amorcage reel (chargement direct).
+- La detection de format de montage du terminal DEVENV (commandes DIR/TYPE sur
+  A:) peut reconnaitre a tort cette disquette en CP/M (H8D) a cause d'une
+  heuristique faible ; sans effet sur INT 13h, qui lit l'image brute.
+- L'emulateur ecrit son propre journal EMUKEY.LOG dans le dossier courant lors
+  de la lecture clavier INT 16h (comportement preexistant).

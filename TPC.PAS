@@ -30,7 +30,12 @@ Program TPC;
    - messages du compilateur en francais, numeros d'erreurs de la table de
      Turbo Pascal 7.0, affichage FICHIER(ligne) et resume
      "n lignes, s secondes, c octets de code, d octets de donnees";
-   - unites standard CRT, DOS, STRINGS et PRINTER integrees (sources Pascal
+   - code de plus de 64 Ko : mode multi-segments active automatiquement
+     (routines globales FAR reparties en
+     segments de code, runtime recopie dans chacun ;
+       voir DOC/TPC_OPTIMISATIONS.txt) ;
+   - unites standard CRT, DOS, STRINGS,
+     PRINTER et GRAPH integrees (sources Pascal
      embarques, compiles a la demande quand aucune TPU n'est trouvee);
    - disposition memoire de TP: code en CS, constantes et chaines en DS,
      variables globales non initialisees apres les constantes (hors de
@@ -86,10 +91,12 @@ Program TPC;
 Uses Dos;
 
 Const
- MaxSource = 262144;
+ MaxSource = 1048576;
  MaxImage = 65520;
  MaxSymbols = 4096;
  MaxFixups = 32768;
+ MaxSegs = 32;           { segments de code au plus (mode multi-segments) }
+ MaxCodeRefs = 8192;
  MaxDefines = 128;
  MaxUnits = 64;
  MaxLibraryUnits = 256;
@@ -193,9 +200,10 @@ Const
  skLabel=6;
  MaxTypes=512;
  MaxScopes=1024;
- MaxTemps=32;                 { temporaires chaine/reel simultanes par instruction }
+ MaxTemps=32;
+   { temporaires chaine/reel simultanes par instruction }
  MaxNativeParams = 16;
- MaxNativeRefs = 4096;
+ MaxNativeRefs = 16384;
  MaxObjects = 64;
  MaxObjSegments = 256;
  MaxObjNames = 512;
@@ -249,6 +257,9 @@ Type
   Addr: Word;
   Owner: Byte;
   Exported, HasBody: Boolean;
+  Unresolved: Boolean;
+    { routine declaree (forward/interface) dont le corps n'est pas encore
+      compile }
   ForwardJump: Word;
   Value: Longint;
   StrValue: TShortString;
@@ -264,7 +275,11 @@ Type
   ByReference, ResultVariable, FarRoutine, ForwardDeclared: Boolean;
   LegacyCall: Boolean;
   AssemblerBody: Boolean;
+  InterruptRoutine, NoFrame, SkipSub: Boolean; { directive interrupt;
+    assembler sans cadre de pile; frame sans variable locale }
   InlineBody: Boolean;       { Procedure X; Inline(...) }
+  IsMethod: Boolean;
+    { methode d'objet : premier parametre implicite Self (var) }
   DebugVisible: Boolean;
   DebugLine, DebugColumn: Word;
   DebugFile: TShortString;
@@ -292,7 +307,7 @@ Type
   Count, Used: Byte;
  End;
  TScopeInfo = Record
-  Parent, ProcSymbol, LocalSize: Word;
+  Parent, ProcSymbol, LocalSize, SkipJump: Word;
   LinkOffset: Word;
   Owner: Byte;
   Pseudo: Boolean;           { portee d'un WITH: pas de frame propre }
@@ -328,6 +343,8 @@ Type
  { 1 = compilation en cours; 2 = compilee }
   InterfaceReady, HasInit: Boolean;
   InitAddress: Word;
+  InitSeg: Byte;
+    { segment de code du bloc d'initialisation (mode multi-segments) }
   FromSource, Embedded: Boolean;
   Path: TShortString;
   Dependencies: TUnitSet;
@@ -336,12 +353,19 @@ Type
   Checksum: Word;
   CodeBase, DataBase: Word;
   LibraryEntry: Word;
+  Kernel: Boolean;
+    { unite noyau : segment virtuel de code commencant a l'offset 0 }
+  SegBase: Word;
+    { debut de l'unite noyau dans le segment de code (multiple de 16) }
  End;
  TLibraryEntry = Record
   Name: String[63];
   Offset, Size: Longint;
   Header: TUnitHeader;
  End;
+ TImageBuf = Array[0..MaxImage-1] Of Byte;
+ TRelTable = Array[1..MaxFixups] Of TRelativeFixup;
+ TOrdBuf = Array[0..MaxImage-1] Of Word;
  TBinaryBuffer = Array[0..262143] Of Byte;
  PBinaryBuffer = ^TBinaryBuffer;
  TNativeRef = Record
@@ -350,6 +374,32 @@ Type
  End;
  TMZRelocation = Packed Record
   Offs, Segm: Word
+ End;
+ { Mode multi-segments (programme de plus de 64 Ko de code) : chaque segment de
+   code
+   ferme est conserve avec ses fixups de donnees,
+     ses relocalisations MZ et ses references
+   de code a resoudre a l'edition de liens. }
+ PImageBuf = ^TImageBuf;
+ TFixTable = Array[1..MaxFixups] Of TAddressFixup;
+ PFixTable = ^TFixTable;
+ TRelocTable = Array[1..MaxNativeRefs] Of TMZRelocation;
+ PRelocTable = ^TRelocTable;
+ TKindTable = Array[1..MaxNativeRefs] Of Byte;
+ PKindTable = ^TKindTable;
+ TCodeRef = Record
+  Pos, Sym: Word;
+  Kind: Byte;                { 0 = offset de la routine,
+    1 = segment de la routine }
+  Add: Longint
+ End;
+ TCodeRefTable = Array[1..MaxCodeRefs] Of TCodeRef;
+ PCodeRefTable = ^TCodeRefTable;
+ TCodeSegment = Record
+  Img: PImageBuf; Size: Word;
+  Fix: PFixTable; FixN: Word;
+  Rel: PRelocTable; Kinds: PKindTable; RelN: Word;
+  Refs: PCodeRefTable; RefN: Word;
  End;
  TLinkedImage = Array[0..MaxLinkedImage-1] Of Byte;
  PLinkedImage = ^TLinkedImage;
@@ -395,7 +445,11 @@ Type
   Kind, Reg, RM, Segment: Byte;
   Width, Sym: Word;
   Displacement: Longint;
-  Direct, OffsetValue, SegmentValue, CodeValue: Boolean;
+  Direct, OffsetValue, SegmentValue, CodeValue, DataSegment: Boolean;
+  LabelRef: Boolean;
+    { adresse = etiquette assembleur locale (+ Displacement) }
+  CodeSym: Word;
+    { adresse = point d'entree d'une procedure (+ Displacement) }
   Name: String[63];
  End;
  PSourceBuffer = ^TSourceBuffer;
@@ -439,7 +493,7 @@ Var
  RealReady,EmulatorReady: Boolean;
  RealCodeBase,RealCodeEnd,RealDataBase,RealDataEnd: Word;
  EmulatorCodeBase,EmulatorCodeEnd,EmulatorDataBase,EmulatorDataEnd: Word;
-const RealSource: array[1..279] of string[255] = (
+const RealSource: array[1..326] of string[255] = (
  '{$R-,S-,B-,N-,O-,D-,L-,Q-}',
  'type RBytes=array[0..5] of Byte;',
  '     Mant=array[0..2] of Word;',
@@ -448,7 +502,8 @@ const RealSource: array[1..279] of string[255] = (
  'procedure RCalc(op:Integer; var a,b,r:RBytes); forward;',
  'function RCmp(var a,b:RBytes):Integer; forward;',
  'function RTrunc(var a:RBytes; rounded:Boolean):Longint; forward;',
- 'procedure RFormat(var a:RBytes; digits,width:Integer; var s:string); forward;',
+ 'procedure RFormat(var a:RBytes; digits,width:Integer; var s:string); ' +
+   'forward;',
  'procedure RParse(var s:string; var a:RBytes; var code:Integer); forward;',
  'procedure Zero(var a:Float); forward;',
  'function Empty(var a:Float):Boolean; forward;',
@@ -471,14 +526,17 @@ const RealSource: array[1..279] of string[255] = (
  'begin Empty:=(a.m[0]=0) and (a.m[1]=0) and (a.m[2]=0) end;',
  'procedure Left(var a:Mant);',
  'var i:Integer; c,t:Word;',
- 'begin c:=0; for i:=0 to 2 do begin t:=a[i] shr 15; a[i]:=(a[i] shl 1) or c; c:=t end end;',
+ 'begin c:=0; for i:=0 to 2 do begin t:=a[i] shr 15; a[i]:=(a[i] shl 1) or ' +
+   'c; c:=t end end;',
  'procedure Right(var a:Mant);',
  'var i:Integer; c,t:Word;',
- 'begin c:=0; for i:=2 downto 0 do begin t:=a[i] shl 15; a[i]:=(a[i] shr 1) or c; c:=t end end;',
+ 'begin c:=0; for i:=2 downto 0 do begin t:=a[i] shl 15; a[i]:=(a[i] shr 1) ' +
+   'or c; c:=t end end;',
  'function Mag(var a,b:Mant):Integer;',
  'var i,c:Integer;',
  'begin c:=0; i:=2; while (i>=0) and (c=0) do begin',
- ' if a[i]<b[i] then c:=-1 else if a[i]>b[i] then c:=1; Dec(i) end; Mag:=c end;',
+ ' if a[i]<b[i] then c:=-1 else if a[i]>b[i] then c:=1; Dec(i) end; Mag:=c ' +
+   'end;',
  'procedure Sub(var a,b:Mant);',
  'var i:Integer; t:Longint; borrow:Word;',
  'begin borrow:=0; for i:=0 to 2 do begin t:=Longint(a[i])-b[i]-borrow;',
@@ -496,20 +554,23 @@ const RealSource: array[1..279] of string[255] = (
  'begin',
  ' FillChar(r,6,0); Normalize(a);',
  ' if not Empty(a) then begin',
- '  if ((a.m[0] and 255)>128) or (((a.m[0] and 255)=128) and ((a.m[0] and 256)<>0)) then begin',
+ '  if ((a.m[0] and 255)>128) or (((a.m[0] and 255)=128) and ((a.m[0] and ' +
+   '256)<>0)) then begin',
  '   carry:=256; for i:=0 to 2 do begin t:=Longint(a.m[i])+carry;',
  '    a.m[i]:=Word(t); carry:=Word(t shr 16) end;',
  '   if carry<>0 then begin a.m[2]:=32768; Inc(a.e) end',
  '  end;',
  '  if a.e>126 then RunError(205);',
  '  if a.e>=-128 then begin r[0]:=a.e+129; r[1]:=a.m[0] shr 8;',
- '   r[2]:=a.m[1]; r[3]:=a.m[1] shr 8; r[4]:=a.m[2]; r[5]:=(a.m[2] shr 8) and 127;',
+ '   r[2]:=a.m[1]; r[3]:=a.m[1] shr 8; r[4]:=a.m[2]; r[5]:=(a.m[2] shr 8) ' +
+   'and 127;',
  '   if a.neg then r[5]:=r[5] or 128 end',
  ' end',
  'end;',
  'procedure IntegerFloat(n:Longint; var a:Float);',
  'begin Zero(a); if n<>0 then begin a.neg:=n<0;',
- ' if a.neg then n:=-n; a.m[0]:=Word(n); a.m[1]:=Word(n shr 16); a.e:=47; Normalize(a) end end;',
+ ' if a.neg then n:=-n; a.m[0]:=Word(n); a.m[1]:=Word(n shr 16); a.e:=47; ' +
+   'Normalize(a) end end;',
  'procedure Add(a,b:Float; var r:Float);',
  'var t:Float; i,d:Integer; n:Longint; carry:Word;',
  'begin',
@@ -539,9 +600,11 @@ const RealSource: array[1..279] of string[255] = (
  '   end; p[i+3]:=carry',
  '  end;',
  '  for i:=1 to 47 do begin carry:=0;',
- '   for j:=5 downto 0 do begin k:=p[j] and 1; p[j]:=(p[j] shr 1) or carry; carry:=Word(k) shl 15 end',
+ '   for j:=5 downto 0 do begin k:=p[j] and 1; p[j]:=(p[j] shr 1) or carry; ' +
+   'carry:=Word(k) shl 15 end',
  '  end;',
- '  r.m[0]:=p[0]; r.m[1]:=p[1]; r.m[2]:=p[2]; r.e:=a.e+b.e; r.neg:=a.neg<>b.neg;',
+ '  r.m[0]:=p[0]; r.m[1]:=p[1]; r.m[2]:=p[2]; r.e:=a.e+b.e; ' +
+   'r.neg:=a.neg<>b.neg;',
  '  if p[3]<>0 then begin Right(r.m); r.m[2]:=r.m[2] or 32768; Inc(r.e) end;',
  '  Normalize(r)',
  ' end',
@@ -554,7 +617,8 @@ const RealSource: array[1..279] of string[255] = (
  '  r.e:=a.e-b.e; r.neg:=a.neg<>b.neg;',
  '  overflow:=False; for i:=0 to 47 do begin',
  '   Left(r.m);',
- '   if overflow or (Mag(a.m,b.m)>=0) then begin Sub(a.m,b.m); r.m[0]:=r.m[0] or 1 end;',
+ '   if overflow or (Mag(a.m,b.m)>=0) then begin Sub(a.m,b.m); ' +
+   'r.m[0]:=r.m[0] or 1 end;',
  '   if i<>47 then begin',
  '    overflow:=(a.m[2] and 32768)<>0; Left(a.m)',
  '   end',
@@ -568,7 +632,8 @@ const RealSource: array[1..279] of string[255] = (
  ' if Empty(a) and Empty(b) then c:=0 else if a.neg<>b.neg then begin',
  '  if a.neg then c:=-1 else c:=1',
  ' end else begin',
- '  c:=0; if a.e<b.e then c:=-1 else if a.e>b.e then c:=1 else c:=Mag(a.m,b.m);',
+ '  c:=0; if a.e<b.e then c:=-1 else if a.e>b.e then c:=1 else ' +
+   'c:=Mag(a.m,b.m);',
  '  if a.neg then c:=-c',
  ' end; Compare:=c',
  'end;',
@@ -580,11 +645,13 @@ const RealSource: array[1..279] of string[255] = (
  '  if a.e>31 then RunError(207);',
  '  if a.e<-1 then begin lost:=True; a.m[0]:=0; a.m[1]:=0; a.m[2]:=0 end',
  '  else for i:=1 to 47-a.e do begin',
- '   below:=below or half; half:=(a.m[0] and 1)<>0; lost:=lost or half; Right(a.m)',
+ '   below:=below or half; half:=(a.m[0] and 1)<>0; lost:=lost or half; ' +
+   'Right(a.m)',
  '  end;',
  '  n:=Longint(a.m[0]) or (Longint(a.m[1]) shl 16);',
  '  if ((mode=0) and half and (below or ((n and 1)<>0))) or',
- '     ((mode=1) and a.neg and lost) or ((mode=2) and not a.neg and lost) then Inc(n);',
+ '     ((mode=1) and a.neg and lost) or ((mode=2) and not a.neg and lost) ' +
+   'then Inc(n);',
  '  if (n<0) and not (a.neg and (n=-2147483647-1)) then RunError(207);',
  '  if a.neg then n:=-n',
  ' end; IntValue:=n',
@@ -604,35 +671,47 @@ const RealSource: array[1..279] of string[255] = (
  ' end else if (op=11) or (op=12) then begin',
  '  { Reduce to [-pi,pi], then use an alternating Taylor series. }',
  '  DecimalFloat(''3.141592653589793'',b);',
- '  t:=b; Inc(t.e); Divide(a,t,c); n:=IntValue(c,3); IntegerFloat(n,c); Multiply(c,t,c); c.neg:=not c.neg; Add(a,c,x);',
- '  c:=b; c.neg:=True; if Compare(x,b)>0 then begin t.neg:=True; Add(x,t,x) end;',
+ '  t:=b; Inc(t.e); Divide(a,t,c); n:=IntValue(c,3); IntegerFloat(n,c); ' +
+   'Multiply(c,t,c); c.neg:=not c.neg; Add(a,c,x);',
+ '  c:=b; c.neg:=True; if Compare(x,b)>0 then begin t.neg:=True; Add(x,t,x) ' +
+   'end;',
  '  if Compare(x,c)<0 then begin t.neg:=False; Add(x,t,x) end;',
  '  Multiply(x,x,t); t.neg:=True;',
- '  if op=11 then begin sum:=x; term:=x; n:=2 end else begin sum:=one; term:=one; n:=1 end;',
- '  for i:=1 to 20 do begin Multiply(term,t,term); IntegerFloat(n*(n+1),c); Divide(term,c,term); Add(sum,term,sum); Inc(n,2) end; r:=sum',
+ '  if op=11 then begin sum:=x; term:=x; n:=2 end else begin sum:=one; ' +
+   'term:=one; n:=1 end;',
+ '  for i:=1 to 20 do begin Multiply(term,t,term); IntegerFloat(n*(n+1),c); ' +
+   'Divide(term,c,term); Add(sum,term,sum); Inc(n,2) end; r:=sum',
  ' end else if op=14 then begin',
  '  if a.neg or Empty(a) then RunError(207); n:=a.e; a.e:=0;',
- '  c:=one; c.neg:=True; Add(a,c,b); Add(a,one,c); Divide(b,c,x); Multiply(x,x,t);',
+ '  c:=one; c.neg:=True; Add(a,c,b); Add(a,one,c); Divide(b,c,x); ' +
+   'Multiply(x,x,t);',
  '  sum:=x; term:=x;',
- '  for i:=1 to 40 do begin Multiply(term,t,term); IntegerFloat(2*i+1,c); Divide(term,c,b); Add(sum,b,sum) end;',
+ '  for i:=1 to 40 do begin Multiply(term,t,term); IntegerFloat(2*i+1,c); ' +
+   'Divide(term,c,b); Add(sum,b,sum) end;',
  '  Inc(sum.e); DecimalFloat(''0.6931471805599453'',b);',
  '  IntegerFloat(n,c); Multiply(b,c,b); Add(sum,b,r)',
  ' end else if op=15 then begin',
  '  DecimalFloat(''0.6931471805599453'',b);',
- '  Divide(a,b,c); n:=IntValue(c,0); if (n>127) or (n<-150) then begin if n>127 then RunError(205); Zero(r) end',
- '  else begin IntegerFloat(n,c); Multiply(b,c,c); c.neg:=not c.neg; Add(a,c,x);',
- '   sum:=one; term:=one; for i:=1 to 24 do begin Multiply(term,x,term); IntegerFloat(i,c); Divide(term,c,term); Add(sum,term,sum) end;',
+ '  Divide(a,b,c); n:=IntValue(c,0); if (n>127) or (n<-150) then begin if ' +
+   'n>127 then RunError(205); Zero(r) end',
+ '  else begin IntegerFloat(n,c); Multiply(b,c,c); c.neg:=not c.neg; ' +
+   'Add(a,c,x);',
+ '   sum:=one; term:=one; for i:=1 to 24 do begin Multiply(term,x,term); ' +
+   'IntegerFloat(i,c); Divide(term,c,term); Add(sum,term,sum) end;',
  '   r:=sum; Inc(r.e,n)',
  '  end',
  ' end else if op=13 then begin',
  '  neg:=a.neg; a.neg:=False; n:=0;',
  '  if Compare(a,one)>0 then begin Divide(one,a,a); n:=1 end;',
  '  { Half-angle reduction makes the series converge rapidly at x=1. }',
- '  Multiply(a,a,b); Add(b,one,b); MathOp(10,b,c); Add(c,one,c); Divide(a,c,x);',
+ '  Multiply(a,a,b); Add(b,one,b); MathOp(10,b,c); Add(c,one,c); ' +
+   'Divide(a,c,x);',
  '  Multiply(x,x,t); t.neg:=True; sum:=x; term:=x;',
- '  for i:=1 to 32 do begin Multiply(term,t,term); IntegerFloat(2*i+1,c); Divide(term,c,b); Add(sum,b,sum) end;',
+ '  for i:=1 to 32 do begin Multiply(term,t,term); IntegerFloat(2*i+1,c); ' +
+   'Divide(term,c,b); Add(sum,b,sum) end;',
  '  Inc(sum.e); r:=sum;',
- '  if n=1 then begin DecimalFloat(''1.5707963267948966'',b); r.neg:=True; Add(b,r,r) end;',
+ '  if n=1 then begin DecimalFloat(''1.5707963267948966'',b); r.neg:=True; ' +
+   'Add(b,r,r) end;',
  '  r.neg:=neg',
  ' end',
  'end;',
@@ -643,13 +722,15 @@ const RealSource: array[1..279] of string[255] = (
  'var x,y,z:Float; i,bits:Integer;',
  'begin',
  ' Unpack(a,x); Unpack(b,y); z:=x;',
- ' if op=1 then Add(x,y,z) else if op=2 then begin y.neg:=not y.neg; Add(x,y,z) end',
+ ' if op=1 then Add(x,y,z) else if op=2 then begin y.neg:=not y.neg; ' +
+   'Add(x,y,z) end',
  ' else if op=3 then Multiply(x,y,z) else if op=4 then Divide(x,y,z)',
  ' else if op=5 then begin if not Empty(z) then z.neg:=not z.neg end',
  ' else if op=6 then z.neg:=False else if op=7 then Multiply(x,x,z)',
  ' else if (op=8) or (op=9) then begin',
  '  if z.e<0 then Zero(z) else if z.e<47 then begin bits:=47-z.e;',
- '   for i:=1 to bits do Right(z.m); for i:=1 to bits do Left(z.m); Normalize(z)',
+ '   for i:=1 to bits do Right(z.m); for i:=1 to bits do Left(z.m); ' +
+   'Normalize(z)',
  '  end;',
  '  if op=9 then begin z.neg:=not z.neg; Add(x,z,z) end',
  ' end',
@@ -661,55 +742,77 @@ const RealSource: array[1..279] of string[255] = (
  'begin Unpack(a,x); Unpack(b,y); RCmp:=Compare(x,y) end;',
  'function RTrunc(var a:RBytes; rounded:Boolean):Longint;',
  'var x:Float; mode:Integer;',
- 'begin Unpack(a,x); mode:=3; if rounded then mode:=0; RTrunc:=IntValue(x,mode) end;',
+ 'begin Unpack(a,x); mode:=3; if rounded then mode:=0; ' +
+   'RTrunc:=IntValue(x,mode) end;',
  'procedure RFormat(var a:RBytes; digits,width:Integer; var s:string);',
  'var x,ten,one,t:Float; i,e,d,n:Integer; negative:Boolean; text,tail:string;',
  'procedure Append(c:Char);',
  'var length:Integer;',
- 'begin length:=Ord(s[0]); if length<255 then begin s[length+1]:=c; s[0]:=Chr(length+1) end end;',
+ 'begin length:=Ord(s[0]); if length<255 then begin s[length+1]:=c; ' +
+   's[0]:=Chr(length+1) end end;',
  'begin',
- ' Unpack(a,x); negative:=x.neg; x.neg:=False; IntegerFloat(10,ten); IntegerFloat(1,one); e:=0;',
+ ' Unpack(a,x); negative:=x.neg; x.neg:=False; IntegerFloat(10,ten); ' +
+   'IntegerFloat(1,one); e:=0;',
  ' if not Empty(x) then begin',
  '  while Compare(x,ten)>=0 do begin Divide(x,ten,x); Inc(e) end;',
  '  while Compare(x,one)<0 do begin Multiply(x,ten,x); Dec(e) end',
  ' end;',
- ' text[0]:=Chr(14); for i:=1 to 14 do begin d:=IntValue(x,3); text[i]:=Chr(48+d);',
+ ' text[0]:=Chr(14); for i:=1 to 14 do begin d:=IntValue(x,3); ' +
+   'text[i]:=Chr(48+d);',
  '  IntegerFloat(d,t); t.neg:=True; Add(x,t,x); Multiply(x,ten,x) end;',
  ' s[0]:=Chr(0);',
- ' if digits<0 then begin Append(text[1]); Append(''.''); for i:=2 to 12 do Append(text[i]); Append(''E'');',
+ ' if digits<0 then begin Append(text[1]); Append(''.''); for i:=2 to 12 do ' +
+   'Append(text[i]); Append(''E'');',
  '  if e>=0 then Append(''+'') else begin Append(''-''); e:=-e end;',
- '  Str(e:2,tail); if tail[1]='' '' then tail[1]:=''0''; for i:=1 to Length(tail) do Append(tail[i])',
+ '  Str(e:2,tail); if tail[1]='' '' then tail[1]:=''0''; for i:=1 to ' +
+   'Length(tail) do Append(tail[i])',
  ' end else begin',
  '  if digits>18 then digits:=18;',
  '  { Round the requested fixed decimal position, with carry into exponent. }',
  '  d:=e+1+digits;',
  '  if (d>=0) and (d<14) and (text[d+1]>=''5'') then begin',
- '   i:=d; while (i>0) and (text[i]=''9'') do begin text[i]:=''0''; Dec(i) end;',
- '   if i>0 then text[i]:=Chr(Ord(text[i])+1) else begin Move(text[1],text[2],14); text[1]:=''1''; text[0]:=Chr(15); Inc(e) end',
+ '   i:=d; while (i>0) and (text[i]=''9'') do begin text[i]:=''0''; Dec(i) ' +
+   'end;',
+ '   if i>0 then text[i]:=Chr(Ord(text[i])+1) else begin ' +
+   'Move(text[1],text[2],14); text[1]:=''1''; text[0]:=Chr(15); Inc(e) end',
  '  end;',
- '  if e<0 then Append(''0'') else for i:=0 to e do begin if i<Length(text) then Append(text[i+1]) else Append(''0'') end;',
- '  if digits>0 then begin Append(''.''); for i:=1 to digits do begin d:=e+1+i;',
- '   if (d>0) and (d<=Length(text)) then Append(text[d]) else Append(''0'') end end',
+ '  if e<0 then Append(''0'') else for i:=0 to e do begin if i<Length(text) ' +
+   'then Append(text[i+1]) else Append(''0'') end;',
+ '  if digits>0 then begin Append(''.''); for i:=1 to digits do begin ' +
+   'd:=e+1+i;',
+ '   if (d>0) and (d<=Length(text)) then Append(text[d]) else Append(''0'') ' +
+   'end end',
  ' end;',
- ' if negative then begin n:=Length(s); Move(s[1],s[2],n); s[1]:=''-''; s[0]:=Chr(n+1) end;',
+ ' if negative then begin n:=Length(s); Move(s[1],s[2],n); s[1]:=''-''; ' +
+   's[0]:=Chr(n+1) end;',
  ' if width>255 then width:=255; n:=Length(s);',
- ' if n<width then begin d:=width-n; Move(s[1],s[d+1],n); FillChar(s[1],d,32); s[0]:=Chr(width) end',
+ ' if n<width then begin d:=width-n; Move(s[1],s[d+1],n); ' +
+   'FillChar(s[1],d,32); s[0]:=Chr(width) end',
  'end;',
  'procedure RParse(var s:string; var a:RBytes; var code:Integer);',
- 'var x,ten,t:Float; i,power,exponent,sign,count:Integer; negative,dot:Boolean;',
+ 'var x,ten,t:Float; i,power,exponent,sign,count:Integer; ' +
+   'negative,dot:Boolean;',
  'begin',
- ' Zero(x); IntegerFloat(10,ten); i:=1; power:=0; exponent:=0; sign:=1; count:=0; dot:=False; negative:=False; code:=0;',
+ ' Zero(x); IntegerFloat(10,ten); i:=1; power:=0; exponent:=0; sign:=1; ' +
+   'count:=0; dot:=False; negative:=False; code:=0;',
  ' while (i<=Length(s)) and (s[i]='' '') do Inc(i);',
- ' if (i<=Length(s)) and ((s[i]=''+'') or (s[i]=''-'')) then begin negative:=s[i]=''-''; Inc(i) end;',
- ' while (i<=Length(s)) and (((s[i]>=''0'') and (s[i]<=''9'')) or (s[i]=''.'')) do begin',
- '  if s[i]=''.'' then begin if dot then begin code:=i; Exit end; dot:=True end',
- '  else begin Multiply(x,ten,x); IntegerFloat(Ord(s[i])-48,t); Add(x,t,x); Inc(count); if dot then Dec(power) end; Inc(i)',
+ ' if (i<=Length(s)) and ((s[i]=''+'') or (s[i]=''-'')) then begin ' +
+   'negative:=s[i]=''-''; Inc(i) end;',
+ ' while (i<=Length(s)) and (((s[i]>=''0'') and (s[i]<=''9'')) or ' +
+   '(s[i]=''.'')) do begin',
+ '  if s[i]=''.'' then begin if dot then begin code:=i; Exit end; dot:=True ' +
+   'end',
+ '  else begin Multiply(x,ten,x); IntegerFloat(Ord(s[i])-48,t); Add(x,t,x); ' +
+   'Inc(count); if dot then Dec(power) end; Inc(i)',
  ' end;',
  ' if count=0 then begin code:=i; Exit end;',
  ' if (i<=Length(s)) and ((s[i]=''e'') or (s[i]=''E'')) then begin Inc(i);',
- '  if (i<=Length(s)) and ((s[i]=''+'') or (s[i]=''-'')) then begin if s[i]=''-'' then sign:=-1; Inc(i) end;',
- '  count:=0; while (i<=Length(s)) and (s[i]>=''0'') and (s[i]<=''9'') do begin',
- '   if exponent>1000 then begin code:=i; Exit end; exponent:=exponent*10+Ord(s[i])-48; Inc(i); Inc(count) end;',
+ '  if (i<=Length(s)) and ((s[i]=''+'') or (s[i]=''-'')) then begin if ' +
+   's[i]=''-'' then sign:=-1; Inc(i) end;',
+ '  count:=0; while (i<=Length(s)) and (s[i]>=''0'') and (s[i]<=''9'') do ' +
+   'begin',
+ '   if exponent>1000 then begin code:=i; Exit end; ' +
+   'exponent:=exponent*10+Ord(s[i])-48; Inc(i); Inc(count) end;',
  '  if count=0 then begin code:=i; Exit end',
  ' end;',
  ' if i<=Length(s) then begin code:=i; Exit end;',
@@ -718,37 +821,100 @@ const RealSource: array[1..279] of string[255] = (
  ' while power>0 do begin Multiply(x,ten,x); Dec(power) end;',
  ' while power<0 do begin Divide(x,ten,x); Inc(power) end;',
  ' x.neg:=negative; if x.e>126 then begin code:=1; Exit end; Pack(x,a)',
- 'end;');
+ 'end;',
+ 'type SBytes=array[0..3] of Byte;',
+ '     DBytes=array[0..7] of Byte;',
+ 'procedure RSingle(var s:SBytes; var r:RBytes);',
+ 'var e:Integer;',
+ 'begin FillChar(r,6,0); e:=((Integer(s[3]) and 127) shl 1) or ' +
+   '(Integer(s[2]) shr 7);',
+ ' if e<>0 then begin',
+ '  e:=e+2; if e>255 then e:=255;',
+ '  r[0]:=Byte(e); r[3]:=s[0]; r[4]:=s[1]; r[5]:=s[2] and 127;',
+ '  if (s[3] and 128)<>0 then r[5]:=r[5] or 128 end end;',
+ 'procedure RToSingle(var r:RBytes; var s:SBytes);',
+ 'var e:Integer; f:Longint;',
+ 'begin FillChar(s,4,0);',
+ ' if r[0]<>0 then begin',
+ '  e:=Integer(r[0])-2;',
+ '  f:=(Longint(r[5] and 127) shl 16) or (Longint(r[4]) shl 8) or r[3];',
+ '  if r[2]>=128 then begin Inc(f); if f>=8388608 then begin f:=0; Inc(e) ' +
+   'end end;',
+ '  if e>=1 then begin',
+ '   if e>254 then begin e:=254; f:=8388607 end;',
+ '   s[0]:=Byte(f and 255); s[1]:=Byte((f shr 8) and 255);',
+ '   s[2]:=Byte(((f shr 16) and 127) or ((e and 1) shl 7));',
+ '   s[3]:=Byte(e shr 1) or (r[5] and 128) end end end;',
+ 'procedure RDouble(var d:DBytes; var r:RBytes);',
+ 'var e:Integer; top,low:Longint;',
+ 'begin FillChar(r,6,0); e:=((Integer(d[7]) and 127) shl 4) or ' +
+   '(Integer(d[6]) shr 4);',
+ ' if e<>0 then begin',
+ '  e:=e-894; if e<1 then Exit; if e>255 then e:=255;',
+ '  top:=(Longint(d[6] and 15) shl 16) or (Longint(d[5]) shl 8) or d[4];',
+ '  low:=(Longint(d[3]) shl 24) or (Longint(d[2]) shl 16) or (Longint(d[1]) ' +
+   'shl 8) or d[0];',
+ '  r[0]:=Byte(e);',
+ '  r[5]:=Byte((top shr 13) and 127);',
+ '  r[4]:=Byte((top shr 5) and 255);',
+ '  r[3]:=Byte(((top and 31) shl 3) or ((low shr 29) and 7));',
+ '  r[2]:=Byte((low shr 21) and 255);',
+ '  r[1]:=Byte((low shr 13) and 255);',
+ '  if (d[7] and 128)<>0 then r[5]:=r[5] or 128 end end;',
+ 'procedure RToDouble(var r:RBytes; var d:DBytes);',
+ 'var e:Integer;',
+ 'begin FillChar(d,8,0);',
+ ' if r[0]<>0 then begin',
+ '  e:=Integer(r[0])+894;',
+ '  d[7]:=Byte(e shr 4) or (r[5] and 128);',
+ '  d[6]:=Byte((e and 15) shl 4) or Byte((r[5] and 127) shr 3);',
+ '  d[5]:=Byte((r[5] and 7) shl 5) or Byte(r[4] shr 3);',
+ '  d[4]:=Byte((r[4] and 7) shl 5) or Byte(r[3] shr 3);',
+ '  d[3]:=Byte((r[3] and 7) shl 5) or Byte(r[2] shr 3);',
+ '  d[2]:=Byte((r[2] and 7) shl 5) or Byte(r[1] shr 3);',
+ '  d[1]:=Byte(r[1] and 7) shl 5 end end;');
 const EmulatorSource: array[1..174] of string[255] = (
  '{$R-,S-,B-,N-,O-,D-,L-}',
  'procedure REmu(op,width,index:Integer; var mem); forward;',
  'type Raw=array[0..9] of Byte; PRaw=^Raw;',
  'const control:Word=895;',
- 'var st:array[0..7] of Float; used:array[0..7] of Boolean; top:Integer; status:Word;',
+ 'var st:array[0..7] of Float; used:array[0..7] of Boolean; top:Integer; ' +
+   'status:Word;',
  'procedure LoadRaw(p:PRaw; width:Integer; integerMode:Boolean; var a:Float);',
  'var r:Raw; i,j,bits,e:Integer; negative:Boolean;',
  'begin',
  ' FillChar(r,SizeOf(r),0); for i:=0 to width-1 do r[i]:=p^[i]; Zero(a);',
  ' if integerMode then begin',
  '  negative:=(r[width-1] and 128)<>0;',
- '  if negative then begin j:=1; for i:=0 to width-1 do begin e:=255-r[i]+j; r[i]:=e; j:=e shr 8 end end;',
+ '  if negative then begin j:=1; for i:=0 to width-1 do begin e:=255-r[i]+j; ' +
+   'r[i]:=e; j:=e shr 8 end end;',
  '  a.e:=47; if width=8 then a.e:=63;',
- '  for i:=width*8-1 downto 0 do begin Left(a.m); if ((r[i div 8] shr (i mod 8)) and 1)<>0 then a.m[0]:=a.m[0] or 1 end;',
- '  if width=8 then begin a.m[0]:=Word(r[2]) or (Word(r[3]) shl 8); a.m[1]:=Word(r[4]) or (Word(r[5]) shl 8); a.m[2]:=Word(r[6]) or (Word(r[7]) shl 8) end;',
+ '  for i:=width*8-1 downto 0 do begin Left(a.m); if ((r[i div 8] shr (i mod ' +
+   '8)) and 1)<>0 then a.m[0]:=a.m[0] or 1 end;',
+ '  if width=8 then begin a.m[0]:=Word(r[2]) or (Word(r[3]) shl 8); ' +
+   'a.m[1]:=Word(r[4]) or (Word(r[5]) shl 8); a.m[2]:=Word(r[6]) or ' +
+     '(Word(r[7]) shl 8) end;',
  '  a.neg:=negative; Normalize(a)',
  ' end else begin',
- '  if width=4 then begin bits:=23; e:=((Word(r[3]) and 127) shl 1) or (r[2] shr 7); j:=127; negative:=(r[3] and 128)<>0; r[2]:=r[2] and 127 end',
- '  else if width=8 then begin bits:=52; e:=((Word(r[7]) and 127) shl 4) or (r[6] shr 4); j:=1023; negative:=(r[7] and 128)<>0; r[6]:=r[6] and 15 end',
- '  else begin bits:=63; e:=Word(r[8]) or ((Word(r[9]) and 127) shl 8); j:=16383; negative:=(r[9] and 128)<>0 end;',
- '  if ((width=4) and (e=255)) or ((width=8) and (e=2047)) or ((width=10) and (e=32767)) then RunError(207);',
- '  if width<>10 then begin if e<>0 then r[bits div 8]:=r[bits div 8] or (1 shl (bits mod 8)) end;',
+ '  if width=4 then begin bits:=23; e:=((Word(r[3]) and 127) shl 1) or (r[2] ' +
+   'shr 7); j:=127; negative:=(r[3] and 128)<>0; r[2]:=r[2] and 127 end',
+ '  else if width=8 then begin bits:=52; e:=((Word(r[7]) and 127) shl 4) or ' +
+   '(r[6] shr 4); j:=1023; negative:=(r[7] and 128)<>0; r[6]:=r[6] and 15 end',
+ '  else begin bits:=63; e:=Word(r[8]) or ((Word(r[9]) and 127) shl 8); ' +
+   'j:=16383; negative:=(r[9] and 128)<>0 end;',
+ '  if ((width=4) and (e=255)) or ((width=8) and (e=2047)) or ((width=10) ' +
+   'and (e=32767)) then RunError(207);',
+ '  if width<>10 then begin if e<>0 then r[bits div 8]:=r[bits div 8] or (1 ' +
+   'shl (bits mod 8)) end;',
  '  a.e:=e-j; if e=0 then Inc(a.e);',
- '  for i:=bits downto bits-47 do begin Left(a.m); if (i>=0) and (((r[i div 8] shr (i mod 8)) and 1)<>0) then a.m[0]:=a.m[0] or 1 end;',
+ '  for i:=bits downto bits-47 do begin Left(a.m); if (i>=0) and (((r[i div ' +
+   '8] shr (i mod 8)) and 1)<>0) then a.m[0]:=a.m[0] or 1 end;',
  '  a.neg:=negative; Normalize(a)',
  ' end',
  'end;',
  'procedure StoreRaw(a:Float; p:PRaw; width:Integer; integerMode:Boolean);',
- 'var r:Raw; i,j,bits,e,mode:Integer; negative,half,below:Boolean; carry:Longint;',
+ 'var r:Raw; i,j,bits,e,mode:Integer; negative,half,below:Boolean; ' +
+   'carry:Longint;',
  'begin',
  ' FillChar(r,SizeOf(r),0);',
  ' if integerMode then begin',
@@ -759,12 +925,15 @@ const EmulatorSource: array[1..174] of string[255] = (
  '  if a.e>63 then RunError(207); half:=False; below:=False;',
  '  for i:=0 to 47 do begin j:=a.e-i;',
  '   if (a.m[2] and 32768)<>0 then begin',
- '    if (j>=0) and (j<width*8) then r[j div 8]:=r[j div 8] or (1 shl (j mod 8))',
- '    else if j=-1 then half:=True else if j<-1 then below:=True else RunError(207)',
+ '    if (j>=0) and (j<width*8) then r[j div 8]:=r[j div 8] or (1 shl (j mod ' +
+   '8))',
+ '    else if j=-1 then half:=True else if j<-1 then below:=True else ' +
+   'RunError(207)',
  '   end; Left(a.m)',
  '  end;',
  '  if ((mode=0) and half and (below or ((r[0] and 1)<>0))) or',
- '     ((mode=1) and negative and (half or below)) or ((mode=2) and not negative and (half or below)) then begin',
+ '     ((mode=1) and negative and (half or below)) or ((mode=2) and not ' +
+   'negative and (half or below)) then begin',
  '   j:=1; for i:=0 to width-1 do begin e:=r[i]+j; r[i]:=e; j:=e shr 8 end;',
  '   if j<>0 then RunError(207)',
  '  end;',
@@ -772,23 +941,32 @@ const EmulatorSource: array[1..174] of string[255] = (
  '   if not negative or (r[width-1]<>128) then RunError(207);',
  '   for i:=0 to width-2 do if r[i]<>0 then RunError(207)',
  '  end;',
- '  if negative then begin j:=1; for i:=0 to width-1 do begin e:=255-r[i]+j; r[i]:=e; j:=e shr 8 end end',
+ '  if negative then begin j:=1; for i:=0 to width-1 do begin e:=255-r[i]+j; ' +
+   'r[i]:=e; j:=e shr 8 end end',
  ' end else if not Empty(a) then begin',
  '  if width=4 then begin',
- '   mode:=(control shr 10) and 3; half:=(a.m[1] and 128)<>0; below:=(a.m[0]<>0) or ((a.m[1] and 127)<>0);',
+ '   mode:=(control shr 10) and 3; half:=(a.m[1] and 128)<>0; ' +
+   'below:=(a.m[0]<>0) or ((a.m[1] and 127)<>0);',
  '   if ((mode=0) and half and (below or ((a.m[1] and 256)<>0))) or',
- '      ((mode=1) and a.neg and (half or below)) or ((mode=2) and not a.neg and (half or below)) then begin',
- '    carry:=Longint(a.m[1])+256; a.m[1]:=Word(carry); carry:=Longint(a.m[2])+(carry shr 16); a.m[2]:=Word(carry);',
+ '      ((mode=1) and a.neg and (half or below)) or ((mode=2) and not a.neg ' +
+   'and (half or below)) then begin',
+ '    carry:=Longint(a.m[1])+256; a.m[1]:=Word(carry); ' +
+   'carry:=Longint(a.m[2])+(carry shr 16); a.m[2]:=Word(carry);',
  '    if carry>65535 then begin a.m[1]:=0; a.m[2]:=32768; Inc(a.e) end',
  '   end',
  '  end;',
- '  if width=4 then begin bits:=23; e:=a.e+127 end else if width=8 then begin bits:=52; e:=a.e+1023 end else begin bits:=63; e:=a.e+16383 end;',
- '  if (e<=0) or ((width=4) and (e>=255)) or ((width=8) and (e>=2047)) or (e>=32767) then RunError(205);',
+ '  if width=4 then begin bits:=23; e:=a.e+127 end else if width=8 then ' +
+   'begin bits:=52; e:=a.e+1023 end else begin bits:=63; e:=a.e+16383 end;',
+ '  if (e<=0) or ((width=4) and (e>=255)) or ((width=8) and (e>=2047)) or ' +
+   '(e>=32767) then RunError(205);',
  '  for i:=0 to 47 do begin j:=bits-i;',
- '   if (j>=0) and ((a.m[2] and 32768)<>0) and ((i<>0) or (width=10)) then r[j div 8]:=r[j div 8] or (1 shl (j mod 8)); Left(a.m)',
+ '   if (j>=0) and ((a.m[2] and 32768)<>0) and ((i<>0) or (width=10)) then ' +
+   'r[j div 8]:=r[j div 8] or (1 shl (j mod 8)); Left(a.m)',
  '  end;',
- '  if width=4 then begin r[2]:=r[2] or ((e and 1) shl 7); r[3]:=e shr 1; if a.neg then r[3]:=r[3] or 128 end',
- '  else if width=8 then begin r[6]:=r[6] or ((e and 15) shl 4); r[7]:=e shr 4; if a.neg then r[7]:=r[7] or 128 end',
+ '  if width=4 then begin r[2]:=r[2] or ((e and 1) shl 7); r[3]:=e shr 1; if ' +
+   'a.neg then r[3]:=r[3] or 128 end',
+ '  else if width=8 then begin r[6]:=r[6] or ((e and 15) shl 4); r[7]:=e shr ' +
+   '4; if a.neg then r[7]:=r[7] or 128 end',
  '  else begin r[8]:=e; r[9]:=e shr 8; if a.neg then r[9]:=r[9] or 128 end',
  ' end;',
  ' for i:=0 to width-1 do p^[i]:=r[i]',
@@ -796,100 +974,131 @@ const EmulatorSource: array[1..174] of string[255] = (
  'procedure Rotate(rightward:Boolean);',
  'var i:Integer; a:Float; valid:Boolean;',
  'begin',
- ' if rightward then begin a:=st[7]; valid:=used[7]; for i:=7 downto 1 do begin st[i]:=st[i-1]; used[i]:=used[i-1] end;',
+ ' if rightward then begin a:=st[7]; valid:=used[7]; for i:=7 downto 1 do ' +
+   'begin st[i]:=st[i-1]; used[i]:=used[i-1] end;',
  '  st[0]:=a; used[0]:=valid; top:=(top-1) and 7',
- ' end else begin a:=st[0]; valid:=used[0]; for i:=0 to 6 do begin st[i]:=st[i+1]; used[i]:=used[i+1] end;',
+ ' end else begin a:=st[0]; valid:=used[0]; for i:=0 to 6 do begin ' +
+   'st[i]:=st[i+1]; used[i]:=used[i+1] end;',
  '  st[7]:=a; used[7]:=valid; top:=(top+1) and 7',
  ' end',
  'end;',
  'procedure Push(a:Float);',
- 'begin if used[7] then RunError(207); Rotate(True); st[0]:=a; used[0]:=True end;',
+ 'begin if used[7] then RunError(207); Rotate(True); st[0]:=a; used[0]:=True ' +
+   'end;',
  'procedure Pop;',
  'begin if not used[0] then RunError(207); used[0]:=False; Rotate(False) end;',
  'procedure SetCompare(a,b:Float);',
  'var c:Integer;',
- 'begin status:=status and 47871; c:=Compare(a,b); if c=0 then status:=status or 16384 else if c<0 then status:=status or 256 end;',
+ 'begin status:=status and 47871; c:=Compare(a,b); if c=0 then ' +
+   'status:=status or 16384 else if c<0 then status:=status or 256 end;',
  'procedure RoundFloat(var a:Float);',
  'var b:Float; bits,i,odd,mode:Integer; half,below,negative:Boolean;',
  'begin',
- ' if Empty(a) or (a.e>=47) then Exit; mode:=(control shr 10) and 3; negative:=a.neg;',
+ ' if Empty(a) or (a.e>=47) then Exit; mode:=(control shr 10) and 3; ' +
+   'negative:=a.neg;',
  ' bits:=47-a.e; half:=False; below:=False;',
  ' odd:=0;',
  ' if bits>48 then begin below:=True; Zero(a) end else begin',
- '  for i:=1 to bits do begin below:=below or half; half:=(a.m[0] and 1)<>0; Right(a.m) end;',
+ '  for i:=1 to bits do begin below:=below or half; half:=(a.m[0] and 1)<>0; ' +
+   'Right(a.m) end;',
  '  odd:=a.m[0] and 1;',
  '  for i:=1 to bits do Left(a.m); Normalize(a)',
  ' end;',
- ' if ((mode=0) and half and (below or (odd<>0))) or ((mode=1) and negative and (half or below)) or',
- '    ((mode=2) and not negative and (half or below)) then begin IntegerFloat(1,b); b.neg:=negative; Add(a,b,a) end',
+ ' if ((mode=0) and half and (below or (odd<>0))) or ((mode=1) and negative ' +
+   'and (half or below)) or',
+ '    ((mode=2) and not negative and (half or below)) then begin ' +
+   'IntegerFloat(1,b); b.neg:=negative; Add(a,b,a) end',
  'end;',
  'procedure REmu(op,width,index:Integer; var mem);',
- 'var p:PRaw; a,b,c:Float; r:RBytes; text:string; err,i,group,target,n:Integer; integerMode,reverse,popping:Boolean;',
+ 'var p:PRaw; a,b,c:Float; r:RBytes; text:string; ' +
+   'err,i,group,target,n:Integer; integerMode,reverse,popping:Boolean;',
  'begin',
  ' p:=Addr(mem);',
- ' if op=0 then begin FillChar(used,SizeOf(used),0); top:=0; control:=895; status:=0; Exit end;',
+ ' if op=0 then begin FillChar(used,SizeOf(used),0); top:=0; control:=895; ' +
+   'status:=0; Exit end;',
  ' if op=1 then begin status:=0; Exit end;',
  ' if op=2 then Exit;',
  ' if op=16 then begin control:=Word(p^[0]) or (Word(p^[1]) shl 8); Exit end;',
  ' if op=17 then begin p^[0]:=control; p^[1]:=control shr 8; Exit end;',
- ' if op=18 then begin n:=(status and 51199) or (top shl 11); p^[0]:=n; p^[1]:=n shr 8; Exit end;',
+ ' if op=18 then begin n:=(status and 51199) or (top shl 11); p^[0]:=n; ' +
+   'p^[1]:=n shr 8; Exit end;',
  ' if (op=27) or (op=28) then begin Rotate(op=27); Exit end;',
  ' if op=3 then begin',
- '  text:=''0''; if index=0 then text:=''1'' else if index=2 then text:=''3.141592653589793''',
- '  else if index=3 then text:=''3.321928094887362'' else if index=4 then text:=''1.442695040888963''',
- '  else if index=5 then text:=''0.3010299956639812'' else if index=6 then text:=''0.6931471805599453'';',
+ '  text:=''0''; if index=0 then text:=''1'' else if index=2 then ' +
+   'text:=''3.141592653589793''',
+ '  else if index=3 then text:=''3.321928094887362'' else if index=4 then ' +
+   'text:=''1.442695040888963''',
+ '  else if index=5 then text:=''0.3010299956639812'' else if index=6 then ' +
+   'text:=''0.6931471805599453'';',
  '  RParse(text,r,err); Unpack(r,a); Push(a); Exit',
  ' end;',
  ' if (op=5) or (op=8) then begin LoadRaw(p,width,op=8,a); Push(a); Exit end;',
  ' if not used[0] then RunError(207);',
- ' if (op=6) or (op=7) or (op=9) or (op=10) then begin StoreRaw(st[0],p,width,op>=9); if (op=7) or (op=10) then Pop; Exit end;',
+ ' if (op=6) or (op=7) or (op=9) or (op=10) then begin ' +
+   'StoreRaw(st[0],p,width,op>=9); if (op=7) or (op=10) then Pop; Exit end;',
  ' if (op>=11) and (op<=14) then begin',
  '  if (index<0) or (index>7) then RunError(207);',
  '  if ((op=11) or (op=14)) and not used[index] then RunError(207);',
- '  if op=11 then Push(st[index]) else if op=14 then begin a:=st[0]; st[0]:=st[index]; st[index]:=a end',
- '  else begin st[index]:=st[0]; used[index]:=True; if op=13 then Pop end; Exit',
+ '  if op=11 then Push(st[index]) else if op=14 then begin a:=st[0]; ' +
+   'st[0]:=st[index]; st[index]:=a end',
+ '  else begin st[index]:=st[0]; used[index]:=True; if op=13 then Pop end; ' +
+   'Exit',
  ' end;',
  ' if op=4 then begin',
  '  a:=st[0];',
  '  if index=0 then MathOp(10,a,a) else if index=1 then a.neg:=False',
  '  else if index=2 then begin if not Empty(a) then a.neg:=not a.neg end',
- '  else if (index=3) or (index=4) then begin Zero(b); SetCompare(a,b); if index=4 then begin',
- '   status:=status and 47359; if Empty(a) then status:=status or 16384 else status:=status or 1024;',
+ '  else if (index=3) or (index=4) then begin Zero(b); SetCompare(a,b); if ' +
+   'index=4 then begin',
+ '   status:=status and 47359; if Empty(a) then status:=status or 16384 else ' +
+   'status:=status or 1024;',
  '   if a.neg then status:=status or 512 end; Exit end',
  '  else if index=5 then RoundFloat(a)',
- '  else if index=6 then begin text:=''0.6931471805599453''; RParse(text,r,err); Unpack(r,b); Multiply(a,b,a); MathOp(15,a,a); IntegerFloat(-1,b); Add(a,b,a) end;',
+ '  else if index=6 then begin text:=''0.6931471805599453''; ' +
+   'RParse(text,r,err); Unpack(r,b); Multiply(a,b,a); MathOp(15,a,a); ' +
+     'IntegerFloat(-1,b); Add(a,b,a) end;',
  '  st[0]:=a; Exit',
  ' end;',
  ' if op=15 then begin',
- '  group:=index and 7; target:=(index shr 3) and 7; popping:=(index and 256)<>0; reverse:=(index and 128)<>0;',
+ '  group:=index and 7; target:=(index shr 3) and 7; popping:=(index and ' +
+   '256)<>0; reverse:=(index and 128)<>0;',
  '  a:=st[0];',
- '  if width=0 then begin if not used[target] then RunError(207); b:=st[target] end',
- '  else begin integerMode:=width>16; if integerMode then Dec(width,16); LoadRaw(p,width,integerMode,b) end;',
+ '  if width=0 then begin if not used[target] then RunError(207); ' +
+   'b:=st[target] end',
+ '  else begin integerMode:=width>16; if integerMode then Dec(width,16); ' +
+   'LoadRaw(p,width,integerMode,b) end;',
  '  if reverse then begin c:=a; a:=b; b:=c end;',
  '  if group=0 then Add(a,b,c) else if group=1 then Multiply(a,b,c)',
- '  else if (group=2) or (group=3) then begin SetCompare(a,b); if group=3 then Pop; Exit end',
+ '  else if (group=2) or (group=3) then begin SetCompare(a,b); if group=3 ' +
+   'then Pop; Exit end',
  '  else if group=4 then begin b.neg:=not b.neg; Add(a,b,c) end',
  '  else if group=5 then begin a.neg:=not a.neg; Add(b,a,c) end',
  '  else if group=6 then Divide(a,b,c) else Divide(b,a,c);',
  '  if reverse then st[target]:=c else st[0]:=c; if popping then Pop; Exit',
  ' end;',
- ' if op=25 then begin a:=st[0]; MathOp(11,a,b); MathOp(12,a,c); Divide(b,c,st[0]); IntegerFloat(1,a); Push(a); Exit end;',
+ ' if op=25 then begin a:=st[0]; MathOp(11,a,b); MathOp(12,a,c); ' +
+   'Divide(b,c,st[0]); IntegerFloat(1,a); Push(a); Exit end;',
  ' if op=26 then begin',
  '  { Intel FXTRACT: ST(0)=significand, ST(1)=unbiased exponent. }',
- '  if Empty(st[0]) then RunError(207); n:=st[0].e; a:=st[0]; a.e:=0; IntegerFloat(n,st[0]); Push(a); Exit',
+ '  if Empty(st[0]) then RunError(207); n:=st[0].e; a:=st[0]; a.e:=0; ' +
+   'IntegerFloat(n,st[0]); Push(a); Exit',
  ' end;',
  ' if not used[1] then RunError(207); a:=st[0]; b:=st[1];',
  ' if op=19 then begin SetCompare(a,b); Pop; Pop end',
  ' else if op=20 then begin n:=IntValue(b,3); Inc(st[0].e,n) end',
- ' else if op=21 then begin Divide(a,b,c); n:=IntValue(c,3); IntegerFloat(n,c); Multiply(c,b,c); c.neg:=not c.neg; Add(a,c,st[0]) end',
+ ' else if op=21 then begin Divide(a,b,c); n:=IntValue(c,3); ' +
+   'IntegerFloat(n,c); Multiply(c,b,c); c.neg:=not c.neg; Add(a,c,st[0]) end',
  ' else if (op=22) or (op=23) then begin',
  '  if op=23 then begin IntegerFloat(1,c); Add(a,c,a) end;',
- '  MathOp(14,a,a); text:=''0.6931471805599453''; RParse(text,r,err); Unpack(r,c); Divide(a,c,a); Multiply(a,b,st[1]); Pop',
+ '  MathOp(14,a,a); text:=''0.6931471805599453''; RParse(text,r,err); ' +
+   'Unpack(r,c); Divide(a,c,a); Multiply(a,b,st[1]); Pop',
  ' end else if op=24 then begin',
  '  if Empty(a) then begin',
- '   if Empty(b) then RunError(207); text:=''1.5707963267948966''; RParse(text,r,err); Unpack(r,c); c.neg:=b.neg',
+ '   if Empty(b) then RunError(207); text:=''1.5707963267948966''; ' +
+   'RParse(text,r,err); Unpack(r,c); c.neg:=b.neg',
  '  end else begin Divide(b,a,c); MathOp(13,c,c);',
- '   if a.neg then begin text:=''3.141592653589793''; RParse(text,r,err); Unpack(r,a); a.neg:=b.neg; Add(c,a,c) end',
+ '   if a.neg then begin text:=''3.141592653589793''; RParse(text,r,err); ' +
+   'Unpack(r,a); a.neg:=b.neg; Add(c,a,c) end',
  '  end; st[1]:=c; Pop',
  ' end',
  ' else RunError(207)',
@@ -945,7 +1154,8 @@ const StringsSource: array[1..209] of string[255] = (
  'Begin',
  ' If Count<>0 Then Begin',
  '  If Source<Dest Then Begin',
- '   For I:=Count-1 DownTo 0 Do Begin Dest[I]:=Source[I]; If I=0 Then Break End;',
+ '   For I:=Count-1 DownTo 0 Do Begin Dest[I]:=Source[I]; If I=0 Then Break ' +
+   'End;',
  '  End Else For I:=0 To Count-1 Do Dest[I]:=Source[I];',
  ' End;',
  ' StrMove:=Dest;',
@@ -970,7 +1180,8 @@ const StringsSource: array[1..209] of string[255] = (
  'Var I: Word;',
  'Begin',
  ' I:=0;',
- ' While (I<MaxLen) And (Source[I]<>#0) Do Begin Dest[I]:=Source[I]; Inc(I) End;',
+ ' While (I<MaxLen) And (Source[I]<>#0) Do Begin Dest[I]:=Source[I]; Inc(I) ' +
+   'End;',
  ' Dest[I]:=#0;',
  ' StrLCopy:=Dest;',
  'End;',
@@ -1128,8 +1339,10 @@ const DosSource: array[1..490] of string[255] = (
  'Interface',
  'Const',
  ' fmClosed=$D7B0; fmInput=$D7B1; fmOutput=$D7B2; fmInOut=$D7B3;',
- ' ReadOnly=$01; Hidden=$02; SysFile=$04; VolumeID=$08; Directory=$10; Archive=$20; AnyFile=$3F;',
- ' FCarry=$0001; FParity=$0004; FAuxiliary=$0010; FZero=$0040; FSign=$0080; FOverflow=$0800;',
+ ' ReadOnly=$01; Hidden=$02; SysFile=$04; VolumeID=$08; Directory=$10; ' +
+   'Archive=$20; AnyFile=$3F;',
+ ' FCarry=$0001; FParity=$0004; FAuxiliary=$0010; FZero=$0040; FSign=$0080; ' +
+   'FOverflow=$0800;',
  'Type',
  ' ComStr=String[127];',
  ' PathStr=String[79];',
@@ -1199,7 +1412,8 @@ const DosSource: array[1..490] of string[255] = (
  'Function DosExitCode: Word;',
  'Function FSearch(Path: PathStr; DirList: String): PathStr;',
  'Function FExpand(Path: PathStr): PathStr;',
- 'Procedure FSplit(Path: PathStr; Var Dir: DirStr; Var Name: NameStr; Var Ext: ExtStr);',
+ 'Procedure FSplit(Path: PathStr; Var Dir: DirStr; Var Name: NameStr; Var ' +
+   'Ext: ExtStr);',
  'Function EnvCount: Integer;',
  'Function EnvStr(Index: Integer): String;',
  'Function GetEnv(EnvVar: String): String;',
@@ -1209,7 +1423,8 @@ const DosSource: array[1..490] of string[255] = (
  ' PWord=^Word;',
  'Var',
  ' R: Registers;',
- ' Stub: Array[0..127] Of Byte;    { code de la routine d''interruption, en DS }',
+ ' Stub: Array[0..127] Of Byte;    { code de la routine d''interruption, en ' +
+   'DS }',
  ' StubLen: Byte;',
  ' StubInt: Integer;',
  ' StubPtr: Pointer;',
@@ -1217,7 +1432,8 @@ const DosSource: array[1..490] of string[255] = (
  '',
  'Procedure StubByte(B: Byte); Begin Stub[StubLen]:=B; Inc(StubLen) End;',
  'Procedure StubWord(W: Word); Begin StubByte(Lo(W)); StubByte(Hi(W)) End;',
- 'Procedure StubMem(Op1,Op2: Byte; Ofs: Word); Begin StubByte(Op1); StubByte(Op2); StubWord(Ofs) End;',
+ 'Procedure StubMem(Op1,Op2: Byte; Ofs: Word); Begin StubByte(Op1); ' +
+   'StubByte(Op2); StubWord(Ofs) End;',
  '',
  'Procedure BuildStub(IntNo: Byte);',
  '{ Routine far, executee avec CS = segment de donnees: charge les registres',
@@ -1243,7 +1459,8 @@ const DosSource: array[1..490] of string[255] = (
  ' StubByte($2E); StubMem($8B,$26,SaveSP); { mov sp,cs:[SaveSP] }',
  ' StubByte($FB);                         { sti }',
  ' StubByte($1E); StubByte($9C); StubByte($50); { push ds; pushf; push ax }',
- ' StubByte($B8); StubWord(DSeg); StubByte($8E); StubByte($D8); { mov ax,DSeg; mov ds,ax }',
+ ' StubByte($B8); StubWord(DSeg); StubByte($8E); StubByte($D8); { mov ' +
+   'ax,DSeg; mov ds,ax }',
  ' StubByte($58);                         { pop ax }',
  ' StubByte($A3); StubWord(RO);           { mov [R.AX],ax }',
  ' StubMem($89,$1E,RO+2);                 { mov [R.BX],bx }',
@@ -1315,7 +1532,8 @@ const DosSource: array[1..490] of string[255] = (
  '',
  'Procedure SetTime(Hour,Minute,Second,Sec100: Word);',
  'Begin',
- ' R.AH:=$2D; R.CH:=Hour; R.CL:=Minute; R.DH:=Second; R.DL:=Sec100; CallInt($21);',
+ ' R.AH:=$2D; R.CH:=Hour; R.CL:=Minute; R.DH:=Second; R.DL:=Sec100; ' +
+   'CallInt($21);',
  'End;',
  '',
  'Procedure GetCBreak(Var Break: Boolean);',
@@ -1381,7 +1599,8 @@ const DosSource: array[1..490] of string[255] = (
  'Procedure SetFTime(Var F; Time: Longint);',
  'Var P: PWord;',
  'Begin',
- ' P:=PWord(@F); R.BX:=P^; R.AX:=$5701; R.CX:=Word(Time); R.DX:=Word(Time Shr 16); DosCall;',
+ ' P:=PWord(@F); R.BX:=P^; R.AX:=$5701; R.CX:=Word(Time); R.DX:=Word(Time ' +
+   'Shr 16); DosCall;',
  'End;',
  '',
  'Procedure SetASCIIZ(S: String);',
@@ -1428,7 +1647,8 @@ const DosSource: array[1..490] of string[255] = (
  '',
  'Procedure PackTime(Var T: DateTime; Var P: Longint);',
  'Begin',
- ' P:=(Longint(T.Year-1980) Shl 25) Or (Longint(T.Month) Shl 21) Or (Longint(T.Day) Shl 16) Or',
+ ' P:=(Longint(T.Year-1980) Shl 25) Or (Longint(T.Month) Shl 21) Or ' +
+   '(Longint(T.Day) Shl 16) Or',
  '    (Longint(T.Hour) Shl 11) Or (Longint(T.Min) Shl 5) Or (T.Sec Div 2);',
  'End;',
  '',
@@ -1440,7 +1660,8 @@ const DosSource: array[1..490] of string[255] = (
  '',
  'Procedure SetIntVec(IntNo: Byte; Vector: Pointer);',
  'Begin',
- ' R.AH:=$25; R.AL:=IntNo; R.DS:=Seg(Vector^); R.DX:=Ofs(Vector^); CallInt($21);',
+ ' R.AH:=$25; R.AL:=IntNo; R.DS:=Seg(Vector^); R.DX:=Ofs(Vector^); ' +
+   'CallInt($21);',
  'End;',
  '',
  'Procedure SwapVectors;',
@@ -1455,7 +1676,8 @@ const DosSource: array[1..490] of string[255] = (
  'End;',
  '',
  'Procedure Exec(Path: PathStr; ComLine: ComStr);',
- 'Var Block: Array[0..6] Of Word; Cmd: Array[0..129] Of Char; I: Integer; Psp,Need: Word;',
+ 'Var Block: Array[0..6] Of Word; Cmd: Array[0..129] Of Char; I: Integer; ' +
+   'Psp,Need: Word;',
  'Begin',
  ' If Length(ComLine)>126 Then ComLine[0]:=#126;',
  ' Cmd[0]:=Chr(Length(ComLine));',
@@ -1512,7 +1734,8 @@ const DosSource: array[1..490] of string[255] = (
  ' End;',
  'End;',
  '',
- 'Procedure FSplit(Path: PathStr; Var Dir: DirStr; Var Name: NameStr; Var Ext: ExtStr);',
+ 'Procedure FSplit(Path: PathStr; Var Dir: DirStr; Var Name: NameStr; Var ' +
+   'Ext: ExtStr);',
  'Var I,DirEnd,ExtPos: Integer;',
  'Begin',
  ' DirEnd:=0; ExtPos:=0;',
@@ -1523,7 +1746,8 @@ const DosSource: array[1..490] of string[255] = (
  '  End;',
  ' Dir:=Copy(Path,1,DirEnd);',
  ' If ExtPos=0 Then Begin Name:=Copy(Path,DirEnd+1,8); Ext:='''' End',
- ' Else Begin Name:=Copy(Path,DirEnd+1,ExtPos-DirEnd-1); Ext:=Copy(Path,ExtPos,4) End;',
+ ' Else Begin Name:=Copy(Path,DirEnd+1,ExtPos-DirEnd-1); ' +
+   'Ext:=Copy(Path,ExtPos,4) End;',
  'End;',
  '',
  'Function FExpand(Path: PathStr): PathStr;',
@@ -1557,7 +1781,8 @@ const DosSource: array[1..490] of string[255] = (
  '  Delete(Res,I,P+2-I);',
  '  If Res='''' Then Res:=''\'';',
  ' Until False;',
- ' If (Length(Res)>=2) And (Res[Length(Res)]=''.'') And (Res[Length(Res)-1]=''\'') Then Delete(Res,Length(Res),1);',
+ ' If (Length(Res)>=2) And (Res[Length(Res)]=''.'') And ' +
+   '(Res[Length(Res)-1]=''\'') Then Delete(Res,Length(Res),1);',
  ' If Res='''' Then Res:=''\'';',
  ' FExpand:=Chr(Drive+64)+'':''+Res;',
  'End;',
@@ -1588,7 +1813,8 @@ const DosSource: array[1..490] of string[255] = (
  ' While Mem[E:O]<>0 Do Begin',
  '  Inc(N);',
  '  If N=Index Then Begin',
- '   While (Mem[E:O]<>0) And (Length(S)<255) Do Begin S:=S+Chr(Mem[E:O]); Inc(O) End;',
+ '   While (Mem[E:O]<>0) And (Length(S)<255) Do Begin S:=S+Chr(Mem[E:O]); ' +
+   'Inc(O) End;',
  '   EnvStr:=S; Exit;',
  '  End;',
  '  While Mem[E:O]<>0 Do Inc(O);',
@@ -1679,7 +1905,8 @@ const CrtSource: array[1..259] of string[255] = (
  'Procedure CopyRow(Src,Dst: Byte; X1,X2: Byte);',
  'Var X: Byte;',
  'Begin',
- ' For X:=X1 To X2 Do MemW[VideoSeg:(Dst*Cols+X)*2]:=MemW[VideoSeg:(Src*Cols+X)*2];',
+ ' For X:=X1 To X2 Do ' +
+   'MemW[VideoSeg:(Dst*Cols+X)*2]:=MemW[VideoSeg:(Src*Cols+X)*2];',
  'End;',
  '',
  'Procedure ScrollUp(Y1,Y2: Byte);',
@@ -1692,7 +1919,8 @@ const CrtSource: array[1..259] of string[255] = (
  'Procedure ScrollDown(Y1,Y2: Byte);',
  'Var Y: Byte;',
  'Begin',
- ' If Y1<Y2 Then For Y:=Y2 DownTo Y1+1 Do CopyRow(Y-1,Y,Lo(WindMin),Lo(WindMax));',
+ ' If Y1<Y2 Then For Y:=Y2 DownTo Y1+1 Do ' +
+   'CopyRow(Y-1,Y,Lo(WindMin),Lo(WindMax));',
  ' FillCells(Lo(WindMin),Y1,Lo(WindMax),Y1);',
  'End;',
  '',
@@ -1718,7 +1946,8 @@ const CrtSource: array[1..259] of string[255] = (
  '    If X>Lo(WindMax) Then Begin X:=Lo(WindMin); Inc(Y) End;',
  '   End;',
  '  End;',
- '  If Y>Hi(WindMax) Then Begin ScrollUp(Hi(WindMin),Hi(WindMax)); Y:=Hi(WindMax) End;',
+ '  If Y>Hi(WindMax) Then Begin ScrollUp(Hi(WindMin),Hi(WindMax)); ' +
+   'Y:=Hi(WindMax) End;',
  ' End;',
  ' SyncCursor(X,Y);',
  'End;',
@@ -1746,7 +1975,8 @@ const CrtSource: array[1..259] of string[255] = (
  'Function ReadKey: Char;',
  'Var K: Word;',
  'Begin',
- ' If HavePending Then Begin HavePending:=False; ReadKey:=Chr(PendingScan); Exit End;',
+ ' If HavePending Then Begin HavePending:=False; ReadKey:=Chr(PendingScan); ' +
+   'Exit End;',
  ' asm',
  '  mov ah,0',
  '  int 16h',
@@ -1785,7 +2015,8 @@ const CrtSource: array[1..259] of string[255] = (
  '',
  'Procedure Window(X1,Y1,X2,Y2: Byte);',
  'Begin',
- ' If (X1<1) Or (Y1<1) Or (X2>Cols) Or (Y2>Rows) Or (X1>X2) Or (Y1>Y2) Then Exit;',
+ ' If (X1<1) Or (Y1<1) Or (X2>Cols) Or (Y2>Rows) Or (X1>X2) Or (Y1>Y2) Then ' +
+   'Exit;',
  ' WindMin:=(Y1-1)*256+(X1-1); WindMax:=(Y2-1)*256+(X2-1);',
  ' SyncCursor(X1-1,Y1-1);',
  'End;',
@@ -1793,7 +2024,8 @@ const CrtSource: array[1..259] of string[255] = (
  'Procedure GotoXY(X,Y: Byte);',
  'Begin',
  ' If (X<1) Or (Y<1) Then Exit;',
- ' If (Lo(WindMin)+X-1>Lo(WindMax)) Or (Hi(WindMin)+Y-1>Hi(WindMax)) Then Exit;',
+ ' If (Lo(WindMin)+X-1>Lo(WindMax)) Or (Hi(WindMin)+Y-1>Hi(WindMax)) Then ' +
+   'Exit;',
  ' SyncCursor(Lo(WindMin)+X-1,Hi(WindMin)+Y-1);',
  'End;',
  '',
@@ -1873,13 +2105,1687 @@ const CrtSource: array[1..259] of string[255] = (
  ' HavePending:=False;',
  'End.');
 { === FIN UNITES INTEGREES === }
+{ === DEBUT UNITE GRAPH === }
+{ Source Pascal de l'unite Graph (BGI integre),
+  compile a la demande comme CRT/DOS.
+  Genere par TESTS/GRAPH/GENGRAPH.PY a partir de TESTS/GRAPH/GRAPH.PAS;
+    apostrophes doublees. }
+const GraphSource: array[1..1610] of string[255] = (
+ 'Unit Graph;',
+ '{$A+,B-,D-,G-,I-,L-,N-,Q-,R-,S-,V-,X+}',
+ '{ Unite GRAPH de Turbo Pascal 7.0 (BGI integre) : pilote video CGA, MCGA, ' +
+   'EGA et',
+ '  VGA par le BIOS et l''acces direct a la memoire video, sans fichier .BGI ' +
+   'ni',
+ '  .CHR. Police 8x8 de la ROM BIOS (toutes les polices sont tracees avec ' +
+   'elle,',
+ '  mises a l''echelle). Extension : VGA, mode 3 = 320x200 en 256 couleurs ' +
+   '(13h). }',
+ 'Interface',
+ 'Const',
+ ' grOk=0; grNoInitGraph=-1; grNotDetected=-2; grFileNotFound=-3; ' +
+   'grInvalidDriver=-4;',
+ ' grNoLoadMem=-5; grNoScanMem=-6; grNoFloodMem=-7; grFontNotFound=-8; ' +
+   'grNoFontMem=-9;',
+ ' grInvalidMode=-10; grError=-11; grIOerror=-12; grInvalidFont=-13;',
+ ' grInvalidFontNum=-14; grInvalidDeviceNum=-15; grInvalidVersion=-18;',
+ ' Detect=0; CGA=1; MCGA=2; EGA=3; EGA64=4; EGAMono=5; IBM8514=6; HercMono=7;',
+ ' ATT400=8; VGA=9; PC3270=10; CurrentDriver=-128;',
+ ' CGAC0=0; CGAC1=1; CGAC2=2; CGAC3=3; CGAHi=4;',
+ ' MCGAC0=0; MCGAC1=1; MCGAC2=2; MCGAC3=3; MCGAMed=4; MCGAHi=5;',
+ ' EGALo=0; EGAHi=1; EGA64Lo=0; EGA64Hi=1; EGAMonoHi=3; HercMonoHi=0;',
+ ' ATT400C0=0; ATT400C1=1; ATT400C2=2; ATT400C3=3; ATT400Med=4; ATT400Hi=5;',
+ ' VGALo=0; VGAMed=1; VGAHi=2; VGA256=3; PC3270Hi=0; IBM8514LO=0; IBM8514HI=1;',
+ ' MaxColors=15;',
+ ' Black=0; Blue=1; Green=2; Cyan=3; Red=4; Magenta=5; Brown=6; LightGray=7;',
+ ' DarkGray=8; LightBlue=9; LightGreen=10; LightCyan=11; LightRed=12;',
+ ' LightMagenta=13; Yellow=14; White=15;',
+ ' EGABlack=0; EGABlue=1; EGAGreen=2; EGACyan=3; EGARed=4; EGAMagenta=5;',
+ ' EGABrown=20; EGALightgray=7; EGADarkgray=56; EGALightblue=57;',
+ ' EGALightgreen=58; EGALightcyan=59; EGALightred=60; EGALightmagenta=61;',
+ ' EGAYellow=62; EGAWhite=63;',
+ ' SolidLn=0; DottedLn=1; CenterLn=2; DashedLn=3; UserBitLn=4;',
+ ' NormWidth=1; ThickWidth=3;',
+ ' CopyPut=0; NormalPut=0; XORPut=1; OrPut=2; AndPut=3; NotPut=4;',
+ ' DefaultFont=0; TriplexFont=1; SmallFont=2; SansSerifFont=3; GothicFont=4;',
+ ' HorizDir=0; VertDir=1; UserCharSize=0;',
+ ' LeftText=0; CenterText=1; RightText=2; BottomText=0; TopText=2;',
+ ' ClipOn=True; ClipOff=False; TopOn=True; TopOff=False;',
+ ' EmptyFill=0; SolidFill=1; LineFill=2; LtSlashFill=3; SlashFill=4;',
+ ' BkSlashFill=5; LtBkSlashFill=6; HatchFill=7; XHatchFill=8; ' +
+   'InterleaveFill=9;',
+ ' WideDotFill=10; CloseDotFill=11; UserFill=12;',
+ 'Type',
+ ' ArcCoordsType=Record X,Y,XStart,YStart,XEnd,YEnd: Integer End;',
+ ' FillPatternType=Array[1..8] Of Byte;',
+ ' FillSettingsType=Record Pattern,Color: Word End;',
+ ' LineSettingsType=Record LineStyle,Pattern,Thickness: Word End;',
+ ' PaletteType=Record Size: Byte; Colors: Array[0..MaxColors] Of ShortInt End;',
+ ' PointType=Record X,Y: Integer End;',
+ ' TextSettingsType=Record Font,Direction,CharSize,Horiz,Vert: Word End;',
+ ' ViewPortType=Record X1,Y1,X2,Y2: Integer; Clip: Boolean End;',
+ 'Var',
+ ' GraphGetMemPtr, GraphFreeMemPtr: Pointer;',
+ 'Procedure Arc(X,Y: Integer; StAngle,EndAngle,Radius: Word);',
+ 'Procedure Bar(X1,Y1,X2,Y2: Integer);',
+ 'Procedure Bar3D(X1,Y1,X2,Y2: Integer; Depth: Word; Top: Boolean);',
+ 'Procedure Circle(X,Y: Integer; Radius: Word);',
+ 'Procedure ClearDevice;',
+ 'Procedure ClearViewPort;',
+ 'Procedure CloseGraph;',
+ 'Procedure DetectGraph(Var GraphDriver,GraphMode: Integer);',
+ 'Procedure DrawPoly(NumPoints: Word; Var PolyPoints);',
+ 'Procedure Ellipse(X,Y: Integer; StAngle,EndAngle,XRadius,YRadius: Word);',
+ 'Procedure FillEllipse(X,Y: Integer; XRadius,YRadius: Word);',
+ 'Procedure FillPoly(NumPoints: Word; Var PolyPoints);',
+ 'Procedure FloodFill(X,Y: Integer; Border: Word);',
+ 'Procedure GetArcCoords(Var ArcCoords: ArcCoordsType);',
+ 'Procedure GetAspectRatio(Var XAsp,YAsp: Word);',
+ 'Function GetBkColor: Word;',
+ 'Function GetColor: Word;',
+ 'Procedure GetDefaultPalette(Var Palette: PaletteType);',
+ 'Function GetDriverName: String;',
+ 'Procedure GetFillPattern(Var FillPattern: FillPatternType);',
+ 'Procedure GetFillSettings(Var FillInfo: FillSettingsType);',
+ 'Function GetGraphMode: Integer;',
+ 'Procedure GetImage(X1,Y1,X2,Y2: Integer; Var BitMap);',
+ 'Procedure GetLineSettings(Var LineInfo: LineSettingsType);',
+ 'Function GetMaxColor: Word;',
+ 'Function GetMaxMode: Integer;',
+ 'Function GetMaxX: Integer;',
+ 'Function GetMaxY: Integer;',
+ 'Function GetModeName(ModeNumber: Integer): String;',
+ 'Procedure GetModeRange(GraphDriver: Integer; Var LoMode,HiMode: Integer);',
+ 'Procedure GetPalette(Var Palette: PaletteType);',
+ 'Function GetPaletteSize: Integer;',
+ 'Function GetPixel(X,Y: Integer): Word;',
+ 'Procedure GetTextSettings(Var TextInfo: TextSettingsType);',
+ 'Procedure GetViewSettings(Var ViewPort: ViewPortType);',
+ 'Function GetX: Integer;',
+ 'Function GetY: Integer;',
+ 'Procedure GraphDefaults;',
+ 'Function GraphErrorMsg(ErrorCode: Integer): String;',
+ 'Function GraphResult: Integer;',
+ 'Function ImageSize(X1,Y1,X2,Y2: Integer): Word;',
+ 'Procedure InitGraph(Var GraphDriver: Integer; Var GraphMode: Integer; ' +
+   'PathToDriver: String);',
+ 'Function InstallUserDriver(DriverFileName: String; AutoDetectPtr: ' +
+   'Pointer): Integer;',
+ 'Function InstallUserFont(FontFileName: String): Integer;',
+ 'Procedure Line(X1,Y1,X2,Y2: Integer);',
+ 'Procedure LineRel(Dx,Dy: Integer);',
+ 'Procedure LineTo(X,Y: Integer);',
+ 'Procedure MoveRel(Dx,Dy: Integer);',
+ 'Procedure MoveTo(X,Y: Integer);',
+ 'Procedure OutText(TextString: String);',
+ 'Procedure OutTextXY(X,Y: Integer; TextString: String);',
+ 'Procedure PieSlice(X,Y: Integer; StAngle,EndAngle,Radius: Word);',
+ 'Procedure PutImage(X,Y: Integer; Var BitMap; BitBlt: Word);',
+ 'Procedure PutPixel(X,Y: Integer; Pixel: Word);',
+ 'Procedure Rectangle(X1,Y1,X2,Y2: Integer);',
+ 'Function RegisterBGIdriver(Driver: Pointer): Integer;',
+ 'Function RegisterBGIfont(Font: Pointer): Integer;',
+ 'Procedure RestoreCrtMode;',
+ 'Procedure Sector(X,Y: Integer; StAngle,EndAngle,XRadius,YRadius: Word);',
+ 'Procedure SetActivePage(Page: Word);',
+ 'Procedure SetAllPalette(Var Palette);',
+ 'Procedure SetAspectRatio(XAsp,YAsp: Word);',
+ 'Procedure SetBkColor(ColorNum: Word);',
+ 'Procedure SetColor(Color: Word);',
+ 'Procedure SetFillPattern(Pattern: FillPatternType; Color: Word);',
+ 'Procedure SetFillStyle(Pattern: Word; Color: Word);',
+ 'Function SetGraphBufSize(BufSize: Word): Word;',
+ 'Procedure SetGraphMode(Mode: Integer);',
+ 'Procedure SetLineStyle(LineStyle: Word; Pattern: Word; Thickness: Word);',
+ 'Procedure SetPalette(ColorNum: Word; Color: ShortInt);',
+ 'Procedure SetRGBPalette(ColorNum,RedValue,GreenValue,BlueValue: Integer);',
+ 'Procedure SetTextJustify(Horiz,Vert: Word);',
+ 'Procedure SetTextStyle(Font,Direction: Word; CharSize: Word);',
+ 'Procedure SetUserCharSize(MultX,DivX,MultY,DivY: Word);',
+ 'Procedure SetViewPort(X1,Y1,X2,Y2: Integer; Clip: Boolean);',
+ 'Procedure SetVisualPage(Page: Word);',
+ 'Procedure SetWriteMode(WriteMode: Integer);',
+ 'Function TextHeight(TextString: String): Word;',
+ 'Function TextWidth(TextString: String): Word;',
+ 'Implementation',
+ 'Const',
+ ' MaxPoly=399;',
+ ' DefPal: Array[0..15] Of ShortInt = ' +
+   '(0,1,2,3,4,5,20,7,56,57,58,59,60,61,62,63);',
+ ' SinTab: Array[0..90] Of Integer = (',
+ '  0,286,572,857,1143,1428,1713,1997,2280,2563,2845,3126,3406,3686,3964,4240,',
+ '  4516,4790,5063,5334,5604,5872,6138,6402,6664,6924,7182,7438,7692,7943,' +
+   '8192,',
+ '  8438,8682,8923,9162,9397,9630,9860,10087,10311,10531,10749,10963,11174,' +
+   '11381,',
+ '  11585,11786,11982,12176,12365,12551,12733,12911,13085,13255,13421,13583,' +
+   '13741,',
+ '  13894,14044,14189,14330,14466,14598,14726,14849,14968,15082,15191,15296,' +
+   '15396,',
+ '  15491,15582,15668,15749,15826,15897,15964,16026,16083,16135,16182,16225,' +
+   '16262,',
+ '  16294,16322,16344,16362,16374,16382,16384);',
+ ' FillTab: Array[0..95] Of Byte = (',
+ '  $00,$00,$00,$00,$00,$00,$00,$00,',
+ '  $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,',
+ '  $FF,$FF,$00,$00,$FF,$FF,$00,$00,',
+ '  $01,$02,$04,$08,$10,$20,$40,$80,',
+ '  $E0,$C1,$83,$07,$0E,$1C,$38,$70,',
+ '  $F0,$78,$3C,$1E,$0F,$87,$C3,$E1,',
+ '  $A5,$D2,$69,$B4,$5A,$2D,$96,$4B,',
+ '  $FF,$88,$88,$88,$FF,$88,$88,$88,',
+ '  $81,$42,$24,$18,$18,$24,$42,$81,',
+ '  $CC,$33,$CC,$33,$CC,$33,$CC,$33,',
+ '  $80,$00,$08,$00,$80,$00,$08,$00,',
+ '  $88,$00,$22,$00,$88,$00,$22,$00);',
+ 'Type',
+ ' TPts=Array[0..8191] Of PointType;',
+ ' PPts=^TPts;',
+ ' TBytes=Array[0..65519] Of Byte;',
+ ' PBytes=^TBytes;',
+ ' TSeed=Record X,Y: Integer End;',
+ ' TSeeds=Array[0..4095] Of TSeed;',
+ ' PSeeds=^TSeeds;',
+ 'Var',
+ ' Active: Boolean;            { mode graphique en cours }',
+ ' Opened: Boolean;            { InitGraph effectue }',
+ ' GErr: Integer;',
+ ' CurDrv, CurMode: Integer;',
+ ' BiosMode, Kind, SavedMode: Byte;',
+ ' { Kind : 0 plans EGA/VGA 16 couleurs, 1 CGA 4 couleurs, 2 CGA 2 couleurs,',
+ '   3 2 couleurs lineaire (11h), 4 256 couleurs (13h) }',
+ ' ScrW, ScrH: Integer;',
+ ' MaxCol, PageLen, PageBase, NPages: Word;',
+ ' HaveVGA, HaveMCGA, HaveEGA, MonoEGA: Boolean;',
+ ' DacDirty: Boolean;',
+ ' CX1, CY1, CX2, CY2: Integer;        { rectangle d''ecretage absolu }',
+ ' VX1, VY1, VX2, VY2: Integer;',
+ ' VClip: Boolean;',
+ ' CPX, CPY: Integer;',
+ ' CurColor, BkIdx: Word;',
+ ' FillPat, UserPat: FillPatternType;',
+ ' FillStyle, FillColor: Word;',
+ ' LnStyle, LnPat, LnThick: Word;',
+ ' TxFont, TxDir, TxSize, TxHoriz, TxVert: Word;',
+ ' UMX, UDX, UMY, UDY: Word;',
+ ' WMode: Integer;',
+ ' AspX, AspY: Word;',
+ ' Pal: PaletteType;',
+ ' ArcInfo: ArcCoordsType;',
+ ' BufSz: Word;',
+ ' POp: Byte;',
+ ' RA, RB, RC, RD: Word;',
+ ' FSeg0, FOfs0, FSeg1, FOfs1: Word;',
+ ' PolyBuf: Array[0..MaxPoly] Of PointType;',
+ ' FVis: PBytes;',
+ ' FW: Integer;',
+ '',
+ 'Procedure Int10(A,B,C,D: Word);',
+ 'Begin',
+ ' asm',
+ '  mov ax,A',
+ '  mov bx,B',
+ '  mov cx,C',
+ '  mov dx,D',
+ '  push bp',
+ '  push si',
+ '  push di',
+ '  int 10h',
+ '  pop di',
+ '  pop si',
+ '  pop bp',
+ '  mov RA,ax',
+ '  mov RB,bx',
+ '  mov RC,cx',
+ '  mov RD,dx',
+ ' end;',
+ 'End;',
+ '',
+ '{ ===== Materiel ===== }',
+ '',
+ 'Procedure DetectHW;',
+ 'Begin',
+ ' HaveVGA:=False; HaveMCGA:=False; HaveEGA:=False; MonoEGA:=False;',
+ ' Int10($1A00,0,0,0);',
+ ' If Lo(RA)=$1A Then Begin',
+ '  Case Lo(RB) Of',
+ '   7,8: HaveVGA:=True;',
+ '   $A,$B,$C: HaveMCGA:=True;',
+ '  End;',
+ ' End;',
+ ' Int10($1200,$10,0,0);',
+ ' If Lo(RB)<>$10 Then Begin',
+ '  HaveEGA:=True; MonoEGA:=Hi(RB)<>0;',
+ ' End;',
+ ' If HaveVGA Then HaveEGA:=True;',
+ 'End;',
+ '',
+ 'Procedure DetectGraph(Var GraphDriver,GraphMode: Integer);',
+ 'Begin',
+ ' DetectHW;',
+ ' If HaveVGA Then Begin GraphDriver:=VGA; GraphMode:=VGAHi End',
+ ' Else If HaveMCGA Then Begin GraphDriver:=MCGA; GraphMode:=MCGAHi End',
+ ' Else If HaveEGA Then Begin',
+ '  If MonoEGA Then Begin GraphDriver:=EGAMono; GraphMode:=EGAMonoHi End',
+ '  Else Begin GraphDriver:=EGA; GraphMode:=EGAHi End',
+ ' End',
+ ' Else If (Mem[$40:$10] And $30)=$30 Then Begin GraphDriver:=HercMono; ' +
+   'GraphMode:=HercMonoHi End',
+ ' Else Begin GraphDriver:=CGA; GraphMode:=CGAHi End;',
+ 'End;',
+ '',
+ 'Procedure GetModeRange(GraphDriver: Integer; Var LoMode,HiMode: Integer);',
+ 'Begin',
+ ' LoMode:=0;',
+ ' Case GraphDriver Of',
+ '  CGA: HiMode:=4;',
+ '  MCGA,ATT400: HiMode:=5;',
+ '  EGA,EGA64,IBM8514: HiMode:=1;',
+ '  EGAMono: Begin LoMode:=3; HiMode:=3 End;',
+ '  HercMono,PC3270: HiMode:=0;',
+ '  VGA: HiMode:=2;',
+ ' Else Begin LoMode:=-1; HiMode:=-1 End;',
+ ' End;',
+ 'End;',
+ '',
+ 'Function SetModeInfo(D,M: Integer): Boolean;',
+ '{ Renseigne les caracteristiques du couple pilote/mode ; Faux si non gere. }',
+ 'Begin',
+ ' SetModeInfo:=True;',
+ ' PageLen:=0; NPages:=1;',
+ ' If ((D=CGA) Or (D=MCGA)) And (M>=0) And (M<=3) Then Begin',
+ '  BiosMode:=4; Kind:=1; ScrW:=320; ScrH:=200; MaxCol:=3; AspX:=8333; ' +
+   'AspY:=10000;',
+ ' End Else If ((D=CGA) Or (D=MCGA)) And (M=4) Then Begin',
+ '  BiosMode:=6; Kind:=2; ScrW:=640; ScrH:=200; MaxCol:=1; AspX:=4167; ' +
+   'AspY:=10000;',
+ '  If D=CGA Then AspX:=5200;',
+ ' End Else If (D=MCGA) And (M=5) Then Begin',
+ '  BiosMode:=$11; Kind:=3; ScrW:=640; ScrH:=480; MaxCol:=1; AspX:=10000; ' +
+   'AspY:=10000;',
+ ' End Else If ((D=EGA) Or (D=VGA)) And (M=0) Then Begin',
+ '  BiosMode:=$E; Kind:=0; ScrW:=640; ScrH:=200; MaxCol:=15; AspX:=4400; ' +
+   'AspY:=10000;',
+ '  NPages:=4; PageLen:=$4000;',
+ ' End Else If ((D=EGA) Or (D=VGA)) And (M=1) Then Begin',
+ '  BiosMode:=$10; Kind:=0; ScrW:=640; ScrH:=350; MaxCol:=15; AspX:=7750; ' +
+   'AspY:=10000;',
+ '  NPages:=2; PageLen:=$8000;',
+ ' End Else If (D=VGA) And (M=2) Then Begin',
+ '  BiosMode:=$12; Kind:=0; ScrW:=640; ScrH:=480; MaxCol:=15; AspX:=10000; ' +
+   'AspY:=10000;',
+ ' End Else If (D=VGA) And (M=3) Then Begin',
+ '  BiosMode:=$13; Kind:=4; ScrW:=320; ScrH:=200; MaxCol:=255; AspX:=8333; ' +
+   'AspY:=10000;',
+ ' End Else SetModeInfo:=False;',
+ 'End;',
+ '',
+ 'Function GetMaxMode: Integer;',
+ 'Var L,H: Integer;',
+ 'Begin',
+ ' GetMaxMode:=0;',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' GetModeRange(CurDrv,L,H);',
+ ' GetMaxMode:=H;',
+ 'End;',
+ '',
+ 'Function GetDriverName: String;',
+ 'Begin',
+ ' GetDriverName:='''';',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' Case CurDrv Of',
+ '  CGA: GetDriverName:=''CGA'';',
+ '  MCGA: GetDriverName:=''MCGA'';',
+ '  EGA: GetDriverName:=''EGA'';',
+ '  EGA64: GetDriverName:=''EGA64'';',
+ '  EGAMono: GetDriverName:=''EGAMONO'';',
+ '  IBM8514: GetDriverName:=''IBM8514'';',
+ '  HercMono: GetDriverName:=''HERCMONO'';',
+ '  ATT400: GetDriverName:=''ATT400'';',
+ '  VGA: GetDriverName:=''VGA'';',
+ '  PC3270: GetDriverName:=''PC3270'';',
+ ' End;',
+ 'End;',
+ '',
+ 'Function GetModeName(ModeNumber: Integer): String;',
+ 'Begin',
+ ' GetModeName:='''';',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (CurDrv=CGA) Or (CurDrv=MCGA) Then Begin',
+ '  Case ModeNumber Of',
+ '   0: GetModeName:=''320 x 200 CGA P0'';',
+ '   1: GetModeName:=''320 x 200 CGA P1'';',
+ '   2: GetModeName:=''320 x 200 CGA P2'';',
+ '   3: GetModeName:=''320 x 200 CGA P3'';',
+ '   4: GetModeName:=''640 x 200 CGA'';',
+ '   5: If CurDrv=MCGA Then GetModeName:=''640 x 480 MCGA'';',
+ '  End;',
+ ' End Else If CurDrv=EGA Then Begin',
+ '  If ModeNumber=0 Then GetModeName:=''640 x 200 EGA''',
+ '  Else If ModeNumber=1 Then GetModeName:=''640 x 350 EGA'';',
+ ' End Else If CurDrv=VGA Then Begin',
+ '  Case ModeNumber Of',
+ '   0: GetModeName:=''640 x 200 VGA'';',
+ '   1: GetModeName:=''640 x 350 VGA'';',
+ '   2: GetModeName:=''640 x 480 VGA'';',
+ '   3: GetModeName:=''320 x 200 VGA256'';',
+ '  End;',
+ ' End;',
+ 'End;',
+ '',
+ 'Function GraphErrorMsg(ErrorCode: Integer): String;',
+ 'Var S: String;',
+ 'Begin',
+ ' Case ErrorCode Of',
+ '  0: S:=''No error'';',
+ '  -1: S:=''Graphics not installed (use InitGraph)'';',
+ '  -2: S:=''Graphics hardware not detected'';',
+ '  -3: S:=''Device driver file not found ()'';',
+ '  -4: S:=''Invalid device driver file ()'';',
+ '  -5: S:=''Not enough memory to load driver'';',
+ '  -6: S:=''Out of memory in scan fill'';',
+ '  -7: S:=''Out of memory in flood fill'';',
+ '  -8: S:=''Font file not found ()'';',
+ '  -9: S:=''Not enough memory to load font'';',
+ '  -10: S:=''Invalid graphics mode for selected driver'';',
+ '  -11: S:=''Graphics error'';',
+ '  -12: S:=''Graphics I/O error'';',
+ '  -13: S:=''Invalid font file ()'';',
+ '  -14: S:=''Invalid font number'';',
+ '  -15: S:=''Invalid device number'';',
+ '  -18: S:=''Invalid version of file ()'';',
+ ' Else Begin Str(ErrorCode,S); S:=''Graphics error (''+S+'')'' End;',
+ ' End;',
+ ' GraphErrorMsg:=S;',
+ 'End;',
+ '',
+ 'Function GraphResult: Integer;',
+ 'Begin',
+ ' GraphResult:=GErr; GErr:=0;',
+ 'End;',
+ '',
+ '{ ===== Palette ===== }',
+ '',
+ 'Procedure ACSet(Reg,Val: Word);',
+ 'Begin',
+ ' Int10($1000,Val*256+Reg,0,0);',
+ 'End;',
+ '',
+ 'Procedure DacSet(Idx,R,G,B: Word);',
+ 'Begin',
+ ' Int10($1010,Idx,G*256+B,R*256);',
+ 'End;',
+ '',
+ 'Procedure EGAtoRGB(E: Word; Var R,G,B: Word);',
+ 'Begin',
+ ' R:=((E Shr 2) And 1)*$2A+((E Shr 5) And 1)*$15;',
+ ' G:=((E Shr 1) And 1)*$2A+((E Shr 4) And 1)*$15;',
+ ' B:=(E And 1)*$2A+((E Shr 3) And 1)*$15;',
+ 'End;',
+ '',
+ 'Procedure SetPalette(ColorNum: Word; Color: ShortInt);',
+ 'Var R,G,B: Word;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (ColorNum>MaxCol) Or (Color<-1) Or (Color>63) Then Begin ' +
+   'GErr:=grError; Exit End;',
+ ' If Color=-1 Then Exit;',
+ ' If ColorNum<16 Then Pal.Colors[ColorNum]:=Color;',
+ ' Case Kind Of',
+ '  0: ACSet(ColorNum,Color);',
+ '  4: Begin EGAtoRGB(Color,R,G,B); DacSet(ColorNum,R,G,B); DacDirty:=True ' +
+   'End;',
+ '  1,2: If ColorNum=0 Then Int10($0B00,Color And 15,0,0);',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure SetBkColor(ColorNum: Word);',
+ 'Var R,G,B: Word;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If ColorNum>MaxCol Then Begin GErr:=grError; Exit End;',
+ ' BkIdx:=ColorNum;',
+ ' Case Kind Of',
+ '  0: Begin Pal.Colors[0]:=Pal.Colors[ColorNum]; ACSet(0,Pal.Colors[0]) End;',
+ '  1,2: Begin Pal.Colors[0]:=ColorNum; Int10($0B00,ColorNum,0,0) End;',
+ '  4: Begin',
+ '   Int10($1015,ColorNum,0,0);',
+ '   R:=Hi(RD); G:=Hi(RC); B:=Lo(RC);',
+ '   DacSet(0,R,G,B); DacDirty:=True;',
+ '  End;',
+ ' End;',
+ 'End;',
+ '',
+ 'Function GetBkColor: Word;',
+ 'Begin',
+ ' GetBkColor:=BkIdx;',
+ 'End;',
+ '',
+ 'Procedure SetRGBPalette(ColorNum,RedValue,GreenValue,BlueValue: Integer);',
+ 'Var Idx: Word;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If Not HaveVGA Then Exit;',
+ ' If (ColorNum<0) Or (ColorNum>MaxCol) Then Begin GErr:=grError; Exit End;',
+ ' Idx:=ColorNum;',
+ ' If Kind=0 Then Begin',
+ '  Int10($1007,ColorNum,0,0);   { registre palette -> index DAC }',
+ '  Idx:=Hi(RB);',
+ ' End Else If Kind<>4 Then Exit;',
+ ' DacSet(Idx,(RedValue And 255) Shr 2,(GreenValue And 255) Shr 2,(BlueValue ' +
+   'And 255) Shr 2);',
+ ' DacDirty:=True;',
+ 'End;',
+ '',
+ 'Procedure SetAllPalette(Var Palette);',
+ 'Var P: ^PaletteType; I: Word;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' P:=@Palette;',
+ ' If P^.Size>MaxCol+1 Then Begin GErr:=grError; Exit End;',
+ ' For I:=0 To P^.Size-1 Do',
+ '  If (P^.Colors[I]>=0) And (P^.Colors[I]<=63) Then ' +
+   'SetPalette(I,P^.Colors[I]);',
+ 'End;',
+ '',
+ 'Procedure GetPalette(Var Palette: PaletteType);',
+ 'Begin',
+ ' Palette:=Pal;',
+ 'End;',
+ '',
+ 'Procedure GetDefaultPalette(Var Palette: PaletteType);',
+ 'Var I: Word;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' Palette.Size:=Pal.Size;',
+ ' For I:=0 To 15 Do',
+ '  If (Kind=0) Or (Kind=4) Then Palette.Colors[I]:=DefPal[I] Else ' +
+   'Palette.Colors[I]:=I;',
+ 'End;',
+ '',
+ 'Function GetPaletteSize: Integer;',
+ 'Begin',
+ ' GetPaletteSize:=MaxCol+1;',
+ 'End;',
+ '',
+ 'Procedure ResetPalette;',
+ 'Var I,R,G,B: Word;',
+ 'Begin',
+ ' Pal.Size:=16; If MaxCol<15 Then Pal.Size:=MaxCol+1;',
+ ' BkIdx:=0;',
+ ' For I:=0 To 15 Do Pal.Colors[I]:=I;',
+ ' If Kind=0 Then Begin',
+ '  For I:=0 To 15 Do Pal.Colors[I]:=DefPal[I];',
+ '  For I:=0 To 15 Do ACSet(I,DefPal[I]);',
+ '  If HaveVGA And DacDirty Then',
+ '   For I:=0 To 15 Do Begin EGAtoRGB(DefPal[I],R,G,B); ' +
+   'DacSet(DefPal[I],R,G,B) End;',
+ ' End Else If Kind=4 Then Begin',
+ '  Pal.Size:=16;',
+ '  If DacDirty Then Begin',
+ '   For I:=0 To 15 Do Pal.Colors[I]:=DefPal[I];',
+ '   For I:=0 To 15 Do Begin EGAtoRGB(DefPal[I],R,G,B); DacSet(I,R,G,B) End;',
+ '  End;',
+ ' End;',
+ ' DacDirty:=False;',
+ 'End;',
+ '',
+ '{ ===== Primitives de trace ===== }',
+ '',
+ 'Function Comb(Old,V,Mask: Byte): Byte;',
+ '{ Combine V (deja positionne) dans Old selon POp, sur les bits de Mask. }',
+ 'Begin',
+ ' Case POp Of',
+ '  0: Comb:=(Old And (Not Mask)) Or (V And Mask);',
+ '  1: Comb:=Old And (V Or (Not Mask));',
+ '  2: Comb:=Old Or (V And Mask);',
+ ' Else Comb:=Old Xor (V And Mask);',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure PixSetup(Op: Byte);',
+ 'Begin',
+ ' POp:=Op;',
+ ' If Kind=0 Then Begin',
+ '  Port[$3C4]:=2; Port[$3C5]:=15;',
+ '  Port[$3CE]:=1; Port[$3CF]:=0;',
+ '  Port[$3CE]:=5; Port[$3CF]:=2;',
+ '  Port[$3CE]:=3; Port[$3CF]:=Op Shl 3;',
+ ' End Else If Kind=3 Then Begin',
+ '  Port[$3CE]:=1; Port[$3CF]:=0;',
+ '  Port[$3CE]:=5; Port[$3CF]:=0;',
+ '  Port[$3CE]:=3; Port[$3CF]:=0;',
+ '  Port[$3CE]:=8; Port[$3CF]:=255;',
+ '  Port[$3CE]:=4; Port[$3CF]:=0;',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure PixDone;',
+ 'Begin',
+ ' If (Kind=0) Or (Kind=3) Then Begin',
+ '  Port[$3CE]:=5; Port[$3CF]:=0;',
+ '  Port[$3CE]:=3; Port[$3CF]:=0;',
+ '  Port[$3CE]:=8; Port[$3CF]:=255;',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure PixPlot(X,Y: Integer; C: Word);',
+ '{ Trace un pixel en coordonnees ecran (dans l''ecran), selon POp. }',
+ 'Var Ofs,XW,YW: Word; B,Sh: Byte;',
+ 'Begin',
+ ' XW:=X; YW:=Y;',
+ ' Case Kind Of',
+ '  0: Begin',
+ '   Ofs:=PageBase+YW*80+(XW Shr 3);',
+ '   Port[$3CE]:=8; Port[$3CF]:=$80 Shr (XW And 7);',
+ '   B:=Mem[$A000:Ofs];',
+ '   Mem[$A000:Ofs]:=C;',
+ '  End;',
+ '  1: Begin',
+ '   Ofs:=(YW And 1)*$2000+(YW Shr 1)*80+(XW Shr 2);',
+ '   Sh:=6-((XW And 3) Shl 1);',
+ '   Mem[$B800:Ofs]:=Comb(Mem[$B800:Ofs],C Shl Sh,3 Shl Sh);',
+ '  End;',
+ '  2: Begin',
+ '   Ofs:=(YW And 1)*$2000+(YW Shr 1)*80+(XW Shr 3);',
+ '   Sh:=7-(XW And 7);',
+ '   Mem[$B800:Ofs]:=Comb(Mem[$B800:Ofs],C Shl Sh,1 Shl Sh);',
+ '  End;',
+ '  3: Begin',
+ '   Ofs:=YW*80+(XW Shr 3);',
+ '   Sh:=7-(XW And 7);',
+ '   Mem[$A000:Ofs]:=Comb(Mem[$A000:Ofs],C Shl Sh,1 Shl Sh);',
+ '  End;',
+ '  4: Begin',
+ '   Ofs:=YW*320+XW;',
+ '   Mem[$A000:Ofs]:=Comb(Mem[$A000:Ofs],C,255);',
+ '  End;',
+ ' End;',
+ 'End;',
+ '',
+ 'Function PixGet(X,Y: Integer): Word;',
+ 'Var Ofs,XW,YW,V: Word; P: Integer;',
+ 'Begin',
+ ' XW:=X; YW:=Y; V:=0;',
+ ' Case Kind Of',
+ '  0: Begin',
+ '   Ofs:=PageBase+YW*80+(XW Shr 3);',
+ '   Port[$3CE]:=4;',
+ '   For P:=3 DownTo 0 Do Begin',
+ '    Port[$3CF]:=P;',
+ '    V:=(V Shl 1) Or ((Mem[$A000:Ofs] Shr (7-(XW And 7))) And 1);',
+ '   End;',
+ '  End;',
+ '  1: Begin',
+ '   Ofs:=(YW And 1)*$2000+(YW Shr 1)*80+(XW Shr 2);',
+ '   V:=(Mem[$B800:Ofs] Shr (6-((XW And 3) Shl 1))) And 3;',
+ '  End;',
+ '  2: Begin',
+ '   Ofs:=(YW And 1)*$2000+(YW Shr 1)*80+(XW Shr 3);',
+ '   V:=(Mem[$B800:Ofs] Shr (7-(XW And 7))) And 1;',
+ '  End;',
+ '  3: Begin',
+ '   Port[$3CE]:=4; Port[$3CF]:=0;',
+ '   Ofs:=YW*80+(XW Shr 3);',
+ '   V:=(Mem[$A000:Ofs] Shr (7-(XW And 7))) And 1;',
+ '  End;',
+ '  4: V:=Mem[$A000:YW*320+XW];',
+ ' End;',
+ ' PixGet:=V;',
+ 'End;',
+ '',
+ 'Procedure Plot(X,Y: Integer; C: Word);',
+ 'Begin',
+ ' If (X>=CX1) And (X<=CX2) And (Y>=CY1) And (Y<=CY2) Then PixPlot(X,Y,C);',
+ 'End;',
+ '',
+ 'Procedure ClearBytes(P: PBytes; Count: Longint);',
+ '{ Met Count octets a zero (FillChar est limite a 32767 octets). }',
+ 'Var Off: Longint; N: Word;',
+ 'Begin',
+ ' Off:=0;',
+ ' While Off<Count Do Begin',
+ '  N:=16384;',
+ '  If Count-Off<N Then N:=Count-Off;',
+ '  FillChar(P^[Off],N,0);',
+ '  Inc(Off,N);',
+ ' End;',
+ 'End;',
+ '',
+ 'Function WriteOp: Byte;',
+ 'Begin',
+ ' Case WMode Of',
+ '  1: WriteOp:=3;',
+ '  2: WriteOp:=2;',
+ '  3: WriteOp:=1;',
+ ' Else WriteOp:=0;',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure SpanFill(X1,X2,Y: Integer);',
+ '{ Remplit [X1,X2] de la ligne Y (ecran, deja ecrete) avec la trame courante.',
+ '  Les bits a 0 de la trame prennent la couleur 0. POp doit valoir 0. }',
+ 'Var PB,M,F,G,B: Byte; XB,XB1,XB2,Ofs,YW: Word; X: Integer;',
+ 'Begin',
+ ' If X1>X2 Then Exit;',
+ ' PB:=FillPat[(Y And 7)+1];',
+ ' If Kind=0 Then Begin',
+ '  XB1:=X1 Shr 3; XB2:=X2 Shr 3;',
+ '  YW:=Y;',
+ '  Ofs:=PageBase+YW*80;',
+ '  For XB:=XB1 To XB2 Do Begin',
+ '   M:=255;',
+ '   If XB=XB1 Then M:=M And (255 Shr (X1 And 7));',
+ '   If XB=XB2 Then M:=M And (255 Shl (7-(X2 And 7)));',
+ '   F:=PB And M; G:=(Not PB) And M;',
+ '   If F<>0 Then Begin',
+ '    Port[$3CE]:=8; Port[$3CF]:=F;',
+ '    B:=Mem[$A000:Ofs+XB]; Mem[$A000:Ofs+XB]:=FillColor;',
+ '   End;',
+ '   If G<>0 Then Begin',
+ '    Port[$3CE]:=8; Port[$3CF]:=G;',
+ '    B:=Mem[$A000:Ofs+XB]; Mem[$A000:Ofs+XB]:=0;',
+ '   End;',
+ '  End;',
+ ' End Else',
+ '  For X:=X1 To X2 Do',
+ '   If (PB And ($80 Shr (X And 7)))<>0 Then PixPlot(X,Y,FillColor) Else ' +
+   'PixPlot(X,Y,0);',
+ 'End;',
+ '',
+ 'Procedure ClearRect(X1,Y1,X2,Y2: Integer);',
+ '{ Efface un rectangle ecran (couleur 0). }',
+ 'Var Save: FillPatternType; Y: Integer;',
+ 'Begin',
+ ' Save:=FillPat;',
+ ' FillChar(FillPat,8,0);',
+ ' PixSetup(0);',
+ ' For Y:=Y1 To Y2 Do SpanFill(X1,X2,Y);',
+ ' PixDone;',
+ ' FillPat:=Save;',
+ 'End;',
+ '',
+ 'Procedure LineAbs(X1,Y1,X2,Y2: Integer; Skip1,SkipLast: Boolean);',
+ 'Var DX,DY,SX,SY,E,E2,X,Y,Cnt: Longint; Mostly: Boolean; Bit: Word; Go: ' +
+   'Boolean;',
+ 'Begin',
+ ' If (X1<CX1-1) And (X2<CX1-1) Then Exit;',
+ ' If (X1>CX2+1) And (X2>CX2+1) Then Exit;',
+ ' If (Y1<CY1-1) And (Y2<CY1-1) Then Exit;',
+ ' If (Y1>CY2+1) And (Y2>CY2+1) Then Exit;',
+ ' DX:=Abs(Longint(X2)-X1); DY:=Abs(Longint(Y2)-Y1);',
+ ' If X1<X2 Then SX:=1 Else SX:=-1;',
+ ' If Y1<Y2 Then SY:=1 Else SY:=-1;',
+ ' Mostly:=DX>=DY;',
+ ' E:=DX-DY; X:=X1; Y:=Y1; Cnt:=0; Go:=True;',
+ ' While Go Do Begin',
+ '  Bit:=1;',
+ '  If LnPat<>$FFFF Then Bit:=LnPat And (Word($8000) Shr (Cnt And 15));',
+ '  If (Bit<>0) And ((Cnt>0) Or Not Skip1) And Not (SkipLast And (X=X2) And ' +
+   '(Y=Y2)) Then Begin',
+ '   Plot(X,Y,CurColor);',
+ '   If LnThick>1 Then',
+ '    If Mostly Then Begin Plot(X,Y-1,CurColor); Plot(X,Y+1,CurColor) End',
+ '    Else Begin Plot(X-1,Y,CurColor); Plot(X+1,Y,CurColor) End;',
+ '  End;',
+ '  If (X=X2) And (Y=Y2) Then Go:=False Else Begin',
+ '   E2:=2*E;',
+ '   If E2>-DY Then Begin E:=E-DY; X:=X+SX End;',
+ '   If E2<DX Then Begin E:=E+DX; Y:=Y+SY End;',
+ '   Inc(Cnt);',
+ '  End;',
+ ' End;',
+ 'End;',
+ '',
+ '{ ===== Etat, mode, fenetre ===== }',
+ '',
+ 'Procedure SetClip;',
+ 'Begin',
+ ' If VClip Then Begin CX1:=VX1; CY1:=VY1; CX2:=VX2; CY2:=VY2 End',
+ ' Else Begin CX1:=0; CY1:=0; CX2:=ScrW-1; CY2:=ScrH-1 End;',
+ 'End;',
+ '',
+ 'Procedure LoadFont;',
+ '{ Police 8x8 : moitie basse (BIOS EGA/VGA ou ROM F000:FA6E), moitie haute. }',
+ 'Begin',
+ ' FSeg0:=0; FOfs0:=0; FSeg1:=0; FOfs1:=0;',
+ ' If HaveEGA Then Begin',
+ '  asm',
+ '   push bp',
+ '   push si',
+ '   push di',
+ '   xor bx,bx',
+ '   mov es,bx',
+ '   xor bp,bp',
+ '   mov ax,1130h',
+ '   mov bh,3',
+ '   int 10h',
+ '   mov dx,bp',
+ '   mov bx,es',
+ '   pop di',
+ '   pop si',
+ '   pop bp',
+ '   mov FOfs0,dx',
+ '   mov FSeg0,bx',
+ '   push bp',
+ '   push si',
+ '   push di',
+ '   xor bx,bx',
+ '   mov es,bx',
+ '   xor bp,bp',
+ '   mov ax,1130h',
+ '   mov bh,4',
+ '   int 10h',
+ '   mov dx,bp',
+ '   mov bx,es',
+ '   pop di',
+ '   pop si',
+ '   pop bp',
+ '   mov FOfs1,dx',
+ '   mov FSeg1,bx',
+ '  end;',
+ ' End;',
+ ' If FSeg0=0 Then Begin FSeg0:=$F000; FOfs0:=$FA6E End;',
+ ' If FSeg1=0 Then Begin FOfs1:=MemW[0:$7C]; FSeg1:=MemW[0:$7E] End;',
+ 'End;',
+ '',
+ 'Procedure GraphDefaultsInt;',
+ 'Var I: Word;',
+ 'Begin',
+ ' CPX:=0; CPY:=0;',
+ ' VX1:=0; VY1:=0; VX2:=ScrW-1; VY2:=ScrH-1; VClip:=True;',
+ ' SetClip;',
+ ' ResetPalette;',
+ ' CurColor:=MaxCol; FillStyle:=SolidFill; FillColor:=MaxCol;',
+ ' For I:=1 To 8 Do Begin FillPat[I]:=$FF; UserPat[I]:=$FF End;',
+ ' LnStyle:=SolidLn; LnPat:=$FFFF; LnThick:=NormWidth;',
+ ' TxFont:=DefaultFont; TxDir:=HorizDir; TxSize:=1; TxHoriz:=LeftText; ' +
+   'TxVert:=TopText;',
+ ' UMX:=1; UDX:=1; UMY:=1; UDY:=1;',
+ ' WMode:=CopyPut;',
+ 'End;',
+ '',
+ 'Procedure GraphDefaults;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' SetModeInfo(CurDrv,CurMode);',
+ ' GraphDefaultsInt;',
+ 'End;',
+ '',
+ 'Procedure EnterMode;',
+ 'Begin',
+ ' Int10(BiosMode,0,0,0);',
+ ' PageBase:=0;',
+ ' If Kind=1 Then Begin',
+ '  { palette CGA : C0 vert/rouge/brun, C1 cyan/magenta/blanc ; C0 et C1 ' +
+   'intenses }',
+ '  If (CurMode And 1)=0 Then Int10($0B01,0,0,0) Else Int10($0B01,1,0,0);',
+ '  If CurMode<2 Then Int10($0B00,$10,0,0) Else Int10($0B00,0,0,0);',
+ ' End;',
+ ' DacDirty:=False;',
+ ' LoadFont;',
+ ' Active:=True;',
+ ' GraphDefaultsInt;',
+ 'End;',
+ '',
+ 'Procedure InitGraph(Var GraphDriver: Integer; Var GraphMode: Integer; ' +
+   'PathToDriver: String);',
+ 'Var D,M: Integer;',
+ 'Begin',
+ ' Active:=False; GErr:=grOk;',
+ ' DetectHW;',
+ ' D:=GraphDriver; M:=GraphMode;',
+ ' If D=Detect Then Begin',
+ '  DetectGraph(D,M);',
+ '  GraphMode:=M;',
+ ' End;',
+ ' If (D<0) Or (D>PC3270) Or (D=EGA64) Or (D=EGAMono) Or (D=IBM8514) Or ' +
+   '(D=HercMono) Or',
+ '    (D=ATT400) Or (D=PC3270) Then Begin',
+ '  GraphDriver:=grInvalidDriver; GErr:=grInvalidDriver; Exit;',
+ ' End;',
+ ' If ((D=VGA) And Not HaveVGA) Or ((D=EGA) And Not HaveEGA) Or ((D=MCGA) ' +
+   'And Not (HaveMCGA Or HaveVGA)) Then Begin',
+ '  GraphDriver:=grNotDetected; GErr:=grNotDetected; Exit;',
+ ' End;',
+ ' If Not SetModeInfo(D,M) Then Begin',
+ '  GraphDriver:=grInvalidMode; GErr:=grInvalidMode; Exit;',
+ ' End;',
+ ' GraphDriver:=D;',
+ ' Int10($0F00,0,0,0);',
+ ' If Not Opened Then SavedMode:=Lo(RA);',
+ ' CurDrv:=D; CurMode:=M; Opened:=True;',
+ ' EnterMode;',
+ 'End;',
+ '',
+ 'Procedure SetGraphMode(Mode: Integer);',
+ 'Begin',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If Not SetModeInfo(CurDrv,Mode) Then Begin',
+ '  SetModeInfo(CurDrv,CurMode); GErr:=grInvalidMode; Exit;',
+ ' End;',
+ ' CurMode:=Mode;',
+ ' EnterMode;',
+ 'End;',
+ '',
+ 'Function GetGraphMode: Integer;',
+ 'Begin',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; GetGraphMode:=0; Exit End;',
+ ' GetGraphMode:=CurMode;',
+ 'End;',
+ '',
+ 'Procedure RestoreCrtMode;',
+ 'Begin',
+ ' If Not Opened Then Exit;',
+ ' Int10(SavedMode,0,0,0);',
+ ' Active:=False;',
+ 'End;',
+ '',
+ 'Procedure CloseGraph;',
+ 'Begin',
+ ' If Not Opened Then Exit;',
+ ' RestoreCrtMode;',
+ ' Opened:=False; Active:=False;',
+ 'End;',
+ '',
+ 'Function GetMaxX: Integer;',
+ 'Begin',
+ ' GetMaxX:=0;',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' GetMaxX:=ScrW-1;',
+ 'End;',
+ '',
+ 'Function GetMaxY: Integer;',
+ 'Begin',
+ ' GetMaxY:=0;',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' GetMaxY:=ScrH-1;',
+ 'End;',
+ '',
+ 'Function GetMaxColor: Word;',
+ 'Begin',
+ ' GetMaxColor:=0;',
+ ' If Not Opened Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' GetMaxColor:=MaxCol;',
+ 'End;',
+ '',
+ 'Procedure SetViewPort(X1,Y1,X2,Y2: Integer; Clip: Boolean);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (X1<0) Or (Y1<0) Or (X2<X1) Or (Y2<Y1) Or (X2>=ScrW) Or (Y2>=ScrH) ' +
+   'Then Begin',
+ '  GErr:=grError; Exit;',
+ ' End;',
+ ' VX1:=X1; VY1:=Y1; VX2:=X2; VY2:=Y2; VClip:=Clip;',
+ ' SetClip;',
+ ' CPX:=0; CPY:=0;',
+ 'End;',
+ '',
+ 'Procedure GetViewSettings(Var ViewPort: ViewPortType);',
+ 'Begin',
+ ' ViewPort.X1:=VX1; ViewPort.Y1:=VY1; ViewPort.X2:=VX2; ViewPort.Y2:=VY2;',
+ ' ViewPort.Clip:=VClip;',
+ 'End;',
+ '',
+ 'Procedure ClearDevice;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' ClearRect(0,0,ScrW-1,ScrH-1);',
+ ' CPX:=0; CPY:=0;',
+ 'End;',
+ '',
+ 'Procedure ClearViewPort;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' ClearRect(VX1,VY1,VX2,VY2);',
+ ' CPX:=0; CPY:=0;',
+ 'End;',
+ '',
+ 'Procedure SetActivePage(Page: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If Page>=NPages Then Begin GErr:=grError; Exit End;',
+ ' PageBase:=Page*PageLen;',
+ 'End;',
+ '',
+ 'Procedure SetVisualPage(Page: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If Page>=NPages Then Begin GErr:=grError; Exit End;',
+ ' Int10($0500+Page,0,0,0);',
+ 'End;',
+ '',
+ 'Function SetGraphBufSize(BufSize: Word): Word;',
+ 'Begin',
+ ' SetGraphBufSize:=BufSz; BufSz:=BufSize;',
+ 'End;',
+ '',
+ 'Function RegisterBGIdriver(Driver: Pointer): Integer;',
+ 'Begin',
+ ' RegisterBGIdriver:=EGA;',
+ 'End;',
+ '',
+ 'Function RegisterBGIfont(Font: Pointer): Integer;',
+ 'Begin',
+ ' RegisterBGIfont:=TriplexFont;',
+ 'End;',
+ '',
+ 'Function InstallUserDriver(DriverFileName: String; AutoDetectPtr: ' +
+   'Pointer): Integer;',
+ 'Begin',
+ ' InstallUserDriver:=grInvalidDriver; GErr:=grError;',
+ 'End;',
+ '',
+ 'Function InstallUserFont(FontFileName: String): Integer;',
+ 'Begin',
+ ' InstallUserFont:=5;',
+ 'End;',
+ '',
+ '{ ===== Couleur, styles ===== }',
+ '',
+ 'Procedure SetColor(Color: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' CurColor:=Color And MaxCol;',
+ 'End;',
+ '',
+ 'Function GetColor: Word;',
+ 'Begin',
+ ' GetColor:=CurColor;',
+ 'End;',
+ '',
+ 'Procedure SetWriteMode(WriteMode: Integer);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (WriteMode<0) Or (WriteMode>3) Then Exit;',
+ ' WMode:=WriteMode;',
+ 'End;',
+ '',
+ 'Procedure SetLineStyle(LineStyle: Word; Pattern: Word; Thickness: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (LineStyle>UserBitLn) Or ((Thickness<>NormWidth) And ' +
+   '(Thickness<>ThickWidth)) Then Begin',
+ '  GErr:=grError; Exit;',
+ ' End;',
+ ' LnStyle:=LineStyle; LnThick:=Thickness;',
+ ' Case LineStyle Of',
+ '  SolidLn: LnPat:=$FFFF;',
+ '  DottedLn: LnPat:=$CCCC;',
+ '  CenterLn: LnPat:=$FC78;',
+ '  DashedLn: LnPat:=$F8F8;',
+ ' Else LnPat:=Pattern;',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure GetLineSettings(Var LineInfo: LineSettingsType);',
+ 'Begin',
+ ' LineInfo.LineStyle:=LnStyle; LineInfo.Pattern:=LnPat; ' +
+   'LineInfo.Thickness:=LnThick;',
+ 'End;',
+ '',
+ 'Procedure SetFillStyle(Pattern: Word; Color: Word);',
+ 'Var I: Word;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (Pattern>UserFill) Or (Color>MaxCol) Then Begin GErr:=grError; Exit End;',
+ ' FillStyle:=Pattern; FillColor:=Color;',
+ ' If Pattern=UserFill Then FillPat:=UserPat',
+ ' Else For I:=1 To 8 Do FillPat[I]:=FillTab[Pattern*8+I-1];',
+ 'End;',
+ '',
+ 'Procedure SetFillPattern(Pattern: FillPatternType; Color: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If Color>MaxCol Then Begin GErr:=grError; Exit End;',
+ ' UserPat:=Pattern; FillPat:=Pattern; FillStyle:=UserFill; FillColor:=Color;',
+ 'End;',
+ '',
+ 'Procedure GetFillPattern(Var FillPattern: FillPatternType);',
+ 'Begin',
+ ' FillPattern:=FillPat;',
+ 'End;',
+ '',
+ 'Procedure GetFillSettings(Var FillInfo: FillSettingsType);',
+ 'Begin',
+ ' FillInfo.Pattern:=FillStyle; FillInfo.Color:=FillColor;',
+ 'End;',
+ '',
+ 'Procedure SetAspectRatio(XAsp,YAsp: Word);',
+ 'Begin',
+ ' If YAsp=0 Then Begin GErr:=grError; Exit End;',
+ ' AspX:=XAsp; AspY:=YAsp;',
+ 'End;',
+ '',
+ 'Procedure GetAspectRatio(Var XAsp,YAsp: Word);',
+ 'Begin',
+ ' XAsp:=AspX; YAsp:=AspY;',
+ 'End;',
+ '',
+ '{ ===== Pixels, lignes, rectangles ===== }',
+ '',
+ 'Procedure PutPixel(X,Y: Integer; Pixel: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' Inc(X,VX1); Inc(Y,VY1);',
+ ' PixSetup(0);',
+ ' Plot(X,Y,Pixel And MaxCol);',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Function GetPixel(X,Y: Integer): Word;',
+ 'Begin',
+ ' GetPixel:=0;',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' Inc(X,VX1); Inc(Y,VY1);',
+ ' If (X>=CX1) And (X<=CX2) And (Y>=CY1) And (Y<=CY2) Then ' +
+   'GetPixel:=PixGet(X,Y);',
+ 'End;',
+ '',
+ 'Function GetX: Integer;',
+ 'Begin',
+ ' GetX:=CPX;',
+ 'End;',
+ '',
+ 'Function GetY: Integer;',
+ 'Begin',
+ ' GetY:=CPY;',
+ 'End;',
+ '',
+ 'Procedure MoveTo(X,Y: Integer);',
+ 'Begin',
+ ' CPX:=X; CPY:=Y;',
+ 'End;',
+ '',
+ 'Procedure MoveRel(Dx,Dy: Integer);',
+ 'Begin',
+ ' Inc(CPX,Dx); Inc(CPY,Dy);',
+ 'End;',
+ '',
+ 'Procedure Line(X1,Y1,X2,Y2: Integer);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' PixSetup(WriteOp);',
+ ' LineAbs(X1+VX1,Y1+VY1,X2+VX1,Y2+VY1,False,False);',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Procedure LineTo(X,Y: Integer);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' PixSetup(WriteOp);',
+ ' LineAbs(CPX+VX1,CPY+VY1,X+VX1,Y+VY1,False,False);',
+ ' PixDone;',
+ ' CPX:=X; CPY:=Y;',
+ 'End;',
+ '',
+ 'Procedure LineRel(Dx,Dy: Integer);',
+ 'Begin',
+ ' LineTo(CPX+Dx,CPY+Dy);',
+ 'End;',
+ '',
+ 'Procedure Rectangle(X1,Y1,X2,Y2: Integer);',
+ 'Var T: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If X1>X2 Then Begin T:=X1; X1:=X2; X2:=T End;',
+ ' If Y1>Y2 Then Begin T:=Y1; Y1:=Y2; Y2:=T End;',
+ ' Inc(X1,VX1); Inc(X2,VX1); Inc(Y1,VY1); Inc(Y2,VY1);',
+ ' PixSetup(WriteOp);',
+ ' If (X1=X2) Or (Y1=Y2) Then LineAbs(X1,Y1,X2,Y2,False,False)',
+ ' Else Begin',
+ '  LineAbs(X1,Y1,X2,Y1,False,True);',
+ '  LineAbs(X2,Y1,X2,Y2,False,True);',
+ '  LineAbs(X2,Y2,X1,Y2,False,True);',
+ '  LineAbs(X1,Y2,X1,Y1,False,True);',
+ ' End;',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Procedure DrawPolyAbs(P: PPts; N: Integer; OX,OY: Integer);',
+ 'Var I: Integer; Closed: Boolean;',
+ 'Begin',
+ ' If N<1 Then Exit;',
+ ' If N=1 Then Begin',
+ '  PixSetup(WriteOp); Plot(P^[0].X+OX,P^[0].Y+OY,CurColor); PixDone; Exit;',
+ ' End;',
+ ' Closed:=(N>2) And (P^[0].X=P^[N-1].X) And (P^[0].Y=P^[N-1].Y);',
+ ' PixSetup(WriteOp);',
+ ' For I:=1 To N-1 Do',
+ '  LineAbs(P^[I-1].X+OX,P^[I-1].Y+OY,P^[I].X+OX,P^[I].Y+OY,I>1,Closed And ' +
+   '(I=N-1));',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Procedure DrawPoly(NumPoints: Word; Var PolyPoints);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' DrawPolyAbs(PPts(@PolyPoints),NumPoints,VX1,VY1);',
+ 'End;',
+ '',
+ '{ ===== Remplissage ===== }',
+ '',
+ 'Procedure Bar(X1,Y1,X2,Y2: Integer);',
+ 'Var T,Y: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If X1>X2 Then Begin T:=X1; X1:=X2; X2:=T End;',
+ ' If Y1>Y2 Then Begin T:=Y1; Y1:=Y2; Y2:=T End;',
+ ' Inc(X1,VX1); Inc(X2,VX1); Inc(Y1,VY1); Inc(Y2,VY1);',
+ ' If X1<CX1 Then X1:=CX1;',
+ ' If X2>CX2 Then X2:=CX2;',
+ ' If Y1<CY1 Then Y1:=CY1;',
+ ' If Y2>CY2 Then Y2:=CY2;',
+ ' PixSetup(0);',
+ ' For Y:=Y1 To Y2 Do SpanFill(X1,X2,Y);',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Procedure Bar3D(X1,Y1,X2,Y2: Integer; Depth: Word; Top: Boolean);',
+ 'Var T: Integer; D: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If X1>X2 Then Begin T:=X1; X1:=X2; X2:=T End;',
+ ' If Y1>Y2 Then Begin T:=Y1; Y1:=Y2; Y2:=T End;',
+ ' Bar(X1,Y1,X2,Y2);',
+ ' Rectangle(X1,Y1,X2,Y2);',
+ ' D:=Depth;',
+ ' If D>0 Then Begin',
+ '  Inc(X1,VX1); Inc(X2,VX1); Inc(Y1,VY1); Inc(Y2,VY1);',
+ '  PixSetup(WriteOp);',
+ '  LineAbs(X2,Y2,X2+D,Y2-D,False,False);',
+ '  LineAbs(X2+D,Y2-D,X2+D,Y1-D,True,False);',
+ '  LineAbs(X2+D,Y1-D,X2,Y1,True,False);',
+ '  If Top Then Begin',
+ '   LineAbs(X2+D,Y1-D,X1+D,Y1-D,False,False);',
+ '   LineAbs(X1+D,Y1-D,X1,Y1,True,False);',
+ '  End;',
+ '  PixDone;',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure ScanFill(P: PPts; N: Integer; OX,OY: Integer);',
+ '{ Remplissage pair-impair d''un polygone avec la trame courante. }',
+ 'Var I,J,K,Cnt,Tmp: Integer;',
+ '    Y,YMin,YMax,XA,YA,XB,YB,X,XL,XR,Den: Longint;',
+ '    Xs: Array[0..127] Of Integer;',
+ 'Begin',
+ ' If N<3 Then Exit;',
+ ' YMin:=P^[0].Y+Longint(OY); YMax:=YMin;',
+ ' For I:=1 To N-1 Do Begin',
+ '  Y:=P^[I].Y+Longint(OY);',
+ '  If Y<YMin Then YMin:=Y;',
+ '  If Y>YMax Then YMax:=Y;',
+ ' End;',
+ ' If YMin<CY1 Then YMin:=CY1;',
+ ' If YMax>CY2 Then YMax:=CY2;',
+ ' PixSetup(0);',
+ ' Y:=YMin;',
+ ' While Y<=YMax Do Begin',
+ '  Cnt:=0;',
+ '  For I:=0 To N-1 Do Begin',
+ '   J:=I+1; If J=N Then J:=0;',
+ '   XA:=P^[I].X+Longint(OX); YA:=P^[I].Y+Longint(OY);',
+ '   XB:=P^[J].X+Longint(OX); YB:=P^[J].Y+Longint(OY);',
+ '   If YA>YB Then Begin X:=XA; XA:=XB; XB:=X; X:=YA; YA:=YB; YB:=X End;',
+ '   If (YA<>YB) And (Y>=YA) And (Y<YB) Then Begin',
+ '    Den:=2*(YB-YA);',
+ '    X:=(Y-YA)*(XB-XA)*2+(YB-YA);',
+ '    If X>=0 Then X:=X Div Den Else X:=-((-X+Den-1) Div Den);',
+ '    Tmp:=XA+X;',
+ '    If Cnt<128 Then Begin',
+ '     K:=Cnt;',
+ '     While (K>0) And (Xs[K-1]>Tmp) Do Begin Xs[K]:=Xs[K-1]; Dec(K) End;',
+ '     Xs[K]:=Tmp; Inc(Cnt);',
+ '    End Else GErr:=grNoScanMem;',
+ '   End;',
+ '  End;',
+ '  K:=0;',
+ '  While K+1<Cnt Do Begin',
+ '   XL:=Xs[K]; XR:=Xs[K+1];',
+ '   If XL<CX1 Then XL:=CX1;',
+ '   If XR>CX2 Then XR:=CX2;',
+ '   If XL<=XR Then SpanFill(XL,XR,Y);',
+ '   Inc(K,2);',
+ '  End;',
+ '  Inc(Y);',
+ ' End;',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Procedure FillPoly(NumPoints: Word; Var PolyPoints);',
+ 'Var P: PPts; N: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' P:=PPts(@PolyPoints); N:=NumPoints;',
+ ' ScanFill(P,N,VX1,VY1);',
+ ' DrawPolyAbs(P,N,VX1,VY1);',
+ ' If (N>2) And ((P^[0].X<>P^[N-1].X) Or (P^[0].Y<>P^[N-1].Y)) Then Begin',
+ '  PixSetup(WriteOp);',
+ '  LineAbs(P^[N-1].X+VX1,P^[N-1].Y+VY1,P^[0].X+VX1,P^[0].Y+VY1,True,True);',
+ '  PixDone;',
+ ' End;',
+ 'End;',
+ '',
+ 'Function Seen(XA,YA: Integer): Boolean;',
+ 'Var Bit: Longint;',
+ 'Begin',
+ ' Bit:=Longint(YA-CY1)*FW+(XA-CX1);',
+ ' Seen:=(FVis^[Bit Shr 3] And (1 Shl (Bit And 7)))<>0;',
+ 'End;',
+ '',
+ 'Procedure MarkSpan(XA,XB,YA: Integer);',
+ 'Var Bit: Longint; I: Integer;',
+ 'Begin',
+ ' For I:=XA To XB Do Begin',
+ '  Bit:=Longint(YA-CY1)*FW+(I-CX1);',
+ '  FVis^[Bit Shr 3]:=FVis^[Bit Shr 3] Or (1 Shl (Bit And 7));',
+ ' End;',
+ 'End;',
+ '',
+ 'Procedure FloodFill(X,Y: Integer; Border: Word);',
+ 'Var Seeds: PSeeds; SP,MaxSeeds,H: Integer; Sz: Longint;',
+ '    PX,PY,XL,XR,NY,XX: Integer; Dir: Integer; Run: Boolean;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' Inc(X,VX1); Inc(Y,VY1);',
+ ' If (X<CX1) Or (X>CX2) Or (Y<CY1) Or (Y>CY2) Then Exit;',
+ ' Border:=Border And MaxCol;',
+ ' If PixGet(X,Y)=Border Then Exit;',
+ ' FW:=CX2-CX1+1; H:=CY2-CY1+1;',
+ ' Sz:=Longint((FW+7) Shr 3)*H;',
+ ' MaxSeeds:=4096;',
+ ' If MemAvail<Sz+MaxSeeds*4+4096 Then MaxSeeds:=1024;',
+ ' If (Sz>65000) Or (MemAvail<Sz+MaxSeeds*4+64) Or (MaxAvail<Sz+64) Then ' +
+   'Begin GErr:=grNoFloodMem; Exit End;',
+ ' GetMem(FVis,Sz); GetMem(Seeds,MaxSeeds*4);',
+ ' ClearBytes(FVis,Sz);',
+ ' Seeds^[0].X:=X; Seeds^[0].Y:=Y; SP:=1;',
+ ' PixSetup(0);',
+ ' While SP>0 Do Begin',
+ '  Dec(SP); PX:=Seeds^[SP].X; PY:=Seeds^[SP].Y;',
+ '  If Not Seen(PX,PY) And (PixGet(PX,PY)<>Border) Then Begin',
+ '   XL:=PX; XR:=PX;',
+ '   While (XL>CX1) And Not Seen(XL-1,PY) And (PixGet(XL-1,PY)<>Border) Do ' +
+   'Dec(XL);',
+ '   While (XR<CX2) And Not Seen(XR+1,PY) And (PixGet(XR+1,PY)<>Border) Do ' +
+   'Inc(XR);',
+ '   MarkSpan(XL,XR,PY);',
+ '   SpanFill(XL,XR,PY);',
+ '   For Dir:=-1 To 1 Do If Dir<>0 Then Begin',
+ '    NY:=PY+Dir;',
+ '    If (NY>=CY1) And (NY<=CY2) Then Begin',
+ '     XX:=XL; Run:=False;',
+ '     While XX<=XR Do Begin',
+ '      If Not Seen(XX,NY) And (PixGet(XX,NY)<>Border) Then Begin',
+ '       If Not Run Then Begin',
+ '        If SP<MaxSeeds Then Begin Seeds^[SP].X:=XX; Seeds^[SP].Y:=NY; ' +
+   'Inc(SP) End',
+ '        Else GErr:=grNoFloodMem;',
+ '        Run:=True;',
+ '       End;',
+ '      End Else Run:=False;',
+ '      Inc(XX);',
+ '     End;',
+ '    End;',
+ '   End;',
+ '  End;',
+ ' End;',
+ ' PixDone;',
+ ' FreeMem(Seeds,MaxSeeds*4); FreeMem(FVis,Sz);',
+ 'End;',
+ '',
+ '{ ===== Arcs, cercles, ellipses ===== }',
+ '',
+ 'Function SinD(A: Integer): Integer;',
+ 'Begin',
+ ' A:=A Mod 360;',
+ ' If A<=90 Then SinD:=SinTab[A]',
+ ' Else If A<=180 Then SinD:=SinTab[180-A]',
+ ' Else If A<=270 Then SinD:=-SinTab[A-180]',
+ ' Else SinD:=-SinTab[360-A];',
+ 'End;',
+ '',
+ 'Function CosD(A: Integer): Integer;',
+ 'Begin',
+ ' CosD:=SinD((A+90) Mod 360);',
+ 'End;',
+ '',
+ 'Function ScaleR(R: Word; T: Integer): Integer;',
+ 'Var V: Longint;',
+ 'Begin',
+ ' V:=Longint(R)*T;',
+ ' If V>=0 Then ScaleR:=(V+8192) Div 16384 Else ScaleR:=-((-V+8192) Div ' +
+   '16384);',
+ 'End;',
+ '',
+ 'Function ArcGen(CxA,CyA: Integer; St,En,Rx,Ry: Word): Integer;',
+ '{ Remplit PolyBuf avec les points de l''arc (coordonnees ecran, pas de 1 ' +
+   'degre) ;',
+ '  retourne le nombre de segments. }',
+ 'Var S,E,I,N,A: Integer;',
+ 'Begin',
+ ' S:=St Mod 360; E:=En;',
+ ' If E>360 Then E:=E Mod 360;',
+ ' If E<S Then E:=E+360;',
+ ' N:=E-S;',
+ ' For I:=0 To N Do Begin',
+ '  A:=(S+I) Mod 360;',
+ '  PolyBuf[I].X:=CxA+ScaleR(Rx,CosD(A));',
+ '  PolyBuf[I].Y:=CyA-ScaleR(Ry,SinD(A));',
+ ' End;',
+ ' ArcInfo.X:=CxA-VX1; ArcInfo.Y:=CyA-VY1;',
+ ' ArcInfo.XStart:=PolyBuf[0].X-VX1; ArcInfo.YStart:=PolyBuf[0].Y-VY1;',
+ ' ArcInfo.XEnd:=PolyBuf[N].X-VX1; ArcInfo.YEnd:=PolyBuf[N].Y-VY1;',
+ ' ArcGen:=N;',
+ 'End;',
+ '',
+ 'Procedure DrawArcPoly(N: Integer);',
+ '{ Trace PolyBuf[0..N] sans motif de ligne (seule l''epaisseur compte). }',
+ 'Var I: Integer; SaveP: Word; Full: Boolean;',
+ 'Begin',
+ ' SaveP:=LnPat; LnPat:=$FFFF;',
+ ' Full:=(N>=360) Or ((N>2) And (PolyBuf[0].X=PolyBuf[N].X) And ' +
+   '(PolyBuf[0].Y=PolyBuf[N].Y));',
+ ' PixSetup(WriteOp);',
+ ' If N=0 Then Plot(PolyBuf[0].X,PolyBuf[0].Y,CurColor)',
+ ' Else',
+ '  For I:=1 To N Do',
+ '   If (PolyBuf[I].X<>PolyBuf[I-1].X) Or (PolyBuf[I].Y<>PolyBuf[I-1].Y) Then',
+ '    ' +
+   'LineAbs(PolyBuf[I-1].X,PolyBuf[I-1].Y,PolyBuf[I].X,PolyBuf[I].Y,I>1,Full ' +
+     'And (I=N));',
+ ' PixDone;',
+ ' LnPat:=SaveP;',
+ 'End;',
+ '',
+ 'Function AspRadius(R: Word): Word;',
+ 'Begin',
+ ' AspRadius:=(Longint(R)*AspX+(AspY Div 2)) Div AspY;',
+ 'End;',
+ '',
+ 'Procedure Ellipse(X,Y: Integer; StAngle,EndAngle,XRadius,YRadius: Word);',
+ 'Var N: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' N:=ArcGen(X+VX1,Y+VY1,StAngle,EndAngle,XRadius,YRadius);',
+ ' DrawArcPoly(N);',
+ 'End;',
+ '',
+ 'Procedure Arc(X,Y: Integer; StAngle,EndAngle,Radius: Word);',
+ 'Var N: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' N:=ArcGen(X+VX1,Y+VY1,StAngle,EndAngle,Radius,AspRadius(Radius));',
+ ' DrawArcPoly(N);',
+ 'End;',
+ '',
+ 'Procedure Circle(X,Y: Integer; Radius: Word);',
+ 'Begin',
+ ' Arc(X,Y,0,360,Radius);',
+ 'End;',
+ '',
+ 'Procedure FillEllipse(X,Y: Integer; XRadius,YRadius: Word);',
+ 'Var N: Integer;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' N:=ArcGen(X+VX1,Y+VY1,0,360,XRadius,YRadius);',
+ ' ScanFill(@PolyBuf,N,0,0);',
+ ' DrawArcPoly(N);',
+ 'End;',
+ '',
+ 'Procedure PieSector(X,Y: Integer; St,En,Rx,Ry: Word);',
+ 'Var N: Integer; SaveP: Word; CxA,CyA: Integer;',
+ 'Begin',
+ ' CxA:=X+VX1; CyA:=Y+VY1;',
+ ' N:=ArcGen(CxA,CyA,St,En,Rx,Ry);',
+ ' PolyBuf[N+1].X:=CxA; PolyBuf[N+1].Y:=CyA;',
+ ' ScanFill(@PolyBuf,N+2,0,0);',
+ ' SaveP:=LnPat; LnPat:=$FFFF;',
+ ' PixSetup(WriteOp);',
+ ' LineAbs(CxA,CyA,PolyBuf[0].X,PolyBuf[0].Y,False,False);',
+ ' PixDone;',
+ ' DrawArcPoly(N);',
+ ' PixSetup(WriteOp);',
+ ' LineAbs(PolyBuf[N].X,PolyBuf[N].Y,CxA,CyA,True,False);',
+ ' PixDone;',
+ ' LnPat:=SaveP;',
+ 'End;',
+ '',
+ 'Procedure PieSlice(X,Y: Integer; StAngle,EndAngle,Radius: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' PieSector(X,Y,StAngle,EndAngle,Radius,AspRadius(Radius));',
+ 'End;',
+ '',
+ 'Procedure Sector(X,Y: Integer; StAngle,EndAngle,XRadius,YRadius: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' PieSector(X,Y,StAngle,EndAngle,XRadius,YRadius);',
+ 'End;',
+ '',
+ 'Procedure GetArcCoords(Var ArcCoords: ArcCoordsType);',
+ 'Begin',
+ ' ArcCoords:=ArcInfo;',
+ 'End;',
+ '',
+ '{ ===== Texte ===== }',
+ '',
+ 'Function CharW: Word;',
+ 'Var W: Longint;',
+ 'Begin',
+ ' If TxSize=UserCharSize Then W:=(8*Longint(UMX)) Div UDX Else ' +
+   'W:=8*Longint(TxSize);',
+ ' If W<1 Then W:=1;',
+ ' CharW:=W;',
+ 'End;',
+ '',
+ 'Function CharH: Word;',
+ 'Var H: Longint;',
+ 'Begin',
+ ' If TxSize=UserCharSize Then H:=(8*Longint(UMY)) Div UDY Else ' +
+   'H:=8*Longint(TxSize);',
+ ' If H<1 Then H:=1;',
+ ' CharH:=H;',
+ 'End;',
+ '',
+ 'Function TextWidth(TextString: String): Word;',
+ 'Begin',
+ ' TextWidth:=Length(TextString)*CharW;',
+ 'End;',
+ '',
+ 'Function TextHeight(TextString: String): Word;',
+ 'Begin',
+ ' TextHeight:=CharH;',
+ 'End;',
+ '',
+ 'Procedure SetTextStyle(Font,Direction: Word; CharSize: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If Font>10 Then Begin GErr:=grInvalidFontNum; Exit End;',
+ ' If Direction>VertDir Then Direction:=HorizDir;',
+ ' If CharSize>10 Then CharSize:=10;',
+ ' TxFont:=Font; TxDir:=Direction; TxSize:=CharSize;',
+ 'End;',
+ '',
+ 'Procedure GetTextSettings(Var TextInfo: TextSettingsType);',
+ 'Begin',
+ ' TextInfo.Font:=TxFont; TextInfo.Direction:=TxDir; ' +
+   'TextInfo.CharSize:=TxSize;',
+ ' TextInfo.Horiz:=TxHoriz; TextInfo.Vert:=TxVert;',
+ 'End;',
+ '',
+ 'Procedure SetTextJustify(Horiz,Vert: Word);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If (Horiz>RightText) Or (Vert>TopText) Then Begin GErr:=grError; Exit End;',
+ ' TxHoriz:=Horiz; TxVert:=Vert;',
+ 'End;',
+ '',
+ 'Procedure SetUserCharSize(MultX,DivX,MultY,DivY: Word);',
+ 'Begin',
+ ' If (DivX=0) Or (DivY=0) Then Exit;',
+ ' UMX:=MultX; UDX:=DivX; UMY:=MultY; UDY:=DivY;',
+ 'End;',
+ '',
+ 'Function GlyphRow(Ch,R: Word): Byte;',
+ 'Begin',
+ ' If Ch<128 Then GlyphRow:=Mem[FSeg0:FOfs0+Ch*8+R]',
+ ' Else If FSeg1=0 Then GlyphRow:=0',
+ ' Else GlyphRow:=Mem[FSeg1:FOfs1+(Ch-128)*8+R];',
+ 'End;',
+ '',
+ 'Procedure DrawStr(X,Y: Integer; S: String);',
+ '{ X,Y : coordonnees ecran du point de justification. }',
+ 'Var CW,CH,BW,BH,X0,Y0,CI,R,C: Integer; Rows: Array[0..7] Of Byte; I: Word;',
+ 'Begin',
+ ' If Length(S)=0 Then Exit;',
+ ' CW:=CharW; CH:=CharH;',
+ ' If TxDir=HorizDir Then Begin BW:=Length(S)*CW; BH:=CH End',
+ ' Else Begin BW:=CH; BH:=Length(S)*CW End;',
+ ' Case TxHoriz Of',
+ '  LeftText: X0:=X;',
+ '  CenterText: X0:=X-BW Div 2;',
+ ' Else X0:=X-BW;',
+ ' End;',
+ ' Case TxVert Of',
+ '  TopText: Y0:=Y;',
+ '  CenterText: Y0:=Y-BH Div 2;',
+ ' Else Y0:=Y-BH;',
+ ' End;',
+ ' PixSetup(WriteOp);',
+ ' For CI:=0 To Length(S)-1 Do Begin',
+ '  For I:=0 To 7 Do Rows[I]:=GlyphRow(Ord(S[CI+1]),I);',
+ '  For R:=0 To CH-1 Do',
+ '   For C:=0 To CW-1 Do',
+ '    If (Rows[(R*8) Div CH] And ($80 Shr ((C*8) Div CW)))<>0 Then Begin',
+ '     If TxDir=HorizDir Then Plot(X0+CI*CW+C,Y0+R,CurColor)',
+ '     Else Plot(X0+R,Y0+BH-1-(CI*CW+C),CurColor);',
+ '    End;',
+ ' End;',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Procedure OutTextXY(X,Y: Integer; TextString: String);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' DrawStr(X+VX1,Y+VY1,TextString);',
+ 'End;',
+ '',
+ 'Procedure OutText(TextString: String);',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' DrawStr(CPX+VX1,CPY+VY1,TextString);',
+ ' If (TxDir=HorizDir) And (TxHoriz=LeftText) Then ' +
+   'Inc(CPX,TextWidth(TextString));',
+ 'End;',
+ '',
+ '{ ===== Images ===== }',
+ '',
+ 'Function PlanesOf: Word;',
+ 'Begin',
+ ' Case Kind Of',
+ '  0: PlanesOf:=4;',
+ '  1: PlanesOf:=2;',
+ ' Else PlanesOf:=1;',
+ ' End;',
+ 'End;',
+ '',
+ 'Function ImgBytes(W,H: Longint): Longint;',
+ 'Begin',
+ ' If Kind=4 Then ImgBytes:=4+W*H',
+ ' Else ImgBytes:=4+((W+7) Shr 3)*H*PlanesOf;',
+ 'End;',
+ '',
+ 'Function ImageSize(X1,Y1,X2,Y2: Integer): Word;',
+ 'Var W,H,N: Longint; T: Integer;',
+ 'Begin',
+ ' ImageSize:=0;',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If X1>X2 Then Begin T:=X1; X1:=X2; X2:=T End;',
+ ' If Y1>Y2 Then Begin T:=Y1; Y1:=Y2; Y2:=T End;',
+ ' W:=Longint(X2)-X1+1; H:=Longint(Y2)-Y1+1;',
+ ' N:=ImgBytes(W,H);',
+ ' If N<=65534 Then ImageSize:=N;',
+ 'End;',
+ '',
+ 'Procedure GetImage(X1,Y1,X2,Y2: Integer; Var BitMap);',
+ 'Var P: PBytes; W,H,BPR,RB,I,J,T,PL,V: Integer; Idx: Longint;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If X1>X2 Then Begin T:=X1; X1:=X2; X2:=T End;',
+ ' If Y1>Y2 Then Begin T:=Y1; Y1:=Y2; Y2:=T End;',
+ ' P:=PBytes(@BitMap);',
+ ' W:=X2-X1+1; H:=Y2-Y1+1;',
+ ' If ImgBytes(W,H)>65534 Then Begin GErr:=grError; Exit End;',
+ ' BPR:=(W+7) Shr 3;',
+ ' If Kind=4 Then RB:=W Else RB:=BPR*PlanesOf;',
+ ' ClearBytes(@P^[4],Longint(RB)*H);',
+ ' P^[0]:=Lo(W-1); P^[1]:=Hi(W-1); P^[2]:=Lo(H-1); P^[3]:=Hi(H-1);',
+ ' Inc(X1,VX1); Inc(Y1,VY1);',
+ ' For J:=0 To H-1 Do',
+ '  For I:=0 To W-1 Do Begin',
+ '   V:=0;',
+ '   If (X1+I>=0) And (X1+I<ScrW) And (Y1+J>=0) And (Y1+J<ScrH) Then ' +
+   'V:=PixGet(X1+I,Y1+J);',
+ '   If Kind=4 Then P^[4+Longint(J)*W+I]:=V',
+ '   Else If V<>0 Then',
+ '    For PL:=0 To PlanesOf-1 Do',
+ '     If ((V Shr PL) And 1)<>0 Then Begin',
+ '      Idx:=4+Longint(J)*RB+PL*BPR+(I Shr 3);',
+ '      P^[Idx]:=P^[Idx] Or ($80 Shr (I And 7));',
+ '     End;',
+ '  End;',
+ 'End;',
+ '',
+ 'Procedure PutImage(X,Y: Integer; Var BitMap; BitBlt: Word);',
+ 'Var P: PBytes; W,H,BPR,RB,I,J,PL,V,Op: Integer; Idx: Longint; Inv: Boolean;',
+ 'Begin',
+ ' If Not Active Then Begin GErr:=grNoInitGraph; Exit End;',
+ ' If BitBlt>NotPut Then Begin GErr:=grError; Exit End;',
+ ' P:=PBytes(@BitMap);',
+ ' W:=(P^[0]+P^[1]*256)+1; H:=(P^[2]+P^[3]*256)+1;',
+ ' BPR:=(W+7) Shr 3;',
+ ' If Kind=4 Then RB:=W Else RB:=BPR*PlanesOf;',
+ ' Inv:=BitBlt=NotPut;',
+ ' Case BitBlt Of',
+ '  XORPut: Op:=3;',
+ '  OrPut: Op:=2;',
+ '  AndPut: Op:=1;',
+ ' Else Op:=0;',
+ ' End;',
+ ' Inc(X,VX1); Inc(Y,VY1);',
+ ' PixSetup(Op);',
+ ' For J:=0 To H-1 Do',
+ '  For I:=0 To W-1 Do',
+ '   If (X+I>=CX1) And (X+I<=CX2) And (Y+J>=CY1) And (Y+J<=CY2) Then Begin',
+ '    If Kind=4 Then V:=P^[4+Longint(J)*W+I]',
+ '    Else Begin',
+ '     V:=0;',
+ '     For PL:=0 To PlanesOf-1 Do Begin',
+ '      Idx:=4+Longint(J)*RB+PL*BPR+(I Shr 3);',
+ '      If (P^[Idx] And ($80 Shr (I And 7)))<>0 Then V:=V Or (1 Shl PL);',
+ '     End;',
+ '    End;',
+ '    If Inv Then V:=(Not V) And MaxCol;',
+ '    PixPlot(X+I,Y+J,V);',
+ '   End;',
+ ' PixDone;',
+ 'End;',
+ '',
+ 'Begin',
+ ' Active:=False; Opened:=False; GErr:=0; BufSz:=4096; DacDirty:=False;',
+ ' GraphGetMemPtr:=Nil; GraphFreeMemPtr:=Nil;',
+ ' ScrW:=640; ScrH:=480; MaxCol:=15; Kind:=0;',
+ 'End.');
+{ === FIN UNITE GRAPH === }
 
 Var
  OverlayTable,OverlayFileName,OverlayResult,OverlayHandle,OverlayScratch: Word;
  OverlayBufferSize,OverlayBankCount: Word;
  OverlaySelected: TUnitSet;
  ObjectDirs: TShortString;
- Image, Data: Array[0..MaxImage-1] Of Byte;
+ Image, Data: TImageBuf;
  Symbols: Array[1..MaxSymbols] Of TSymbol;
  Types: Array[0..MaxTypes] Of TTypeInfo;
  TypeExtras: Array[0..MaxTypes] Of TTypeExtra;
@@ -1904,8 +3810,87 @@ Var
  ExprValue: Longint;
  Fixups: Array[1..MaxFixups] Of TAddressFixup;
  RelativeFixups: Array[1..MaxFixups] Of TRelativeFixup;
+ { References en avant vers une routine dont le corps n'est pas encore connu :
+   appel relatif (E8) ou adresse absolue (offset dans le segment de code). }
+ PendPos, PendSym: Array[1..8192] Of Word;
+ PendAbs: Array[1..8192] Of Boolean;
+ PendAdd: Array[1..8192] Of Longint;
+ PendCount: Word;
+ { Sauts courts : les passes successives memorisent pour chaque saut (ordinal)
+   s'il tient en 8 bits ;
+   la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp
+     rel16. }
+ JumpOrd: Word;
+ DbgNoJ, DbgNoIf, DbgNoBack, KeepES, TailIndexed, DirIndexed,
+   KernelSeen: Boolean;
+ InObjectDecl, ObjectFieldsMode, MethodCalled, SelfPushed: Boolean;
+ ObjectDeclName, TypeNameBeingDeclared, CurObjName: TShortString;
+ ObjectDeclType: Word;
+ LitAddr, LitEnd: Array[1..1500] Of Word; LitUnit: Array[1..1500] Of Byte;
+   LitCount: Word;
+ ProcOrd: Word; FramePred, FrameNext, FrameForce: Array[1..8000] Of Boolean;
+ ReportLines: Array[1..64] Of String[120];
+ ReportCount: Word;
+ ShortPred, ShortNext, ForceLong: Array[1..32000] Of Boolean;
+ OrdAt: Array[0..MaxImage-1] Of Word;
+ RuntimeDepth: Word;
+ JumpOverflow: Boolean;
+ { Edition de liens intelligente (comme TP) : graphe d'appels des routines,
+   passe
+   d'analyse tolerant le debordement du segment de code, puis recompilation
+   sans les routines jamais referencees. }
+ AnalysisPass, Overflowed, NoLimit: Boolean;
+ { Mode multi-segments : active seulement quand le code deborde de 64 Ko apres
+   l'edition de
+   liens intelligente. Toutes les routines globales deviennent FAR ;
+     le code est reparti en
+   segments en une seule passe (le segment courant est ferme quand la routine
+     suivante ne
+   tient plus) et chaque segment recoit une copie du runtime (memes decalages
+     0..RuntimeEnd). }
+ MultiSeg, AllowMulti, SegTooBig, InDeadBody: Boolean;
+ CurSeg, SegCount, SegDepth, RtlFix, RtlReloc, CodeRefCount, SegReserve: Word;
+ MainSeg, MainOff, CrtHookSeg, SegSavedCount: Word;
+ CrtHookSet: Boolean;
+ SegCap: Word;
+   { taille maximale visee d'un segment (TPC_SEGSIZE pour les essais) }
+ SegParas: Array[0..MaxSegs-1] Of Word;
+   { paragraphe de chaque segment dans l'image liee }
+ MultiCodeBytes: Longint;
+ SegSaved: Array[0..MaxSegs-1] Of TCodeSegment;
+ CodeRefs: Array[1..MaxCodeRefs] Of TCodeRef;
+ SymSeg: Array[1..MaxSymbols] Of Byte;
+ SegFar: Array[1..MaxSymbols] Of Boolean;
+ RoutSize: Array[1..MaxSymbols] Of Word;
+   { taille de chaque routine globale a la passe precedente }
+ MainSizeEst: Word;
+   { taille du corps principal a la passe precedente }
+ { Segment noyau : l'unite qui declare BEGIN_KERNEL est compilee dans une image
+   separee (offset 0 = debut), avec ses donnees et les routines de runtime
+   necessaires recopiees dans son propre segment (DS=CS a l'execution). }
+ KernelMode, HaveKernel: Boolean;
+ StringRingMask: Word;
+ RuntimeEnd, RuntimeBodyEnd: Word;
+ KUnit: Byte;
+ KImage, SavedImg: ^TImageBuf;
+ SavedRel: ^TRelTable;
+ SavedOrd: ^TOrdBuf;
+ SavedOwn: ^TImageBuf;
+ KSize: Word;
+ KDataStart, KDataFlushed, KFixBase, SCode, SFix, SRel, SNat, SReloc, SObj,
+   SPend, SDbg, SLab, SDataFix, SRing, SRingPos: Word;
+ ChunkLo, ChunkHi, ChunkAt: Array[1..1024] Of Word;
+ ChunkCount: Word;
+ CloneSrc, CloneDst: Array[1..128] Of Word;
+ CloneCount: Word;
+ CurProc: Word;
+ EdgeFrom, EdgeTo: Array[1..32768] Of Word;
+ EdgeCount: Word;
+ DeadProc, RootProc: Array[1..MaxSymbols] Of Boolean;
+ TotalEmitted: Longint;
+ LastJumpTarget: Word;
  RelativeCount: Word;
- CodeOwners, DataOwners: Array[0..MaxImage-1] Of Byte;
+ CodeOwners, DataOwners: TImageBuf;
  Defines: Array[1..MaxDefines] Of String[63];
  Conditions: Array[1..32] Of TCondition;
  SourceSize, SourcePos: Longint;
@@ -1916,8 +3901,11 @@ Var
  TokenReal: Double; TokenIsReal: Boolean;
  TokenIsString, Active: Boolean;
  CodeSize, DataSize, SymbolCount, FixupCount, DefineCount: Word;
- BssTop: Longint;             { variables globales non initialisees: allouees a partir de 65536 vers le bas }
- BssCount: Word;              { table des variables BSS pour retablir l'ordre de declaration }
+ BssTop: Longint;
+   { variables globales non initialisees: allouees a partir de 65536 vers le bas
+     }
+ BssCount: Word;
+   { table des variables BSS pour retablir l'ordre de declaration }
  BssStart, BssLen: Array[1..MaxSymbols] Of Word;
  CondDepth: Byte;
  SourceName, OutputDir, UnitDirs, InputName, InspectName: TShortString;
@@ -1929,7 +3917,8 @@ Var
  { bits: I=1 R=2 S=4 X=8 V=$10 F=$20 B=$40 N=$80 D=$100 L=$200 E=$400 O=$800
          A=$1000 G=$2000 P=$4000 Q=$8000 T=$10000 }
  BuildMode, MakeMode, Quiet, InProcedure: Boolean;
- EntryFixup, RuntimeString, RuntimeInteger, RuntimeChar, RuntimeRawChar, BufferedCharPatch, BufferedHaltPatch: Word;
+ EntryFixup, RuntimeString, RuntimeInteger, RuntimeChar, RuntimeRawChar,
+   BufferedCharPatch, BufferedHaltPatch: Word;
  OutputFilePointer: Word;
  StandardInputAddress, StandardOutputAddress: Word;
  RuntimeBoolean, RuntimeCopy: Word;
@@ -1959,16 +3948,19 @@ Var
  RelocationCount: Word;
  NativeNeeded: Boolean;
  RuntimeHalt, MainEntry: Word;
- RuntimeError, RuntimeErrorPatch, RuntimeErrorText: Word; { "Erreur d'execution N a S:O." }
+ RuntimeError, RuntimeErrorPatch, RuntimeErrorText: Word;
+   { "Erreur d'execution N a S:O." }
  { Resultats de fonctions String: anneau de 8 tampons de 256 octets, pour
    que F(a)+F(b) ne partage pas le meme tampon statique. }
  StringRing, StringRingPos: Word;
- CrtHook: Word;            { adresse de CRTWRITE de l'unite Crt, 0 = sortie DOS }
+ CrtHook: Word;            { adresse de CRTWRITE de l'unite Crt,
+   0 = sortie DOS }
  { Le code (CS) et les donnees (DS) sont deux segments distincts, comme dans
    Turbo Pascal: DataSegVar est un mot du segment de code qui recoit, par la
    table de relocalisation MZ (kind 3), le paragraphe du segment de donnees. }
  DataSegVar: Word;
- CondTail: Word; CondJcc: Byte; { fin de la derniere sequence booleenne de comparaison }
+ CondTail: Word; CondJcc: Byte;
+   { fin de la derniere sequence booleenne de comparaison }
  PrefixSeg: Word;          { segment du PSP, variable PrefixSeg de System }
  LinkedDataBase: Longint;  { position des donnees dans l'image liee }
  RuntimeUnsigned: Word;
@@ -1996,7 +3988,8 @@ Var
    permettent de retirer le code deja emis pour la chaine Pascal. }
  ExprLiteral: Boolean;
  ExprLiteralText: TShortString;
- CastTarget: Word;            { type impose a un dereferencement sans type dans TRec(Pointer(P)^) }
+ CastTarget: Word;
+   { type impose a un dereferencement sans type dans TRec(Pointer(P)^) }
  LiteralMarkCode, LiteralMarkFixup, LiteralMarkRelative: Word;
  LiteralMarkNative, LiteralMarkReloc, LiteralMarkData: Word;
  { Constantes typees PChar du programme: mots de Data a relocaliser. }
@@ -2004,12 +3997,13 @@ Var
  DataFixupCount: Word;
  { Break/Continue (TP 7.0): chaque boucle FOR/WHILE/REPEAT ouvre un niveau;
    les sauts emis a ce niveau sont resolus a la sortie de la boucle. }
- LoopDepth: Byte;
+ LoopDepth: Byte; StackLoops: Word;
  LoopJumpCount: Word;
  { GOTO vers une etiquette pas encore definie }
  LabelJumps: Array[1..512] Of Record Sym, Position: Word End;
  LabelJumpCount: Word;
- LoopJumps: Array[1..MaxLoopJumps] Of Record Depth: Byte; IsBreak: Boolean; Position: Word End;
+ LoopJumps: Array[1..MaxLoopJumps] Of Record Depth: Byte; IsBreak: Boolean;
+   Position: Word End;
  StartTime: Longint;       { heure de depart en centiemes de seconde }
 Procedure ActivateNative(U: Byte);Forward;
  Procedure QueueObject(Name: TShortString);Forward;
@@ -2058,7 +4052,8 @@ Function ErrorMessage(N: Word): TShortString;Begin
   21:ErrorMessage:='Erreur dans le type';
   22:ErrorMessage:='Structure trop grande';
   23:ErrorMessage:='Type de base de l''ensemble hors limites';
-  24:ErrorMessage:='Les composants d''un fichier ne peuvent pas etre des fichiers ou des objets';
+  24:ErrorMessage:='Les composants d''un fichier ne peuvent pas etre des ' +
+    'fichiers ou des objets';
   25:ErrorMessage:='Longueur de chaine invalide';
   26:ErrorMessage:='Types incompatibles';
   27:ErrorMessage:='Type de base d''intervalle invalide';
@@ -2075,7 +4070,8 @@ Function ErrorMessage(N: Word): TShortString;Begin
   38:ErrorMessage:='Expression entiere attendue';
   39:ErrorMessage:='Expression ordinale attendue';
   40:ErrorMessage:='Expression booleenne attendue';
-  41:ErrorMessage:='Les types des operandes ne correspondent pas a l''operateur';
+  41:ErrorMessage:='Les types des operandes ne correspondent pas a ' +
+    'l''operateur';
   42:ErrorMessage:='Erreur dans l''expression';
   43:ErrorMessage:='Affectation illegale';
   44:ErrorMessage:='Identificateur de champ attendu';
@@ -2133,7 +4129,8 @@ Function ErrorMessage(N: Word): TShortString;Begin
   96:ErrorMessage:='Trop de variables';
   97:ErrorMessage:='Variable de controle FOR invalide';
   98:ErrorMessage:='Variable entiere attendue';
-  99:ErrorMessage:='Les fichiers et les types proceduraux ne sont pas autorises ici';
+  99:ErrorMessage:='Les fichiers et les types proceduraux ne sont pas ' +
+    'autorises ici';
   100:ErrorMessage:='Longueurs de chaines differentes';
   101:ErrorMessage:='Ordre des champs invalide';
   102:ErrorMessage:='Constante chaine attendue';
@@ -2187,7 +4184,8 @@ Function ErrorMessage(N: Word): TShortString;Begin
   154:ErrorMessage:='Fail n''est autorise que dans les constructeurs';
   155:ErrorMessage:='Combinaison invalide de code operation et d''operandes';
   156:ErrorMessage:='Reference memoire attendue';
-  157:ErrorMessage:='Impossible d''ajouter ou de soustraire des symboles relogeables';
+  157:ErrorMessage:='Impossible d''ajouter ou de soustraire des symboles ' +
+    'relogeables';
   158:ErrorMessage:='Combinaison de registres invalide';
   159:ErrorMessage:='Les instructions 286/287 ne sont pas activees';
   160:ErrorMessage:='Reference de symbole invalide';
@@ -2198,7 +4196,8 @@ End;
 End;
 
 Procedure Fail(N: Word; S: TShortString);Begin
- Write(SourceName,'(',TokenLine,',',TokenColumn,'): Erreur ',N,': ',ErrorMessage(N),'.');
+ Write(SourceName,'(',TokenLine,',',TokenColumn,'): Erreur ',N,': ',
+   ErrorMessage(N),'.');
  If S<>'' Then Write(' (',S,')');
  WriteLn;
  Halt(1);
@@ -2284,7 +4283,8 @@ Function SwitchBit(C: Char): Longint;Begin
  'A':SwitchBit:=$1000; 'G':SwitchBit:=$2000;
  'P':SwitchBit:=$4000; 'Q':SwitchBit:=$8000; 'T':SwitchBit:=$10000;
  { K, W, Y, Z: reconnus par TP 7.0, sans effet en mode reel. }
- 'K':SwitchBit:=$20000; 'W':SwitchBit:=$40000; 'Y':SwitchBit:=$80000; 'Z':SwitchBit:=$100000;
+ 'K':SwitchBit:=$20000; 'W':SwitchBit:=$40000; 'Y':SwitchBit:=$80000;
+   'Z':SwitchBit:=$100000;
  Else SwitchBit:=0;
 End;
 End;
@@ -2304,7 +4304,8 @@ Begin
  If S[2]='+' Then Begin
   OptionBits:=OptionBits Or B;
   If UpCase(S[1]) In ['D','L'] Then DebugRequested:=True;
-  If UpCase(S[1])='O' Then UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 4;
+  If UpCase(S[1])='O' Then UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit]
+    Or 4;
  End Else OptionBits:=OptionBits And Not B;
 End;
 
@@ -2358,7 +4359,9 @@ Var F: File; Count: Word; Err,Sep: Integer; Path,Search,Part: TShortString;
  D: DirStr; N: NameStr; E: ExtStr; K: Byte; Saved: PParserState;
 Begin
  Name:=Trim(Name);
- If (Length(Name)>=2) And (Name[1] In ['''','"']) And (Name[Length(Name)]=Name[1]) Then Name:=Copy(Name,2,Length(Name)-2);
+ If (Length(Name)>=2) And (Name[1] In ['''',
+   '"']) And (Name[Length(Name)]=Name[1]) Then Name:=Copy(Name,2,
+     Length(Name)-2);
  If Name='' Then Fail(2,'Nom du fichier include attendu');
  FSplit(SourceName,D,N,E); Search:=D+';.;'+IncludeDirs; Path:='';
  Repeat
@@ -2368,11 +4371,16 @@ Begin
   Path:='';
  Until Search='';
  If Path='' Then Fail(15,'Include introuvable: '+Name);
- If Upper(FExpand(Path))=Upper(FExpand(SourceName)) Then Fail(68,'Include circulaire');
- For K:=1 To IncludeDepth Do If Upper(FExpand(Path))=Upper(FExpand(IncludeStack[K]^.SourceName)) Then Fail(68,'Include circulaire');
+ If Upper(FExpand(Path))=Upper(FExpand(SourceName)) Then Fail(68,
+   'Include circulaire');
+ For K:=1 To IncludeDepth Do If
+   Upper(FExpand(Path))=Upper(FExpand(IncludeStack[K]^.SourceName)) Then
+     Fail(68,'Include circulaire');
  If IncludeDepth=16 Then Fail(123,'Includes imbriques >16');
- Assign(F,Path); OpenBinaryRead(F,Err); If Err<>0 Then Fail(15,'Ouverture include impossible');
- If FileSize(F)>MaxSource Then Begin Close(F); Fail(49,'Include trop grand') End;
+ Assign(F,Path); OpenBinaryRead(F,Err); If Err<>0 Then Fail(15,
+   'Ouverture include impossible');
+ If FileSize(F)>MaxSource Then Begin Close(F); Fail(49,
+   'Include trop grand') End;
  SaveParser(Saved); Inc(IncludeDepth); IncludeStack[IncludeDepth]:=Saved;
  SourceSize:=FileSize(F);
  Err:=ReadWhole(F); Close(F);
@@ -2383,22 +4391,28 @@ End;
 Procedure ReportSource;
 { TPC 7.0 affiche FICHIER(ligne) pour chaque source compile et cumule les
   lignes pour le resume final. }
-Var N: Longint;
+Var N: Longint; NS: String;
 Begin
  N:=Line;
  If (SourceSize>0) And (Source[SourceSize]=#10) And (N>1) Then Dec(N);
  Inc(TotalLines,N);
- If Not Quiet Then WriteLn(SourceName,'(',N,')');
+ If Not Quiet Then Begin
+  Str(N,NS);
+  If ReportCount<64 Then Begin Inc(ReportCount);
+    ReportLines[ReportCount]:=SourceName+'('+NS+')' End;
+ End;
 End;
 
 Procedure EndInclude;
 Var P: PParserState;
 Begin
  P:=IncludeStack[IncludeDepth];
- If CondDepth<>P^.CondDepth Then Fail(129,'Condition non terminee dans include');
+ If CondDepth<>P^.CondDepth Then Fail(129,
+   'Condition non terminee dans include');
  ReportSource;
  Move(P^.Buffer^,Source,P^.SourceSize); SourceName:=P^.SourceName;
- SourceSize:=P^.SourceSize; SourcePos:=P^.SourcePos; Line:=P^.Line; Column:=P^.Column;
+ SourceSize:=P^.SourceSize; SourcePos:=P^.SourcePos; Line:=P^.Line;
+   Column:=P^.Column;
  Dispose(P^.Buffer); Dispose(P); Dec(IncludeDepth);
 End;
 
@@ -2428,7 +4442,8 @@ Begin
   If CondDepth=32 Then Unsupported('imbrication conditionnelle > 32');
   If Cmd='IFOPT' Then Begin
    Arg:=Upper(Arg);
-   If (Length(Arg)<>2) Or Not (Arg[2] In ['+','-']) Or (SwitchBit(Arg[1])=0) Then Fail(17,'$IFOPT invalide');
+   If (Length(Arg)<>2) Or Not (Arg[2] In ['+',
+     '-']) Or (SwitchBit(Arg[1])=0) Then Fail(17,'$IFOPT invalide');
    Test:=(OptionBits And SwitchBit(Arg[1])<>0)=(Arg[2]='+');
   End Else Begin Test:=IsDefined(Arg); If Cmd='IFNDEF' Then Test:=Not Test End;
   Inc(CondDepth);
@@ -2455,7 +4470,8 @@ Begin
     SetSwitch(Upper(Trim(Copy(S,1,P-1)))); Delete(S,1,P);
    Until False;
   End Else If (Length(Cmd)=2) And (Cmd[2] In ['+','-']) Then SetSwitch(Cmd) Else
-  If (Length(Cmd)>0) And (Cmd[1]='M') Then      MemoryDirective(Trim(Copy(S,2,255)))
+  If (Length(Cmd)>0) And (Cmd[1]='M') Then      MemoryDirective(Trim(Copy(S,2,
+    255)))
                                       Else Unsupported('directive $'+S);
  End;
 End;
@@ -2487,7 +4503,8 @@ Const
  Names: Array[1..51] Of String[14] = (
  'AND','ARRAY','BEGIN','CASE','CONST','CONSTRUCTOR','DESTRUCTOR','DIV',
  'DO','DOWNTO','ELSE','END','ASM','EXPORTS','FILE','FOR','FUNCTION','GOTO','IF',
- 'IMPLEMENTATION','IN','INHERITED','INLINE','INTERFACE','LABEL','LIBRARY','MOD','NIL','NOT',
+ 'IMPLEMENTATION','IN','INHERITED','INLINE','INTERFACE','LABEL','LIBRARY','MOD',
+   'NIL','NOT',
  'OBJECT','OF','OR','PACKED','PROCEDURE','PROGRAM','RECORD','REPEAT',
  'SET','SHL','SHR','STRING','THEN','TYPE','TO','UNIT','UNTIL','USES',
  'VAR','WHILE','WITH','XOR');
@@ -2522,7 +4539,8 @@ Begin
                                      Else Break;
   If Digit>=Base Then Break;
   { TP 7.0: une constante hexadecimale va jusqu'a $FFFFFFFF (Longint negatif). }
-  If Base=16 Then Begin If N>($FFFFFFFF-Digit) Div 16 Then Fail(7,'Constante hors limites') End
+  If Base=16 Then Begin If N>($FFFFFFFF-Digit) Div 16 Then Fail(7,
+    'Constante hors limites') End
   Else If N>(2147483647-Digit) Div Base Then Fail(7,'Constante hors limites');
   N:=N*Base+Digit; Advance;
  End;
@@ -2534,13 +4552,17 @@ Function ReadAssemblyNumber: Longint;
 Var S: TShortString; E: Integer; N: Longint;
 Begin
  If Peek='$' Then Begin ReadAssemblyNumber:=ReadNumber; Exit End;
- S:=''; While UpCase(Peek) In ['0'..'9','A'..'F','H','O','Q','T'] Do Begin AppendChar(S,UpCase(Peek)); Advance End;
+ S:=''; While UpCase(Peek) In ['0'..'9','A'..'F','H','O','Q',
+   'T'] Do Begin AppendChar(S,UpCase(Peek)); Advance End;
  If S[Length(S)]='H' Then S:='$'+Copy(S,1,Length(S)-1)
  Else If S[Length(S)]='B' Then S:='%'+Copy(S,1,Length(S)-1)
  Else If S[Length(S)] In ['O','Q'] Then S:='&'+Copy(S,1,Length(S)-1)
  Else If S[Length(S)] In ['D','T'] Then Delete(S,Length(S),1);
- Val(S,N,E); If E<>0 Then Fail(7,'Constante assembleur invalide'); ReadAssemblyNumber:=N;
+ Val(S,N,E); If E<>0 Then Fail(7,'Constante assembleur invalide');
+   ReadAssemblyNumber:=N;
 End;
+
+Function FindLexicalSymbol(S: TShortString): Word;Forward;
 
 Procedure NextToken;
 Var
@@ -2549,16 +4571,21 @@ Var
  Closed: Boolean;
 Begin
  Repeat
- If (Peek=#0) And (IncludeDepth<>0) And (IncludeStack[IncludeDepth]^.CurrentUnit=CurrentUnit) Then Begin EndInclude; Continue End;
+ If (Peek=#0) And (IncludeDepth<>0) And
+   (IncludeStack[IncludeDepth]^.CurrentUnit=CurrentUnit) Then Begin EndInclude;
+     Continue End;
  While (Peek<>#0) And (Peek<=' ') Do Advance;
- If (Peek=#0) And (IncludeDepth<>0) And (IncludeStack[IncludeDepth]^.CurrentUnit=CurrentUnit) Then Begin EndInclude; Continue End;
+ If (Peek=#0) And (IncludeDepth<>0) And
+   (IncludeStack[IncludeDepth]^.CurrentUnit=CurrentUnit) Then Begin EndInclude;
+     Continue End;
  TokenLine:=Line; TokenColumn:=Column;
  If Peek='{' Then SkipComment(False) Else
  If (Peek='(') And (PeekNext='*') Then SkipComment(True) Else
  If Not Active And (Peek<>#0) Then Advance
                               Else Break;
  Until False;
- TokenText:=''; TokenValue:=0; TokenIsString:=False; TokenIsReal:=False; TokenReal:=0;
+ TokenText:=''; TokenValue:=0; TokenIsString:=False; TokenIsReal:=False;
+   TokenReal:=0;
  TokenLine:=Line; TokenColumn:=Column; C:=Peek;
  If C=#0 Then Begin
   If CondDepth<>0 Then Fail(129,'$ENDIF manquant');
@@ -2570,9 +4597,14 @@ Begin
   End;
   If Length(TokenText)>63 Then Unsupported('identificateur > 63 caracteres');
   { System.Ident: le qualificatif de l'unite System est implicite. }
-  If (TokenText='SYSTEM') And (Peek='.') And (UpCase(PeekNext) In ['A'..'Z','_']) Then Begin
+  If (TokenText='SYSTEM') And (Peek='.') And (UpCase(PeekNext) In ['A'..'Z',
+    '_']) Then Begin
    Advance; TokenText:='';
-   While UpCase(Peek) In ['A'..'Z','0'..'9','_'] Do Begin AppendChar(TokenText,UpCase(Peek)); Advance End;
+   While UpCase(Peek) In ['A'..'Z','0'..'9','_'] Do Begin AppendChar(TokenText,
+     UpCase(Peek)); Advance End;
+   { un nom local qui masque le symbole de System : System.Nom doit viser
+     System, pas le nom local }
+   If FindLexicalSymbol(TokenText)<>0 Then TokenText:='SYSTEM.'+TokenText;
   End;
   Token:=Keyword(TokenText); Exit;
  End;
@@ -2597,10 +4629,13 @@ Begin
     If N>38 Then Fail(76,'Constante reelle hors limites (Real 6 octets)');
    End;
    If TokenIsReal Then Begin
-    Val(TokenText,TokenReal,N); If N<>0 Then Fail(7,'Constante reelle invalide');
-    If Abs(TokenReal)>1.701411834603E38 Then Fail(76,'Constante reelle hors limites (Real 6 octets)');
+    Val(TokenText,TokenReal,N); If N<>0 Then Fail(7,
+      'Constante reelle invalide');
+    If Abs(TokenReal)>1.701411834603E38 Then Fail(76,
+      'Constante reelle hors limites (Real 6 octets)');
    End
-   Else Begin Val(TokenText,TokenValue,N); If N<>0 Then Fail(7,'Constante hors limites') End;
+   Else Begin Val(TokenText,TokenValue,N); If N<>0 Then Fail(7,
+     'Constante hors limites') End;
   End;
   Exit;
  End;
@@ -2636,17 +4671,28 @@ Begin
  '+':Token:=tkPlus; '-':Token:=tkMinus; '*':Token:=tkTimes;
  '/':Token:=tkSlash; '=':Token:=tkEqual; '(':Token:=tkLP;
  ')':Token:=tkRP; '[':Token:=tkLB; ']':Token:=tkRB;
- ',':Token:=tkComma; ';':Token:=tkSemi; '@':Token:=tkAt;
+ ',':Token:=tkComma; ';':Token:=tkSemi;
+ '@':Begin
+  Token:=tkAt;
+  { assembleur : @Etiquette, @01Etiquette, @@1 forment un seul identificateur }
+  If InAssembler And (UpCase(Peek) In ['A'..'Z','0'..'9','_','@']) Then Begin
+   Token:=tkIdent; TokenText:='@'; TokenIsString:=False;
+   While UpCase(Peek) In ['A'..'Z','0'..'9','_',
+     '@'] Do Begin AppendChar(TokenText,UpCase(Peek)); Advance End;
+  End;
+ End;
  '^':Begin
   { ^Z est une constante caractere (#26) sauf apres un designateur (P^) ou
     devant un identificateur de type (^String). }
   If (UpCase(Peek) In ['@','A'..'Z','[','\',']','_']) And
      Not (UpCase(PeekNext) In ['A'..'Z','0'..'9','_']) And
      Not (Token In [tkIdent,tkRP,tkRB,tkCaret]) Then Begin
-   Token:=tkConstant; TokenIsString:=True; TokenText:=Chr(Ord(UpCase(Peek))-64); Advance;
+   Token:=tkConstant; TokenIsString:=True; TokenText:=Chr(Ord(UpCase(Peek))-64);
+     Advance;
    { ^M^J: caracteres de controle juxtaposes = une seule chaine }
    While (Peek='^') And (UpCase(PeekNext) In ['@','A'..'Z','[','\',']','_']) And
-         ((SourcePos+2>SourceSize) Or Not (UpCase(Source[SourcePos+2]) In ['A'..'Z','0'..'9','_'])) Do Begin
+         ((SourcePos+2>SourceSize) Or Not (UpCase(Source[SourcePos+2]) In
+           ['A'..'Z','0'..'9','_'])) Do Begin
     Advance; AppendChar(TokenText,Chr(Ord(UpCase(Peek))-64)); Advance;
    End;
   End Else Token:=tkCaret;
@@ -2703,10 +4749,29 @@ NextToken;
 End;
 
 Procedure Emit(B: Byte);Begin
- If CodeSize=MaxImage Then Fail(48,'Segment de code trop grand');
+ Inc(TotalEmitted);
+ { Toute emission invalide la fin de la derniere sequence de comparaison.
+   Sinon une valeur perimee (sequence deja consommee par JumpZero, ou code
+   recule par CodeSize:=...) peut coincider plus tard avec CodeSize et faire
+   retirer 7 octets d'un code sans rapport. Exemple : "If IOResult<>0 Then;"
+   (corps vide) suivi de "If B Then ... Else ..." : la condition de B finissait
+   a la meme adresse et son test disparaissait. }
+ CondTail:=0;
+
+ { multi-segments : un corps annule ou un segment plein ne perd que des octets
+   (positions figees) }
+ If (MultiSeg Or InDeadBody) And (CodeSize>=MaxImage-16) Then Begin
+  If Not InDeadBody Then SegTooBig:=True;
+  Exit;
+ End;
+ If CodeSize>=MaxImage-1 Then Begin
+  If AnalysisPass Or NoLimit Or AllowMulti Then Begin Overflowed:=True;
+    CodeSize:=0 End
+  Else Fail(48,'Segment de code trop grand');
+ End;
  CodeOwners[CodeSize]:=CurrentUnit;
  If CurrentUnit In [253,254] Then CodeOwners[CodeSize]:=0;
- Image[CodeSize]:=B; Inc(CodeSize);
+ Image[CodeSize]:=B; OrdAt[CodeSize]:=0; Inc(CodeSize);
 End;
 
 Procedure EmitWord(W: Word);Begin
@@ -2721,14 +4786,79 @@ Procedure Emit2(A,B: Byte);Begin
  Emit(A); Emit(B)
 End;
 
-Function Jump: Word;Begin
- Emit($E9); Jump:=CodeSize; EmitWord(0)
+Function WantShort(O: Word): Boolean;
+{ Saut court autorise pour l'ordinal O ? Pas dans le runtime ecrit a la main. }
+Begin
+ WantShort:=(RuntimeDepth=0) And (O<>0) And (O<=32000) And ShortPred[O] And Not
+   ForceLong[O];
+End;
+
+Function AfterSkip: Boolean;
+{ Le code se termine par un "jcc +n" ecrit a la main : le saut qui suit peut
+  etre saute par n,
+  il doit rester long (3 octets). }
+Begin
+ AfterSkip:=(CodeSize>=2) And (Image[CodeSize-2]>=$70) And
+   (Image[CodeSize-2]<=$7F) And
+  (Image[CodeSize-1]>=2) And (Image[CodeSize-1]<=16);
+End;
+
+Function Jump: Word;
+Var O,R: Word;
+Begin
+ Inc(JumpOrd); O:=JumpOrd; If O>32000 Then O:=0;
+ { derriere un "jcc +n" ecrit a la main,
+   le saut peut etre saute par n : rester long }
+ If WantShort(O) And Not DbgNoJ And Not AfterSkip Then Begin
+  Emit($EB); R:=CodeSize; Emit(0);
+ End Else Begin
+  Emit($E9); R:=CodeSize; EmitWord(0);
+ End;
+ OrdAt[R]:=O; Jump:=R;
+End;
+
+Function JumpIf(CCSkip: Byte): Word;
+{ Saut conditionnel vers une cible a patcher : jcc'(rel8) si court,
+  sinon "jcc +3; jmp rel16".
+  CCSkip est le code de la condition INVERSE (celle qui saute par-dessus le
+    jmp). }
+Var O,R: Word;
+Begin
+ Inc(JumpOrd); O:=JumpOrd; If O>32000 Then O:=0;
+ If WantShort(O) And Not DbgNoIf Then Begin
+  Emit(CCSkip Xor 1); R:=CodeSize; Emit(0);
+ End Else Begin
+  Emit2(CCSkip,3); Emit($E9); R:=CodeSize; EmitWord(0);
+ End;
+ OrdAt[R]:=O; JumpIf:=R;
+End;
+
+Function JumpLong: Word;
+Var R: Word;
+Begin
+ Emit($E9); R:=CodeSize; EmitWord(0); OrdAt[R]:=0; JumpLong:=R;
 End;
 
 Procedure PatchJump(P, Target: Word);
 Var
- I: Word;
+ I,O: Word; D: Longint;
 Begin
+ LastJumpTarget:=Target;
+ O:=OrdAt[P];
+ If (P>0) And ((Image[P-1]=$EB) Or ((Image[P-1]>=$70) And (Image[P-1]<=$7F)))
+   Then Begin
+  { saut court : deplacement sur 8 bits, pas de fixup de relocalisation }
+  D:=Longint(Target)-P-1;
+  If (D<-128) Or (D>127) Then Begin
+   JumpOverflow:=True; If O<>0 Then ForceLong[O]:=True; D:=0;
+  End Else If O<>0 Then ShortNext[O]:=True;
+  Image[P]:=Byte(D);
+  Exit;
+ End;
+ If (O<>0) And (O<=32000) Then Begin
+  D:=Longint(Target)-P-1;
+  ShortNext[O]:=(D>=-120) And (D<=120);
+ End;
  PatchWord(P,Word(Longint(Target)-P-2));
  For I:=1 To RelativeCount Do If RelativeFixups[I].Position=P Then Begin
   RelativeFixups[I].Target:=Target; Exit;
@@ -2740,8 +4870,16 @@ End;
 
 Procedure JumpTo(Target: Word);
 Var
- P: Word;
+ P,O: Word;
 Begin
+ { saut arriere court : deplacement connu tout de suite }
+ If (RuntimeDepth=0) And Not DbgNoBack And Not AfterSkip And (Target<CodeSize)
+   And (CodeSize+2-Target<=128) Then Begin
+  Inc(JumpOrd);
+  Emit($EB); Emit(Byte(Longint(Target)-CodeSize-1));
+  LastJumpTarget:=Target;
+  Exit;
+ End;
  P:=Jump; PatchJump(P,Target)
 End;
 
@@ -2750,32 +4888,227 @@ Function TailConst(Var V: Word): Boolean;
   constant), retire ces 4 octets et rend la constante. }
 Begin
  TailConst:=False;
- If (CodeSize>=4) And (Image[CodeSize-4]=$50) And (Image[CodeSize-3]=$B8) Then Begin
-  V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; CodeSize:=CodeSize-4; TailConst:=True;
+ If (CodeSize>=4) And (Image[CodeSize-4]=$50) And (Image[CodeSize-3]=$B8) Then
+   Begin
+  V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; CodeSize:=CodeSize-4;
+    TailConst:=True;
+ End;
+End;
+
+Procedure ZeroAH;
+{ xor ah,ah sauf si le code se termine deja par xor ah,ah }
+Begin
+ If (CodeSize>=2) And (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) And
+   (LastJumpTarget<>CodeSize) Then Exit;
+ Emit2($30,$E4);
+End;
+
+Function RightLocalWord(PushPos: Word; Var D: Longint): Boolean;
+{ Le membre droit d'une operation binaire se resume a "mov ax,[bp+d]" (mot de la
+  frame) emis
+  juste apres le "push ax" (PushPos-1) : retire le push et le mov, rend d. }
+Begin
+ RightLocalWord:=False;
+ If (PushPos=0) Or (Image[PushPos-1]<>$50) Or (LastJumpTarget>=PushPos) Then
+   Exit;
+ If (CodeSize-PushPos=3) And (Image[PushPos]=$8B) And (Image[PushPos+1]=$46)
+   Then Begin
+  D:=ShortInt(Image[PushPos+2]); CodeSize:=PushPos-1; RightLocalWord:=True;
+ End Else If (CodeSize-PushPos=4) And (Image[PushPos]=$8B) And
+   (Image[PushPos+1]=$86) Then Begin
+  D:=SmallInt(Image[PushPos+2]+Word(Image[PushPos+3])*256); CodeSize:=PushPos-1;
+    RightLocalWord:=True;
+ End;
+End;
+
+Function RightLocalByte(PushPos: Word; Var D: Longint): Boolean;
+{ Idem pour "mov al,[bp+d]; xor ah,ah" (octet non signe de la frame). }
+Begin
+ RightLocalByte:=False;
+ If (PushPos=0) Or (Image[PushPos-1]<>$50) Or (LastJumpTarget>=PushPos) Then
+   Exit;
+ If (CodeSize-PushPos=5) And (Image[PushPos]=$8A) And (Image[PushPos+1]=$46) And
+    (Image[PushPos+3]=$30) And (Image[PushPos+4]=$E4) Then Begin
+  D:=ShortInt(Image[PushPos+2]); CodeSize:=PushPos-1; RightLocalByte:=True;
+ End Else If (CodeSize-PushPos=6) And (Image[PushPos]=$8A) And
+   (Image[PushPos+1]=$86) And
+    (Image[PushPos+4]=$30) And (Image[PushPos+5]=$E4) Then Begin
+  D:=SmallInt(Image[PushPos+2]+Word(Image[PushPos+3])*256); CodeSize:=PushPos-1;
+    RightLocalByte:=True;
  End;
 End;
 
 Function JumpZeroKeep: Word;Begin
  { AX doit rester le resultat booleen (0) a la cible: pas de raccourci. }
- Emit2($09,$C0); Emit2($75,$03); JumpZeroKeep:=Jump;
+ Emit2($09,$C0); JumpZeroKeep:=JumpIf($75);
 End;
 
-Function JumpZero: Word;Begin
- If (CondTail=CodeSize) And (CodeSize>=7) Then Begin
-  { La comparaison vient de produire "mov ax,1; jcc +2; xor ax,ax":
-    sauter directement sur la condition inverse. }
-  CodeSize:=CodeSize-7; Emit2(CondJcc,3); JumpZero:=Jump; Exit;
+Procedure EmitBP(Reg: Byte; D: Integer); Forward;
+
+Function TailLoadByte(Var Len: Word; Var D: Longint): Boolean;
+{ Le code se termine par "mov al,[bp+d];
+  xor ah,ah" (octet non signe de la frame). }
+Begin
+ TailLoadByte:=False;
+ If (CodeSize>=5) And (Image[CodeSize-5]=$8A) And (Image[CodeSize-4]=$46) And
+   (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) Then Begin
+  Len:=5; D:=ShortInt(Image[CodeSize-3]); TailLoadByte:=True;
+ End Else If (CodeSize>=6) And (Image[CodeSize-6]=$8A) And
+   (Image[CodeSize-5]=$86) And (Image[CodeSize-2]=$30) And
+     (Image[CodeSize-1]=$E4) Then Begin
+  Len:=6; D:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256);
+    TailLoadByte:=True;
  End;
- Emit2($09,$C0);             { or ax,ax }
- Emit2($75,$03);             { jnz +3: 8086 n'a pas Jcc near }
- JumpZero:=Jump;
 End;
+
+Function TailLoadWord(Var Len: Word; Var D: Longint): Boolean;
+{ Le code se termine par "mov ax,[bp+d]". }
+Begin
+ TailLoadWord:=False;
+ If (CodeSize>=3) And (Image[CodeSize-3]=$8B) And (Image[CodeSize-2]=$46) Then
+   Begin
+  Len:=3; D:=ShortInt(Image[CodeSize-1]); TailLoadWord:=True;
+ End Else If (CodeSize>=4) And (Image[CodeSize-4]=$8B) And
+   (Image[CodeSize-3]=$86) Then Begin
+  Len:=4; D:=SmallInt(Image[CodeSize-2]+Word(Image[CodeSize-1])*256);
+    TailLoadWord:=True;
+ End;
+End;
+
+Function JumpZero: Word;
+Var Len: Word; D: Longint; V: Word; Inverted: Boolean;
+Begin
+ If (CondTail=CodeSize) And (CodeSize>=7) And (Image[CodeSize-4]>=$70) And
+   (Image[CodeSize-4]<=$7F) And (Image[CodeSize-3]=2) And
+   (Image[CodeSize-2]=$31) And (Image[CodeSize-1]=$C0) Then Begin
+  { La comparaison vient de produire "mov ax,1; jcc +2; xor ax,ax":
+    sauter directement sur la condition inverse. CondTail est verifie par
+    les octets : apres un recul de CodeSize (If a corps vide), il pouvait
+    coincider par hasard avec la fin d'une autre condition. }
+  CondTail:=0;
+  CodeSize:=CodeSize-7;
+  { comparaison d'une variable de la frame avec une constante : cmp [bp+d],imm }
+  If (CodeSize>=3) And (Image[CodeSize-3]=$3D) And (LastJumpTarget<CodeSize-3)
+    Then Begin
+   V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256;
+   Dec(CodeSize,3);
+   If (V<=255) And (CondJcc>=$72) And (CondJcc<=$77) And TailLoadByte(Len,
+     D) Then Begin
+    Dec(CodeSize,Len); Emit($80); EmitBP(7,SmallInt(D)); Emit(V);
+   End Else If TailLoadWord(Len,D) And (LastJumpTarget<CodeSize) Then Begin
+    Dec(CodeSize,Len);
+    If (V<=127) Or (V>=$FF80) Then Begin Emit($83); EmitBP(7,SmallInt(D));
+      Emit(V And 255) End
+    Else Begin Emit($81); EmitBP(7,SmallInt(D)); EmitWord(V) End;
+   End Else Begin Emit($3D); EmitWord(V) End;
+  End;
+  JumpZero:=JumpIf(CondJcc); Exit;
+ End;
+ Inverted:=False;
+ { "not b" : saut sur la condition inverse au lieu de "xor ax,1" }
+ If (CodeSize>=3) And (Image[CodeSize-3]=$35) And (Image[CodeSize-2]=1) And
+   (Image[CodeSize-1]=0) And
+    (LastJumpTarget<CodeSize) Then Begin Dec(CodeSize,3); Inverted:=True End;
+ If (LastJumpTarget<CodeSize) And TailLoadByte(Len,D) Then Begin
+  Dec(CodeSize,Len); Emit($80); EmitBP(7,SmallInt(D)); Emit(0);
+    { cmp byte [bp+d],0 }
+ End Else If (LastJumpTarget<CodeSize) And TailLoadWord(Len,D) Then Begin
+  Dec(CodeSize,Len); Emit($83); EmitBP(7,SmallInt(D)); Emit(0);
+    { cmp word [bp+d],0 }
+ End Else Emit2($09,$C0);    { or ax,ax }
+ If Inverted Then JumpZero:=JumpIf($74) Else JumpZero:=JumpIf($75);
+   { 8086 : pas de Jcc near }
+End;
+
+Function RtlTarget(T: Word): Word; Forward;
 
 Procedure CallTo(Target: Word);
 Var
  P: Word;
 Begin
  Emit($E8); P:=CodeSize; EmitWord(0); PatchJump(P,Target)
+End;
+
+
+Function StdIndex(T: Word): Word;
+Var K: Word;
+Begin
+ StdIndex:=0;
+ For K:=1 To 96 Do If RuntimeStandard[K]=T Then StdIndex:=K;
+End;
+
+Function NumText(W: Word): String;
+Var S: String;
+Begin Str(W,S); NumText:=S End;
+
+Function RtlTarget(T: Word): Word;
+{ Hors noyau : T. Dans le noyau : copie (une fois) de la routine de runtime T
+  dans le segment du noyau et rend son adresse locale. Le code du runtime
+  recopie ne doit ni utiliser de donnees ni du segment de donnees. }
+Var
+ Entries: Array[1..110] Of Word; N,K,J,EndAddr,Start,Over,Dst: Word;
+ Rel: Array[1..64] Of Word; RelCount: Word;
+Begin
+ RtlTarget:=T;
+ If Not KernelMode Then Exit;
+ For K:=1 To CloneCount Do If CloneSrc[K]=T Then Begin RtlTarget:=CloneDst[K];
+   Exit End;
+ If CloneCount=128 Then Fail(123,'Trop de routines de runtime dans le noyau');
+ { routine d'erreur/arret : le noyau s'arrete (HLT) }
+ If (T=RuntimeError) Or (T=RuntimeHalt) Then Begin
+  Over:=Jump; Start:=CodeSize; Emit($F4); Emit2($EB,$FD); PatchJump(Over,
+    CodeSize);
+  Inc(CloneCount); CloneSrc[CloneCount]:=T; CloneDst[CloneCount]:=Start;
+    RtlTarget:=Start; Exit;
+ End;
+ N:=0;
+ For K:=1 To 96 Do If RuntimeStandard[K]<>0 Then Begin Inc(N);
+   Entries[N]:=RuntimeStandard[K] End;
+ Inc(N); Entries[N]:=RuntimeString; Inc(N); Entries[N]:=RuntimeInteger; Inc(N);
+   Entries[N]:=RuntimeChar;
+ Inc(N); Entries[N]:=RuntimeRawChar; Inc(N); Entries[N]:=RuntimeBoolean; Inc(N);
+   Entries[N]:=RuntimeUnsigned;
+ Inc(N); Entries[N]:=RuntimeCopy; Inc(N); Entries[N]:=RuntimeError; Inc(N);
+   Entries[N]:=RuntimeHalt;
+ Inc(N); Entries[N]:=RuntimeBodyEnd;
+ EndAddr:=RuntimeBodyEnd; J:=0;
+ For K:=1 To N Do If Entries[K]=T Then J:=1;
+ If J=0 Then Fail(72,
+   'Le noyau appelle une routine de runtime inconnue (adresse '+NumText(T)+')');
+ For K:=1 To N Do If (Entries[K]>T) And (Entries[K]<EndAddr) Then
+   EndAddr:=Entries[K];
+ { le runtime recopie ne doit pas toucher aux donnees }
+ If GetEnv('TPC_RTLDBG')<>'' Then WriteLn(StdErr,'CLONE ',T,'..',EndAddr,
+   ' std=',StdIndex(T));
+ For K:=1 To SFix Do If (Fixups[K].Position>=T) And (Fixups[K].Position<EndAddr)
+   Then
+  Fail(72,
+    'Le noyau appelle une routine du runtime SYSTEM qui utilise des donnees ' +
+      '(adresse '+NumText(T)+', RuntimeStandard['+NumText(StdIndex(T))+'])');
+ For K:=T To EndAddr-3 Do
+  If (SavedImg^[K]=$2E) And (SavedImg^[K+1]=$8E) And (SavedImg^[K+2]=$1E) Then
+   Fail(72,
+     'Le noyau appelle une routine du runtime SYSTEM qui change DS (adresse ' +
+       ''+NumText(T)+')');
+ Over:=Jump; Start:=CodeSize;
+ Inc(CloneCount); CloneSrc[CloneCount]:=T; CloneDst[CloneCount]:=Start;
+ For K:=T To EndAddr-1 Do Emit(SavedImg^[K]);
+ { appels/sauts relatifs vers l'exterieur de la routine : recopier aussi la
+   cible }
+ RelCount:=0;
+ For K:=1 To SRel Do
+  If (SavedRel^[K].Position>=T) And (SavedRel^[K].Position<EndAddr) And
+     ((SavedRel^[K].Target<T) Or (SavedRel^[K].Target>=EndAddr)) Then Begin
+   If RelCount=64 Then Fail(123,
+     'Trop de references dans une routine de runtime');
+   Inc(RelCount); Rel[RelCount]:=K;
+  End;
+ For K:=1 To RelCount Do Begin
+  Dst:=RtlTarget(SavedRel^[Rel[K]].Target);
+  PatchJump(Start+SavedRel^[Rel[K]].Position-T,Dst);
+ End;
+ PatchJump(Over,CodeSize);
+ RtlTarget:=Start;
 End;
 
 Procedure LoadImmediate(W: Word);Begin
@@ -2790,7 +5123,18 @@ Procedure EmitLoadES;Begin
  Emit($2E); Emit2($8E,$06); EmitWord(DataSegVar); { mov es,cs:[DataSegVar] }
 End;
 
-Procedure DataAddress(Offs: Word);Begin
+Procedure DataAddress(Offs: Word);
+Var K: Word;
+Begin
+ If KernelMode Then Begin
+  { donnee du noyau : adresse finale si deja placee dans le segment du noyau }
+  For K:=1 To ChunkCount Do If (Offs>=ChunkLo[K]) And (Offs<ChunkHi[K]) Then
+    Begin
+   EmitWord(ChunkAt[K]+Offs-ChunkLo[K]); Exit;
+  End;
+  If Offs<KDataStart Then Fail(72,
+    'Le noyau ne peut pas utiliser une donnee du runtime SYSTEM');
+ End;
  If FixupCount=MaxFixups Then Unsupported('trop de references de donnees');
  Inc(FixupCount); Fixups[FixupCount].Position:=CodeSize;
  Fixups[FixupCount].DataOffset:=Offs; EmitWord(0);
@@ -2805,9 +5149,12 @@ Function AllocBss(N: Word): Word;
   FinalDataAddress lors de l'edition des liens, dans l'ordre de declaration
   (comme TP: un debordement de tampon atteint les variables suivantes). }
 Begin
- If Longint(DataSize)+BssSize+N>MaxImage Then Fail(49,'Segment de donnees trop grand');
+ If Longint(DataSize)+BssSize+N>MaxImage Then Begin If GetEnv('TPC_PASSES')<>''
+   Then WriteLn(StdErr,'BSS ',DataSize,' ',BssSize,' ',N); Fail(49,
+     'Segment de donnees trop grand') End;
  If BssCount=MaxSymbols Then Unsupported('trop de variables globales');
- BssTop:=BssTop-N; Inc(BssCount); BssStart[BssCount]:=Word(BssTop); BssLen[BssCount]:=N;
+ BssTop:=BssTop-N; Inc(BssCount); BssStart[BssCount]:=Word(BssTop);
+   BssLen[BssCount]:=N;
  AllocBss:=Word(BssTop);
 End;
 
@@ -2817,8 +5164,10 @@ Begin
  If (BssTop<65536) And (A>=BssTop) Then Begin
   { BssStart est decroissant: trouver la variable contenant A }
   Lo:=1; Hi:=BssCount;
-  While Lo<Hi Do Begin Mid:=(Lo+Hi) Div 2; If BssStart[Mid]<=A Then Hi:=Mid Else Lo:=Mid+1 End;
-  FinalDataAddress:=DataSize+Word(65536-Longint(BssStart[Lo])-BssLen[Lo])+(A-BssStart[Lo]);
+  While Lo<Hi Do Begin Mid:=(Lo+Hi) Div 2;
+    If BssStart[Mid]<=A Then Hi:=Mid Else Lo:=Mid+1 End;
+  FinalDataAddress:=DataSize+Word(65536-Longint(BssStart[Lo])-BssLen[Lo])+(A-
+    BssStart[Lo]);
  End Else FinalDataAddress:=A;
 End;
 
@@ -2826,7 +5175,8 @@ Function AllocData(N: Word): Word;
 Var
  I: Word;
 Begin
- If Longint(DataSize)+N+BssSize>MaxImage Then Fail(49,'Segment de donnees trop grand');
+ If Longint(DataSize)+N+BssSize>MaxImage Then Fail(49,
+   'Segment de donnees trop grand');
  If N<>0 Then
  For I:=DataSize To DataSize+N-1 Do Begin
   DataOwners[I]:=CurrentUnit; If CurrentUnit In [253,254] Then DataOwners[I]:=0;
@@ -2842,6 +5192,34 @@ Begin
  A:=AllocData(Length(S)+1); Data[A]:=Ord(S[0]);
  For I:=1 To Length(S) Do Data[A+I]:=Ord(S[I]);
  StoreString:=A;
+End;
+
+Procedure TrimLiterals(Size: Word);
+{ oublie les chaines litterales dont l'emplacement est libere par un retour
+  arriere des donnees }
+Begin
+ While (LitCount>0) And (LitEnd[LitCount]>Size) Do Dec(LitCount);
+End;
+
+Function LiteralString(S: TShortString): Word;
+{ Chaine litterale (lecture seule) : une chaine identique deja stockee est
+  reutilisee. }
+Var K,A,I: Word; Same: Boolean;
+Begin
+ For K:=LitCount DownTo 1 Do Begin
+  A:=LitAddr[K];
+  If (LitUnit[K]=CurrentUnit) And (LitEnd[K]-A=Length(S)+1) And (Not KernelMode
+    Or (A>=KDataFlushed)) And (Data[A]=Ord(S[0])) Then Begin
+   Same:=True;
+   For I:=1 To Length(S) Do If Data[A+I]<>Ord(S[I]) Then Begin Same:=False;
+     Break End;
+   If Same Then Begin LiteralString:=A; Exit End;
+  End;
+ End;
+ A:=StoreString(S);
+ If LitCount<1500 Then Begin Inc(LitCount); LitAddr[LitCount]:=A;
+   LitEnd[LitCount]:=A+Length(S)+1; LitUnit[LitCount]:=CurrentUnit End;
+ LiteralString:=A;
 End;
 
 Function FindAtScope(S: TShortString; Owner: Byte; Scope: Word): Word;
@@ -2876,8 +5254,12 @@ Function FindSymbol(S: TShortString): Word;
 Var
  I: Word;
  J: Integer; Scope: Word;
+ Qualified: Boolean;
 Begin
  Scope:=CurrentScope;
+ Qualified:=(Length(S)>7) And (Copy(S,1,7)='SYSTEM.');
+ If Qualified Then Begin S:=Copy(S,8,Length(S)-7); Scope:=0; End
+  Else
  Repeat
   I:=FindAtScope(S,CurrentUnit,Scope);
   If I<>0 Then Begin FindSymbol:=I; Exit End;
@@ -2885,17 +5267,27 @@ Begin
   Scope:=Scopes[Scope].Parent;
  Until False;
  FindSymbol:=0;
+ { dans une methode : les autres methodes de l'objet sont visibles sans
+   qualification }
+ If (CurObjName<>'') And Not Qualified Then Begin
+  I:=FindAtScope(CurObjName+'.'+S,CurrentUnit,0);
+  If I<>0 Then Begin FindSymbol:=I; Exit End;
+ End;
  For J:=ImportCount Downto 1 Do
  Begin
- If ((S='FILEMODE') Or (S='INPUT') Or (S='OUTPUT') Or (S='RANDSEED') Or (S='MAXINT') Or (S='REAL') Or
-     (S='PI') Or (S='SEG0040') Or (S='SEGA000') Or (S='SEGB000') Or (S='SEGB800') Or
-     (S='PREFIXSEG') Or (S='INOUTRES') Or (S='MAXLONGINT')) And (Units[ImportOrder[J]].Name='SYSTEM') Then Continue;
+ If ((S='FILEMODE') Or (S='INPUT') Or (S='OUTPUT') Or (S='RANDSEED') Or
+   (S='MAXINT') Or (S='REAL') Or
+     (S='PI') Or (S='SEG0040') Or (S='SEGA000') Or (S='SEGB000') Or
+       (S='SEGB800') Or
+     (S='PREFIXSEG') Or (S='INOUTRES') Or (S='MAXLONGINT')) And
+       (Units[ImportOrder[J]].Name='SYSTEM') Then Continue;
  I:=FindAtScope(S,ImportOrder[J],0);
  If (I<>0) And Symbols[I].Exported Then Begin
   FindSymbol:=I; Exit
  End;
  End;
- If CurrentUnit=253 Then Begin I:=FindAtScope(S,254,0); If I<>0 Then Begin FindSymbol:=I; Exit End End;
+ If CurrentUnit=253 Then Begin I:=FindAtScope(S,254,0);
+   If I<>0 Then Begin FindSymbol:=I; Exit End End;
  FindSymbol:=FindAtScope(S,255,0);
 End;
 
@@ -2943,14 +5335,17 @@ Begin
   ResolveSymbol:=I; Exit;
  End;
  U:=FindBuildUnit(Name);
- If (U=0) Or Not ((U In Imports) Or (U=CurrentUnit)) Then    Fail(3,'Unite inconnue: '+
+ If (U=0) Or Not ((U In Imports) Or (U=CurrentUnit)) Then    Fail(3,
+   'Unite inconnue: '+
  Name);
  NextToken;
  If Token<>tkIdent Then Fail(2,'Identificateur qualifie attendu');
  I:=0;
- For I:=1 To SymbolCount Do    If (Symbols[I].Owner=U) And (Symbols[I].Name=TokenText) And
+ For I:=1 To SymbolCount Do    If (Symbols[I].Owner=U) And
+   (Symbols[I].Name=TokenText) And
  (Symbols[I].Scope=0) And (Symbols[I].Exported Or (U=CurrentUnit)) Then Begin
-  If Symbols[I].Kind=skForeign Then        Unsupported('symbole Borland '+Name+'.'+
+  If Symbols[I].Kind=skForeign Then
+    Unsupported('symbole Borland '+Name+'.'+
   TokenText+
   ': signature hors du sous-ensemble ABI');
   ResolveSymbol:=I; NextToken; Exit;
@@ -2968,10 +5363,13 @@ Begin
  Symbols[SymbolCount].Scope:=CurrentScope;
  Symbols[SymbolCount].Exported:=InInterface And (CurrentScope=0);
  Bucket:=(HashIdent(S) And 126) Div 2;
- Symbols[SymbolCount].HashNext:=Dictionary[Bucket]; Dictionary[Bucket]:=SymbolCount;
+ Symbols[SymbolCount].HashNext:=Dictionary[Bucket];
+   Dictionary[Bucket]:=SymbolCount;
  Symbols[SymbolCount].Name:=S; NewSymbol:=SymbolCount;
  Symbols[SymbolCount].DebugVisible:=(OptionBits And $200<>0) Or (MapMode>=2);
- Symbols[SymbolCount].DebugFile:=SourceName; Symbols[SymbolCount].DebugLine:=TokenLine; Symbols[SymbolCount].DebugColumn:=TokenColumn;
+ Symbols[SymbolCount].DebugFile:=SourceName;
+   Symbols[SymbolCount].DebugLine:=TokenLine;
+     Symbols[SymbolCount].DebugColumn:=TokenColumn;
 End;
 
 Function NewType(Typ, Width, Capacity: Byte; Signed: Boolean;
@@ -3005,9 +5403,17 @@ Begin
  TypeCount:=NewType(ttInteger,4,0,True,-2147483647-1,2147483647,1);
  TypeCount:=NewType(ttText,0,0,False,0,0,0); TypeExtras[10].Size:=256;
  TypeCount:=NewType(ttReal,6,0,True,0,0,0);
- TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[12].ElementType:=6; { PChar = ^Char }
+ TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[12].ElementType:=6;
+   { PChar = ^Char }
  TypeCount:=NewType(ttBoolean,2,0,False,0,1,5); { WordBool }
  TypeCount:=NewType(ttBoolean,4,0,False,0,1,5); { LongBool }
+ TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[15].ElementType:=2;
+   { PByte = ^Byte }
+ TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[16].ElementType:=3;
+   { PWord = ^Word }
+ TypeCount:=NewType(ttReal,4,0,True,0,0,0); { Single : stockage IEEE,
+   converti en Real a la lecture / ecriture }
+ TypeCount:=NewType(ttReal,8,0,True,0,0,0); { Double }
 End;
 
 Function BuiltinType(S: TShortString): Word;
@@ -3033,8 +5439,10 @@ Function PointerTo(T: Word): Word;
 Var I: Word;
 Begin
  For I:=1 To TypeCount Do
-  If (Types[I].Typ=ttPointer) And (TypeExtras[I].ElementType=T) Then Begin PointerTo:=I; Exit End;
- I:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[I].ElementType:=T; PointerTo:=I;
+  If (Types[I].Typ=ttPointer) And (TypeExtras[I].ElementType=T) Then Begin
+    PointerTo:=I; Exit End;
+ I:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[I].ElementType:=T;
+   PointerTo:=I;
 End;
 
 Procedure ApplyType(I, T: Word);
@@ -3047,38 +5455,60 @@ End;
 Function StoreReal(V: Double): Word; Forward;
 
 Procedure InstallStandardTypes;
-Const Names: Array[1..14] Of String[8]=('INTEGER','BYTE','WORD','SHORTINT','BOOLEAN','CHAR','STRING','POINTER','LONGINT','TEXT','REAL','PCHAR','WORDBOOL','LONGBOOL');
+Const Names: Array[1..18] Of String[8]=('INTEGER','BYTE','WORD','SHORTINT',
+  'BOOLEAN','CHAR','STRING','POINTER','LONGINT','TEXT','REAL','PCHAR',
+    'WORDBOOL','LONGBOOL','PBYTE','PWORD','SINGLE','DOUBLE');
 Var T,I: Word;
 Begin
  CurrentUnit:=255;
- For T:=1 To 14 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType; ApplyType(I,T) End;
+ For T:=1 To 18 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType;
+   ApplyType(I,T) End;
  CurrentUnit:=0; FileModeAddress:=AllocData(1); Data[FileModeAddress]:=2;
- CurrentUnit:=255; I:=NewSymbol('FILEMODE'); Symbols[I].Kind:=skVar; ApplyType(I,2); Symbols[I].Addr:=FileModeAddress;
- CurrentUnit:=0; StandardInputAddress:=AllocData(256); StandardOutputAddress:=AllocData(256);
+ CurrentUnit:=255; I:=NewSymbol('FILEMODE'); Symbols[I].Kind:=skVar;
+   ApplyType(I,2); Symbols[I].Addr:=FileModeAddress;
+ CurrentUnit:=0; StandardInputAddress:=AllocData(256);
+   StandardOutputAddress:=AllocData(256);
  Data[StandardInputAddress+2]:=1; Data[StandardInputAddress+4]:=1;
  Data[StandardInputAddress+6]:=255; Data[StandardInputAddress+7]:=255;
- Data[StandardInputAddress+8]:=1; Data[StandardInputAddress+12]:=$46; Data[StandardInputAddress+13]:=$50;
+ Data[StandardInputAddress+8]:=1; Data[StandardInputAddress+12]:=$46;
+   Data[StandardInputAddress+13]:=$50;
  Move(Data[StandardInputAddress],Data[StandardOutputAddress],256);
  Data[StandardOutputAddress]:=1; Data[StandardOutputAddress+4]:=2;
- CurrentUnit:=255; I:=NewSymbol('INPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10); Symbols[I].Addr:=StandardInputAddress;
- I:=NewSymbol('OUTPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10); Symbols[I].Addr:=StandardOutputAddress;
+ CurrentUnit:=255; I:=NewSymbol('INPUT'); Symbols[I].Kind:=skVar; ApplyType(I,
+   10); Symbols[I].Addr:=StandardInputAddress;
+ I:=NewSymbol('OUTPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10);
+   Symbols[I].Addr:=StandardOutputAddress;
  CurrentUnit:=0; RandomSeed:=AllocData(4);
- StringRing:=AllocData(2048); StringRingPos:=AllocData(2);
- CurrentUnit:=255; I:=NewSymbol('RANDSEED'); Symbols[I].Kind:=skVar; ApplyType(I,9); Symbols[I].Addr:=RandomSeed;
- I:=NewSymbol('MAXINT'); Symbols[I].Kind:=skConst; ApplyType(I,1); Symbols[I].Value:=32767;
+ If AnalysisPass Or KernelSeen Then Begin StringRing:=AllocData(2048);
+   StringRingPos:=AllocData(2) End
+ Else Begin StringRing:=AllocBss(2048); StringRingPos:=AllocBss(2) End;
+ CurrentUnit:=255; I:=NewSymbol('RANDSEED'); Symbols[I].Kind:=skVar;
+   ApplyType(I,9); Symbols[I].Addr:=RandomSeed;
+ I:=NewSymbol('MAXINT'); Symbols[I].Kind:=skConst; ApplyType(I,1);
+   Symbols[I].Value:=32767;
  { TP 7.0: segments standard et constante Pi de l'unite System }
- I:=NewSymbol('SEG0040'); Symbols[I].Kind:=skConst; ApplyType(I,3); Symbols[I].Value:=$0040;
- I:=NewSymbol('SEGA000'); Symbols[I].Kind:=skConst; ApplyType(I,3); Symbols[I].Value:=$A000;
- I:=NewSymbol('SEGB000'); Symbols[I].Kind:=skConst; ApplyType(I,3); Symbols[I].Value:=$B000;
- I:=NewSymbol('SEGB800'); Symbols[I].Kind:=skConst; ApplyType(I,3); Symbols[I].Value:=$B800;
+ I:=NewSymbol('SEG0040'); Symbols[I].Kind:=skConst; ApplyType(I,3);
+   Symbols[I].Value:=$0040;
+ I:=NewSymbol('SEGA000'); Symbols[I].Kind:=skConst; ApplyType(I,3);
+   Symbols[I].Value:=$A000;
+ I:=NewSymbol('SEGB000'); Symbols[I].Kind:=skConst; ApplyType(I,3);
+   Symbols[I].Value:=$B000;
+ I:=NewSymbol('SEGB800'); Symbols[I].Kind:=skConst; ApplyType(I,3);
+   Symbols[I].Value:=$B800;
  CurrentUnit:=0; I:=StoreReal(Pi); CurrentUnit:=255;
- T:=NewSymbol('PI'); Symbols[T].Kind:=skConst; ApplyType(T,11); Symbols[T].Addr:=I;
+ T:=NewSymbol('PI'); Symbols[T].Kind:=skConst; ApplyType(T,11);
+   Symbols[T].Addr:=I;
  Symbols[T].StrValue[0]:=#6; Move(Data[I],Symbols[T].StrValue[1],6);
- CurrentUnit:=0; CrtHook:=AllocData(2); PrefixSeg:=AllocData(2);
+ CurrentUnit:=0;
+   If MultiSeg Then CrtHook:=AllocData(4) Else CrtHook:=AllocData(2);
+     PrefixSeg:=AllocData(2);
  CurrentUnit:=255;
- I:=NewSymbol('PREFIXSEG'); Symbols[I].Kind:=skVar; ApplyType(I,3); Symbols[I].Addr:=PrefixSeg;
- I:=NewSymbol('INOUTRES'); Symbols[I].Kind:=skVar; ApplyType(I,1); Symbols[I].Addr:=InputError;
- I:=NewSymbol('MAXLONGINT'); Symbols[I].Kind:=skConst; ApplyType(I,9); Symbols[I].Value:=2147483647;
+ I:=NewSymbol('PREFIXSEG'); Symbols[I].Kind:=skVar; ApplyType(I,3);
+   Symbols[I].Addr:=PrefixSeg;
+ I:=NewSymbol('INOUTRES'); Symbols[I].Kind:=skVar; ApplyType(I,1);
+   Symbols[I].Addr:=InputError;
+ I:=NewSymbol('MAXLONGINT'); Symbols[I].Kind:=skConst; ApplyType(I,9);
+   Symbols[I].Value:=2147483647;
  CurrentUnit:=0;
 End;
 
@@ -3104,7 +5534,8 @@ Begin
  If DebugCount=MaxDebugEntries Then Exit;
  Inc(DebugCount); FillChar(DebugEntries[DebugCount],SizeOf(TDebugEntry),0);
  With DebugEntries[DebugCount] Do Begin
-  U:=CurrentUnit; Address:=CodeSize; Line:=TokenLine; Column:=TokenColumn; FileName:=SourceName;
+  U:=CurrentUnit; Address:=CodeSize; Line:=TokenLine; Column:=TokenColumn;
+    FileName:=SourceName;
  End;
 End;
 
@@ -3112,19 +5543,25 @@ Procedure CaptureDebugSymbols(Owner: Byte);
 Var I,T: Word; Prefix: TShortString;
 Begin
  If Owner In DebugCaptured Then Exit;
- DebugCaptured:=DebugCaptured+[Owner]; Prefix:=''; If Owner<>0 Then Prefix:=Units[Owner].Name+'.';
- For I:=1 To SymbolCount Do If (Symbols[I].Owner=Owner) And Symbols[I].DebugVisible And
+ DebugCaptured:=DebugCaptured+[Owner]; Prefix:='';
+   If Owner<>0 Then Prefix:=Units[Owner].Name+'.';
+ For I:=1 To SymbolCount Do If (Symbols[I].Owner=Owner) And
+   Symbols[I].DebugVisible And
     (Symbols[I].Kind In [skVar,skProc]) And Not Symbols[I].Native Then Begin
   If DebugCount=MaxDebugEntries Then Fail(110,'Trop d''entrees de debug');
   Inc(DebugCount); FillChar(DebugEntries[DebugCount],SizeOf(TDebugEntry),0);
   With DebugEntries[DebugCount] Do Begin
    U:=Owner; Address:=Symbols[I].Addr;
-   FileName:=Symbols[I].DebugFile; Line:=Symbols[I].DebugLine; Column:=Symbols[I].DebugColumn;
+   FileName:=Symbols[I].DebugFile; Line:=Symbols[I].DebugLine;
+     Column:=Symbols[I].DebugColumn;
    Name:=Prefix+Symbols[I].Name;
    If Symbols[I].Kind=skProc Then Kind:=1 Else If Symbols[I].Local Then Begin
-    Kind:=3; Name:=Prefix+Symbols[Scopes[Symbols[I].Scope].ProcSymbol].Name+'.'+Symbols[I].Name;
+    Kind:=3;
+      Name:=Prefix+Symbols[Scopes[Symbols[I].Scope].ProcSymbol].Name+'.'+
+        Symbols[I].Name;
    End Else Kind:=2;
-   T:=SymbolType(I); Size:=TypeExtras[T].Size; If Symbols[I].ByReference Then Size:=4;
+   T:=SymbolType(I); Size:=TypeExtras[T].Size;
+     If Symbols[I].ByReference Then Size:=4;
   End;
  End;
 End;
@@ -3132,36 +5569,48 @@ End;
 Function IsCharPointer(T: Word): Boolean;
 { PChar ou tout type ^Char: Turbo Pascal 7.0 les traite de la meme facon. }
 Begin
- IsCharPointer:=(T<>0) And (Types[T].Typ=ttPointer) And (TypeExtras[T].ElementType=6);
+ IsCharPointer:=(T<>0) And (Types[T].Typ=ttPointer) And
+   (TypeExtras[T].ElementType=6);
 End;
 
 Function IsCharArray(T: Word): Boolean;
 { Tableau de Char a base zero, compatible PChar avec $X+. }
 Begin
- IsCharArray:=(T<>0) And (Types[T].Typ=ttArray) And (TypeExtras[T].ElementType=6) And
-  (Types[TypeExtras[T].IndexType].Typ=ttInteger) And (Types[TypeExtras[T].IndexType].LowBound=0);
+ IsCharArray:=(T<>0) And (Types[T].Typ=ttArray) And
+   (TypeExtras[T].ElementType=6) And
+  (Types[TypeExtras[T].IndexType].Typ=ttInteger) And
+    (Types[TypeExtras[T].IndexType].LowBound=0);
 End;
 Function IsAnyCharArray(T: Word): Boolean;
 { Tableau (packed) de Char quelconque: compatible chaine dans les expressions. }
 Begin
- IsAnyCharArray:=(T<>0) And (Types[T].Typ=ttArray) And (TypeExtras[T].ElementType=6);
+ IsAnyCharArray:=(T<>0) And (Types[T].Typ=ttArray) And
+   (TypeExtras[T].ElementType=6);
 End;
 
 Function CompatibleTypes(A, B: Word): Boolean;
 Begin
  CompatibleTypes:=(A=0) Or (B=0);
- If IsCharPointer(A) And IsCharPointer(B) Then Begin CompatibleTypes:=True; Exit End;
- If (A<>0) And (B<>0) And (Types[A].Typ=ttReal) And (Types[B].Typ=ttReal) Then Begin CompatibleTypes:=True; Exit End;
+ If IsCharPointer(A) And IsCharPointer(B) Then Begin CompatibleTypes:=True;
+   Exit End;
+ If (A<>0) And (B<>0) And (Types[A].Typ=ttReal) And (Types[B].Typ=ttReal) Then
+   Begin CompatibleTypes:=True; Exit End;
  If (A<>0) And (B<>0) Then
-  CompatibleTypes:=(Types[A].Typ=Types[B].Typ) And (Types[A].Base=Types[B].Base);
- If (A<>0) And (B<>0) And (Types[A].Typ=ttPointer) And (Types[B].Typ=ttPointer) Then
-  CompatibleTypes:=(TypeExtras[A].ElementType=0) Or (TypeExtras[B].ElementType=0) Or (Types[A].Base=Types[B].Base);
+  CompatibleTypes:=(Types[A].Typ=Types[B].Typ) And
+    (Types[A].Base=Types[B].Base);
+ If (A<>0) And (B<>0) And (Types[A].Typ=ttPointer) And (Types[B].Typ=ttPointer)
+   Then
+  CompatibleTypes:=(TypeExtras[A].ElementType=0) Or
+    (TypeExtras[B].ElementType=0) Or (Types[A].Base=Types[B].Base);
  If (A<>0) And (B<>0) And (Types[A].Typ=ttSet) And (Types[B].Typ=ttSet) Then
-  CompatibleTypes:=(TypeExtras[A].ElementType=0) Or (TypeExtras[B].ElementType=0) Or
+  CompatibleTypes:=(TypeExtras[A].ElementType=0) Or
+    (TypeExtras[B].ElementType=0) Or
    CompatibleTypes(TypeExtras[A].ElementType,TypeExtras[B].ElementType);
- If (A<>0) And (B<>0) And (Types[A].Typ=ttText) And (Types[B].Typ=ttText) Then CompatibleTypes:=True;
+ If (A<>0) And (B<>0) And (Types[A].Typ=ttText) And (Types[B].Typ=ttText) Then
+   CompatibleTypes:=True;
  If (A<>0) And (B<>0) And (Types[A].Typ=ttFile) And (Types[B].Typ=ttFile) Then
-  CompatibleTypes:=(TypeExtras[A].ElementType=0) Or (TypeExtras[B].ElementType=0) Or
+  CompatibleTypes:=(TypeExtras[A].ElementType=0) Or
+    (TypeExtras[B].ElementType=0) Or
    CompatibleTypes(TypeExtras[A].ElementType,TypeExtras[B].ElementType);
 End;
 
@@ -3191,8 +5640,10 @@ Begin
   If P^.Count=MaxTemps Then Fail(49,'Expression trop complexe (temporaires)');
   Inc(P^.Count); K:=P^.Count; P^.Size[K]:=Size;
   If R<>0 Then Begin
-   If Longint(Scopes[R].LocalSize)+Size>65520 Then Fail(49,'Variables locales trop grandes');
-   Inc(Scopes[R].LocalSize,Size); P^.Addr[K]:=Word(-Longint(Scopes[R].LocalSize));
+   If Longint(Scopes[R].LocalSize)+Size>65520 Then Fail(49,
+     'Variables locales trop grandes');
+   Inc(Scopes[R].LocalSize,Size);
+     P^.Addr[K]:=Word(-Longint(Scopes[R].LocalSize));
   End Else P^.Addr[K]:=AllocData(Size);
  End;
  Inc(P^.Used);
@@ -3211,16 +5662,19 @@ Begin
  If R<>0 Then Scopes[R].Temps.Used:=0 Else StaticTemps.Used:=0;
 End;
 
-Procedure TempPointerAX(A: Word; Local: Boolean);  { DX:AX := adresse du temporaire }
+Procedure TempPointerAX(A: Word; Local: Boolean);
+  { DX:AX := adresse du temporaire }
 Begin
  If Local Then Begin Emit2($8D,$86); EmitWord(A); Emit2($8C,$D2) End
  Else Begin Emit($B8); DataAddress(A); Emit2($8C,$DA) End;
 End;
 
-Procedure TempPointerDI(A: Word; Local: Boolean);  { ES:DI := adresse du temporaire }
+Procedure TempPointerDI(A: Word; Local: Boolean);
+  { ES:DI := adresse du temporaire }
 Begin
  If Local Then Begin Emit2($8D,$BE); EmitWord(A); Emit($16); Emit($07) End
- Else Begin Emit($BF); DataAddress(A); CallTo(RuntimeStandard[71]) End;
+ Else Begin Emit($BF); DataAddress(A);
+   CallTo(RtlTarget(RuntimeStandard[71])) End;
 End;
 
 Procedure TempClear(A: Word; Local: Boolean);      { octet de longueur := 0 }
@@ -3243,22 +5697,148 @@ Begin
 End;
 
 Procedure AddSegmentRelocation(P: Word; Kind: Byte);Begin
- If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
+ If MultiSeg And (Kind=0) Then Kind:=8+CurSeg;   { segment de code courant }
+ If RelocationCount=MaxNativeRefs Then
+   Unsupported('trop de relocalisations MZ');
  Inc(RelocationCount); Relocations[RelocationCount].Offs:=P;
  Relocations[RelocationCount].Segm:=0; RelocationKinds[RelocationCount]:=Kind;
 End;
 
+Procedure NoteRef(Sym: Word);
+Begin
+ If (Sym=0) Or (EdgeCount=32768) Then Exit;
+ Inc(EdgeCount); EdgeFrom[EdgeCount]:=CurProc; EdgeTo[EdgeCount]:=Sym;
+End;
+
+Procedure AddPending(P,Sym: Word; Absolute: Boolean; Add: Longint);
+Begin
+ If PendCount=8192 Then
+   Unsupported('trop de references en avant vers des routines');
+ Inc(PendCount); PendPos[PendCount]:=P; PendSym[PendCount]:=Sym;
+   PendAbs[PendCount]:=Absolute; PendAdd[PendCount]:=Add;
+End;
+
+Function KernelSymbol(I: Word): Boolean;
+{ Vrai pour une routine du noyau referencee depuis hors du noyau. }
+Begin
+ KernelSymbol:=False;
+ If (Symbols[I].Owner<>0) And (Symbols[I].Owner<=MaxUnits) Then
+  KernelSymbol:=Units[Symbols[I].Owner].Kernel And Not KernelMode;
+End;
+
+Function UnitBias(U: Byte): Longint;
+{ Decalage a retirer d'une adresse de code absolue : un segment noyau virtuel
+  commence a l'offset 0 de son propre segment. }
+Begin
+ UnitBias:=0;
+ If (U<>0) And (U<=MaxUnits) Then If Units[U].Kernel Then
+   UnitBias:=Units[U].SegBase;
+End;
+
+Procedure ResolvePending(Sym: Word);
+Var K: Word;
+Begin
+ K:=1;
+ While K<=PendCount Do Begin
+  If PendSym[K]=Sym Then Begin
+   If PendAbs[K] Then PatchWord(PendPos[K],
+     Word(Longint(Symbols[Sym].Addr)+PendAdd[K]))
+   Else PatchJump(PendPos[K],Symbols[Sym].Addr);
+   PendPos[K]:=PendPos[PendCount]; PendSym[K]:=PendSym[PendCount];
+     PendAbs[K]:=PendAbs[PendCount]; PendAdd[K]:=PendAdd[PendCount];
+   Dec(PendCount);
+  End Else Inc(K);
+ End;
+End;
+
+Procedure AddCodeRef(P,Sym: Word; Kind: Byte; Add: Longint);
+{ Multi-segments : mot du code a completer a l'edition de liens avec l'adresse
+  (Kind 0) ou le
+  segment (Kind 1) d'une routine dont le corps n'est pas encore compile. }
+Begin
+ If CodeRefCount=MaxCodeRefs Then
+   Unsupported('trop de references de code entre segments');
+ Inc(CodeRefCount); CodeRefs[CodeRefCount].Pos:=P;
+   CodeRefs[CodeRefCount].Sym:=Sym;
+ CodeRefs[CodeRefCount].Kind:=Kind; CodeRefs[CodeRefCount].Add:=Add;
+End;
+
+Function CrossSegment(I: Word): Boolean;
+{ Vrai si la routine I doit etre atteinte par un appel FAR vers un autre segment
+  (ou un segment
+  encore inconnu) : routine globale du mode multi-segments,
+    non encore definie ou d'un autre segment. }
+Begin
+ CrossSegment:=MultiSeg And SegFar[I] And (Symbols[I].Unresolved Or
+   (SymSeg[I]<>CurSeg));
+End;
+
+Procedure EmitProcOffsetWord(I: Word; Add: Longint);
+{ Mot : offset du point d'entree de la routine I (+ Add),
+  dans le segment de la routine. }
+Begin
+ If Symbols[I].Unresolved Then Begin
+  If MultiSeg And SegFar[I] Then AddCodeRef(CodeSize,I,0,Add)
+  Else AddPending(CodeSize,I,True,Add);
+  EmitWord(0);
+ End Else EmitWord(Word(Longint(Symbols[I].Addr)+Add));
+End;
+
+Procedure EmitProcSegmentWord(I: Word);
+{ Mot : segment de la routine I (relocalise par la table MZ) ;
+  apres Emit($B8+registre). }
+Begin
+ If Symbols[I].Unresolved Then AddCodeRef(CodeSize,I,1,0)
+ Else AddSegmentRelocation(CodeSize,8+SymSeg[I]);
+ EmitWord(0);
+End;
+
+{ AX := offset du point d'entree d'une routine, DX := CS (adresse absolue). }
+Procedure EmitProcAddress(I: Word; WithSegment: Boolean);
+Var Bias: Longint;
+Begin
+ NoteRef(I);
+ Bias:=UnitBias(Symbols[I].Owner);
+ Emit($B8);
+ If CrossSegment(I) Then EmitProcOffsetWord(I,0)
+ Else If Symbols[I].Unresolved Then Begin AddPending(CodeSize,I,True,-Bias);
+   EmitWord(0) End
+ Else EmitWord(Word(Longint(Symbols[I].Addr)-Bias));
+ If WithSegment Then Begin
+  If KernelSymbol(I) Then Begin
+   { depuis hors du noyau : segment du noyau, relocalise par la table MZ }
+   Emit($BA); AddSegmentRelocation(CodeSize,4); EmitWord(0);
+  End Else If CrossSegment(I) Then Begin Emit($BA); EmitProcSegmentWord(I) End
+  Else Emit2($8C,$CA);
+ End;
+End;
+
 Procedure EmitLocalCall(I: Word);
 Begin
- If Symbols[I].Scope=0 Then Emit($55) { le lien statique d'une routine globale est inutilise }
- Else Begin ScopeAddress(Symbols[I].Scope); Emit($53) End;
- If Symbols[I].FarRoutine Then Emit($0E);
- CallTo(Symbols[I].Addr);
+ NoteRef(I);
+ If KernelSymbol(I) Then Fail(72,
+   'Un programme ne peut pas appeler directement une routine du noyau : ' +
+     ''+Symbols[I].Name);
+ { ABI Turbo Pascal 7 : une routine globale n'a pas de lien statique }
+ If Symbols[I].Scope<>0 Then Begin ScopeAddress(Symbols[I].Scope);
+   Emit($53) End;
+ If CrossSegment(I) Then Begin
+  { appel FAR direct vers un autre segment de code (ou un segment encore
+    inconnu) }
+  Emit($9A);
+  EmitProcOffsetWord(I,0);
+  EmitProcSegmentWord(I);
+ End Else Begin
+  If Symbols[I].FarRoutine Then Emit($0E);
+  If Symbols[I].Unresolved Then Begin
+   Emit($E8); AddPending(CodeSize,I,False,0); EmitWord(0);
+  End Else CallTo(Symbols[I].Addr);
+ End;
  If Symbols[I].LegacyCall Then Begin Emit2($83,$C4); Emit(2) End;
 End;
 
 Procedure ProcedureExit;
-Var I,A: Word;
+Var I,A,V: Word; Done,ZeroKnown: Boolean;
 Begin
  I:=Scopes[CurrentScope].ProcSymbol;
  If (Symbols[I].ResultSymbol<>0) And Not Symbols[I].AssemblerBody Then Begin
@@ -3266,26 +5846,70 @@ Begin
    { Copier la variable resultat (frame locale) dans le prochain tampon de
      l'anneau; DX:AX = adresse du tampon. }
    Emit2($8B,$1E); DataAddress(StringRingPos);                 { mov bx,[pos] }
-   Emit2($8D,$BF); DataAddress(StringRing);                    { lea di,[bx+anneau] }
-   Emit2($81,$C3); EmitWord(256); Emit2($81,$E3); EmitWord(2047); { add bx,256; and bx,2047 }
+   Emit2($8D,$BF); DataAddress(StringRing);
+     { lea di,[bx+anneau] }
+   Emit2($81,$C3); EmitWord(256); Emit2($81,$E3); EmitWord(StringRingMask);
+     { add bx,256; and bx,masque }
    Emit2($89,$1E); DataAddress(StringRingPos);                 { mov [pos],bx }
-   Emit($1E); Emit($07); Emit($57);                            { push ds; pop es; push di }
-   Emit2($8D,$B6); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr); { lea si,[bp+resultat] }
-   Emit($1E); Emit($16); Emit($1F); Emit($B9); EmitWord(Word(Types[Symbols[I].TypeId].Capacity)+1);
-   Emit2($F3,$A4); Emit($1F); Emit($58); Emit2($8C,$DA);       { rep movsb; pop ds; pop ax; mov dx,ds }
+   Emit($1E); Emit($07); Emit($57);                            { push ds;
+     pop es; push di }
+   Emit2($8D,$B6); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr);
+     { lea si,[bp+resultat] }
+   Emit($1E); Emit($16); Emit($1F); Emit($B9);
+     EmitWord(Word(Types[Symbols[I].TypeId].Capacity)+1);
+   Emit2($F3,$A4); Emit($1F); Emit($58); Emit2($8C,$DA);       { rep movsb;
+     pop ds; pop ax; mov dx,ds }
   End Else
   If Symbols[I].Typ=ttReal Then Begin
    A:=AllocData(6); Emit($1E); Emit($07); Emit($BF); DataAddress(A);
    Emit2($8D,$B6); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr);
-   Emit($1E); Emit($16); Emit($1F); Emit($B9); EmitWord(6); Emit2($F3,$A4); Emit($1F);
+   Emit($1E); Emit($16); Emit($1F); Emit($B9); EmitWord(6); Emit2($F3,$A4);
+     Emit($1F);
    Emit($B8); DataAddress(A); Emit2($8C,$DA);
   End Else Begin
   { AX/AL contient le resultat ordinal apres restauration de la frame. }
-  Emit2($8B,$86); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr);
-  If Symbols[I].Width=4 Then Begin
-   Emit2($8B,$96); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr+2);
+  A:=Symbols[Symbols[I].ResultSymbol].Addr;
+  { resultat tout juste stocke dans la variable : AX le contient deja,
+    et la frame va disparaitre :
+    le stockage est inutile }
+  Done:=False; ZeroKnown:=False;
+  If (LastJumpTarget<>CodeSize) And (Not Symbols[I].NoFrame) Then Begin
+   If (Symbols[I].Width=2) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And
+     (CodeSize>=3) And
+      (Image[CodeSize-3]=$89) And (Image[CodeSize-2]=$46) And
+        (Image[CodeSize-1]=Byte(A)) Then Begin
+    Dec(CodeSize,3); Done:=True;
+   End Else If (Symbols[I].Width=2) And (CodeSize>=4) And
+     (Image[CodeSize-4]=$89) And (Image[CodeSize-3]=$86) And
+      (SmallInt(Image[CodeSize-2]+Word(Image[CodeSize-1])*256)=SmallInt(A)) Then
+        Begin
+    Dec(CodeSize,4); Done:=True;
+   End Else If (Symbols[I].Width=1) And (SmallInt(A)>=-128) And
+     (SmallInt(A)<=127) And (CodeSize>=3) And
+      (Image[CodeSize-3]=$88) And (Image[CodeSize-2]=$46) And
+        (Image[CodeSize-1]=Byte(A)) Then Begin
+    Dec(CodeSize,3); Done:=True;
+   End Else If (Symbols[I].Width=2) And (SmallInt(A)>=-128) And
+     (SmallInt(A)<=127) And (CodeSize>=5) And
+      (Image[CodeSize-5]=$C7) And (Image[CodeSize-4]=$46) And
+        (Image[CodeSize-3]=Byte(A)) Then Begin
+    { Fn:=const : mov [bp+d],imm devient mov ax,imm }
+    V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; Dec(CodeSize,5);
+      Emit($B8); EmitWord(V); Done:=True;
+   End Else If (Symbols[I].Width=1) And (SmallInt(A)>=-128) And
+     (SmallInt(A)<=127) And (CodeSize>=4) And
+      (Image[CodeSize-4]=$C6) And (Image[CodeSize-3]=$46) And
+        (Image[CodeSize-2]=Byte(A)) Then Begin
+    V:=Image[CodeSize-1];
+      If Symbols[I].SignedByte And (V>=128) Then V:=V Or $FF00;
+    Dec(CodeSize,4); Emit($B8); EmitWord(V); Done:=True; ZeroKnown:=True;
+   End;
   End;
-  If Symbols[I].Width=1 Then Begin
+  If Not Done Then Begin Emit($8B); EmitBP(0,SmallInt(A)) End;
+  If Symbols[I].Width=4 Then Begin
+   Emit2($8B,$96); EmitWord(A+2);
+  End;
+  If (Symbols[I].Width=1) And Not ZeroKnown Then Begin
    If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
   End;
  End;
@@ -3293,9 +5917,24 @@ Begin
  If Symbols[I].AssemblerBody And (Symbols[I].Width=1) Then Begin
   If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
  End;
- Emit2($89,$EC); Emit($5D);
+ If Symbols[I].InterruptRoutine Then Begin
+  { procedure interrupt : le corps assembleur gere les registres, IRET }
+  If Not Symbols[I].NoFrame Then Begin Emit2($89,$EC); Emit($5D) End;
+  If Not Symbols[I].NoFrame And Not Symbols[I].AssemblerBody Then Begin
+   Emit2($83,$C4); Emit(4);
+   Emit($5D); Emit($07); Emit($1F); Emit($5F); Emit($5E); Emit($5A); Emit($59);
+     Emit($5B); Emit($58);
+  End;
+  Emit($CF); Exit;
+ End;
+ If Not Symbols[I].NoFrame Then Begin
+  If Not (Symbols[I].SkipSub And (StackLoops=0)) Then Emit2($89,$EC);
+  Emit($5D)
+ End;
  If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
- EmitWord(Symbols[I].ParamBytes+2); { parametres + lien statique local }
+ { parametres (+ lien statique pour une routine imbriquee) }
+ If Symbols[I].Scope<>0 Then EmitWord(Symbols[I].ParamBytes+2) Else
+   EmitWord(Symbols[I].ParamBytes);
 End;
 
 Procedure NativeReference(U, Kind: Byte; Map, Target: Word);Begin
@@ -3308,7 +5947,8 @@ End;
 
 Procedure NeedNative(U: Byte);Begin
  If CurrentUnit<>0 Then
-  Units[CurrentUnit].NativeDependencies:=Units[CurrentUnit].NativeDependencies+[U];
+  Units[CurrentUnit].NativeDependencies:=Units[CurrentUnit].NativeDependencies+
+    [U];
  NativeNeeded:=True; ActivateNative(U);
 End;
 
@@ -3327,19 +5967,66 @@ End;
 
 Procedure ReferencePointer(I: Word);
 Begin
+ If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope))
+   Then Begin
+  Emit($C4); EmitBP(7,SmallInt(Symbols[I].Addr)); { les di,[bp+offset] }
+ End Else
  If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope);
-  Emit($36); Emit2($C4,$BF); EmitWord(Symbols[I].Addr); { les di,ss:[bx+offset] }
- End Else Begin Emit2($C4,$3E); DataAddress(Symbols[I].Addr) End; { les di,[statique] }
- If Symbols[I].WithOffset<>0 Then Begin Emit2($81,$C7); EmitWord(Symbols[I].WithOffset) End;
+  Emit($36); Emit2($C4,$BF); EmitWord(Symbols[I].Addr);
+    { les di,ss:[bx+offset] }
+ End Else Begin Emit2($C4,$3E); DataAddress(Symbols[I].Addr) End;
+   { les di,[statique] }
+ If Symbols[I].WithOffset<>0 Then Begin Emit2($81,$C7);
+   EmitWord(Symbols[I].WithOffset) End;
 End;
 
 Function Designator(I: Word): Word; Forward;
 
-Procedure PushVariableAddress(I: Word);
-Var T: Word;
+Function TailLeaBP: Word;
+{ Longueur (5 ou 6) du "lea di,[bp+d]" ou "lea di,[bp+di+d]" suivi de "push ss;
+  pop es" qui termine
+  le code, 0 sinon. TailIndexed := la forme [bp+di+d]. }
 Begin
- T:=Designator(I); ExprType:=T; Emit($06); Emit($57);
+ TailLeaBP:=0; TailIndexed:=False;
+ If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) And
+   (LastJumpTarget<>CodeSize) Then Begin
+  If (Image[CodeSize-5]=$8D) And ((Image[CodeSize-4]=$7E) Or
+    (Image[CodeSize-4]=$7B)) Then Begin
+   TailLeaBP:=5; TailIndexed:=Image[CodeSize-4]=$7B;
+  End Else If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And
+    ((Image[CodeSize-5]=$BE) Or (Image[CodeSize-5]=$BB)) Then Begin
+   TailLeaBP:=6; TailIndexed:=Image[CodeSize-5]=$BB;
+  End;
+ End;
+End;
+
+Procedure EmitAddrAXDX;
+{ DX:AX := ES:DI ; si le code finit par "lea di,[bp+d]; push ss;
+  pop es" : lea ax,[bp+d]; push ss; pop dx }
+Var N: Word;
+Begin
+ N:=TailLeaBP;
+ If N<>0 Then Begin
+  Dec(CodeSize,2);
+  If N=5 Then Image[CodeSize-2]:=Image[CodeSize-2] And $C7 Else
+    Image[CodeSize-3]:=Image[CodeSize-3] And $C7;
+  Emit($16); Emit($5A);
+ End Else Begin Emit2($89,$F8); Emit2($8C,$C2) End;
+End;
+
+Procedure PushVariableAddress(I: Word);
+Var T,N: Word;
+Begin
+ T:=Designator(I); ExprType:=T;
+ N:=TailLeaBP;
+ If N<>0 Then Begin
+  { lea di,[bp+d]; push ss; pop es; push es; push di  ->  push ss;
+    lea di,[bp+d]; push di }
+  Dec(CodeSize,2); Image[CodeSize]:=0; { retire "push ss; pop es" }
+  Move(Image[CodeSize-(N-2)],Image[CodeSize-(N-2)+1],N-2);
+  Image[CodeSize-(N-2)]:=$16; Inc(CodeSize); Emit($57);
+ End Else Begin Emit($06); Emit($57) End;
 End;
 
 Procedure RangeBounds(LowBound,HighBound: Longint; SourceType: Word);
@@ -3348,16 +6035,16 @@ Begin
  If Types[SourceType].Width<>4 Then Begin
   If Types[SourceType].Signed Then Emit($99) Else Emit2($31,$D2);
  End;
- Emit2($81,$FA); EmitWord(Word(LowBound Shr 16)); Emit2($7D,3); Bad[1]:=Jump;
- Emit2($7E,3); P:=Jump;
- Emit($3D); EmitWord(Word(LowBound)); Emit2($73,3); Bad[2]:=Jump;
+ Emit2($81,$FA); EmitWord(Word(LowBound Shr 16)); Bad[1]:=JumpIf($7D);
+ P:=JumpIf($7E);
+ Emit($3D); EmitWord(Word(LowBound)); Bad[2]:=JumpIf($73);
  PatchJump(P,CodeSize);
- Emit2($81,$FA); EmitWord(Word(HighBound Shr 16)); Emit2($7E,3); Bad[3]:=Jump;
- Emit2($7D,3); Q:=Jump;
- Emit($3D); EmitWord(Word(HighBound)); Emit2($76,3); Bad[4]:=Jump;
+ Emit2($81,$FA); EmitWord(Word(HighBound Shr 16)); Bad[3]:=JumpIf($7E);
+ Q:=JumpIf($7D);
+ Emit($3D); EmitWord(Word(HighBound)); Bad[4]:=JumpIf($76);
  PatchJump(Q,CodeSize); Done:=Jump;
  For K:=1 To 4 Do PatchJump(Bad[K],CodeSize);
- LoadImmediate(201); CallTo(RuntimeError); PatchJump(Done,CodeSize);
+ LoadImmediate(201); CallTo(RtlTarget(RuntimeError)); PatchJump(Done,CodeSize);
 End;
 
 Function SimpleScalar(I: Word): Boolean;
@@ -3368,7 +6055,8 @@ Begin
  If (Symbols[I].Kind<>skVar) Or Symbols[I].ByReference Or Symbols[I].Native Or
     Symbols[I].IsAbsolute Or (Symbols[I].WithOffset<>0) Then Exit;
  T:=SymbolType(I); If T=0 Then Exit;
- If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer]) Then Exit;
+ If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,
+   ttPointer]) Then Exit;
  If Not (Types[T].Width In [1,2,4]) Then Exit;
  SimpleScalar:=True;
 End;
@@ -3376,8 +6064,46 @@ End;
 Procedure EmitBP(Reg: Byte; D: Integer);
 { ModRM [BP+disp] (8 ou 16 bits) pour le registre Reg. }
 Begin
- If (D>=-128) And (D<=127) Then Begin Emit($46 Or (Reg Shl 3)); Emit(Byte(D)) End
+ If (D>=-128) And (D<=127) Then Begin Emit($46 Or (Reg Shl 3));
+   Emit(Byte(D)) End
  Else Begin Emit($86 Or (Reg Shl 3)); EmitWord(Word(D)) End;
+End;
+
+Function TakeLeaBP: Longint;
+{ Retire le "lea di,[bp+d]; push ss; pop es" qui termine le code et rend d. }
+Var N: Word;
+Begin
+ N:=TailLeaBP; DirIndexed:=TailIndexed;
+ If N=5 Then TakeLeaBP:=ShortInt(Image[CodeSize-3]) Else
+   TakeLeaBP:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256);
+ Dec(CodeSize,N);
+End;
+
+Procedure EmitBPDisp(Opcode,Reg: Byte; D: Longint);
+{ Opcode ModRM[bp+D] ou [bp+di+D] (DirIndexed) ;
+  D hors limites 16 bits : impossible (appelant verifie). }
+Begin
+ Emit(Opcode);
+ If DirIndexed Then Begin
+  If (D>=-128) And (D<=127) Then Begin Emit($43 Or (Reg Shl 3));
+    Emit(Byte(D)) End
+  Else Begin Emit($83 Or (Reg Shl 3)); EmitWord(Word(D)) End;
+ End Else EmitBP(Reg,SmallInt(D));
+End;
+
+Function DirectLocalOK(T: Word; AllowIndexed: Boolean): Boolean;
+{ La destination/source de type T est accessible directement par [bp+d] ? }
+Var N: Word;
+Begin
+ DirectLocalOK:=False; N:=TailLeaBP;
+ If N=0 Then Exit;
+ If TailIndexed And Not AllowIndexed Then Exit;
+ If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,
+   ttPointer]) Or Not (Types[T].Width In [1,2,4]) Then Exit;
+ If N=6 Then Begin
+  If SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256)>32760 Then Exit;
+ End;
+ DirectLocalOK:=True;
 End;
 
 Procedure LoadScalar(I: Word);
@@ -3425,13 +6151,18 @@ Procedure BaseVariableAddress(I: Word);
 Begin
  If Symbols[I].Kind<>skVar Then Fail(43,'Variable attendue');
  If Symbols[I].IsAbsolute Then Begin
-  Emit($B8); EmitWord(Symbols[I].AbsoluteSeg); Emit2($8E,$C0); Emit($BF); EmitWord(Symbols[I].Addr);
+  Emit($B8); EmitWord(Symbols[I].AbsoluteSeg); Emit2($8E,$C0); Emit($BF);
+    EmitWord(Symbols[I].Addr);
  End Else If Symbols[I].ByReference Then Begin
   ReferencePointer(I);
  End Else If Symbols[I].Native Then Begin
   NeedNative(Symbols[I].Owner);
   Emit($BA); AddSegmentRelocation(CodeSize,1); EmitWord(0); Emit2($8E,$C2);
   Emit($BF); NativeVarAddress(I);
+ End Else If Symbols[I].Local And
+   (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) Then Begin
+  Emit($8D); EmitBP(7,SmallInt(Symbols[I].Addr)); Emit($16); Emit($07);
+    { lea di,[bp+offset]; push ss; pop es }
  End Else If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope); Emit2($81,$C3); EmitWord(Symbols[I].Addr);
   Emit2($89,$DF); Emit($16); Emit($07);
@@ -3444,11 +6175,19 @@ Procedure LoadSymbol(I: Word);Begin
  If Symbols[I].Kind=skType Then Fail(42,'Type utilise comme valeur');
  If Symbols[I].IsAbsolute Then Begin
   Emit($B8); EmitWord(Symbols[I].AbsoluteSeg); Emit2($8E,$C0); Emit($26);
-  If Symbols[I].Width=1 Then Begin Emit($A0); EmitWord(Symbols[I].Addr); If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4) End
+  If Symbols[I].Width=1 Then Begin Emit($A0); EmitWord(Symbols[I].Addr);
+    If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4) End
   Else Begin Emit($A1); EmitWord(Symbols[I].Addr) End;
  End Else If Symbols[I].ByReference Then Begin
   ReferencePointer(I); Emit($26);
   If Symbols[I].Width=1 Then Emit2($8A,$05) Else Emit2($8B,$05);
+  If Symbols[I].Width=1 Then Begin
+   If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
+  End;
+ End Else If Symbols[I].Local And
+   (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) Then Begin
+  If Symbols[I].Width=1 Then Emit($8A) Else Emit($8B);
+  EmitBP(0,SmallInt(Symbols[I].Addr));
   If Symbols[I].Width=1 Then Begin
    If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
   End;
@@ -3468,11 +6207,13 @@ Procedure LoadSymbol(I: Word);Begin
   End;
  End Else If Symbols[I].Kind=skConst Then Begin
   If Symbols[I].Typ In [ttString,ttReal] Then Begin
-   Emit($B8); DataAddress(Symbols[I].Addr); If Symbols[I].Typ=ttReal Then Emit2($8C,$DA)
+   Emit($B8); DataAddress(Symbols[I].Addr);
+     If Symbols[I].Typ=ttReal Then Emit2($8C,$DA)
   End
   Else Begin
    LoadImmediate(Word(Symbols[I].Value));
-   If Symbols[I].Width=4 Then Begin Emit($BA); EmitWord(Word(Symbols[I].Value Shr 16)) End;
+   If Symbols[I].Width=4 Then Begin Emit($BA);
+     EmitWord(Word(Symbols[I].Value Shr 16)) End;
   End;
  End Else If Symbols[I].Typ=ttString Then Begin
   Emit($B8); DataAddress(Symbols[I].Addr);
@@ -3488,12 +6229,18 @@ End;
 Procedure SaveSymbol(I: Word);Begin
  If Symbols[I].IsAbsolute Then Begin
   Emit($B8); EmitWord(Symbols[I].AbsoluteSeg); Emit2($8E,$C0); Emit($26);
-  If Symbols[I].Width=1 Then Emit($A2) Else Emit($A3); EmitWord(Symbols[I].Addr); Exit;
+  If Symbols[I].Width=1 Then Emit($A2) Else Emit($A3);
+    EmitWord(Symbols[I].Addr); Exit;
  End;
  If Symbols[I].ByReference Then Begin
   ReferencePointer(I); Emit($26);
   If Symbols[I].Width=1 Then Emit2($88,$05) Else Emit2($89,$05);
   Exit;
+ End;
+ If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope))
+   Then Begin
+  If Symbols[I].Width=1 Then Emit($88) Else Emit($89);
+  EmitBP(0,SmallInt(Symbols[I].Addr)); Exit;
  End;
  If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope); Emit($36);
@@ -3528,9 +6275,11 @@ Begin
    Data[A]:=E; V:=(V-1)*128; Data[A+5]:=Trunc(V); V:=V-Trunc(V);
    For I:=4 Downto 1 Do Begin V:=V*256; Data[A+I]:=Trunc(V); V:=V-Trunc(V) End;
    If (V>0.5) Or ((V=0.5) And (Data[A+1] And 1<>0)) Then Begin
-    I:=1; N:=1; While (I<=5) And (N<>0) Do Begin N:=Data[A+I]+N; Data[A+I]:=N And 255; N:=N Shr 8; Inc(I) End;
+    I:=1; N:=1; While (I<=5) And (N<>0) Do Begin N:=Data[A+I]+N;
+      Data[A+I]:=N And 255; N:=N Shr 8; Inc(I) End;
     If Data[A+5] And 128<>0 Then Begin
-     If Data[A]=255 Then Fail(76,'Constante Real hors limites'); Data[A+5]:=0; Inc(Data[A]);
+     If Data[A]=255 Then Fail(76,'Constante Real hors limites'); Data[A+5]:=0;
+       Inc(Data[A]);
     End;
    End;
    If Negative Then Data[A+5]:=Data[A+5] Or 128;
@@ -3543,39 +6292,49 @@ Begin
  If Types[T].Typ=ttReal Then Exit;
  If Types[T].Typ<>ttInteger Then Fail(26,'Expression numerique attendue');
  EnsureRealRuntime; A:=AllocData(6);
- If Types[T].Width<>4 Then Begin If Types[T].Signed Then Emit($99) Else Emit2($31,$D2) End;
- Emit($06); Emit($57); Emit($52); Emit($50); Emit($1E); Emit($BB); DataAddress(A); Emit($53); RealCall('RINT'); Emit($5F); Emit($07); RealPointer(A);
+ If Types[T].Width<>4 Then Begin If Types[T].Signed Then Emit($99) Else
+   Emit2($31,$D2) End;
+ Emit($06); Emit($57); Emit($52); Emit($50); Emit($1E); Emit($BB);
+   DataAddress(A); Emit($53); RealCall('RINT'); Emit($5F); Emit($07);
+     RealPointer(A);
 End;
 Procedure PushReal;
 Begin
  Emit2($8C,$C1); Emit2($8E,$C2); Emit2($89,$C3);
- Emit($26); Emit2($FF,$77); Emit(4); Emit($26); Emit2($FF,$77); Emit(2); Emit($26); Emit2($FF,$37); Emit2($8E,$C1);
+ Emit($26); Emit2($FF,$77); Emit(4); Emit($26); Emit2($FF,$77); Emit(2);
+   Emit($26); Emit2($FF,$37); Emit2($8E,$C1);
 End;
 Procedure RealUnary(Op: Word);
 Var A: Word;
 Begin
  EnsureRealRuntime; A:=AllocData(6); Emit2($89,$C3); Emit2($89,$D1);
- Emit($06); LoadImmediate(Op); Emit($50); Emit($51); Emit($53); Emit($51); Emit($53);
- Emit($1E); Emit($B8); DataAddress(A); Emit($50); RealCall('RCALC'); Emit($07); RealPointer(A);
+ Emit($06); LoadImmediate(Op); Emit($50); Emit($51); Emit($53); Emit($51);
+   Emit($53);
+ Emit($1E); Emit($B8); DataAddress(A); Emit($50); RealCall('RCALC'); Emit($07);
+   RealPointer(A);
  ExprType:=11; ExprKnown:=False; ExprUnsigned:=False;
 End;
 Procedure RealBinary(L,R,Op: Word; Compare: Boolean);
 Var A: Word;
 Begin
- If Not (Types[L].Typ In [ttReal,ttInteger]) Then Fail(26,'Expression numerique attendue');
+ If Not (Types[L].Typ In [ttReal,ttInteger]) Then Fail(26,
+   'Expression numerique attendue');
  EnsureRealRuntime; ToReal(R);
  If Types[L].Typ=ttReal Then Begin Emit2($89,$E3); Emit2($8C,$D1) End
  Else Begin
   Emit2($89,$C6); Emit2($89,$D7); Emit($58);
-  If Types[L].Width=4 Then Emit($5A) Else If Types[L].Signed Then Emit($99) Else Emit2($31,$D2);
+  If Types[L].Width=4 Then Emit($5A) Else If Types[L].Signed Then Emit($99) Else
+    Emit2($31,$D2);
   Emit($57); Emit($56); ToReal(9); Emit($5E); Emit($5F);
   Emit2($89,$C3); Emit2($89,$D1); Emit2($89,$F0); Emit2($89,$FA);
  End;
  Emit($06);
- If Compare Then Begin Emit($51); Emit($53); Emit($52); Emit($50); RealCall('RCMP') End
+ If Compare Then Begin Emit($51); Emit($53); Emit($52); Emit($50);
+   RealCall('RCMP') End
  Else Begin
   A:=AllocData(6); Emit2($89,$C6); LoadImmediate(Op); Emit($50);
-  Emit($51); Emit($53); Emit($52); Emit($56); Emit($1E); Emit($B8); DataAddress(A); Emit($50);
+  Emit($51); Emit($53); Emit($52); Emit($56); Emit($1E); Emit($B8);
+    DataAddress(A); Emit($50);
   RealCall('RCALC'); RealPointer(A);
  End;
  Emit($07);
@@ -3586,7 +6345,8 @@ Procedure RealParseText;
 Var A,C: Word;
 Begin
  EnsureRealRuntime; A:=AllocData(6); C:=AllocData(2);
- Emit($06); Emit($52); Emit($50); Emit($1E); Emit($B8); DataAddress(A); Emit($50);
+ Emit($06); Emit($52); Emit($50); Emit($1E); Emit($B8); DataAddress(A);
+   Emit($50);
  Emit($1E); Emit($B8); DataAddress(C); Emit($50); RealCall('RPARSE'); Emit($07);
  Emit2($8B,$0E); DataAddress(C); RealPointer(A);
 End;
@@ -3602,6 +6362,8 @@ Procedure AllocateVariable(I: Word); Forward;
 Procedure CheckLabels(Scope: Word); Forward;
 Function NativeCall(I: Word): Byte;Forward;
 Function UserCall(I: Word): Byte;Forward;
+Procedure ProcedureDeclaration; Forward;
+
 Function ReadType: Word; Forward;
  Procedure RequireOrdinal(T: Byte); Forward;
  Function StandardFunction(Name: TShortString): Word; Forward;
@@ -3623,9 +6385,35 @@ Procedure TrimSet(T,A: Word); Forward;
  Function StringBinary(LeftIsTemp: Boolean): Word; Forward;
  Procedure SetComparison(LeftType,RightType: Word; Op: Byte); Forward;
 
+Procedure AddDI(N: Word);
+{ DI := DI + N, en repliant N dans un "lea di,[bp+d]; push ss;
+  pop es" precedent. }
+Var D: Longint;
+Begin
+ If N=0 Then Exit;
+ If (CodeSize>=5) And (Image[CodeSize-1]=$07) And (Image[CodeSize-2]=$16) Then
+   Begin
+  If (Image[CodeSize-5]=$8D) And ((Image[CodeSize-4]=$7E) Or
+    (Image[CodeSize-4]=$7B)) Then Begin
+   D:=ShortInt(Image[CodeSize-3])+Longint(N);
+   If (D>=-128) And (D<=127) Then Begin Image[CodeSize-3]:=Byte(D); Exit End;
+  End;
+  If (CodeSize>=6) And (Image[CodeSize-6]=$8D) And ((Image[CodeSize-5]=$BE) Or
+    (Image[CodeSize-5]=$BB)) Then Begin
+   D:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256)+Longint(N);
+   If (D>=-32768) And (D<=32767) Then Begin PatchWord(CodeSize-4,Word(D));
+     Exit End;
+  End;
+ End;
+ If N<=127 Then Begin Emit2($83,$C7); Emit(Byte(N)) End Else Begin Emit2($81,
+   $C7); EmitWord(N) End;
+End;
+
 Function DesignatorTail(T: Word): Word;
 { Suite d'un designateur (^ . [ ]) a partir de ES:DI et du type T. }
-Var F,IndexType,Element: Word; Name: TShortString;
+Var F,IndexType,Element,StartIdx,FixMark,RelMark,PendMark,LeaLen: Word;
+  Name: TShortString;
+ LocalBase: Boolean; LD: Longint;
 Begin
  While Token In [tkLB,tkDot,tkCaret] Do Begin
   If Token=tkCaret Then Begin
@@ -3641,8 +6429,17 @@ Begin
    NextToken; If Token<>tkIdent Then Fail(2,'Champ attendu'); Name:=TokenText;
    F:=TypeExtras[T].FirstField;
    While (F<>0) And (Fields[F].Name<>Name) Do F:=Fields[F].Next;
+   If (F=0) And (Types[T].IdentityName<>'') Then Begin
+    { methode d'objet : Objet.Methode(args) }
+    F:=FindAtScope(Types[T].IdentityName+'.'+Name,CurrentUnit,0);
+    If (F<>0) And (Symbols[F].Kind=skProc) And Symbols[F].IsMethod Then Begin
+     NextToken; Emit($06); Emit($57); SelfPushed:=True;
+     UserCall(F); MethodCalled:=True; DesignatorTail:=ExprType; Exit;
+    End;
+    F:=0;
+   End;
    If F=0 Then Fail(3,'Champ inconnu: '+Name);
-   If Fields[F].Offset<>0 Then Begin Emit2($81,$C7); EmitWord(Fields[F].Offset) End;
+   AddDI(Fields[F].Offset);
    T:=Fields[F].TypeId; NextToken;
   End Else Begin
    NextToken;
@@ -3651,15 +6448,58 @@ Begin
     Else If Types[T].Typ=ttArray Then Begin
      IndexType:=TypeExtras[T].IndexType; Element:=TypeExtras[T].ElementType;
     End Else Fail(26,'Tableau ou chaine attendu');
-    Emit($06); Emit($57); RequireOrdinal(Expression);
+    { base locale simple ("lea di,[bp+d]; push ss;
+      pop es") : on la retire pendant le calcul de l'index
+      et on la refait avec l'index : lea di,[bp+di+d] }
+    LeaLen:=TailLeaBP; LocalBase:=(LeaLen<>0) And Not TailIndexed;
+    If LocalBase Then LD:=TakeLeaBP Else Begin Emit($06); Emit($57) End;
+    StartIdx:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount;
+      PendMark:=PendCount;
+    RequireOrdinal(Expression);
     If Not CompatibleTypes(IndexType,ExprType) Then Fail(26,'Type de l''index');
     If ExprKnown And (Types[T].Typ=ttArray) And
-       ((ExprValue<Types[IndexType].LowBound) Or (ExprValue>Types[IndexType].HighBound)) Then
+       ((ExprValue<Types[IndexType].LowBound) Or
+         (ExprValue>Types[IndexType].HighBound)) Then
      Fail(76,'Index constant hors limites');
-    Emit($5F); Emit($07);
+    If (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark)
+      And
+       (OptionBits And 2=0) And ExprKnown And (CodeSize-StartIdx=3) And
+         (Image[StartIdx]=$B8) And
+       (Types[ExprType].Width<=2) And ((Token<>tkComma) Or True) Then Begin
+     { index constant : deplacement replie dans DI,
+       sans PUSH/POP ni multiplication }
+     If LocalBase Then Begin
+      CodeSize:=StartIdx;
+      If Types[T].Typ=ttArray Then
+        LD:=LD+SmallInt((ExprValue-Types[IndexType].LowBound)*
+          TypeExtras[Element].Size)
+      Else LD:=LD+SmallInt(ExprValue*TypeExtras[Element].Size);
+      LD:=SmallInt(LD);
+      Emit($8D); EmitBP(7,SmallInt(LD)); Emit($16); Emit($07);
+     End Else Begin
+     CodeSize:=StartIdx-2;
+     If Types[T].Typ=ttArray Then
+       AddDI(Word((ExprValue-Types[IndexType].LowBound)*
+         TypeExtras[Element].Size))
+     Else AddDI(Word(ExprValue*TypeExtras[Element].Size));
+     End;
+     T:=Element;
+     If Token<>tkComma Then Break; NextToken; Continue;
+    End;
+    If LocalBase Then
+    Else If (FixupCount=FixMark) And (RelativeCount=RelMark) And
+      (PendCount=PendMark) And (CodeSize-StartIdx=3) And
+       ((Image[StartIdx]=$B8) Or ((Image[StartIdx]=$8B) And
+         (Image[StartIdx+1]=$46))) Then Begin
+     { index simple : ES:DI n'est pas modifie par le calcul de l'index }
+     For StartIdx:=StartIdx To CodeSize-1 Do Image[StartIdx-2]:=Image[StartIdx];
+     Dec(CodeSize,2);
+    End Else
+    Begin Emit($5F); Emit($07) End;
     If OptionBits And 2<>0 Then Begin
      If Types[T].Typ=ttString Then RangeBounds(0,Types[T].Capacity,ExprType)
-     Else RangeBounds(Types[IndexType].LowBound,Types[IndexType].HighBound,ExprType);
+     Else RangeBounds(Types[IndexType].LowBound,Types[IndexType].HighBound,
+       ExprType);
     End;
     If (Types[T].Typ=ttArray) And (Types[IndexType].LowBound<>0) Then Begin
      Emit($2D); EmitWord(Word(Types[IndexType].LowBound));
@@ -3667,7 +6507,15 @@ Begin
     If TypeExtras[Element].Size<>1 Then Begin
      Emit($BB); EmitWord(TypeExtras[Element].Size); Emit2($F7,$E3);
     End;
-    Emit2($01,$C7); T:=Element;
+    If LocalBase Then Begin
+     Emit2($89,$C7);                                            { mov di,ax }
+     Emit($8D);
+       { lea di,[bp+di+d] }
+     If (LD>=-128) And (LD<=127) Then Begin Emit($7B);
+       Emit(Byte(LD)) End Else Begin Emit($BB); EmitWord(Word(LD)) End;
+     Emit($16); Emit($07);
+    End Else Emit2($01,$C7);
+    T:=Element;
     If Token<>tkComma Then Break; NextToken;
    Until False;
    Need(tkRB);
@@ -3681,25 +6529,87 @@ Begin
  BaseVariableAddress(I); Designator:=DesignatorTail(SymbolType(I));
 End;
 
+Procedure EmitDIMem(Opcode,Reg: Byte; D: Longint);
+{ ES:[DI+D] avec registre Reg. }
+Begin
+ Emit($26); Emit(Opcode);
+ If D=0 Then Emit($05 Or (Reg Shl 3))
+ Else If (D>=-128) And (D<=127) Then Begin Emit($45 Or (Reg Shl 3));
+   Emit(Byte(D)) End
+ Else Begin Emit($85 Or (Reg Shl 3)); EmitWord(Word(D)) End;
+End;
+
+Function TakeAddDI(Skip: Word; Var D: Longint): Boolean;
+{ Le designateur (suivi de Skip octets de second membre) se termine par "add
+  di,imm" : le retire,
+  deplace le second membre et rend l'imm comme deplacement de l'acces final. }
+Var P,Len: Word;
+Begin
+ TakeAddDI:=False;
+ If CodeSize<Skip+3 Then Exit;
+ P:=CodeSize-Skip;
+ If (P>=3) And (Image[P-3]=$83) And (Image[P-2]=$C7) And (Image[P-1]<=127) Then
+   Begin Len:=3; D:=Image[P-1] End
+ Else If (P>=4) And (Image[P-4]=$81) And (Image[P-3]=$C7) And (Image[P-1]<=126)
+   Then Begin Len:=4; D:=Image[P-2]+Word(Image[P-1])*256 End
+ Else Exit;
+ If LastJumpTarget>=P Then Exit;
+ If Skip>0 Then Move(Image[P],Image[P-Len],Skip);
+ Dec(CodeSize,Len); TakeAddDI:=True;
+End;
+
 Procedure LoadDesignator(T: Word);
+Var D: Longint; A: Word;
 Begin
  If T=0 Then Fail(42,'Variable sans type utilisee comme valeur');
- If Types[T].Typ In [ttString,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal] Then Begin
-  Emit2($89,$F8); Emit2($8C,$C2);
- End Else Begin
-  Emit($26);
-  If Types[T].Width=1 Then Emit2($8A,$05) Else Emit2($8B,$05);
+ If (Types[T].Typ=ttReal) And (Types[T].Width<>6) Then Begin
+  { Single / Double : conversion vers un Real temporaire (pointeur DX:AX) }
+  EnsureRealRuntime; A:=AllocData(6);
+  Emit($06); Emit($57); Emit($06); Emit($57);
+  Emit($1E); Emit($BB); DataAddress(A); Emit($53);
+  If Types[T].Width=4 Then RealCall('RSINGLE') Else RealCall('RDOUBLE');
+  Emit($5F); Emit($07); RealPointer(A); ExprType:=11;
+ End Else
+ If Types[T].Typ In [ttString,ttArray,ttRecord,ttSet,ttFile,ttText,
+   ttReal] Then Begin
+  EmitAddrAXDX;
+ End Else If DirectLocalOK(T,True) Then Begin
+  { variable de la frame : mov ax,[bp+d] directement }
+  D:=TakeLeaBP;
+  If Types[T].Width=1 Then EmitBPDisp($8A,0,D) Else EmitBPDisp($8B,0,D);
   If Types[T].Width=1 Then Begin
    If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
-  End Else If Types[T].Width=4 Then Begin Emit($26); Emit2($8B,$55); Emit(2) End;
+  End Else If Types[T].Width=4 Then EmitBPDisp($8B,2,D+2);
+ End Else Begin
+  D:=0; TakeAddDI(0,D);
+  If Types[T].Width=1 Then EmitDIMem($8A,0,D) Else EmitDIMem($8B,0,D);
+  If Types[T].Width=1 Then Begin
+   If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
+  End Else If Types[T].Width=4 Then EmitDIMem($8B,2,D+2);
  End;
+End;
+
+Procedure StoreDesignatorN(T: Word; Skip: Word);
+{ ES:DI := AX (DX:AX) ;
+  Skip = octets du second membre deja emis apres le designateur. }
+Var D: Longint; V: Word;
+Begin
+ D:=0; TakeAddDI(Skip,D);
+ If (Skip=3) And (CodeSize>=3) And (Image[CodeSize-3]=$B8) And
+   (Types[T].Width<=2) And (LastJumpTarget<CodeSize-2) Then Begin
+  { constante : mov [es:di+d],imm }
+  V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; Dec(CodeSize,3);
+  If Types[T].Width=1 Then Begin EmitDIMem($C6,0,D); Emit(V And 255) End
+  Else Begin EmitDIMem($C7,0,D); EmitWord(V) End;
+  Exit;
+ End;
+ If Types[T].Width=1 Then EmitDIMem($88,0,D) Else EmitDIMem($89,0,D);
+ If Types[T].Width=4 Then EmitDIMem($89,2,D+2);
 End;
 
 Procedure StoreDesignator(T: Word);
 Begin
- Emit($26);
- If Types[T].Width=1 Then Emit2($88,$05) Else Emit2($89,$05);
- If Types[T].Width=4 Then Begin Emit($26); Emit2($89,$55); Emit(2) End;
+ StoreDesignatorN(T,0);
 End;
 
 Procedure RequireInteger(T: Byte);Begin
@@ -3710,14 +6620,15 @@ Procedure RequireBoolean(T: Byte);Begin
  If T<>ttBoolean Then Fail(40,'Expression booleenne attendue');
 End;
 Procedure RequireOrdinal(T: Byte);Begin
- If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(27,'Expression ordinale attendue');
+ If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(27,
+   'Expression ordinale attendue');
 End;
 
 Function Factor: Byte;
 Var
  T: Byte;
  I,CastType: Word;
- Name: TShortString;
+ Name,FullName: TShortString;
  Bound: Longint;
  Lit: Boolean;
 Begin
@@ -3728,36 +6639,58 @@ Begin
   NextToken; Emit2($31,$C0); Emit2($31,$D2); T:=ttPointer; ExprType:=8;
  End Else If Token=tkAt Then Begin
   NextToken; If Token<>tkIdent Then Fail(83,'Variable attendue apres @');
-  Name:=TokenText; NextToken; I:=ResolveSymbol(Name); CastType:=Designator(I);
-  Emit2($89,$F8); Emit2($8C,$C2); T:=ttPointer; ExprType:=8;
+  Name:=TokenText; NextToken; I:=ResolveSymbol(Name);
+  If Symbols[I].Kind=skProc Then Begin
+   { @Procedure : pointeur CS:offset du point d'entree }
+   EmitProcAddress(I,True); T:=ttPointer; ExprType:=8; ExprKnown:=False;
+     Factor:=T; Exit;
+  End;
+  CastType:=Designator(I);
+  EmitAddrAXDX; T:=ttPointer; ExprType:=8;
   { $T+: @ produit un pointeur sur le type de la variable au lieu de Pointer. }
-  If (OptionBits And $10000<>0) And (CastType<>0) Then ExprType:=PointerTo(CastType);
+  If (OptionBits And $10000<>0) And (CastType<>0) Then
+    ExprType:=PointerTo(CastType);
  End Else If Token=tkConstant Then Begin
   ExprKnown:=True; ExprValue:=TokenValue;
-  If TokenIsReal Then Begin EnsureRealRuntime; RealPointer(StoreReal(TokenReal)); T:=ttReal; ExprType:=11; ExprKnown:=False End
+  If TokenIsReal Then Begin EnsureRealRuntime;
+    RealPointer(StoreReal(TokenReal)); T:=ttReal; ExprType:=11;
+      ExprKnown:=False End
   Else If TokenIsString Then Begin
-   LiteralMarkCode:=CodeSize; LiteralMarkFixup:=FixupCount; LiteralMarkRelative:=RelativeCount;
-   LiteralMarkNative:=NativeRefCount; LiteralMarkReloc:=RelocationCount; LiteralMarkData:=DataSize;
+   LiteralMarkCode:=CodeSize; LiteralMarkFixup:=FixupCount;
+     LiteralMarkRelative:=RelativeCount;
+   LiteralMarkNative:=NativeRefCount; LiteralMarkReloc:=RelocationCount;
+     LiteralMarkData:=DataSize;
    ExprLiteral:=True; Lit:=True; ExprLiteralText:=TokenText;
    If Length(TokenText)=1 Then Begin
-    T:=ttChar; ExprType:=6; ExprValue:=Ord(TokenText[1]); LoadImmediate(Ord(TokenText[1]))
+    T:=ttChar; ExprType:=6; ExprValue:=Ord(TokenText[1]);
+      LoadImmediate(Ord(TokenText[1]))
    End
     Else
    Begin
-    T:=ttString; ExprType:=7; Emit($B8); DataAddress(StoreString(TokenText)); Emit2($8C,$DA)
+    T:=ttString; ExprType:=7; Emit($B8); DataAddress(LiteralString(TokenText));
+      Emit2($8C,$DA)
    End;
   End Else
   Begin
   If TokenValue>32767 Then ExprType:=3;
    LoadImmediate(Word(TokenValue));
-   If (TokenValue>65535) Or (TokenValue<-32768) Then Begin ExprType:=9; Emit($BA); EmitWord(Word(TokenValue Shr 16)) End;
+   If (TokenValue>65535) Or (TokenValue<-32768) Then Begin ExprType:=9;
+     Emit($BA); EmitWord(Word(TokenValue Shr 16)) End;
   End;
   NextToken;
+  If (T=ttString) And (Token=tkLB) Then Begin
+   { 'constante'[i] : caractere d'une chaine litterale }
+   Emit2($8E,$C2); Emit2($89,$C7);
+   ExprType:=DesignatorTail(7); LoadDesignator(ExprType);
+     T:=Types[ExprType].Typ; ExprLiteral:=False; Lit:=False;
+  End;
  End Else If Token=tkLP Then Begin
   NextToken; T:=Expression; Need(tkRP);
   If (Token=tkCaret) And (T=ttPointer) Then Begin
-   { (expression pointeur)^ : dereferencement direct, ES:DI = valeur du pointeur }
-   Emit2($8E,$C2); Emit2($89,$C7); NextToken; ExprType:=TypeExtras[ExprType].ElementType;
+   { (expression pointeur)^ : dereferencement direct,
+     ES:DI = valeur du pointeur }
+   Emit2($8E,$C2); Emit2($89,$C7); NextToken;
+     ExprType:=TypeExtras[ExprType].ElementType;
    If (ExprType=0) And (CastTarget<>0) Then ExprType:=CastTarget;
    If ExprType<>0 Then ExprType:=DesignatorTail(ExprType);
    If (ExprType=0) And (CastTarget<>0) Then ExprType:=CastTarget;
@@ -3776,11 +6709,15 @@ Begin
    ; If Types[ExprType].Width=4 Then Emit2($F7,$D2)
   End;
  End Else If Token=tkIdent Then Begin
-  Name:=TokenText; NextToken;
+  Name:=TokenText; NextToken; FullName:=Name;
   I:=FindLexicalSymbol(Name);
+  { System.Nom : fonction standard masquee par un nom local }
+  If (I=0) And (Copy(Name,1,7)='SYSTEM.') Then Name:=Copy(Name,8,
+    Length(Name)-7);
   If (I=0) And (Token=tkLB) And IsMemPort(Name) Then Begin
    ExprType:=MemPortLoad(Name); T:=Types[ExprType].Typ; ExprKnown:=False;
-   ExprUnsigned:=Not Types[ExprType].Signed; ExprLiteral:=False; Factor:=T; Exit;
+   ExprUnsigned:=Not Types[ExprType].Signed; ExprLiteral:=False; Factor:=T;
+     Exit;
   End;
   CastType:=0;
   If (I=0) And (Token<>tkDot) Then CastType:=BuiltinType(Name);
@@ -3797,16 +6734,38 @@ Begin
   If (Token=tkLP) And (CastType<>0) Then Begin
    NextToken;
    If Types[CastType].Typ In [ttRecord,ttArray,ttString,ttSet] Then Begin
-    { Transtypage de variable structuree: TRec(Pointer(P)^), TTab(Rec) }
-    I:=CastTarget; CastTarget:=CastType; T:=Expression; CastTarget:=I; Need(tkRP);
+    { Transtypage de variable structuree: TRec(Pointer(P)^), TTab(Rec),
+      PtrRec(P).Ofs }
+    I:=0; If Token=tkIdent Then I:=FindLexicalSymbol(TokenText);
+    If (I<>0) And (Symbols[I].Kind=skVar) And Not Symbols[I].ResultVariable Then
+      Begin
+     { variable : sa memoire est reinterpretee avec le type du transtypage }
+     ExprType:=VariableArgument; Need(tkRP);
+     ExprType:=CastType;
+     If Token In [tkLB,tkDot] Then ExprType:=DesignatorTail(CastType);
+     LoadDesignator(ExprType); T:=Types[ExprType].Typ; ExprKnown:=False;
+       ExprLiteral:=False;
+    End Else Begin
+    I:=CastTarget; CastTarget:=CastType; T:=Expression; CastTarget:=I;
+      Need(tkRP);
     If T<>Types[CastType].Typ Then Fail(61,'Transtypage structure invalide');
     ExprType:=CastType; ExprKnown:=False; ExprLiteral:=False;
+    If Token In [tkLB,tkDot] Then Begin
+     { TTab(Variable)[i] ou TRec(Variable).champ : adresse DX:AX -> ES:DI puis
+       suite du designateur }
+     Emit2($8E,$C2); Emit2($89,$C7);
+     ExprType:=DesignatorTail(CastType); LoadDesignator(ExprType);
+       T:=Types[ExprType].Typ;
+    End;
+    End;
    End Else Begin
    T:=Expression; Need(tkRP);
-   If Types[CastType].Typ=ttReal Then Begin ToReal(ExprType); T:=ttReal; ExprType:=11 End
+   If Types[CastType].Typ=ttReal Then Begin ToReal(ExprType); T:=ttReal;
+     ExprType:=11 End
    Else Begin
    If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer]) Or
-      Not (Types[CastType].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer]) Then
+      Not (Types[CastType].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,
+        ttPointer]) Then
     Fail(61,'Conversion ordinale invalide');
    If (Types[CastType].Width=4) And (Types[ExprType].Width<>4) Then Begin
     If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
@@ -3819,7 +6778,8 @@ Begin
    If (Token In [tkCaret,tkLB,tkDot]) And (T=ttPointer) Then Begin
     { TypePointeur(expression)^ ... : ES:DI = valeur du pointeur }
     Emit2($8E,$C2); Emit2($89,$C7);
-    If Token=tkCaret Then Begin NextToken; ExprType:=TypeExtras[ExprType].ElementType End;
+    If Token=tkCaret Then Begin NextToken;
+      ExprType:=TypeExtras[ExprType].ElementType End;
     If (ExprType=0) And (CastTarget<>0) Then ExprType:=CastTarget;
     If ExprType<>0 Then ExprType:=DesignatorTail(ExprType);
     If (ExprType=0) And (CastTarget<>0) Then ExprType:=CastTarget;
@@ -3827,31 +6787,40 @@ Begin
    End;
    End;
    End;
-  End Else If (I=0) And (Token<>tkDot) And ((Name='HIGH') Or (Name='LOW')) Then Begin
+  End Else If (I=0) And (Token<>tkDot) And ((Name='HIGH') Or (Name='LOW')) Then
+    Begin
    { TP 7.0: bornes d'un type ou d'une variable ordinale, tableau ou chaine. }
    Need(tkLP);
    If Token=tkIdent Then Begin
     I:=FindLexicalSymbol(TokenText);
-    If (I<>0) And (Symbols[I].Kind=skVar) And (Types[SymbolType(I)].Typ=ttArray) And
+    If (I<>0) And (Symbols[I].Kind=skVar) And (Types[SymbolType(I)].Typ=ttArray)
+      And
        (TypeExtras[SymbolType(I)].FieldCount=$FFFF) Then Begin
      { tableau ouvert: High est le mot qui suit le pointeur dans la frame }
      NextToken; Need(tkRP);
-     If Name='HIGH' Then Begin ScopeAddress(Symbols[I].Scope); Emit($36); Emit2($8B,$87); EmitWord(Symbols[I].Addr+4) End
+     If Name='HIGH' Then Begin ScopeAddress(Symbols[I].Scope); Emit($36);
+       Emit2($8B,$87); EmitWord(Symbols[I].Addr+4) End
      Else LoadImmediate(0);
-     T:=ttInteger; ExprType:=1; ExprKnown:=False; ExprLiteral:=False; I:=0; Factor:=T; Exit;
+     T:=ttInteger; ExprType:=1; ExprKnown:=False; ExprLiteral:=False; I:=0;
+       Factor:=T; Exit;
     End;
    End;
    CastType:=SizeArgument; Need(tkRP);
    If Types[CastType].Typ=ttArray Then CastType:=TypeExtras[CastType].IndexType;
    If Types[CastType].Typ=ttString Then Begin
-    If Name='HIGH' Then Bound:=Types[CastType].Capacity Else Bound:=0; CastType:=1;
+    If Name='HIGH' Then Bound:=Types[CastType].Capacity Else Bound:=0;
+      CastType:=1;
    End Else Begin
-    If Not (Types[CastType].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(29,'');
-    If Name='HIGH' Then Bound:=Types[CastType].HighBound Else Bound:=Types[CastType].LowBound;
+    If Not (Types[CastType].Typ In [ttInteger,ttBoolean,ttChar,
+      ttEnum]) Then Fail(29,'');
+    If Name='HIGH' Then Bound:=Types[CastType].HighBound Else
+      Bound:=Types[CastType].LowBound;
    End;
    LoadImmediate(Word(Bound));
-   If Types[CastType].Width=4 Then Begin Emit($BA); EmitWord(Word(Bound Shr 16)) End;
-   T:=Types[CastType].Typ; ExprType:=CastType; ExprKnown:=True; ExprValue:=Bound;
+   If Types[CastType].Width=4 Then Begin Emit($BA);
+     EmitWord(Word(Bound Shr 16)) End;
+   T:=Types[CastType].Typ; ExprType:=CastType; ExprKnown:=True;
+     ExprValue:=Bound;
   End Else If (I=0) And (Token<>tkDot) And (Name='ASSIGNED') Then Begin
    Need(tkLP); T:=Expression; Need(tkRP);
    If T<>ttPointer Then Fail(78,'');
@@ -3861,11 +6830,13 @@ Begin
    Need(tkLP); CastType:=SizeArgument; Need(tkRP);
    LoadImmediate(TypeExtras[CastType].Size);
    T:=ttInteger; ExprType:=1;
-  End Else If (I=0) And (Token<>tkDot) And ((Name='TRUE') Or (Name='FALSE')) Then Begin
+  End Else If (I=0) And (Token<>tkDot) And ((Name='TRUE') Or (Name='FALSE'))
+    Then Begin
   T:=ttBoolean; ExprType:=5; ExprKnown:=True;
   If Name='TRUE' Then Begin ExprValue:=1; LoadImmediate(1) End
   Else Begin ExprValue:=0; LoadImmediate(0) End;
-  End Else If (I=0) And (Token<>tkDot) And ((Name='LENGTH') Or (Name='ORD') Or (Name='CHR') Or
+  End Else If (I=0) And (Token<>tkDot) And ((Name='LENGTH') Or (Name='ORD') Or
+    (Name='CHR') Or
   (Name='ABS') Or (Name='SQR') Or (Name='SUCC') Or (Name='PRED')) Then Begin
    Need(tkLP); T:=Expression; Need(tkRP);
    If Name='LENGTH' Then Begin
@@ -3876,13 +6847,16 @@ Begin
     End
     Else If T=ttChar Then LoadImmediate(1)
     Else If (T=ttArray) And IsAnyCharArray(ExprType) Then Begin
-     CharArrayToString(ExprType); Emit($1E); Emit2($8E,$DA); Emit2($89,$C3); Emit2($8A,$07); Emit2($30,$E4); Emit($1F);
+     CharArrayToString(ExprType); Emit($1E); Emit2($8E,$DA); Emit2($89,$C3);
+       Emit2($8A,$07); Emit2($30,$E4); Emit($1F);
     End Else Fail(67,'Chaine attendue');
     T:=ttInteger; ExprType:=1;
    End Else If Name='ORD' Then Begin
-    If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(26,'Type ordinal attendu');
+    If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(26,
+      'Type ordinal attendu');
     T:=ttInteger;
-    If Types[ExprType].Width=4 Then ExprType:=9 Else If ExprUnsigned Then ExprType:=3 Else ExprType:=1;
+    If Types[ExprType].Width=4 Then ExprType:=9 Else If ExprUnsigned Then
+      ExprType:=3 Else ExprType:=1;
    End Else If Name='CHR' Then Begin
     RequireInteger(T); Emit2($30,$E4); T:=ttChar; ExprType:=6
    End
@@ -3892,25 +6866,32 @@ Begin
      If Name='ABS' Then RealUnary(6) Else RealUnary(7);
     End Else Begin
     If Not ((Name='SUCC') Or (Name='PRED')) Then RequireInteger(T)
-    Else If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(26,'Type ordinal attendu');
+    Else If Not (T In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(26,
+      'Type ordinal attendu');
     If Name='ABS' Then Begin
      If Types[ExprType].Width=4 Then Begin
-      Emit2($09,$D2); Emit2($79,7); Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA);
-     End Else If Not ExprUnsigned Then Begin Emit2($09,$C0); Emit2($79,$02); Emit2($F7,$D8) End;
+      Emit2($09,$D2); Emit2($79,7); Emit2($F7,$D8); Emit2($83,$D2); Emit(0);
+        Emit2($F7,$DA);
+     End Else If Not ExprUnsigned Then Begin Emit2($09,$C0); Emit2($79,$02);
+       Emit2($F7,$D8) End;
     End;
     If Name='SQR' Then Begin
-     If Types[ExprType].Width=4 Then Begin Emit2($89,$C3); Emit2($89,$D1); CallTo(RuntimeStandard[14]) End
+     If Types[ExprType].Width=4 Then Begin Emit2($89,$C3); Emit2($89,$D1);
+       CallTo(RtlTarget(RuntimeStandard[14])) End
      Else Emit2($F7,$E8);
     End;
-    If Name='SUCC' Then Begin Emit($05); EmitWord(1); If Types[ExprType].Width=4 Then Begin Emit2($83,$D2); Emit(0) End End;
-    If Name='PRED' Then Begin Emit($2D); EmitWord(1); If Types[ExprType].Width=4 Then Begin Emit2($83,$DA); Emit(0) End End;
+    If Name='SUCC' Then Begin Emit($05); EmitWord(1);
+      If Types[ExprType].Width=4 Then Begin Emit2($83,$D2); Emit(0) End End;
+    If Name='PRED' Then Begin Emit($2D); EmitWord(1);
+      If Types[ExprType].Width=4 Then Begin Emit2($83,$DA); Emit(0) End End;
     End;
    End;
     ExprKnown:=False;
   End Else
   Begin
-   I:=ResolveSymbol(Name);
-  If Symbols[I].ResultVariable And (Token=tkLP) Then I:=Symbols[I].RoutineSymbol;
+   I:=ResolveSymbol(FullName);
+  If Symbols[I].ResultVariable And (Token=tkLP) Then
+    I:=Symbols[I].RoutineSymbol;
    If Symbols[I].Kind=skProc Then Begin
    If Symbols[I].Typ=ttVoid Then Fail(42,'Procedure utilisee comme fonction');
    If Symbols[I].Native Then T:=NativeCall(I) Else T:=UserCall(I);
@@ -3919,15 +6900,23 @@ Begin
     If T=ttVoid Then Fail(42,'Fonction attendue');
    End Else
    Begin
-    If (Symbols[I].Kind=skVar) And SimpleScalar(I) And Not (Token In [tkLB,tkDot,tkCaret]) Then Begin
+    If (Symbols[I].Kind=skVar) And SimpleScalar(I) And Not (Token In [tkLB,
+      tkDot,tkCaret]) Then Begin
      ExprType:=SymbolType(I); T:=Types[ExprType].Typ; LoadScalar(I);
     End Else If Symbols[I].Kind=skVar Then Begin
-     ExprType:=Designator(I); T:=Types[ExprType].Typ; LoadDesignator(ExprType);
+     ExprType:=Designator(I);
+     If (ExprType=0) And (CastTarget<>0) Then ExprType:=CastTarget;
+     If MethodCalled Then Begin
+      { appel de methode : le resultat est deja dans AX / DX:AX }
+      MethodCalled:=False; T:=Types[ExprType].Typ; If ExprType=0 Then Fail(42,
+        'Fonction attendue');
+     End Else Begin T:=Types[ExprType].Typ; LoadDesignator(ExprType) End;
     End Else Begin
      T:=Symbols[I].Typ; ExprType:=SymbolType(I); LoadSymbol(I);
      If T=ttString Then Emit2($8C,$DA);
     End;
-    ExprKnown:=(Symbols[I].Kind=skConst) And (T<>ttReal); ExprValue:=Symbols[I].Value;
+    ExprKnown:=(Symbols[I].Kind=skConst) And (T<>ttReal);
+      ExprValue:=Symbols[I].Value;
    End;
   End;
  End Else If Token=tkEOF Then Fail(10,'Fin de fichier inattendue')
@@ -3942,11 +6931,12 @@ End;
 Function Term: Byte;
 Var
  T, R, Op: Byte; RightKnown,MixedWide: Boolean; RightValue: Longint;
- Skip,ShiftLoop,CV: Word; ConstOp: Boolean;
+ Skip,ShiftLoop,CV,PushPos,K: Word; ConstOp,MemOp,ConstBx: Boolean; MD: Longint;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
- LeftKnown: Boolean; LeftValue: Longint; Check: Real;
+ LeftKnown: Boolean; LeftValue: Longint; Check: Real; S0: Word;
 Begin
+ S0:=CodeSize;
  T:=Factor;
  While Token In [tkTimes,tkSlash,tkDiv,tkMod,tkAnd,tkShl,tkShr] Do Begin
   Op:=Token;
@@ -3954,7 +6944,8 @@ Begin
    LeftType:=ExprType; If Op<>tkTimes Then Fail(26,'Operation set invalide');
    Emit($52); Emit($50); NextToken; R:=Factor; ExprLiteral:=False;
    If R<>ttSet Then Fail(26,'Ensemble attendu');
-   ExprType:=SetBinary(LeftType,ExprType,Op); ExprKnown:=False; ExprUnsigned:=False; Continue;
+   ExprType:=SetBinary(LeftType,ExprType,Op); ExprKnown:=False;
+     ExprUnsigned:=False; Continue;
   End;
 
   ShortCircuit:=(Op=tkAnd) And (T=ttBoolean) And (OptionBits And $40=0);
@@ -3962,59 +6953,128 @@ Begin
   LeftKnown:=ExprKnown; LeftValue:=ExprValue;
   If ShortCircuit Then Skip:=JumpZeroKeep;
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
-  If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
+  If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52);
+    Emit($50) End;
+  PushPos:=CodeSize;
   NextToken; R:=Factor; ExprLiteral:=False;
   RightKnown:=ExprKnown; RightValue:=ExprValue;
-  { Word op Integer (signes differents, ni constante positive): Longint comme TP }
-  If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And Not (Op In [tkShl,tkShr]) And
-     Not (LeftUnsigned And RightKnown And (RightValue>=0) And (RightValue<=65535)) And
-     Not (ExprUnsigned And LeftKnown And (LeftValue>=0) And (LeftValue<=65535)) Then Begin
-   If Not ((Types[LeftType].Width=4) Or (Types[ExprType].Width=4)) Then MixedWide:=True;
+  { Word op Integer (signes differents,
+    ni constante positive): Longint comme TP }
+  If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And Not
+    (Op In [tkShl,tkShr]) And
+     Not (LeftUnsigned And RightKnown And (RightValue>=0) And
+       (RightValue<=65535)) And
+     Not (ExprUnsigned And LeftKnown And (LeftValue>=0) And (LeftValue<=65535))
+       Then Begin
+   If Not ((Types[LeftType].Width=4) Or (Types[ExprType].Width=4)) Then
+     MixedWide:=True;
   End Else MixedWide:=False;
   If (T=ttReal) Or (R=ttReal) Or (Op=tkSlash) Then Begin
    If Not (Op In [tkTimes,tkSlash]) Then Fail(26,'Operation reelle invalide');
-   If Op=tkTimes Then RealBinary(LeftType,ExprType,3,False) Else RealBinary(LeftType,ExprType,4,False);
+   If Op=tkTimes Then RealBinary(LeftType,ExprType,3,
+     False) Else RealBinary(LeftType,ExprType,4,False);
    T:=ttReal; Continue;
   End;
-  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight Or MixedWide;
+  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4);
+    WideResult:=WideLeft Or WideRight Or MixedWide;
   If WideResult Then Begin
-   If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
+   If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
+     $D2) Else Emit($99) End;
    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
-   If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,$D2) Else Emit($99);
+   If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,
+     $D2) Else Emit($99);
    RequireInteger(T); RequireInteger(R);
    Case Op Of
-    tkTimes:CallTo(RuntimeStandard[14]);
+    tkTimes:CallTo(RtlTarget(RuntimeStandard[14]));
     tkDiv,tkMod:Begin
-     CallTo(RuntimeStandard[15]);
+     CallTo(RtlTarget(RuntimeStandard[15]));
      If Op=tkMod Then Begin Emit2($89,$D8); Emit2($89,$CA) End;
     End;
     tkAnd:Begin Emit2($21,$D8); Emit2($21,$CA) End;
     tkShl,tkShr:Begin
-     Emit2($89,$D9); Emit2($80,$E1); Emit(31); Emit2($09,$C9); Emit2($75,3); Skip:=Jump;
+     Emit2($89,$D9); Emit2($80,$E1); Emit(31); Emit2($09,$C9);
+       Skip:=JumpIf($75);
      ShiftLoop:=CodeSize;
      If Op=tkShl Then Begin Emit2($D1,$E0); Emit2($D1,$D2) End
      Else Begin Emit2($D1,$EA); Emit2($D1,$D8) End;
-     Emit($E2); Emit(Byte(Longint(ShiftLoop)-CodeSize-1)); PatchJump(Skip,CodeSize);
+     Emit($E2); Emit(Byte(Longint(ShiftLoop)-CodeSize-1)); PatchJump(Skip,
+       CodeSize);
     End;
    End;
   End Else Begin
   ConstOp:=(Op=tkAnd) And TailConst(CV);
-  If Not ConstOp Then Begin Emit2($89,$C3); Emit($58) End;
+  MemOp:=False; ConstBx:=False;
+  { diviseur / multiplicateur constant : "mov bx,imm" a la place de push/mov/pop
+    }
+  If Not ConstOp And (Op In [tkTimes,tkDiv,
+    tkMod]) And RightKnown And (RightValue>=-32768) And (RightValue<=65535) And
+     ((Op=tkTimes) Or (RightValue<>0)) And Not ((Op<>tkTimes) And
+       (RightValue=-1)) And
+     ((Op=tkTimes) Or LeftUnsigned Or (RightValue<=32767)) Then
+       ConstBx:=TailConst(CV);
+  If Not ConstOp And Not ConstBx And (Op In [tkAnd,
+    tkTimes]) Then MemOp:=(T=ttInteger) And (R=ttInteger) And
+      (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
+  If Not ConstOp And Not MemOp And Not ConstBx Then Begin Emit2($89,$C3);
+    Emit($58) End;
   If Op=tkAnd Then Begin
-   If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,'Types incompatibles');
-   If ConstOp Then Begin Emit($25); EmitWord(CV) End Else Emit2($21,$D8);
+   If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,
+     'Types incompatibles');
+   If ConstOp Then Begin Emit($25);
+     EmitWord(CV) End Else If MemOp Then Begin Emit($23); EmitBP(0,
+       SmallInt(MD)) End Else Emit2($21,$D8);
   End Else
   Begin
    RequireInteger(T); RequireInteger(R);
    Case Op Of
-   tkTimes:Begin Emit2($F7,$EB); OverflowCheck(LeftUnsigned And ExprUnsigned) End;
+   tkTimes:Begin
+    If ConstBx Then Begin
+     K:=0; While (K<15) And (Word(1) Shl K<CV) Do Inc(K);
+     If (OptionBits And $8000=0) And (CV=0) Then Emit2($31,$C0)
+     Else If (OptionBits And $8000=0) And (CV=1) Then
+     Else If (OptionBits And $8000=0) And (CV<>0) And (Word(1) Shl K=CV) And
+       (K<=2) Then Begin
+      Emit2($D1,$E0); If K=2 Then Emit2($D1,$E0);
+     End Else If (OptionBits And $8000=0) And (CV<>0) And (Word(1) Shl K=CV)
+       Then Begin
+      Emit2($B1,K); Emit2($D3,$E0);
+     End Else Begin Emit($BB); EmitWord(CV); Emit2($F7,$EB) End;
+    End Else
+    If MemOp Then Begin Emit($F7); EmitBP(5,SmallInt(MD)) End Else Emit2($F7,
+      $EB);
+    OverflowCheck(LeftUnsigned And ExprUnsigned);
+   End;
    tkDiv,tkMod:
+   If ConstBx Then Begin
+    { constante non nulle (et differente de -1) : ni controle de zero ni de
+      debordement }
+    K:=0; While (K<15) And (Word(1) Shl K<CV) Do Inc(K);
+    If LeftUnsigned And (RightValue>0) And (Word(1) Shl K=CV) And (CV>1) And
+      (Op=tkMod) Then Begin
+     Emit($25); EmitWord(CV-1)
+    End Else If LeftUnsigned And (RightValue>0) And (Word(1) Shl K=CV) And
+      (CV>1) And (K<=2) Then Begin
+     Emit2($D1,$E8); If K=2 Then Emit2($D1,$E8)
+    End Else If LeftUnsigned And (RightValue>0) And (Word(1) Shl K=CV) And
+      (CV>1) Then Begin
+     Emit2($B1,K); Emit2($D3,$E8)
+    End Else Begin
+     Emit($BB); EmitWord(CV);
+     If LeftUnsigned And (RightValue>0) Then Begin Emit2($31,$D2); Emit2($F7,
+       $F3) End
+     Else Begin Emit($99); Emit2($F7,$FB) End;
+     If Op=tkMod Then Emit2($89,$D0);
+    End;
+   End Else
    Begin
-    Emit2($09,$DB); Emit2($75,6); LoadImmediate(200); CallTo(RuntimeError);
-    If LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>0))) Then Begin Emit2($31,$D2); Emit2($F7,$F3) End
+    Emit2($09,$DB); Emit2($75,6); LoadImmediate(200);
+      CallTo(RtlTarget(RuntimeError));
+    If LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>0))) Then
+      Begin Emit2($31,$D2); Emit2($F7,$F3) End
     Else Begin
      Emit($3D); EmitWord($8000); Emit2($75,12);
-     Emit2($81,$FB); EmitWord($FFFF); Emit2($75,6); LoadImmediate(200); CallTo(RuntimeError);
+     Emit2($81,$FB); EmitWord($FFFF); Emit2($75,6); LoadImmediate(200);
+       CallTo(RtlTarget(RuntimeError));
      Emit($99); Emit2($F7,$FB);
     End;
     If Op=tkMod Then Emit2($89,$D0);
@@ -4033,26 +7093,42 @@ Begin
   Case Op Of
    tkTimes:Begin
     Check:=LeftValue; Check:=Check*ExprValue;
-    If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,'Debordement expression constante');
+    If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,
+      'Debordement expression constante');
     ExprValue:=LeftValue*ExprValue;
+    { produit de constantes hors de l'intervalle 16 bits : constante Longint
+      (Word entre 32768 et 65535), comme TP }
+    If (T=ttInteger) And (Types[ExprType].Width<>4) And (CodeSize>S0) And
+      ((ExprValue<-32768) Or (ExprValue>65535)) Then Begin
+     CodeSize:=S0; Emit($B8); EmitWord(Word(ExprValue)); Emit($BA);
+       EmitWord(Word(ExprValue Shr 16));
+     WideResult:=True;
+    End;
    End;
    tkDiv,tkMod:Begin
-    If (ExprValue=0) Or ((LeftValue=-2147483647-1) And (ExprValue=-1)) Then ExprKnown:=False
-    Else If Op=tkDiv Then ExprValue:=LeftValue Div ExprValue Else ExprValue:=LeftValue Mod ExprValue;
+    If (ExprValue=0) Or ((LeftValue=-2147483647-1) And (ExprValue=-1)) Then
+      ExprKnown:=False
+    Else If Op=tkDiv Then ExprValue:=LeftValue Div ExprValue Else
+      ExprValue:=LeftValue Mod ExprValue;
    End;
    tkAnd:ExprValue:=LeftValue And ExprValue;
    tkShl,tkShr:Begin
     If (ExprValue<0) Or (ExprValue>31) Then ExprKnown:=False
-    Else If Op=tkShl Then ExprValue:=LeftValue Shl ExprValue Else ExprValue:=LeftValue Shr ExprValue;
+    Else If Op=tkShl Then ExprValue:=LeftValue Shl ExprValue Else
+      ExprValue:=LeftValue Shr ExprValue;
    End;
   End;
  End;
  If T=ttInteger Then Begin
-  { Comme TP: Word shl n reste Word; un operande Word avec une constante positive reste Word. }
+  { Comme TP: Word shl n reste Word;
+    un operande Word avec une constante positive reste Word. }
   If WideResult Then ExprType:=9
-  Else If Op In [tkShl,tkShr] Then Begin If LeftUnsigned Then ExprType:=3 Else ExprType:=1 End
-  Else If (LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>=0)))) Or
-          (ExprUnsigned And LeftKnown And (LeftValue>=0)) Then ExprType:=3 Else ExprType:=1;
+  Else If Op In [tkShl,
+    tkShr] Then Begin If LeftUnsigned Then ExprType:=3 Else ExprType:=1 End
+  Else If (LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>=0))))
+    Or
+          (ExprUnsigned And LeftKnown And (LeftValue>=0)) Then ExprType:=3 Else
+            ExprType:=1;
   ExprUnsigned:=ExprType=3;
  End Else ExprType:=LeftType;
 End;
@@ -4062,11 +7138,12 @@ End;
 Function SimpleExpression: Byte;
 Var
  T,R,Op,Sign: Byte;
- Skip,CV: Word; ConstOp: Boolean;
+ Skip,CV,PushPos: Word; ConstOp,MemOp: Boolean; MD: Longint;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
  LeftKnown: Boolean; LeftValue: Longint; Check: Real;
- StrTemp,LeftArray,RightKnown,MixedWide: Boolean; RightT: Word; RightValue: Longint;
+ StrTemp,LeftArray,RightKnown,MixedWide: Boolean; RightT: Word;
+   RightValue: Longint;
 Begin
  Sign:=0; StrTemp:=False;
  If Token In [tkPlus,tkMinus] Then Begin
@@ -4078,16 +7155,20 @@ Begin
  If (Sign=tkMinus) And (T=ttReal) Then RealUnary(5)
  Else If Sign=tkMinus Then Begin
   Emit2($F7,$D8);
-  If Types[ExprType].Width=4 Then Begin Emit2($83,$D2); Emit(0); Emit2($F7,$DA) End
+  If Types[ExprType].Width=4 Then Begin Emit2($83,$D2); Emit(0); Emit2($F7,
+    $DA) End
   Else ExprType:=1;
   ExprUnsigned:=False; ExprValue:=-ExprValue;
  End;
  While Token In [tkPlus,tkMinus,tkOr,tkXor] Do Begin
   Op:=Token;
-  If (T=ttPointer) And IsCharPointer(ExprType) And (Op In [tkPlus,tkMinus]) And ExtendedSyntax Then Begin
+  If (T=ttPointer) And IsCharPointer(ExprType) And (Op In [tkPlus,
+    tkMinus]) And ExtendedSyntax Then Begin
    { $X+: P+n et P-n agissent sur l'offset seulement; P-Q donne un entier. }
-   LeftType:=ExprType; Emit($52); Emit($50); NextToken; R:=Term; ExprLiteral:=False;
-   If (R=ttArray) And IsCharArray(ExprType) Then Begin R:=ttPointer; ExprType:=12 End;
+   LeftType:=ExprType; Emit($52); Emit($50); NextToken; R:=Term;
+     ExprLiteral:=False;
+   If (R=ttArray) And IsCharArray(ExprType) Then Begin R:=ttPointer;
+     ExprType:=12 End;
    If (R=ttPointer) And (Op=tkMinus) Then Begin
     If Not IsCharPointer(ExprType) Then Fail(26,'PChar attendu');
     Emit2($89,$C3); Emit($58); Emit($5A); Emit2($29,$D8);
@@ -4101,83 +7182,118 @@ Begin
    ExprKnown:=False; Continue;
   End;
   If T=ttSet Then Begin
-   LeftType:=ExprType; If Not (Op In [tkPlus,tkMinus]) Then Fail(26,'Operation set invalide');
+   LeftType:=ExprType; If Not (Op In [tkPlus,tkMinus]) Then Fail(26,
+     'Operation set invalide');
    Emit($52); Emit($50); NextToken; R:=Term; ExprLiteral:=False;
    If R<>ttSet Then Fail(26,'Ensemble attendu');
-   ExprType:=SetBinary(LeftType,ExprType,Op); ExprKnown:=False; ExprUnsigned:=False; Continue;
+   ExprType:=SetBinary(LeftType,ExprType,Op); ExprKnown:=False;
+     ExprUnsigned:=False; Continue;
   End;
   LeftArray:=(T=ttArray) And IsAnyCharArray(ExprType) And (Op=tkPlus);
-  If LeftArray Then Begin LeftType:=ExprType; T:=ttString; ExprLiteral:=False End;
+  If LeftArray Then Begin LeftType:=ExprType; T:=ttString;
+    ExprLiteral:=False End;
   If (T In [ttString,ttChar]) And (Op=tkPlus) Then Begin
    NextToken;
-   { Constantes juxtaposees ('a'+#13+'b'): pliage en une seule constante chaine. }
+   { Constantes juxtaposees ('a'+#13+'b'): pliage en une seule constante chaine.
+     }
    If ExprLiteral And (Token=tkConstant) And TokenIsString And
       (Length(ExprLiteralText)+Length(TokenText)<=255) Then Begin
-    CodeSize:=LiteralMarkCode; FixupCount:=LiteralMarkFixup; RelativeCount:=LiteralMarkRelative;
-    NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc; DataSize:=LiteralMarkData;
+    CodeSize:=LiteralMarkCode; FixupCount:=LiteralMarkFixup;
+      RelativeCount:=LiteralMarkRelative;
+    NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc;
+      DataSize:=LiteralMarkData; TrimLiterals(DataSize);
     ExprLiteralText:=ExprLiteralText+TokenText; NextToken;
-    T:=ttString; ExprType:=7; Emit($B8); DataAddress(StoreString(ExprLiteralText)); Emit2($8C,$DA);
+    T:=ttString; ExprType:=7; Emit($B8);
+      DataAddress(LiteralString(ExprLiteralText)); Emit2($8C,$DA);
     ExprKnown:=False; ExprUnsigned:=False; Continue;
    End;
    If T=ttChar Then StringFromChar;
    Emit($52); Emit($50); R:=Term; ExprLiteral:=False;
-   If LeftArray And (R=ttInteger) And ExtendedSyntax And IsCharArray(LeftType) Then Begin
+   If LeftArray And (R=ttInteger) And ExtendedSyntax And IsCharArray(LeftType)
+     Then Begin
     { TableauChar + n: arithmetique PChar ($X+) }
     Emit2($89,$C3); Emit($58); Emit($5A); Emit2($01,$D8);
-    T:=ttPointer; ExprType:=12; ExprUnsigned:=False; ExprKnown:=False; StrTemp:=False; Continue;
+    T:=ttPointer; ExprType:=12; ExprUnsigned:=False; ExprKnown:=False;
+      StrTemp:=False; Continue;
    End;
    If LeftArray Then Begin
     { convertir la gauche (empilee) en chaine temporaire }
     RightT:=ExprType;
-    Emit($52); Emit($50); Emit2($89,$E3); Emit($36); Emit2($8B,$47); Emit(4); Emit($36); Emit2($8B,$57); Emit(6);
+    Emit($52); Emit($50); Emit2($89,$E3); Emit($36); Emit2($8B,$47); Emit(4);
+      Emit($36); Emit2($8B,$57); Emit(6);
     CharArrayToString(LeftType);
-    Emit2($89,$E3); Emit($36); Emit2($89,$47); Emit(4); Emit($36); Emit2($89,$57); Emit(6); Emit($58); Emit($5A);
+    Emit2($89,$E3); Emit($36); Emit2($89,$47); Emit(4); Emit($36); Emit2($89,
+      $57); Emit(6); Emit($58); Emit($5A);
     ExprType:=RightT;
    End;
-   If (R=ttArray) And IsAnyCharArray(ExprType) Then Begin CharArrayToString(ExprType); R:=ttString End;
-   If R=ttChar Then StringFromChar Else If R<>ttString Then Fail(67,'Chaine attendue');
-   ExprType:=StringBinary(StrTemp); StrTemp:=True; T:=ttString; ExprKnown:=False; ExprUnsigned:=False; Continue;
+   If (R=ttArray) And IsAnyCharArray(ExprType) Then Begin
+     CharArrayToString(ExprType); R:=ttString End;
+   If R=ttChar Then StringFromChar Else If R<>ttString Then Fail(67,
+     'Chaine attendue');
+   ExprType:=StringBinary(StrTemp); StrTemp:=True; T:=ttString;
+     ExprKnown:=False; ExprUnsigned:=False; Continue;
   End;
   ShortCircuit:=(Op=tkOr) And (T=ttBoolean) And (OptionBits And $40=0);
   LeftType:=ExprType; LeftUnsigned:=ExprUnsigned;
   LeftKnown:=ExprKnown; LeftValue:=ExprValue;
   If ShortCircuit Then Begin
-   Emit2($09,$C0); Emit2($74,$03); Skip:=Jump;
+   Emit2($09,$C0); Skip:=JumpIf($74);
   End;
   WideLeft:=(T=ttInteger) And (Types[LeftType].Width=4);
-  If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52); Emit($50) End;
+  If T=ttReal Then PushReal Else Begin If WideLeft Then Emit($52);
+    Emit($50) End;
+  PushPos:=CodeSize;
   NextToken; R:=Term; ExprLiteral:=False;
   RightKnown:=ExprKnown; RightValue:=ExprValue;
-  If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And (Op In [tkPlus,tkMinus]) And
-     Not (LeftUnsigned And RightKnown And (RightValue>=0) And (RightValue<=65535)) And
-     Not (ExprUnsigned And LeftKnown And (LeftValue>=0) And (LeftValue<=65535)) Then Begin
-   If Not ((Types[LeftType].Width=4) Or (Types[ExprType].Width=4)) Then MixedWide:=True;
+  If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And (Op In
+    [tkPlus,tkMinus]) And
+     Not (LeftUnsigned And RightKnown And (RightValue>=0) And
+       (RightValue<=65535)) And
+     Not (ExprUnsigned And LeftKnown And (LeftValue>=0) And (LeftValue<=65535))
+       Then Begin
+   If Not ((Types[LeftType].Width=4) Or (Types[ExprType].Width=4)) Then
+     MixedWide:=True;
   End Else MixedWide:=False;
   If (T=ttReal) Or (R=ttReal) Then Begin
    If Not (Op In [tkPlus,tkMinus]) Then Fail(26,'Operation reelle invalide');
-   If Op=tkPlus Then RealBinary(LeftType,ExprType,1,False) Else RealBinary(LeftType,ExprType,2,False);
+   If Op=tkPlus Then RealBinary(LeftType,ExprType,1,
+     False) Else RealBinary(LeftType,ExprType,2,False);
    T:=ttReal; Continue;
   End;
-  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); WideResult:=WideLeft Or WideRight Or MixedWide;
-  ConstOp:=False;
+  WideRight:=(R=ttInteger) And (Types[ExprType].Width=4);
+    WideResult:=WideLeft Or WideRight Or MixedWide;
+  ConstOp:=False; MemOp:=False;
   If WideResult Then Begin
-   If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
+   If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
+     $D2) Else Emit($99) End;
    Emit2($89,$C3); Emit2($89,$D1); Emit($58);
-   If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,$D2) Else Emit($99);
+   If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,
+     $D2) Else Emit($99);
   End Else Begin
    ConstOp:=TailConst(CV);
-   If Not ConstOp Then Begin Emit2($89,$C3); Emit($58) End;
+   If Not ConstOp Then MemOp:=(T=ttInteger) And (R=ttInteger) And
+     (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
+   If Not ConstOp And Not MemOp Then Begin Emit2($89,$C3); Emit($58) End;
   End;
   If Op In [tkOr,tkXor] Then Begin
-   If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,'Types incompatibles');
-   If ConstOp Then Begin If Op=tkOr Then Emit($0D) Else Emit($35); EmitWord(CV) End
-   Else If Op=tkOr Then Begin Emit2($09,$D8); If WideResult Then Emit2($09,$CA) End
+   If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,
+     'Types incompatibles');
+   If ConstOp Then Begin If Op=tkOr Then Emit($0D) Else Emit($35);
+     EmitWord(CV) End
+   Else If MemOp Then Begin If Op=tkOr Then Emit($0B) Else Emit($33); EmitBP(0,
+     SmallInt(MD)) End
+   Else If Op=tkOr Then Begin Emit2($09,$D8); If WideResult Then Emit2($09,
+     $CA) End
    Else Begin Emit2($31,$D8); If WideResult Then Emit2($31,$CA) End;
   End Else
   Begin
    RequireInteger(T); RequireInteger(R);
-   If ConstOp Then Begin If Op=tkPlus Then Emit($05) Else Emit($2D); EmitWord(CV) End
-   Else If Op=tkPlus Then Begin Emit2($01,$D8); If WideResult Then Emit2($11,$CA) End
+   If ConstOp Then Begin If Op=tkPlus Then Emit($05) Else Emit($2D);
+     EmitWord(CV) End
+   Else If MemOp Then Begin If Op=tkPlus Then Emit($03) Else Emit($2B);
+     EmitBP(0,SmallInt(MD)) End
+   Else If Op=tkPlus Then Begin Emit2($01,$D8); If WideResult Then Emit2($11,
+     $CA) End
    Else Begin Emit2($29,$D8); If WideResult Then Emit2($19,$CA) End;
    If Not WideResult Then OverflowCheck(LeftUnsigned And ExprUnsigned);
   End;
@@ -4185,17 +7301,23 @@ Begin
   ExprKnown:=LeftKnown And ExprKnown;
   If ExprKnown Then Begin
    Check:=LeftValue;
-   If Op=tkPlus Then Check:=Check+ExprValue Else If Op=tkMinus Then Check:=Check-ExprValue;
-   If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,'Debordement expression constante');
+   If Op=tkPlus Then Check:=Check+ExprValue Else If Op=tkMinus Then
+     Check:=Check-ExprValue;
+   If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,
+     'Debordement expression constante');
    Case Op Of
-    tkPlus:ExprValue:=LeftValue+ExprValue; tkMinus:ExprValue:=LeftValue-ExprValue;
-    tkOr:ExprValue:=LeftValue Or ExprValue; tkXor:ExprValue:=LeftValue Xor ExprValue;
+    tkPlus:ExprValue:=LeftValue+ExprValue;
+      tkMinus:ExprValue:=LeftValue-ExprValue;
+    tkOr:ExprValue:=LeftValue Or ExprValue;
+      tkXor:ExprValue:=LeftValue Xor ExprValue;
    End;
   End;
   If T=ttInteger Then Begin
    If WideResult Then ExprType:=9
-   Else If (LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>=0)))) Or
-           (ExprUnsigned And LeftKnown And (LeftValue>=0)) Then ExprType:=3 Else ExprType:=1;
+   Else If (LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>=0))))
+     Or
+           (ExprUnsigned And LeftKnown And (LeftValue>=0)) Then ExprType:=3 Else
+             ExprType:=1;
    ExprUnsigned:=ExprType=3;
   End Else ExprType:=LeftType;
  End;
@@ -4203,27 +7325,33 @@ Begin
 End;
 
 Function Expression: Byte;
-Var T,R,Op,Jcc,HighJcc: Byte; LeftType: Word; LeftUnsigned,WideLeft,WideRight,Wide: Boolean;
- P,Q,H,CV: Word;
+Var T,R,Op,Jcc,HighJcc: Byte; LeftType: Word; LeftUnsigned,WideLeft,WideRight,
+  Wide: Boolean;
+ P,Q,H,CV,PushPos: Word; MD: Longint;
 Begin
  T:=SimpleExpression;
  If Token=tkIn Then Begin
   LeftType:=ExprType;
-  If Not (T In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(27,'Element IN non ordinal');
+  If Not (T In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(27,
+    'Element IN non ordinal');
   { Longint: hors de tout ensemble si la partie haute n'est pas nulle. }
-  If Types[LeftType].Width=4 Then Begin Emit2($09,$D2); Emit2($74,3); LoadImmediate($FFFF) End;
+  If Types[LeftType].Width=4 Then Begin Emit2($09,$D2); Emit2($74,3);
+    LoadImmediate($FFFF) End;
   Emit($50); NextToken; R:=SimpleExpression; ExprLiteral:=False;
   If R<>ttSet Then Fail(26,'Ensemble attendu apres IN');
-  If (TypeExtras[ExprType].ElementType<>0) And Not CompatibleTypes(LeftType,TypeExtras[ExprType].ElementType) Then
+  If (TypeExtras[ExprType].ElementType<>0) And Not CompatibleTypes(LeftType,
+    TypeExtras[ExprType].ElementType) Then
    Fail(26,'Type de l''element IN');
   Emit2($89,$C7); Emit2($8E,$C2); Emit($58);
   Emit($2D); EmitWord(Types[ExprType].LowBound Div 8*8);
-  Emit($3D); EmitWord(TypeExtras[ExprType].Size*8); Emit2($72,3); P:=Jump;
+  Emit($3D); EmitWord(TypeExtras[ExprType].Size*8); P:=JumpIf($72);
   Emit2($89,$C3); Emit2($89,$C1); Emit2($80,$E1); Emit(7);
   Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB);
-  Emit($26); Emit2($84,$11); LoadImmediate(1); Emit2($75,2); Emit2($31,$C0); Q:=Jump;
+  Emit($26); Emit2($84,$11); LoadImmediate(1); Emit2($75,2); Emit2($31,$C0);
+    Q:=Jump;
   PatchJump(P,CodeSize); Emit2($31,$C0); PatchJump(Q,CodeSize);
-  ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=ttBoolean; Exit;
+  ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=ttBoolean;
+    Exit;
  End;
  If Token In [tkEqual,tkNE,tkGreater,tkLess,tkGE,tkLE] Then Begin
   { Deux caracteres se comparent comme des octets; un caractere face a une
@@ -4231,33 +7359,70 @@ Begin
   LeftType:=ExprType; LeftUnsigned:=ExprUnsigned;
   WideLeft:=(T=ttPointer) Or ((T=ttInteger) And (Types[LeftType].Width=4));
   Op:=Token;
-  If T=ttReal Then PushReal Else Begin If WideLeft Or (T In [ttString,ttSet,ttArray]) Then Emit($52); Emit($50) End;
+  If T=ttReal Then PushReal Else Begin If WideLeft Or (T In [ttString,ttSet,
+    ttArray]) Then Emit($52); Emit($50) End;
+  PushPos:=CodeSize;
   NextToken; R:=SimpleExpression; ExprLiteral:=False;
   If (T=ttChar) And (R=ttString) Then Begin
    Emit($58); StringFromChar; Emit($52); Emit($50); T:=ttString; LeftType:=7;
   End;
-  If (T=ttString) And (R=ttChar) Then Begin StringFromChar; R:=ttString; ExprType:=7 End;
-  If (T=ttArray) And (TypeExtras[LeftType].ElementType=6) And (R In [ttString,ttChar,ttArray]) Then Begin
-   { Tableau de Char compare a une chaine (meme longueur) ou a un autre tableau. }
+  If (T=ttString) And (R=ttChar) Then Begin StringFromChar; R:=ttString;
+    ExprType:=7 End;
+  If (T=ttArray) And (TypeExtras[LeftType].ElementType=6) And (R In [ttString,
+    ttChar,ttArray]) Then Begin
+   { Tableau de Char compare a une chaine (meme longueur) ou a un autre tableau.
+     }
    If R=ttChar Then StringFromChar;
-   Emit2($89,$C7); Emit2($8E,$C2);                               { es:di = droite }
-   If R<>ttArray Then Begin Emit($26); Emit2($8A,$1D); Emit($47) End; { bl = longueur; di++ }
-   Emit($5E); Emit($5A); Emit($1E); Emit2($8E,$DA);             { ds:si = gauche }
+   Emit2($89,$C7); Emit2($8E,$C2);
+     { es:di = droite }
+   If R<>ttArray Then Begin Emit($26); Emit2($8A,$1D); Emit($47) End;
+     { bl = longueur; di++ }
+   Emit($5E); Emit($5A); Emit($1E); Emit2($8E,$DA);
+     { ds:si = gauche }
    Emit($B9); EmitWord(TypeExtras[LeftType].Size);
-   If R<>ttArray Then Begin Emit2($80,$FB); Emit(TypeExtras[LeftType].Size); Emit2($75,2) End;
-   Emit2($F3,$A6); Emit($1F);                                    { repe cmpsb; pop ds }
-   Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76; tkNE:Jcc:=$75 Else Jcc:=$74 End;
-   LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize; CondJcc:=Jcc;
-   ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean; Exit;
+   If R<>ttArray Then Begin Emit2($80,$FB); Emit(TypeExtras[LeftType].Size);
+     Emit2($75,2) End;
+   Emit2($F3,$A6); Emit($1F);                                    { repe cmpsb;
+     pop ds }
+   Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76;
+     tkNE:Jcc:=$75 Else Jcc:=$74 End;
+   LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize;
+     CondJcc:=Jcc;
+   ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean;
+     Exit;
+  End;
+  If (T=ttString) And (R=ttArray) And (TypeExtras[ExprType].ElementType=6) Then
+    Begin
+   { Chaine comparee a un tableau de Char (meme longueur) : symetrique du cas
+     precedent }
+   Emit($5F); Emit($07); Emit2($89,$C6);
+     { di,es = chaine ; si = tableau }
+   Emit($1E); Emit2($8E,$DA);                                     { push ds;
+     ds = segment du tableau }
+   Emit($26); Emit2($8A,$1D); Emit($47);
+     { bl = longueur; di++ }
+   Emit($B9); EmitWord(TypeExtras[ExprType].Size);
+   Emit2($80,$FB); Emit(TypeExtras[ExprType].Size); Emit2($75,2);
+   Emit2($F3,$A6); Emit($1F);                                     { repe cmpsb;
+     pop ds }
+   Case Op Of tkGreater:Jcc:=$72; tkLess:Jcc:=$77; tkGE:Jcc:=$76; tkLE:Jcc:=$73;
+     tkNE:Jcc:=$75 Else Jcc:=$74 End;
+   LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize;
+     CondJcc:=Jcc;
+   ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean;
+     Exit;
   End;
   If (T=ttReal) Or (R=ttReal) Then Begin
    RealBinary(LeftType,ExprType,0,True); Emit2($09,$C0);
-   Jcc:=$74; Case Op Of tkNE:Jcc:=$75; tkLess:Jcc:=$7C; tkGreater:Jcc:=$7F; tkLE:Jcc:=$7E; tkGE:Jcc:=$7D End;
+   Jcc:=$74; Case Op Of tkNE:Jcc:=$75; tkLess:Jcc:=$7C; tkGreater:Jcc:=$7F;
+     tkLE:Jcc:=$7E; tkGE:Jcc:=$7D End;
    LoadImmediate(1); Emit2(Jcc,2); Emit2($31,$C0);
-   ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean; Exit;
+   ExprType:=5; ExprKnown:=False; ExprUnsigned:=False; Expression:=ttBoolean;
+     Exit;
   End;
   If T<>R Then Fail(26,'Comparaison de types incompatibles');
-  If Not CompatibleTypes(LeftType,ExprType) Then Fail(26,'Identites de types incompatibles');
+  If Not CompatibleTypes(LeftType,ExprType) Then Fail(26,
+    'Identites de types incompatibles');
   Jcc:=$74;
   Case Op Of
    tkEqual:Jcc:=$74; tkNE:Jcc:=$75; tkGreater:Jcc:=$7F;
@@ -4265,32 +7430,42 @@ Begin
   End;
   If T=ttSet Then Begin
    SetComparison(LeftType,ExprType,Op);
-   ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=ttBoolean; Exit;
+   ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=ttBoolean;
+     Exit;
   End Else If T=ttString Then Begin
    Emit2($89,$C7); Emit2($8E,$C2); Emit($5E); Emit($5A);
-   Emit($1E); Emit2($8E,$DA); CallTo(RuntimeStandard[13]); Emit($1F); Emit2($09,$C0);
+   Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[13])); Emit($1F);
+     Emit2($09,$C0);
   End Else If T=ttPointer Then Begin
    If Op In [tkEqual,tkNE] Then Begin
-    Emit2($89,$C3); Emit($58); Emit($59); Emit2($31,$D8); Emit2($31,$D1); Emit2($09,$C8);
+    Emit2($89,$C3); Emit($58); Emit($59); Emit2($31,$D8); Emit2($31,$D1);
+      Emit2($09,$C8);
    End Else Begin
     { $X+: ordre de deux PChar, compare sur l'offset (non signe). }
-    If Not (IsCharPointer(LeftType) And ExtendedSyntax) Then Fail(26,'Comparaison ordonnee de pointeurs');
+    If Not (IsCharPointer(LeftType) And ExtendedSyntax) Then Fail(26,
+      'Comparaison ordonnee de pointeurs');
     Emit2($89,$C3); Emit($58); Emit($59); Emit2($39,$D8);
-    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76 End;
+    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73;
+      tkLE:Jcc:=$76 End;
    End;
   End Else Begin
-   WideRight:=(R=ttInteger) And (Types[ExprType].Width=4); Wide:=WideLeft Or WideRight;
+   WideRight:=(R=ttInteger) And (Types[ExprType].Width=4);
+     Wide:=WideLeft Or WideRight;
    { Word compare a Integer (signes differents): comparaison 32 bits comme TP,
      sauf avec une constante positive ou la comparaison non signee suffit. }
    If (T=ttInteger) And (R=ttInteger) And (LeftUnsigned<>ExprUnsigned) And
-      Not (LeftUnsigned And ExprKnown And (ExprValue>=0) And (ExprValue<=65535)) Then Wide:=True;
+      Not (LeftUnsigned And ExprKnown And (ExprValue>=0) And (ExprValue<=65535))
+        Then Wide:=True;
    If Wide Then Begin
-    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
+    If Not WideRight Then Begin If ExprUnsigned Then Emit2($31,
+      $D2) Else Emit($99) End;
     Emit2($89,$C3); Emit2($89,$D1); Emit($58);
-    If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,$D2) Else Emit($99);
-    Emit2($39,$CA); Emit2($74,3); H:=Jump;
+    If WideLeft Then Emit($5A) Else If LeftUnsigned Then Emit2($31,
+      $D2) Else Emit($99);
+    Emit2($39,$CA); H:=JumpIf($74);
     Emit2($39,$D8);
-    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76 End;
+    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73;
+      tkLE:Jcc:=$76 End;
     Emit2(Jcc Xor 1,3); P:=Jump; Q:=Jump;
     PatchJump(H,CodeSize);
     HighJcc:=$74;
@@ -4298,15 +7473,29 @@ Begin
      tkGreater,tkGE:HighJcc:=$7F; tkLess,tkLE:HighJcc:=$7C End;
     Emit2(HighJcc Xor 1,3); H:=Jump;
     PatchJump(Q,CodeSize); Emit2($31,$C0); Q:=Jump;
-    PatchJump(P,CodeSize); PatchJump(H,CodeSize); LoadImmediate(1); PatchJump(Q,CodeSize);
-    T:=ttBoolean; ExprType:=5; ExprUnsigned:=False; ExprKnown:=False; Expression:=T; Exit;
+    PatchJump(P,CodeSize); PatchJump(H,CodeSize); LoadImmediate(1); PatchJump(Q,
+      CodeSize);
+    T:=ttBoolean; ExprType:=5; ExprUnsigned:=False; ExprKnown:=False;
+      Expression:=T; Exit;
    End;
    If TailConst(CV) Then Begin Emit($3D); EmitWord(CV) End
+   Else If (T=ttInteger) And (R=ttInteger) And (Types[LeftType].Width=2) And
+     (Types[ExprType].Width=2) And
+           RightLocalWord(PushPos,MD) Then Begin Emit($3B); EmitBP(0,
+             SmallInt(MD)) End
+   Else If (T In [ttChar,ttBoolean,
+     ttEnum]) And (Types[LeftType].Width=1) And (Types[ExprType].Width=1) And
+           RightLocalByte(PushPos,MD) Then Begin Emit($3A); EmitBP(0,
+             SmallInt(MD)) End
    Else Begin Emit2($89,$C3); Emit($58); Emit2($39,$D8) End;
-   If (T In [ttChar,ttBoolean,ttEnum]) Or (LeftUnsigned And (ExprUnsigned Or (ExprKnown And (ExprValue>=0)))) Then
-    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73; tkLE:Jcc:=$76 End;
+   If (T In [ttChar,ttBoolean,
+     ttEnum]) Or (LeftUnsigned And (ExprUnsigned Or (ExprKnown And
+       (ExprValue>=0)))) Then
+    Case Op Of tkGreater:Jcc:=$77; tkLess:Jcc:=$72; tkGE:Jcc:=$73;
+      tkLE:Jcc:=$76 End;
   End;
-  LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize; CondJcc:=Jcc;
+  LoadImmediate(1); Emit2(Jcc,$02); Emit2($31,$C0); CondTail:=CodeSize;
+    CondJcc:=Jcc;
   T:=ttBoolean; ExprType:=5; ExprUnsigned:=False; ExprKnown:=False;
  End;
  Expression:=T;
@@ -4318,15 +7507,17 @@ Procedure OverflowCheck(Unsigned: Boolean);
 Var Bad,Done: Word;
 Begin
  If OptionBits And $8000=0 Then Exit;
- If Unsigned Then Emit2($73,3) Else Emit2($71,3);
- Bad:=Jump; Done:=Jump;
- PatchJump(Bad,CodeSize); LoadImmediate(215); CallTo(RuntimeError); PatchJump(Done,CodeSize);
+ If Unsigned Then Bad:=JumpIf($73) Else Bad:=JumpIf($71);
+ Done:=Jump;
+ PatchJump(Bad,CodeSize); LoadImmediate(215); CallTo(RtlTarget(RuntimeError));
+   PatchJump(Done,CodeSize);
 End;
 
 Procedure StackRoom(Needed: Word);
 Begin
  If OptionBits And 4=0 Then Exit;
- CallTo(RuntimeStandard[72]); EmitWord(Needed); { call StackCheck; dw besoin }
+ CallTo(RtlTarget(RuntimeStandard[72])); EmitWord(Needed); { call StackCheck;
+   dw besoin }
 End;
 
 Function NativeCall(I: Word): Byte;
@@ -4337,7 +7528,8 @@ Var
 Begin
  NeedNative(Symbols[I].Owner);
  StackRoom(320);
- Emit($1E); Emit($06); Emit($55); { saves BELOW arguments, not between args and return }
+ Emit($1E); Emit($06); Emit($55); { saves BELOW arguments,
+   not between args and return }
  If Symbols[I].ParamCount<>0 Then Begin
   Need(tkLP);
   For J:=1 To Symbols[I].ParamCount Do Begin
@@ -4350,17 +7542,20 @@ Begin
     PushVariableAddress(V);
     If (Types[ExprType].Typ<>Symbols[I].ParamTypes[J]) Or
     (Types[ExprType].Width<>Symbols[I].ParamWidths[J]) Or
-    ((Types[ExprType].Signed And (Types[ExprType].Width=1))<>Symbols[I].ParamSigned[J]) Then Fail(26,
+    ((Types[ExprType].Signed And
+      (Types[ExprType].Width=1))<>Symbols[I].ParamSigned[J]) Then Fail(26,
     'Type du parametre var');
     If (Symbols[I].ParamTypes[J]=ttString) And
-       ((Types[ExprType].Capacity<>Types[ParamType].Capacity) And (OptionBits And $10<>0) And
+       ((Types[ExprType].Capacity<>Types[ParamType].Capacity) And (OptionBits
+         And $10<>0) And
         (OptionBits And $4000=0)) Then
       Fail(100,'Longueur de chaine du parametre var');
    End Else
    Begin
     T:=Expression;
     If Symbols[I].ParamTypes[J]=ttString Then Begin
-     If Not (T In [ttString,ttChar]) Then Fail(26,'Chaine pour parametre natif attendue');
+     If Not (T In [ttString,ttChar]) Then Fail(26,
+       'Chaine pour parametre natif attendue');
      If T=ttChar Then Begin
       A:=AllocData(2); Emit($A2); DataAddress(A+1);
       Emit2($C6,$06); DataAddress(A); Emit(1); Emit($B8); DataAddress(A);
@@ -4370,7 +7565,7 @@ Begin
     End Else Begin
     If T<>Symbols[I].ParamTypes[J] Then Fail(26,'Type du parametre valeur');
     If Symbols[I].ParamWidths[J]=1 Then Begin
-     If Symbols[I].ParamSigned[J] Then Emit($98) Else Emit2($30,$E4);
+     If Symbols[I].ParamSigned[J] Then Emit($98) Else ZeroAH;
     End;
     Emit($50); { TP6 empile les scalaires courts dans un mot }
     End;
@@ -4391,45 +7586,72 @@ Begin
 End;
 
 Function UserCall(I: Word): Byte;
-Var J,V,T,N,A: Word; Kind: Byte; Name: TShortString;
+Var J,V,T,N,A,First: Word; Kind: Byte; Name: TShortString;
 Begin
  StackRoom(Symbols[I].ParamBytes+268);
- Emit($06); { preserve ES: indirect var accesses use LES }
- If Symbols[I].ParamCount<>0 Then Begin
+ If KeepES Then Emit($06); { preserve ES: indirect var accesses use LES }
+ First:=1;
+ If Symbols[I].IsMethod Then Begin
+  { methode : le premier parametre (Self) est deja empile par l'appelant ou,
+    a l'interieur d'une
+    methode, repris du Self courant }
+  First:=2;
+  If SelfPushed Then SelfPushed:=False
+  Else Begin
+   V:=FindLexicalSymbol('SELF');
+   If V=0 Then Fail(3,'Methode appelee sans objet : '+Symbols[I].Name);
+   PushVariableAddress(V);
+  End;
+ End;
+ If Symbols[I].ParamCount>=First Then Begin
   Need(tkLP);
-  For J:=1 To Symbols[I].ParamCount Do Begin
-   If J<>1 Then Need(tkComma);
+  For J:=First To Symbols[I].ParamCount Do Begin
+   If J<>First Then Need(tkComma);
    T:=Symbols[I].ParamTypeIds[J];
    If Symbols[I].ParamFlags[J]=7 Then Begin
     { Tableau ouvert: adresse du tableau puis High, reordonnes sur la pile. }
-    If (Token=tkConstant) And TokenIsString And (TypeExtras[T].ElementType=6) Then Begin
+    If (Token=tkConstant) And TokenIsString And (TypeExtras[T].ElementType=6)
+      Then Begin
      { constante chaine pour un "array of Char" ouvert (TP 7) }
-     A:=StoreString(TokenText); N:=Length(TokenText); NextToken;
+     A:=LiteralString(TokenText); N:=Length(TokenText); NextToken;
      Emit($1E); Emit($B8); DataAddress(A+1); Emit($50); LoadImmediate(N-1);
      Emit($5F); Emit($5B); Emit($50); Emit($53); Emit($57);
     End Else Begin
     If Token<>tkIdent Then Fail(20,'Variable pour parametre var attendue');
     Name:=TokenText; NextToken; V:=ResolveSymbol(Name);
     PushVariableAddress(V); A:=ExprType;
-    If (Types[A].Typ<>ttArray) Or Not CompatibleTypes(TypeExtras[A].ElementType,TypeExtras[T].ElementType) Then
+    If (Types[A].Typ<>ttArray) Or Not CompatibleTypes(TypeExtras[A].ElementType,
+      TypeExtras[T].ElementType) Then
      Fail(26,'Tableau attendu');
     If TypeExtras[A].FieldCount=$FFFF Then Begin
-     ScopeAddress(Symbols[V].Scope); Emit($36); Emit2($8B,$87); EmitWord(Symbols[V].Addr+4);
-    End Else LoadImmediate(Word(Types[TypeExtras[A].IndexType].HighBound-Types[TypeExtras[A].IndexType].LowBound));
+     ScopeAddress(Symbols[V].Scope); Emit($36); Emit2($8B,$87);
+       EmitWord(Symbols[V].Addr+4);
+    End Else
+      LoadImmediate(Word(Types[TypeExtras[A].IndexType].HighBound-
+        Types[TypeExtras[A].IndexType].LowBound));
     Emit($5F); Emit($5B); Emit($50); Emit($53); Emit($57); { High, seg, ofs }
     End;
    End Else
    If Symbols[I].ParamFlags[J]=6 Then Begin
     If Token<>tkIdent Then Fail(20,'Variable pour parametre var attendue');
-    If IsMemPort(TokenText) And (TokenText[1]='M') And (FindLexicalSymbol(TokenText)=0) Then Begin
+    If IsMemPort(TokenText) And (TokenText[1]='M') And
+      (FindLexicalSymbol(TokenText)=0) Then Begin
+     ExprType:=VariableArgument; Emit($06); Emit($57);
+    End Else If ((FindLexicalSymbol(TokenText)<>0) And
+      (Symbols[FindLexicalSymbol(TokenText)].Kind=skType)) Or
+                ((FindLexicalSymbol(TokenText)=0) And
+                  (BuiltinType(TokenText)<>0)) Then Begin
+     { Type(Variable) ou TPtr(expression)^ passe en parametre var }
      ExprType:=VariableArgument; Emit($06); Emit($57);
     End Else Begin
     Name:=TokenText; NextToken; V:=ResolveSymbol(Name);
     PushVariableAddress(V);
     End;
-    { V- ou P+ (OpenString): une chaine de toute longueur declaree est acceptee. }
+    { V- ou P+ (OpenString): une chaine de toute longueur declaree est acceptee.
+      }
     If (T<>0) And (ExprType<>T) And
-       Not ((Types[T].Typ In [ttFile,ttText]) And CompatibleTypes(T,ExprType)) And
+       Not ((Types[T].Typ In [ttFile,ttText]) And CompatibleTypes(T,
+         ExprType)) And
        Not ((Types[T].Typ=ttString) And (Types[ExprType].Typ=ttString) And
             ((OptionBits And $10=0) Or (OptionBits And $4000<>0) Or
              (Types[T].Capacity=Types[ExprType].Capacity))) Then
@@ -4438,18 +7660,23 @@ Begin
     Kind:=Expression;
     If IsCharPointer(T) And ExtendedSyntax Then Begin
      If ExprLiteral Then Begin LiteralToPChar; Kind:=ttPointer End
-     Else If (Kind=ttArray) And IsCharArray(ExprType) Then Begin Kind:=ttPointer; ExprType:=12 End;
+     Else If (Kind=ttArray) And IsCharArray(ExprType) Then Begin
+       Kind:=ttPointer; ExprType:=12 End;
     End;
-    If (Types[T].Typ=ttString) And (Kind=ttChar) Then Begin StringFromChar; Kind:=ttString; ExprType:=7; ExprKnown:=False End;
-    If (Types[T].Typ=ttReal) And (Kind=ttInteger) Then Begin ToReal(ExprType); ExprType:=11; Kind:=ttReal End;
-    If (Kind<>Types[T].Typ) Or Not CompatibleTypes(T,ExprType) Then Fail(26,'Type du parametre valeur');
+    If (Types[T].Typ=ttString) And (Kind=ttChar) Then Begin StringFromChar;
+      Kind:=ttString; ExprType:=7; ExprKnown:=False End;
+    If (Types[T].Typ=ttReal) And (Kind=ttInteger) Then Begin ToReal(ExprType);
+      ExprType:=11; Kind:=ttReal End;
+    If (Kind<>Types[T].Typ) Or Not CompatibleTypes(T,ExprType) Then Fail(26,
+      'Type du parametre valeur');
     If ExprKnown And (Types[T].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) And
        ((ExprValue<Types[T].LowBound) Or (ExprValue>Types[T].HighBound)) Then
       Fail(76,'Parametre constant hors limites');
-    If (OptionBits And 2<>0) And (Types[T].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then
+    If (OptionBits And 2<>0) And (Types[T].Typ In [ttInteger,ttChar,ttBoolean,
+      ttEnum]) Then
      RangeBounds(Types[T].LowBound,Types[T].HighBound,ExprType);
     If Types[T].Width=1 Then Begin
-     If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
+     If Types[T].Signed Then Emit($98) Else ZeroAH;
     End;
     If (Types[T].Width=4) And (Types[ExprType].Width<>4) Then Begin
      If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
@@ -4461,22 +7688,58 @@ Begin
     If Types[T].Typ In [ttArray,ttRecord,ttSet,ttString,ttReal] Then Begin
      N:=(TypeExtras[T].Size+1) And $FFFE;
      If N<2 Then N:=2;
-     { copie sur la pile par le runtime: call StringArg/BlockArg; dw N; dw capacite|taille }
-     If Types[T].Typ=ttString Then Begin CallTo(RuntimeStandard[79]); EmitWord(N); EmitWord(Types[T].Capacity) End
-     Else Begin CallTo(RuntimeStandard[80]); EmitWord(N); EmitWord(TypeExtras[T].Size) End;
+     { copie sur la pile par le runtime: call StringArg/BlockArg; dw N;
+       dw capacite|taille }
+     If (Types[T].Typ=ttString) And (Types[T].Capacity=255) Then
+       CallTo(RtlTarget(RuntimeStandard[82]))
+     Else If Types[T].Typ=ttString Then Begin
+       CallTo(RtlTarget(RuntimeStandard[79])); EmitWord(N);
+         EmitWord(Types[T].Capacity) End
+     Else Begin CallTo(RtlTarget(RuntimeStandard[80])); EmitWord(N);
+       EmitWord(TypeExtras[T].Size) End;
     End Else Begin
-     If Types[T].Width=4 Then Emit($52); Emit($50);
+     { variable de la frame : push [bp+d] directement }
+     If (LastJumpTarget<>CodeSize) And (Types[T].Width=2) And (CodeSize>=3) And
+       (Image[CodeSize-3]=$8B) And (Image[CodeSize-2]=$46) Then Begin
+      Image[CodeSize-3]:=$FF; Image[CodeSize-2]:=$76;
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=2) And
+       (CodeSize>=4) And (Image[CodeSize-4]=$8B) And (Image[CodeSize-3]=$86)
+         Then Begin
+      Image[CodeSize-4]:=$FF; Image[CodeSize-3]:=$B6;
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=4) And
+       (CodeSize>=6) And (Image[CodeSize-6]=$8B) And (Image[CodeSize-5]=$46) And
+        (Image[CodeSize-3]=$8B) And (Image[CodeSize-2]=$56) And
+          (Image[CodeSize-1]=Byte(Image[CodeSize-4]+2)) Then Begin
+      { mov ax,[bp+d]; mov dx,[bp+d+2]  ->  push [bp+d+2]; push [bp+d] }
+      V:=Image[CodeSize-4]; CodeSize:=CodeSize-6;
+      Emit2($FF,$76); Emit(Byte(V+2)); Emit2($FF,$76); Emit(Byte(V));
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=1) And Not
+       Symbols[I].AssemblerBody And (CodeSize>=5) And
+        (Image[CodeSize-5]=$8A) And (Image[CodeSize-4]=$46) And
+          (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) Then Begin
+      Image[CodeSize-5]:=$FF; Image[CodeSize-4]:=$76; Dec(CodeSize,2);
+        { push [bp+d] : l'octet de poids fort est ignore }
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=1) And Not
+       Symbols[I].AssemblerBody And (CodeSize>=4) And
+        (Image[CodeSize-4]=$8A) And (Image[CodeSize-3]=$46) And
+          (Image[CodeSize-1]=$98) Then Begin
+      Image[CodeSize-4]:=$FF; Image[CodeSize-3]:=$76; Dec(CodeSize,1);
+     End Else Begin
+      If Types[T].Width=4 Then Emit($52); Emit($50);
+     End;
     End;
    End;
   End;
   Need(tkRP);
  End Else If Token=tkLP Then Begin NextToken; Need(tkRP) End;
- If Symbols[I].InlineBody Then For J:=1 To Length(Symbols[I].StrValue) Do Emit(Ord(Symbols[I].StrValue[J]))
+ If Symbols[I].InlineBody Then For J:=1 To Length(Symbols[I].StrValue) Do
+   Emit(Ord(Symbols[I].StrValue[J]))
  Else EmitLocalCall(I);
- Emit($07);
+ If KeepES Then Emit($07);
  UserCall:=Symbols[I].Typ;
  ExprType:=SymbolType(I); ExprKnown:=False;
- ExprUnsigned:=(Symbols[I].Typ=ttInteger) And (ExprType<>0) And Not Types[ExprType].Signed;
+ ExprUnsigned:=(Symbols[I].Typ=ttInteger) And (ExprType<>0) And Not
+   Types[ExprType].Signed;
 End;
 
 Function SizeArgument: Word;
@@ -4484,9 +7747,11 @@ Var I,T,C,F,R,N,S: Word; Name: TShortString;
 Begin
  I:=0; If Token=tkIdent Then I:=FindSymbol(TokenText);
  If (I<>0) And (Symbols[I].Kind=skVar) Then Begin
-  C:=CodeSize; F:=FixupCount; R:=RelativeCount; N:=NativeRefCount; S:=RelocationCount;
+  C:=CodeSize; F:=FixupCount; R:=RelativeCount; N:=NativeRefCount;
+    S:=RelocationCount;
   Name:=TokenText; NextToken; I:=ResolveSymbol(Name); T:=Designator(I);
-  CodeSize:=C; FixupCount:=F; RelativeCount:=R; NativeRefCount:=N; RelocationCount:=S;
+  CodeSize:=C; FixupCount:=F; RelativeCount:=R; NativeRefCount:=N;
+    RelocationCount:=S;
  End Else T:=ReadType;
  SizeArgument:=T;
 End;
@@ -4498,14 +7763,25 @@ Begin
  Name:=TokenText; NextToken; J:=FindLexicalSymbol(Name);
  If (J=0) And (Token=tkLB) And IsMemPort(Name) And (Name[1]='M') Then Begin
   MemPortIndex(Name);
-  If Name='MEM' Then VariableArgument:=2 Else If Name='MEMW' Then VariableArgument:=3 Else VariableArgument:=9;
+  If Name='MEM' Then VariableArgument:=2 Else If Name='MEMW' Then
+    VariableArgument:=3 Else VariableArgument:=9;
   Exit;
  End;
  T:=0;
- If (J<>0) And (Symbols[J].Kind=skType) Then T:=Symbols[J].TypeId Else If J=0 Then T:=BuiltinType(Name);
+ If (J<>0) And (Symbols[J].Kind=skType) Then T:=Symbols[J].TypeId Else If J=0
+   Then T:=BuiltinType(Name);
  If (T<>0) And (Token=tkLP) Then Begin
   { Transtypage d'une variable: Word(X) designe X vu comme un Word. }
-  NextToken; I:=VariableArgument; Need(tkRP); VariableArgument:=T; Exit;
+  NextToken;
+  If Types[T].Typ=ttPointer Then Begin
+   { TPtr(expression)^... : la valeur du pointeur donne l'adresse de la variable
+     }
+   I:=Expression; Need(tkRP);
+   If Token<>tkCaret Then Fail(61,'Transtypage de variable invalide');
+   NextToken; Emit2($8E,$C2); Emit2($89,$C7);
+   VariableArgument:=DesignatorTail(TypeExtras[T].ElementType); Exit;
+  End;
+  I:=VariableArgument; Need(tkRP); VariableArgument:=T; Exit;
  End;
  I:=ResolveSymbol(Name); VariableArgument:=Designator(I);
 End;
@@ -4515,8 +7791,10 @@ Procedure LiteralToPChar;
   DX:AX d'une copie a zero terminal (syntaxe etendue $X+). }
 Var Z: Word; K: Integer;
 Begin
- CodeSize:=LiteralMarkCode; FixupCount:=LiteralMarkFixup; RelativeCount:=LiteralMarkRelative;
- NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc; DataSize:=LiteralMarkData;
+ CodeSize:=LiteralMarkCode; FixupCount:=LiteralMarkFixup;
+   RelativeCount:=LiteralMarkRelative;
+ NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc;
+   DataSize:=LiteralMarkData; TrimLiterals(DataSize);
  Z:=AllocData(Length(ExprLiteralText)+1);
  For K:=1 To Length(ExprLiteralText) Do Data[Z+K-1]:=Ord(ExprLiteralText[K]);
  Data[Z+Length(ExprLiteralText)]:=0;
@@ -4528,13 +7806,18 @@ Procedure WriteZString;
 { DX:AX = PChar; ecrit les caracteres jusqu'au zero terminal via RuntimeChar. }
 Var LoopStart,Done: Word;
 Begin
- Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);        { push ds; mov ds,dx; mov si,ax }
+ Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);        { push ds; mov ds,dx;
+   mov si,ax }
  LoopStart:=CodeSize;
- Emit($AC); Emit2($08,$C0); Emit2($75,3); Done:=Jump; { lodsb; or al,al; jnz suite; jmp fin }
- Emit2($30,$E4); Emit($1E); Emit($56);                { xor ah,ah; push ds; push si }
- Emit2($8B,$DC); Emit($36); Emit2($8E,$5F); Emit(4);  { mov bx,sp; mov ds,ss:[bx+4] }
- CallTo(RuntimeChar);
- Emit($5E); Emit($1F); JumpTo(LoopStart);             { pop si; pop ds; jmp boucle }
+ Emit($AC); Emit2($08,$C0); Done:=JumpIf($75); { lodsb; or al,al; jnz suite;
+   jmp fin }
+ Emit2($30,$E4); Emit($1E); Emit($56);                { xor ah,ah; push ds;
+   push si }
+ Emit2($8B,$DC); Emit($36); Emit2($8E,$5F); Emit(4);  { mov bx,sp;
+   mov ds,ss:[bx+4] }
+ CallTo(RtlTarget(RuntimeChar));
+ Emit($5E); Emit($1F); JumpTo(LoopStart);             { pop si; pop ds;
+   jmp boucle }
  PatchJump(Done,CodeSize); Emit($1F);                 { pop ds }
 End;
 
@@ -4550,8 +7833,10 @@ Procedure StringExpression;
 Var T: Byte;
 Begin
  T:=Expression;
- If (T=ttArray) And IsAnyCharArray(ExprType) Then Begin CharArrayToString(ExprType); T:=ttString End;
- If T=ttChar Then StringFromChar Else If T<>ttString Then Fail(67,'Chaine attendue');
+ If (T=ttArray) And IsAnyCharArray(ExprType) Then Begin
+   CharArrayToString(ExprType); T:=ttString End;
+ If T=ttChar Then StringFromChar Else If T<>ttString Then Fail(67,
+   'Chaine attendue');
 End;
 
 Function SetConstructor: Word;
@@ -4564,22 +7849,28 @@ Begin
  Need(tkLB);
  While Token<>tkRB Do Begin
   Kind:=Expression;
-  If Not (Kind In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(27,'Element set non ordinal');
+  If Not (Kind In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(27,
+    'Element set non ordinal');
   FirstType:=ExprType;
   If First Then Begin
    If Kind<>ttInteger Then TypeExtras[T].ElementType:=FirstType;
    First:=False;
   End;
-  If Not CompatibleTypes(TypeExtras[T].ElementType,FirstType) Then Fail(26,'Elements set incompatibles');
-  If ExprKnown And ((ExprValue<0) Or (ExprValue>255)) Then Fail(76,'Element set hors 0..255');
+  If Not CompatibleTypes(TypeExtras[T].ElementType,FirstType) Then Fail(26,
+    'Elements set incompatibles');
+  If ExprKnown And ((ExprValue<0) Or (ExprValue>255)) Then Fail(76,
+    'Element set hors 0..255');
   Emit($50);
   If Token=tkRange Then Begin
    NextToken; Kind:=Expression;
-   If Not CompatibleTypes(FirstType,ExprType) Then Fail(26,'Bornes set incompatibles');
-   If ExprKnown And ((ExprValue<0) Or (ExprValue>255)) Then Fail(76,'Borne set hors 0..255');
+   If Not CompatibleTypes(FirstType,ExprType) Then Fail(26,
+     'Bornes set incompatibles');
+   If ExprKnown And ((ExprValue<0) Or (ExprValue>255)) Then Fail(76,
+     'Borne set hors 0..255');
    Emit2($89,$C3); Emit($58);
   End Else Begin Emit($58); Emit2($89,$C3) End;
-  Emit($1E); Emit($07); Emit($BF); DataAddress(A); CallTo(RuntimeStandard[7]);
+  Emit($1E); Emit($07); Emit($BF); DataAddress(A);
+    CallTo(RtlTarget(RuntimeStandard[7]));
   If Token<>tkComma Then Break; NextToken;
  End;
  Need(tkRB); If First Then TypeExtras[T].ElementType:=0;
@@ -4587,10 +7878,12 @@ Begin
  SetConstructor:=T;
 End;
 
-Procedure TrimSet(T,A: Word); { masquer les bits hors bornes dans le bitmap CS:A }
+Procedure TrimSet(T,A: Word);
+  { masquer les bits hors bornes dans le bitmap CS:A }
 Var First,Last: Byte;
 Begin
- First:=Byte($FF Shl (Types[T].LowBound Mod 8)); Last:=$FF Shr (7-Types[T].HighBound Mod 8);
+ First:=Byte($FF Shl (Types[T].LowBound Mod 8));
+   Last:=$FF Shr (7-Types[T].HighBound Mod 8);
  If Types[T].LowBound Div 8=Types[T].HighBound Div 8 Then Begin
   Emit2($80,$26); DataAddress(A+Types[T].LowBound Div 8); Emit(First And Last);
  End Else Begin
@@ -4599,7 +7892,8 @@ Begin
  End;
 End;
 
-Procedure NormalizeSet(T,A: Word); { source DX:AX, destination universelle CS:A }
+Procedure NormalizeSet(T,A: Word); { source DX:AX,
+  destination universelle CS:A }
 Begin
  Emit($52); Emit($50); Emit($1E); Emit($07); Emit($BF); DataAddress(A);
  Emit2($31,$C0); Emit($B9); EmitWord(32); Emit2($F3,$AA);
@@ -4612,7 +7906,8 @@ End;
 Function SetBinary(LeftType,RightType: Word; Op: Byte): Word;
 Var A,B,T,LoopStart: Word;
 Begin
- If Not CompatibleTypes(LeftType,RightType) Then Fail(26,'Operations set incompatibles');
+ If Not CompatibleTypes(LeftType,RightType) Then Fail(26,
+   'Operations set incompatibles');
  A:=AllocData(32); B:=AllocData(32); NormalizeSet(RightType,B);
  Emit($58); Emit($5A); NormalizeSet(LeftType,A);
  Emit($BE); DataAddress(B); Emit($BF); DataAddress(A); Emit($B9); EmitWord(32);
@@ -4623,7 +7918,8 @@ Begin
  Emit($47); Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1));
  T:=NewType(ttSet,0,0,False,0,255,0); TypeExtras[T].Size:=32;
  TypeExtras[T].ElementType:=TypeExtras[LeftType].ElementType;
- If TypeExtras[T].ElementType=0 Then TypeExtras[T].ElementType:=TypeExtras[RightType].ElementType;
+ If TypeExtras[T].ElementType=0 Then
+   TypeExtras[T].ElementType:=TypeExtras[RightType].ElementType;
  Emit($B8); DataAddress(A); Emit2($8C,$DA); SetBinary:=T;
 End;
 
@@ -4636,12 +7932,17 @@ Begin
  N:=TypeExtras[T].Size; If N>255 Then N:=255;
  Z:=ExtendedSyntax And (Types[TypeExtras[T].IndexType].LowBound=0);
  A:=TempAlloc(256); L:=TempLocal;
- Emit($1E); Emit2($89,$C6); Emit2($8E,$DA); TempPointerDI(A,L);   { push ds; mov si,ax; mov ds,dx; ES:DI temp }
- Emit($B9); EmitWord(N); Emit2($89,$FB); Emit($47);                 { mov cx,N; mov bx,di; inc di }
+ Emit($1E); Emit2($89,$C6); Emit2($8E,$DA); TempPointerDI(A,L);   { push ds;
+   mov si,ax; mov ds,dx; ES:DI temp }
+ Emit($B9); EmitWord(N); Emit2($89,$FB); Emit($47);                 { mov cx,N;
+   mov bx,di; inc di }
  Emit($AC);                                                        { lodsb }
- If Z Then Begin Emit2($08,$C0); Emit2($74,3); Emit($AA); Emit2($E2,$F8) End   { or al,al; jz fin; stosb; loop }
- Else Begin Emit($AA); Emit2($E2,$FC) End;                         { stosb; loop }
- Emit2($89,$F8); Emit2($29,$D8); Emit($48); Emit($26); Emit2($88,$07); Emit($1F); { longueur := di-bx-1 }
+ If Z Then Begin Emit2($08,$C0); Emit2($74,3); Emit($AA); Emit2($E2,
+   $F8) End   { or al,al; jz fin; stosb; loop }
+ Else Begin Emit($AA); Emit2($E2,$FC) End;                         { stosb;
+   loop }
+ Emit2($89,$F8); Emit2($29,$D8); Emit($48); Emit($26); Emit2($88,$07);
+   Emit($1F); { longueur := di-bx-1 }
  TempPointerAX(A,L); ExprType:=7; ExprKnown:=False; ExprLiteral:=False;
 End;
 
@@ -4654,22 +7955,30 @@ Begin
  If LeftIsTemp Then Begin A:=LastTempAddr; L:=LastTempLocal End
  Else Begin
   A:=TempAlloc(256); L:=TempLocal;
-  Emit($52); Emit($50);                                            { sauver droite }
-  Emit2($89,$E3); Emit($36); Emit2($8B,$77); Emit(4); Emit($36); Emit2($8B,$57); Emit(6);
-  Emit($1E); Emit2($8E,$DA); TempPointerDI(A,L);                    { DS:SI gauche, ES:DI temp }
-  LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB); EmitWord(255); CallTo(RuntimeStandard[1]); Emit($1F);
-  Emit($58); Emit($5A);                                            { droite -> DX:AX }
+  Emit($52); Emit($50);
+    { sauver droite }
+  Emit2($89,$E3); Emit($36); Emit2($8B,$77); Emit(4); Emit($36); Emit2($8B,$57);
+    Emit(6);
+  Emit($1E); Emit2($8E,$DA); TempPointerDI(A,L);
+    { DS:SI gauche, ES:DI temp }
+  LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB); EmitWord(255);
+    CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
+  Emit($58); Emit($5A);
+    { droite -> DX:AX }
  End;
- Emit2($89,$C6); Emit($1E); Emit2($8E,$DA); TempPointerDI(A,L);     { ajouter DS:SI a ES:DI }
- Emit($BB); EmitWord(255); CallTo(RuntimeStandard[3]); Emit($1F);
- Emit2($83,$C4); Emit(4);                                          { depiler la gauche }
+ Emit2($89,$C6); Emit($1E); Emit2($8E,$DA); TempPointerDI(A,L);
+   { ajouter DS:SI a ES:DI }
+ Emit($BB); EmitWord(255); CallTo(RtlTarget(RuntimeStandard[3])); Emit($1F);
+ Emit2($83,$C4); Emit(4);
+   { depiler la gauche }
  TempPointerAX(A,L); LastTempAddr:=A; LastTempLocal:=L; StringBinary:=7;
 End;
 
 Procedure SetComparison(LeftType,RightType: Word; Op: Byte);
 Var A,B,P,Q,LoopStart: Word;
 Begin
- If Not (Op In [tkEqual,tkNE,tkLE,tkGE]) Then Fail(26,'Comparaison ordonnee set');
+ If Not (Op In [tkEqual,tkNE,tkLE,tkGE]) Then Fail(26,
+   'Comparaison ordonnee set');
  A:=AllocData(32); B:=AllocData(32); NormalizeSet(RightType,B);
  Emit($58); Emit($5A); NormalizeSet(LeftType,A);
  Emit($BE); DataAddress(A); Emit($BF); DataAddress(B); Emit($B9); EmitWord(32);
@@ -4677,11 +7986,14 @@ Begin
   Emit2($F3,$A6); LoadImmediate(1);
   If Op=tkEqual Then Emit2($74,2) Else Emit2($75,2); Emit2($31,$C0);
  End Else Begin
-  If Op=tkGE Then Begin Emit($BE); DataAddress(B); Emit($BF); DataAddress(A) End;
-  LoopStart:=CodeSize; Emit($26); Emit2($8A,$05); Emit2($F6,$D0); Emit2($22,$04);
-  Emit2($09,$C0); Emit2($74,3); P:=Jump;
+  If Op=tkGE Then Begin Emit($BE); DataAddress(B); Emit($BF);
+    DataAddress(A) End;
+  LoopStart:=CodeSize; Emit($26); Emit2($8A,$05); Emit2($F6,$D0); Emit2($22,
+    $04);
+  Emit2($09,$C0); P:=JumpIf($74);
   Emit($46); Emit($47); Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1));
-  LoadImmediate(1); Q:=Jump; PatchJump(P,CodeSize); Emit2($31,$C0); PatchJump(Q,CodeSize);
+  LoadImmediate(1); Q:=Jump; PatchJump(P,CodeSize); Emit2($31,$C0); PatchJump(Q,
+    CodeSize);
  End;
 End;
 
@@ -4690,103 +8002,126 @@ Procedure RandomWord;
 Var P,Q: Word;
 Begin
   Emit($A1); DataAddress(RandomSeed); Emit2($8B,$16); DataAddress(RandomSeed+2);
-  Emit($BB); EmitWord($660D); Emit($B9); EmitWord($19); CallTo(RuntimeStandard[14]);
+  Emit($BB); EmitWord($660D); Emit($B9); EmitWord($19);
+    CallTo(RtlTarget(RuntimeStandard[14]));
   Emit($05); EmitWord($F35F); Emit2($81,$D2); EmitWord($3C6E);
-  Emit($A3); DataAddress(RandomSeed); Emit2($89,$16); DataAddress(RandomSeed+2); Emit($5B);
-  Emit2($09,$DB); Emit2($75,3); P:=Jump;
+  Emit($A3); DataAddress(RandomSeed); Emit2($89,$16); DataAddress(RandomSeed+2);
+    Emit($5B);
+  Emit2($09,$DB); P:=JumpIf($75);
   Emit($50); Emit2($89,$D0); Emit2($31,$D2); Emit2($F7,$F3); Emit($58);
   Emit2($F7,$F3); Emit2($89,$D0); Q:=Jump;
   PatchJump(P,CodeSize); Emit2($31,$C0); PatchJump(Q,CodeSize);
 End;
 
 Function StandardFunction(Name: TShortString): Word;
-Var T,A,P,Q: Word; ScopedInput,Lcl: Boolean;
+Var T,A,P,Q,P2: Word; ScopedInput,Lcl: Boolean;
 Begin
- If (Name='SQRT') Or (Name='SIN') Or (Name='COS') Or (Name='ARCTAN') Or (Name='LN') Or (Name='EXP') Then Begin
+ If (Name='SQRT') Or (Name='SIN') Or (Name='COS') Or (Name='ARCTAN') Or
+   (Name='LN') Or (Name='EXP') Then Begin
   Need(tkLP); T:=Expression; Need(tkRP); ToReal(ExprType);
-  A:=10; If Name='SIN' Then A:=11 Else If Name='COS' Then A:=12 Else If Name='ARCTAN' Then A:=13 Else If Name='LN' Then A:=14 Else If Name='EXP' Then A:=15;
+  A:=10;
+    If Name='SIN' Then A:=11 Else If Name='COS' Then A:=12 Else If Name='ARCTAN'
+      Then A:=13 Else If Name='LN' Then A:=14 Else If Name='EXP' Then A:=15;
   RealUnary(A); StandardFunction:=11; Exit;
  End;
  If (Name='TRUNC') Or (Name='ROUND') Or (Name='INT') Or (Name='FRAC') Then Begin
   Need(tkLP); T:=Expression; Need(tkRP); ToReal(ExprType);
   If (Name='INT') Or (Name='FRAC') Then Begin
-   If Name='INT' Then RealUnary(8) Else RealUnary(9); StandardFunction:=11; Exit;
+   If Name='INT' Then RealUnary(8) Else RealUnary(9); StandardFunction:=11;
+     Exit;
   End;
-  Emit($06); Emit($52); Emit($50); LoadImmediate(Ord(Name='ROUND')); Emit($50); RealCall('RTRUNC'); Emit($07);
+  Emit($06); Emit($52); Emit($50); LoadImmediate(Ord(Name='ROUND')); Emit($50);
+    RealCall('RTRUNC'); Emit($07);
   StandardFunction:=9; Exit;
  End;
 
  StandardFunction:=0;
  If Name='PARAMCOUNT' Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
-  CallTo(RuntimeStandard[31]); StandardFunction:=3;
+  CallTo(RtlTarget(RuntimeStandard[31])); StandardFunction:=3;
  End Else If Name='PARAMSTR' Then Begin
   Need(tkLP); RequireInteger(Expression); Need(tkRP);
-  CallTo(RuntimeStandard[32]); StandardFunction:=7;
+  CallTo(RtlTarget(RuntimeStandard[32])); StandardFunction:=7;
  End Else If (Name='FILEPOS') Or (Name='FILESIZE') Then Begin
-  Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'FilePos/Size exige File');
+  Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,
+    'FilePos/Size exige File');
   Need(tkRP); If Name='FILEPOS' Then LoadImmediate(0) Else LoadImmediate(1);
-  CallTo(RuntimeStandard[38]); Emit($52); Emit($50); Emit2($09,$C9); Emit2($75,3); P:=Jump;
-  Emit2($89,$C8); CallTo(RuntimeStandard[24]); PatchJump(P,CodeSize);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]); Emit($58); Emit($5A); StandardFunction:=9;
- End Else If (Name='EOF') Or (Name='EOLN') Or (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
+  CallTo(RtlTarget(RuntimeStandard[38])); Emit($52); Emit($50); Emit2($09,$C9);
+    P:=JumpIf($75);
+  Emit2($89,$C8); CallTo(RtlTarget(RuntimeStandard[24])); PatchJump(P,CodeSize);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25])); Emit($58);
+    Emit($5A); StandardFunction:=9;
+ End Else If (Name='EOF') Or (Name='EOLN') Or (Name='SEEKEOF') Or
+   (Name='SEEKEOLN') Then Begin
   ScopedInput:=False;
   If Token=tkLP Then Begin
    NextToken;
    Begin
     T:=VariableArgument;
     If (Types[T].Typ=ttFile) And (Name='EOF') Then Begin
-     Need(tkRP); CallTo(RuntimeStandard[45]);
-     If OptionBits And 1<>0 Then Begin Emit($50); CallTo(RuntimeStandard[25]); Emit($58) End;
+     Need(tkRP); CallTo(RtlTarget(RuntimeStandard[45]));
+     If OptionBits And 1<>0 Then Begin Emit($50);
+       CallTo(RtlTarget(RuntimeStandard[25])); Emit($58) End;
      StandardFunction:=5; Exit;
     End;
     If Types[T].Typ<>ttText Then Fail(26,'Eof/Eoln exige Text');
     Emit2($89,$F8); Emit2($8C,$C2);
-    CallTo(RuntimeStandard[41]); Emit($52); Emit($50); ScopedInput:=True;
+    CallTo(RtlTarget(RuntimeStandard[41])); Emit($52); Emit($50);
+      ScopedInput:=True;
    End;
    Need(tkRP);
   End;
   If Not ScopedInput Then Begin
    Emit($B8); DataAddress(StandardInputAddress); Emit2($8C,$DA);
-   CallTo(RuntimeStandard[41]); Emit($52); Emit($50); ScopedInput:=True;
+   CallTo(RtlTarget(RuntimeStandard[41])); Emit($52); Emit($50);
+     ScopedInput:=True;
   End;
   P:=CodeSize;
-  CallTo(RuntimeStandard[18]);
+  CallTo(RtlTarget(RuntimeStandard[18]));
   If (Name='SEEKEOF') Or (Name='SEEKEOLN') Then Begin
-   Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
-   If Name='SEEKEOF' Then Begin Emit($3D); EmitWord(32); Emit2($76,3); A:=Jump End
+   Emit($3D); EmitWord(26); Q:=JumpIf($75);
+   If Name='SEEKEOF' Then Begin Emit($3D); EmitWord(32); A:=JumpIf($76) End
    Else Begin
-    Emit($3D); EmitWord(32); Emit2($74,8); Emit($3D); EmitWord(9); Emit2($74,3); A:=Jump;
+    Emit($3D); EmitWord(32); P2:=JumpIf($75); Emit($3D); EmitWord(9);
+      A:=JumpIf($74);
+    PatchJump(P2,CodeSize);
    End;
-   CallTo(RuntimeStandard[19]); JumpTo(P); PatchJump(A,CodeSize); PatchJump(Q,CodeSize);
+   CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(P); PatchJump(A,CodeSize);
+     PatchJump(Q,CodeSize);
   End;
   If (Name='EOF') Or (Name='SEEKEOF') Then Begin
    Emit($3D); EmitWord(26); LoadImmediate(1); Emit2($74,2); Emit2($31,$C0);
   End Else Begin
-   Emit($3D); EmitWord(13); Emit2($75,3); P:=Jump;
-   Emit($3D); EmitWord(10); Emit2($75,3); Q:=Jump;
-   Emit($3D); EmitWord(26); LoadImmediate(1); Emit2($74,2); Emit2($31,$C0); A:=Jump;
-   PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(1); PatchJump(A,CodeSize);
+   Emit($3D); EmitWord(13); P:=JumpIf($75);
+   Emit($3D); EmitWord(10); Q:=JumpIf($75);
+   Emit($3D); EmitWord(26); LoadImmediate(1); Emit2($74,2); Emit2($31,$C0);
+     A:=Jump;
+   PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(1); PatchJump(A,
+     CodeSize);
   End;
   If ScopedInput Then Begin
    Emit2($89,$C3); Emit($58); Emit($5A); Emit($53);
-   CallTo(RuntimeStandard[41]); Emit($58);
+   CallTo(RtlTarget(RuntimeStandard[41])); Emit($58);
   End;
-  If OptionBits And 1<>0 Then Begin Emit($50); CallTo(RuntimeStandard[25]); Emit($58) End;
+  If OptionBits And 1<>0 Then Begin Emit($50);
+    CallTo(RtlTarget(RuntimeStandard[25])); Emit($58) End;
   StandardFunction:=5;
  End Else If (Name='MAXAVAIL') Or (Name='MEMAVAIL') Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
   HeapNeeded:=True;
-  If Name='MEMAVAIL' Then CallTo(RuntimeStandard[46]) Else CallTo(RuntimeStandard[33]);
+  If Name='MEMAVAIL' Then CallTo(RtlTarget(RuntimeStandard[46])) Else
+    CallTo(RtlTarget(RuntimeStandard[33]));
   StandardFunction:=9;
  End Else If Name='IORESULT' Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
-  CallTo(RuntimeStandard[23]); StandardFunction:=3;
- End Else If (Name='ODD') Or (Name='SWAP') Or (Name='LO') Or (Name='HI') Or (Name='UPCASE') Then Begin
+  CallTo(RtlTarget(RuntimeStandard[23])); StandardFunction:=3;
+ End Else If (Name='ODD') Or (Name='SWAP') Or (Name='LO') Or (Name='HI') Or
+   (Name='UPCASE') Then Begin
   Need(tkLP); T:=Expression; Need(tkRP);
   If Name='UPCASE' Then Begin
    If T<>ttChar Then Fail(106,'Caractere attendu');
-   Emit2($3C,Ord('a')); Emit2($72,6); Emit2($3C,Ord('z')); Emit2($77,2); Emit2($2C,32);
+   Emit2($3C,Ord('a')); Emit2($72,6); Emit2($3C,Ord('z')); Emit2($77,2);
+     Emit2($2C,32);
    StandardFunction:=6;
   End Else Begin
    RequireInteger(T);
@@ -4797,25 +8132,32 @@ Begin
    End;
   End;
  End Else If (Name='CSEG') Or (Name='DSEG') Or (Name='SSEG') Or
-             (Name='CSSEG') Or (Name='DSSEG') Or (Name='SSSEG') Or (Name='SPTR') Then Begin
+             (Name='CSSEG') Or (Name='DSSEG') Or (Name='SSSEG') Or (Name='SPTR')
+               Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
-  If (Name='CSEG') Or (Name='CSSEG') Then Emit2($8C,$C8) Else If (Name='DSEG') Or (Name='DSSEG') Then Emit2($8C,$D8)
-  Else If (Name='SSEG') Or (Name='SSSEG') Then Emit2($8C,$D0) Else Emit2($89,$E0);
+  If (Name='CSEG') Or (Name='CSSEG') Then Emit2($8C,
+    $C8) Else If (Name='DSEG') Or (Name='DSSEG') Then Emit2($8C,$D8)
+  Else If (Name='SSEG') Or (Name='SSSEG') Then Emit2($8C,$D0) Else Emit2($89,
+    $E0);
   StandardFunction:=3;
  End Else If (Name='TEST8086') Or (Name='TEST8087') Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
   If Name='TEST8086' Then Begin
    { 0 = 8086/88, 1 = 80286, 2 = 80386 ou plus (methode de Turbo Pascal). }
-   Emit($54); Emit($58); Emit2($39,$E0); Emit2($74,3); P:=Jump;     { push sp; pop ax; cmp ax,sp; jne 8086 }
+   Emit($54); Emit($58); Emit2($39,$E0); P:=JumpIf($74);     { push sp; pop ax;
+     cmp ax,sp; jne 8086 }
    Emit($9C); Emit($58); Emit($0D); EmitWord($7000); Emit($50); Emit($9D);
-   Emit($9C); Emit($58); Emit($25); EmitWord($7000); Emit2($75,3); Q:=Jump; { 286 si bits 12-14 nuls }
+   Emit($9C); Emit($58); Emit($25); EmitWord($7000); Q:=JumpIf($75);
+     { 286 si bits 12-14 nuls }
    LoadImmediate(2); A:=Jump;
    PatchJump(Q,CodeSize); LoadImmediate(1); T:=Jump;
-   PatchJump(P,CodeSize); LoadImmediate(0); PatchJump(A,CodeSize); PatchJump(T,CodeSize);
+   PatchJump(P,CodeSize); LoadImmediate(0); PatchJump(A,CodeSize); PatchJump(T,
+     CodeSize);
   End Else If OptionBits And $80=0 Then LoadImmediate(0) { comme TP: 0 en $N- }
   Else Begin
    { bit 1 du mot d'equipement BIOS: coprocesseur present (3 = 80387) }
-   Emit($06); LoadImmediate($40); Emit2($8E,$C0); Emit($26); Emit($A1); EmitWord($10); Emit($07);
+   Emit($06); LoadImmediate($40); Emit2($8E,$C0); Emit($26); Emit($A1);
+     EmitWord($10); Emit($07);
    Emit($25); EmitWord(2); Emit2($74,3); LoadImmediate(3);
   End;
   StandardFunction:=2;
@@ -4823,27 +8165,46 @@ Begin
   Need(tkLP); RequireInteger(Expression); Emit($50); Need(tkComma);
   RequireInteger(Expression); Emit($5A); Need(tkRP); StandardFunction:=8;
  End Else If (Name='ADDR') Or (Name='OFS') Or (Name='SEG') Then Begin
-  Need(tkLP); T:=VariableArgument; Need(tkRP);
+  Need(tkLP);
+  If Token=tkIdent Then A:=FindSymbol(TokenText) Else A:=0;
+  If (A<>0) And (Symbols[A].Kind=skProc) Then Begin
+   { Ofs/Seg/Addr d'une procedure : adresse de son point d'entree }
+   NextToken; Need(tkRP);
+   If Name='SEG' Then Begin
+    If KernelSymbol(A) Then Begin Emit($B8); AddSegmentRelocation(CodeSize,4);
+      EmitWord(0) End
+    Else If CrossSegment(A) Then Begin Emit($B8);
+      EmitProcSegmentWord(A) End Else Emit2($8C,$C8);
+   End Else EmitProcAddress(A,Name='ADDR');
+   ExprKnown:=False;
+   If Name='ADDR' Then Begin ExprType:=8;
+     StandardFunction:=8 End Else StandardFunction:=3;
+   Exit;
+  End;
+  T:=VariableArgument; Need(tkRP);
   If Name='SEG' Then Emit2($8C,$C0)
   Else Begin Emit2($89,$F8); If Name='ADDR' Then Emit2($8C,$C2) End;
   If Name='ADDR' Then StandardFunction:=8 Else StandardFunction:=3;
  End Else If Name='COPY' Then Begin
   Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma);
-  RequireInteger(Expression); Emit($50); Need(tkComma); RequireInteger(Expression);
+  RequireInteger(Expression); Emit($50); Need(tkComma);
+    RequireInteger(Expression);
   Emit2($89,$C1); Emit($58); Emit($5E); Emit($5A); Need(tkRP);
   A:=TempAlloc(256); Emit($1E); Emit2($8E,$DA); TempPointerDI(A,TempLocal);
-  Emit($BB); EmitWord(255); CallTo(RuntimeStandard[1]); Emit($1F);
+  Emit($BB); EmitWord(255); CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
   TempPointerAX(A,TempLocal); StandardFunction:=7;
  End Else If Name='POS' Then Begin
-  Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma); StringExpression;
+  Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma);
+    StringExpression;
   Emit2($89,$C7); Emit2($8E,$C2); Emit($5E); Emit($5A); Need(tkRP);
-  Emit($1E); Emit2($8E,$DA); CallTo(RuntimeStandard[2]); Emit($1F); StandardFunction:=1;
+  Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[2])); Emit($1F);
+    StandardFunction:=1;
  End Else If Name='CONCAT' Then Begin
   A:=TempAlloc(256); Lcl:=TempLocal; TempClear(A,Lcl); Need(tkLP);
   Repeat
    StringExpression; Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
    TempPointerDI(A,Lcl); Emit($BB); EmitWord(255);
-   CallTo(RuntimeStandard[3]); Emit($1F);
+   CallTo(RtlTarget(RuntimeStandard[3])); Emit($1F);
    If Token<>tkComma Then Break; NextToken;
   Until False;
   Need(tkRP); TempPointerAX(A,Lcl); StandardFunction:=7;
@@ -4852,57 +8213,71 @@ Begin
   If Token<>tkLP Then Begin
    { Random: reel de [0,1) = Random(32768)/32768.0 }
    LoadImmediate(32768); Emit($50); RandomWord; ToReal(3); PushReal;
-   RealPointer(StoreReal(32768.0)); RealBinary(11,11,4,False); StandardFunction:=11; Exit;
+   RealPointer(StoreReal(32768.0)); RealBinary(11,11,4,False);
+     StandardFunction:=11; Exit;
   End;
-  NextToken; RequireInteger(Expression); Need(tkRP); Emit($50); RandomWord; StandardFunction:=3;
+  NextToken; RequireInteger(Expression); Need(tkRP); Emit($50); RandomWord;
+    StandardFunction:=3;
  End;
 End;
 
 Procedure FileTransferResult(Op,Count: Word);
 Var P,Q,R: Word;
 Begin
- Emit2($09,$D2); Emit2($74,3); P:=Jump;
- Emit($3D); EmitWord(Count); Emit2($75,3); Q:=Jump;
- LoadImmediate(100+Op); CallTo(RuntimeStandard[24]); R:=Jump;
- PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RuntimeStandard[24]);
+ Emit2($09,$D2); P:=JumpIf($74);
+ Emit($3D); EmitWord(Count); Q:=JumpIf($75);
+ LoadImmediate(100+Op); CallTo(RtlTarget(RuntimeStandard[24])); R:=Jump;
+ PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RtlTarget(RuntimeStandard[24]));
  PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
- If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+ If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
 End;
 
 Procedure BinaryFileWrite(FileType,ValueType: Word);
 Var Element,N,A: Word;
 Begin
  Element:=TypeExtras[FileType].ElementType;
- If (Types[Element].Typ=ttString) And (Types[ValueType].Typ=ttChar) Then Begin StringFromChar; ValueType:=7 End;
- If (Types[Element].Typ=ttReal) And (Types[ValueType].Typ=ttInteger) Then Begin ToReal(ValueType); ValueType:=11 End;
- If Not CompatibleTypes(Element,ValueType) Then Fail(26,'Type de valeur du fichier');
- If ExprKnown And (Types[Element].Typ In [ttInteger,ttChar,ttEnum,ttBoolean]) And
-    ((ExprValue<Types[Element].LowBound) Or (ExprValue>Types[Element].HighBound)) Then Fail(76,'Valeur fichier hors limites');
+ If (Types[Element].Typ=ttString) And (Types[ValueType].Typ=ttChar) Then Begin
+   StringFromChar; ValueType:=7 End;
+ If (Types[Element].Typ=ttReal) And (Types[ValueType].Typ=ttInteger) Then Begin
+   ToReal(ValueType); ValueType:=11 End;
+ If Not CompatibleTypes(Element,ValueType) Then Fail(26,
+   'Type de valeur du fichier');
+ If ExprKnown And (Types[Element].Typ In [ttInteger,ttChar,ttEnum,
+   ttBoolean]) And
+    ((ExprValue<Types[Element].LowBound) Or
+      (ExprValue>Types[Element].HighBound)) Then Fail(76,
+        'Valeur fichier hors limites');
  N:=0;
- If (OptionBits And 2<>0) And (Types[Element].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then
+ If (OptionBits And 2<>0) And (Types[Element].Typ In [ttInteger,ttChar,
+   ttBoolean,ttEnum]) Then
   RangeBounds(Types[Element].LowBound,Types[Element].HighBound,ValueType);
  If Types[Element].Typ=ttSet Then Begin
   A:=AllocData(32); NormalizeSet(ValueType,A); TrimSet(Element,A);
   Emit($B8); DataAddress(A+Types[Element].LowBound Div 8); Emit2($8C,$DA);
  End;
  If Types[Element].Typ=ttString Then Begin
-  A:=AllocData(TypeExtras[Element].Size); Emit2($89,$C6); Emit($1E); Emit2($8E,$DA);
-  CallTo(RuntimeStandard[71]); Emit($BF); DataAddress(A); LoadImmediate(1);
-  Emit($BB); EmitWord(Types[Element].Capacity); Emit2($89,$D9); CallTo(RuntimeStandard[1]); Emit($1F);
+  A:=AllocData(TypeExtras[Element].Size); Emit2($89,$C6); Emit($1E); Emit2($8E,
+    $DA);
+  CallTo(RtlTarget(RuntimeStandard[71])); Emit($BF); DataAddress(A);
+    LoadImmediate(1);
+  Emit($BB); EmitWord(Types[Element].Capacity); Emit2($89,$D9);
+    CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
   Emit($B8); DataAddress(A); Emit2($8C,$DA);
  End;
  If Types[Element].Typ In [ttArray,ttRecord,ttString,ttSet,ttReal] Then Begin
   Emit($1E); Emit2($8E,$DA); Emit2($89,$C2);
  End Else Begin
   If Types[Element].Width=4 Then Begin
-   If Types[ValueType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
+   If Types[ValueType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,
+     $D2) Else Emit($99) End;
    Emit($52); N:=4;
   End Else N:=2;
   Emit($50); Emit2($89,$E2); Emit($1E); Emit($16); Emit($1F);
  End;
  Emit2($89,$E3); Emit($36); Emit2($8B,$7F); Emit(N+2);
  Emit($36); Emit2($8B,$47); Emit(N+4); Emit2($8E,$C0);
- Emit($B9); EmitWord(1); LoadImmediate(1); CallTo(RuntimeStandard[36]); Emit($1F);
+ Emit($B9); EmitWord(1); LoadImmediate(1);
+   CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
  If N<>0 Then Begin Emit2($83,$C4); Emit(N) End;
  FileTransferResult(1,1);
 End;
@@ -4917,108 +8292,141 @@ Begin
   Emit($06); Emit($57); Need(tkComma); A:=VariableArgument;
   Emit($06); Emit($57);
   If Token=tkComma Then Begin NextToken; RequireInteger(Expression) End
-  Else Begin If A=0 Then Fail(26,'Taille du buffer requise'); LoadImmediate(TypeExtras[A].Size) End;
+  Else Begin If A=0 Then Fail(26,'Taille du buffer requise');
+    LoadImmediate(TypeExtras[A].Size) End;
   Need(tkRP); Emit2($89,$C1); Emit($58); Emit($5A); Emit($5F); Emit($07);
-  CallTo(RuntimeStandard[51]); If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  CallTo(RtlTarget(RuntimeStandard[51]));
+    If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='RUNERROR' Then Begin
   LoadImmediate(0);
-  If Token=tkLP Then Begin NextToken; RequireInteger(Expression); Need(tkRP) End;
-  CallTo(RuntimeStandard[47]);
+  If Token=tkLP Then Begin NextToken; RequireInteger(Expression);
+    Need(tkRP) End;
+  CallTo(RtlTarget(RuntimeStandard[47]));
  End Else If Name='GETDIR' Then Begin
   Need(tkLP); RequireInteger(Expression); Emit($50); Need(tkComma);
-  T:=VariableArgument; If Types[T].Typ<>ttString Then Fail(26,'GetDir exige une chaine variable');
-  Need(tkRP); Emit($58); Emit($06); Emit($57); CallTo(RuntimeStandard[44]);
+  T:=VariableArgument; If Types[T].Typ<>ttString Then Fail(26,
+    'GetDir exige une chaine variable');
+  Need(tkRP); Emit($58); Emit($06); Emit($57);
+    CallTo(RtlTarget(RuntimeStandard[44]));
   Emit($5F); Emit($07); Emit2($89,$C6); Emit($1E); Emit2($8E,$DA);
-  LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB); EmitWord(Types[T].Capacity);
-  CallTo(RuntimeStandard[1]); Emit($1F);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  LoadImmediate(1); Emit($B9); EmitWord(255); Emit($BB);
+    EmitWord(Types[T].Capacity);
+  CallTo(RtlTarget(RuntimeStandard[1])); Emit($1F);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='MKDIR') Or (Name='RMDIR') Or (Name='CHDIR') Then Begin
   Need(tkLP); StringExpression; Need(tkRP);
   A:=AllocData(256); Emit($1E); Emit($06); Emit2($89,$C6); Emit2($8E,$DA);
-  CallTo(RuntimeStandard[71]); Emit($BF); DataAddress(A); Emit2($31,$C9); Emit($AC);
-  Emit2($88,$C1); Emit2($F3,$A4); Emit2($31,$C0); Emit($AA); Emit($07); Emit($1F);
+  CallTo(RtlTarget(RuntimeStandard[71])); Emit($BF); DataAddress(A); Emit2($31,
+    $C9); Emit($AC);
+  Emit2($88,$C1); Emit2($F3,$A4); Emit2($31,$C0); Emit($AA); Emit($07);
+    Emit($1F);
   Emit($BA); DataAddress(A);
   If Name='MKDIR' Then Op:=$39 Else If Name='RMDIR' Then Op:=$3A Else Op:=$3B;
-  Emit2($B4,Op); CallTo(RuntimeStandard[43]);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  Emit2($B4,Op); CallTo(RtlTarget(RuntimeStandard[43]));
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='RENAME' Then Begin
   Need(tkLP); T:=VariableArgument;
-  If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,'Variable fichier attendue');
+  If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,
+    'Variable fichier attendue');
   Emit($06); Emit($57); Need(tkComma); StringExpression; Need(tkRP);
   Emit2($89,$C6); Emit($1E); Emit2($8E,$DA); Emit($5B); { ancienne DS }
-  Emit($5F); Emit($07); Emit($53); CallTo(RuntimeStandard[42]); Emit($1F);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  Emit($5F); Emit($07); Emit($53); CallTo(RtlTarget(RuntimeStandard[42]));
+    Emit($1F);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='ASSIGN' Then Begin
   Need(tkLP); T:=VariableArgument;
-  If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,'Variable fichier attendue');
+  If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,
+    'Variable fichier attendue');
   Emit($06); Emit($57); Need(tkComma); StringExpression; Need(tkRP);
   Emit($5F); Emit($07); Emit2($89,$C6); Emit($1E); Emit2($8E,$DA);
   A:=TypeExtras[T].ElementType;
   If Types[T].Typ=ttText Then Begin A:=1; LoadImmediate(1) End
-  Else Begin If A=0 Then A:=128 Else A:=TypeExtras[A].Size; LoadImmediate(0) End;
-  Emit($BB); EmitWord(A); CallTo(RuntimeStandard[34]); Emit($1F);
- End Else If (Name='RESET') Or (Name='REWRITE') Or (Name='APPEND') Or (Name='CLOSE') Or
+  Else Begin If A=0 Then A:=128 Else A:=TypeExtras[A].Size;
+    LoadImmediate(0) End;
+  Emit($BB); EmitWord(A); CallTo(RtlTarget(RuntimeStandard[34])); Emit($1F);
+ End Else If (Name='RESET') Or (Name='REWRITE') Or (Name='APPEND') Or
+   (Name='CLOSE') Or
              (Name='ERASE') Or (Name='FLUSH') Or (Name='TRUNCATE') Then Begin
   Need(tkLP); T:=VariableArgument;
-  If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,'Variable fichier attendue');
-  If ((Name='APPEND') Or (Name='FLUSH')) And (Types[T].Typ<>ttText) Then Fail(26,'Fichier Text attendu');
-  If (Name='TRUNCATE') And (Types[T].Typ<>ttFile) Then Fail(26,'Truncate exige File');
+  If Not (Types[T].Typ In [ttFile,ttText]) Then Fail(26,
+    'Variable fichier attendue');
+  If ((Name='APPEND') Or (Name='FLUSH')) And (Types[T].Typ<>ttText) Then
+    Fail(26,'Fichier Text attendu');
+  If (Name='TRUNCATE') And (Types[T].Typ<>ttFile) Then Fail(26,
+    'Truncate exige File');
   If Token=tkComma Then Begin
    If Not ((Name='RESET') Or (Name='REWRITE')) Or (Types[T].Typ<>ttFile) Or
-      (TypeExtras[T].ElementType<>0) Then Fail(26,'Taille record reservee au File sans type');
+      (TypeExtras[T].ElementType<>0) Then Fail(26,
+        'Taille record reservee au File sans type');
    Emit($06); Emit($57); NextToken; RequireInteger(Expression);
-   If ExprKnown And ((ExprValue<1) Or (ExprValue>65535)) Then Fail(76,'Taille record hors limites');
+   If ExprKnown And ((ExprValue<1) Or (ExprValue>65535)) Then Fail(76,
+     'Taille record hors limites');
    Emit2($89,$C3); Emit($5F); Emit($07);
   End Else Begin Emit($BB); EmitWord(0) End;
   Need(tkRP); Op:=1;
-  If Name='REWRITE' Then Op:=2 Else If Name='APPEND' Then Op:=3 Else If Name='CLOSE' Then Op:=4
-  Else If Name='ERASE' Then Op:=5 Else If Name='FLUSH' Then Op:=6 Else If Name='TRUNCATE' Then Op:=7;
-  LoadImmediate(Op); CallTo(RuntimeStandard[35]); If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  If Name='REWRITE' Then Op:=2 Else If Name='APPEND' Then Op:=3 Else If
+    Name='CLOSE' Then Op:=4
+  Else If Name='ERASE' Then Op:=5 Else If Name='FLUSH' Then Op:=6 Else If
+    Name='TRUNCATE' Then Op:=7;
+  LoadImmediate(Op); CallTo(RtlTarget(RuntimeStandard[35]));
+    If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If Name='SEEK' Then Begin
-  Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'Seek exige File');
+  Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,
+    'Seek exige File');
   Emit($06); Emit($57); Need(tkComma); RequireInteger(Expression);
   If ExprKnown And (ExprValue<0) Then Fail(76,'Position Seek negative');
-  If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
-  Need(tkRP); Emit($5F); Emit($07); CallTo(RuntimeStandard[37]); If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,
+    $D2) Else Emit($99) End;
+  Need(tkRP); Emit($5F); Emit($07); CallTo(RtlTarget(RuntimeStandard[37]));
+    If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='BLOCKREAD') Or (Name='BLOCKWRITE') Then Begin
-  Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,'BlockRead/Write exige File');
-  Emit($06); Emit($57); Need(tkComma); A:=VariableArgument; Emit($06); Emit($57);
+  Need(tkLP); T:=VariableArgument; If Types[T].Typ<>ttFile Then Fail(26,
+    'BlockRead/Write exige File');
+  Emit($06); Emit($57); Need(tkComma); A:=VariableArgument; Emit($06);
+    Emit($57);
   Need(tkComma); RequireInteger(Expression);
-  If ExprKnown And ((ExprValue<0) Or (ExprValue>65535)) Then Fail(76,'Nombre records hors limites');
+  If ExprKnown And ((ExprValue<0) Or (ExprValue>65535)) Then Fail(76,
+    'Nombre records hors limites');
   Emit($50); HasResult:=Token=tkComma;
   If HasResult Then Begin
    NextToken; A:=VariableArgument;
-   If (Types[A].Typ<>ttInteger) Or (Types[A].Width<>2) Then Fail(26,'Resultat transfert doit etre Word/Integer');
+   If (Types[A].Typ<>ttInteger) Or (Types[A].Width<>2) Then Fail(26,
+     'Resultat transfert doit etre Word/Integer');
    Emit($06); Emit($57);
   End Else Begin Emit2($31,$D2); Emit($52); Emit($52) End;
   Need(tkRP); Emit($55); Emit2($89,$E5); Emit($1E);
   Emit2($8B,$46); Emit(10); Emit2($8E,$D8); Emit2($8B,$56); Emit(8);
   Emit2($8B,$46); Emit(14); Emit2($8E,$C0); Emit2($8B,$7E); Emit(12);
   Emit2($8B,$4E); Emit(6);
-  Op:=0; If Name='BLOCKWRITE' Then Op:=1; LoadImmediate(Op); CallTo(RuntimeStandard[36]); Emit($1F);
-  Emit($50); Emit2($09,$D2); Emit2($74,3); P:=Jump;
+  Op:=0; If Name='BLOCKWRITE' Then Op:=1; LoadImmediate(Op);
+    CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
+  Emit($50); Emit2($09,$D2); P:=JumpIf($74);
   If Not HasResult Then Begin
-   Emit2($3B,$46); Emit(6); Emit2($75,3); Q:=Jump;
-   LoadImmediate(100+Op); CallTo(RuntimeStandard[24]); R:=Jump;
+   Emit2($3B,$46); Emit(6); Q:=JumpIf($75);
+   LoadImmediate(100+Op); CallTo(RtlTarget(RuntimeStandard[24])); R:=Jump;
    PatchJump(Q,CodeSize);
   End Else R:=Jump;
-  Done:=Jump; PatchJump(P,CodeSize); Emit2($89,$D0); CallTo(RuntimeStandard[24]);
+  Done:=Jump; PatchJump(P,CodeSize); Emit2($89,$D0);
+    CallTo(RtlTarget(RuntimeStandard[24]));
   PatchJump(R,CodeSize); PatchJump(Done,CodeSize); Emit($58);
-  If HasResult Then Begin Emit2($C4,$7E); Emit(2); Emit($26); Emit2($89,$05) End;
+  If HasResult Then Begin Emit2($C4,$7E); Emit(2); Emit($26); Emit2($89,
+    $05) End;
   Emit2($89,$EC); Emit($5D); Emit2($83,$C4); Emit(14);
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='NEW') Or (Name='GETMEM') Or (Name='MARK') Then Begin
   HeapNeeded:=True; Need(tkLP); T:=VariableArgument;
   If Types[T].Typ<>ttPointer Then Fail(26,'Variable pointeur attendue');
   Emit($06); Emit($57);
   If Name='NEW' Then Begin
-   A:=TypeExtras[T].ElementType; If A=0 Then Fail(26,'New exige un pointeur type');
-   LoadImmediate(TypeExtras[A].Size); CallTo(RuntimeStandard[26]);
+   A:=TypeExtras[T].ElementType; If A=0 Then Fail(26,
+     'New exige un pointeur type');
+   LoadImmediate(TypeExtras[A].Size); CallTo(RtlTarget(RuntimeStandard[26]));
   End Else If Name='GETMEM' Then Begin
    Need(tkComma); RequireInteger(Expression);
-   If ExprKnown And ((ExprValue<0) Or (ExprValue>65535)) Then Fail(76,'Taille GetMem hors limites');
-   CallTo(RuntimeStandard[26]);
-  End Else CallTo(RuntimeStandard[29]);
+   If ExprKnown And ((ExprValue<0) Or (ExprValue>65535)) Then Fail(76,
+     'Taille GetMem hors limites');
+   CallTo(RtlTarget(RuntimeStandard[26]));
+  End Else CallTo(RtlTarget(RuntimeStandard[29]));
   Need(tkRP); Emit($5F); Emit($07); StoreDesignator(T);
  End Else If (Name='DISPOSE') Or (Name='FREEMEM') Or (Name='RELEASE') Then Begin
   HeapNeeded:=True; Need(tkLP); A:=Expression;
@@ -5028,81 +8436,96 @@ Begin
    Emit2($89,$C3); Emit($58); Emit($5A); Emit($BE); EmitWord(1);
   End Else Emit2($31,$F6);
   Need(tkRP);
-  If Name='RELEASE' Then CallTo(RuntimeStandard[30]) Else CallTo(RuntimeStandard[27]);
+  If Name='RELEASE' Then CallTo(RtlTarget(RuntimeStandard[30])) Else
+    CallTo(RtlTarget(RuntimeStandard[27]));
  End Else If (Name='READ') Or (Name='READLN') Then Begin
-  CallTo(RuntimeStandard[76]); { ReadBegin }
+  CallTo(RtlTarget(RuntimeStandard[76])); { ReadBegin }
   FirstInput:=True; BinaryType:=0;
   If Token=tkLP Then Begin
    NextToken;
-   If (Token=tkIdent) And (TokenText='INPUT') And (FindLexicalSymbol('INPUT')=0) Then Begin
+   If (Token=tkIdent) And (TokenText='INPUT') And (FindLexicalSymbol('INPUT')=0)
+     Then Begin
     NextToken; FirstInput:=False; If Token=tkComma Then NextToken;
    End;
    While Token<>tkRP Do Begin
     T:=VariableArgument;
     If FirstInput And (Types[T].Typ In [ttFile,ttText]) Then Begin
      If Types[T].Typ=ttText Then Begin
-      Emit2($89,$F8); Emit2($8C,$C2); CallTo(RuntimeStandard[41]);
-      If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+      Emit2($89,$F8); Emit2($8C,$C2); CallTo(RtlTarget(RuntimeStandard[41]));
+      If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
      End Else Begin
-      If (Name='READLN') Or (TypeExtras[T].ElementType=0) Then Fail(26,'Read exige File type, ReadLn exige Text');
+      If (Name='READLN') Or (TypeExtras[T].ElementType=0) Then Fail(26,
+        'Read exige File type, ReadLn exige Text');
       BinaryType:=T; Emit($06); Emit($57);
      End;
     End Else If BinaryType<>0 Then Begin
      A:=TypeExtras[BinaryType].ElementType;
-     If Not CompatibleTypes(T,A) Or (TypeExtras[T].Size<>TypeExtras[A].Size) Then Fail(26,'Variable du fichier incompatible');
+     If Not CompatibleTypes(T,
+       A) Or (TypeExtras[T].Size<>TypeExtras[A].Size) Then Fail(26,
+         'Variable du fichier incompatible');
      Emit2($89,$F8); Emit2($8C,$C2); Emit($1E); Emit2($8E,$DA); Emit2($89,$C2);
      Emit2($89,$E3); Emit($36); Emit2($8B,$7F); Emit(2);
      Emit($36); Emit2($8B,$47); Emit(4); Emit2($8E,$C0);
-     Emit($B9); EmitWord(1); LoadImmediate(0); CallTo(RuntimeStandard[36]); Emit($1F);
+     Emit($B9); EmitWord(1); LoadImmediate(0);
+       CallTo(RtlTarget(RuntimeStandard[36])); Emit($1F);
      FileTransferResult(0,1);
     End Else Begin
      Emit($06); Emit($57);
      Case Types[T].Typ Of
       ttReal:Begin
-       CallTo(RuntimeStandard[20]); Emit2($8C,$DA); RealParseText;
+       CallTo(RtlTarget(RuntimeStandard[20])); Emit2($8C,$DA); RealParseText;
        Emit($52); Emit($50);
-       Emit2($09,$C9); Emit2($74,3); P:=Jump; Q:=Jump;
-       PatchJump(P,CodeSize); LoadImmediate(106); CallTo(RuntimeStandard[24]);
+       Emit2($09,$C9); P:=JumpIf($74); Q:=Jump;
+       PatchJump(P,CodeSize); LoadImmediate(106);
+         CallTo(RtlTarget(RuntimeStandard[24]));
        PatchJump(Q,CodeSize); Emit($58); Emit($5A);
       End;
-      ttChar:CallTo(RuntimeStandard[19]);
-      ttString:Begin Emit($BB); EmitWord(Types[T].Capacity); CallTo(RuntimeStandard[21]) End;
+      ttChar:CallTo(RtlTarget(RuntimeStandard[19]));
+      ttString:Begin Emit($BB); EmitWord(Types[T].Capacity);
+        CallTo(RtlTarget(RuntimeStandard[21])) End;
       ttArray:Begin
-       { tableau de Char a base zero ($X+): chaine lue (DX:AX) copiee avec zero terminal }
-       If Not (IsCharArray(T) And ExtendedSyntax) Then Fail(26,'Type non lisible');
+       { tableau de Char a base zero ($X+): chaine lue (DX:AX) copiee avec zero
+         terminal }
+       If Not (IsCharArray(T) And ExtendedSyntax) Then Fail(26,
+         'Type non lisible');
        N:=TypeExtras[T].Size-1; If N>255 Then N:=255;
-       Emit($BB); EmitWord(N); CallTo(RuntimeStandard[21]);
+       Emit($BB); EmitWord(N); CallTo(RtlTarget(RuntimeStandard[21]));
       End;
       ttInteger:Begin
-       CallTo(RuntimeStandard[20]); Emit2($89,$C6); CallTo(RuntimeStandard[17]);
-       Emit2($09,$C9); Emit2($74,3); P:=Jump; Q:=0; R:=0; A:=0;
+       CallTo(RtlTarget(RuntimeStandard[20])); Emit2($89,$C6);
+         CallTo(RtlTarget(RuntimeStandard[17]));
+       Emit2($09,$C9); P:=JumpIf($74); Q:=0; R:=0; A:=0;
        If Types[T].Width<>4 Then Begin
-        If Types[T].Signed Then Begin Emit2($89,$C3); Emit2($B1,15); Emit2($D3,$FB) End
+        If Types[T].Signed Then Begin Emit2($89,$C3); Emit2($B1,15); Emit2($D3,
+          $FB) End
         Else Emit2($31,$DB);
-        Emit2($39,$DA); Emit2($74,3); Q:=Jump;
+        Emit2($39,$DA); Q:=JumpIf($74);
         If Types[T].Width=1 Then Begin
          Emit($3D); EmitWord(Word(Types[T].LowBound));
-         If Types[T].Signed Then Emit2($7D,3) Else Emit2($73,3); R:=Jump;
+         If Types[T].Signed Then R:=JumpIf($7D) Else R:=JumpIf($73);
          Emit($3D); EmitWord(Word(Types[T].HighBound));
-         If Types[T].Signed Then Emit2($7E,3) Else Emit2($76,3); A:=Jump;
+         If Types[T].Signed Then A:=JumpIf($7E) Else A:=JumpIf($76);
         End;
        End;
        Done:=Jump; PatchJump(P,CodeSize); If Q<>0 Then PatchJump(Q,CodeSize);
        If R<>0 Then PatchJump(R,CodeSize); If A<>0 Then PatchJump(A,CodeSize);
-       LoadImmediate(106); CallTo(RuntimeStandard[24]); Emit2($31,$C0); Emit2($31,$D2);
+       LoadImmediate(106); CallTo(RtlTarget(RuntimeStandard[24])); Emit2($31,
+         $C0); Emit2($31,$D2);
        PatchJump(Done,CodeSize);
       End;
      Else Fail(26,'Type non lisible');
      End;
      Emit($5F); Emit($07);
      If Types[T].Typ=ttReal Then Begin
-      Emit($1E); Emit2($8E,$DA); Emit2($89,$C6); Emit($B9); EmitWord(6); Emit2($F3,$A4); Emit($1F);
+      Emit($1E); Emit2($8E,$DA); Emit2($89,$C6); Emit($B9); EmitWord(6);
+        Emit2($F3,$A4); Emit($1F);
      End Else If Types[T].Typ=ttString Then Begin
       Emit2($89,$C6); Emit2($31,$C9); Emit2($8A,$0C); Emit($41); Emit2($F3,$A4);
      End Else If Types[T].Typ=ttArray Then Begin
-      Emit2($89,$C6); Emit2($31,$C9); Emit2($8A,$0C); Emit($46); Emit2($F3,$A4); Emit2($30,$C0); Emit($AA);
+      Emit2($89,$C6); Emit2($31,$C9); Emit2($8A,$0C); Emit($46); Emit2($F3,$A4);
+        Emit2($30,$C0); Emit($AA);
      End Else StoreDesignator(T);
-     If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+     If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
     End;
     FirstInput:=False;
     If Token<>tkComma Then Break; NextToken;
@@ -5110,20 +8533,24 @@ Begin
    Need(tkRP);
   End Else If Name='READ' Then Fail(88,'Parametres Read manquants');
   If BinaryType<>0 Then Begin Emit2($83,$C4); Emit(4) End;
-  If Name='READLN' Then CallTo(RuntimeStandard[78]) Else CallTo(RuntimeStandard[77]); { ReadLnEnd / ReadEnd }
-  If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+  If Name='READLN' Then CallTo(RtlTarget(RuntimeStandard[78])) Else
+    CallTo(RtlTarget(RuntimeStandard[77])); { ReadLnEnd / ReadEnd }
+  If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
  End Else If (Name='INC') Or (Name='DEC') Then Begin
   Need(tkLP);
   If Token=tkIdent Then T:=FindLexicalSymbol(TokenText) Else T:=0;
-  If (T<>0) And SimpleScalar(T) And (OptionBits And $8002=0) And (Types[SymbolType(T)].Width<=2) And
+  If (T<>0) And SimpleScalar(T) And (OptionBits And $8002=0) And
+    (Types[SymbolType(T)].Width<=2) And
      (Types[SymbolType(T)].Typ<>ttPointer) And
-     (Not Symbols[T].Local Or (RealScope(Symbols[T].Scope)=RealScope(CurrentScope))) Then Begin
+     (Not Symbols[T].Local Or
+       (RealScope(Symbols[T].Scope)=RealScope(CurrentScope))) Then Begin
    { inc/dec/add/sub directement en memoire }
    NextToken; A:=Types[SymbolType(T)].Width; P:=0;
    If Token=tkComma Then Begin
     NextToken; RequireInteger(Expression);
     If (CodeSize>=3) And (Image[CodeSize-3]=$B8) Then Begin
-     Q:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; CodeSize:=CodeSize-3; P:=2;
+     Q:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; CodeSize:=CodeSize-3;
+       P:=2;
     End Else P:=1;
    End;
    Need(tkRP);
@@ -5131,7 +8558,8 @@ Begin
     If A=1 Then Emit($FE) Else Emit($FF);
     If Name='INC' Then Op:=0 Else Op:=1;
    End Else If P=2 Then Begin
-    If A=1 Then Emit($80) Else If (Q<128) Or (Q>=65408) Then Emit($83) Else Emit($81);
+    If A=1 Then Emit($80) Else If (Q<128) Or (Q>=65408) Then Emit($83) Else
+      Emit($81);
     If Name='INC' Then Op:=0 Else Op:=5;
    End Else Begin
     If A=1 Then Begin If Name='INC' Then Emit($00) Else Emit($28) End
@@ -5157,28 +8585,37 @@ Begin
    Need(tkRP); Emit($5F); Emit($07); StoreDesignator(T);
    Exit;
   End;
-  If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(104,'Variable ordinale attendue');
+  If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(104,
+    'Variable ordinale attendue');
   Emit($06); Emit($57); LoadDesignator(T);
   If Token=tkComma Then Begin
-   If Types[T].Width=4 Then Emit($52); Emit($50); NextToken; RequireInteger(Expression);
+   If Types[T].Width=4 Then Emit($52); Emit($50); NextToken;
+     RequireInteger(Expression);
    If Types[T].Width=4 Then Begin
-    If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
+    If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,
+      $D2) Else Emit($99) End;
     Emit2($89,$D1);
    End;
    Emit2($89,$C3); Emit($58); If Types[T].Width=4 Then Emit($5A);
-   If Name='INC' Then Begin Emit2($01,$D8); If Types[T].Width=4 Then Emit2($11,$CA) End
+   If Name='INC' Then Begin Emit2($01,$D8); If Types[T].Width=4 Then Emit2($11,
+     $CA) End
    Else Begin Emit2($29,$D8); If Types[T].Width=4 Then Emit2($19,$CA) End;
   End Else If Name='INC' Then Begin
-   Emit($05); EmitWord(1); If Types[T].Width=4 Then Begin Emit2($83,$D2); Emit(0) End;
+   Emit($05); EmitWord(1); If Types[T].Width=4 Then Begin Emit2($83,$D2);
+     Emit(0) End;
   End Else Begin
-   Emit($2D); EmitWord(1); If Types[T].Width=4 Then Begin Emit2($83,$DA); Emit(0) End;
+   Emit($2D); EmitWord(1); If Types[T].Width=4 Then Begin Emit2($83,$DA);
+     Emit(0) End;
   End;
   Need(tkRP); Emit($5F); Emit($07);
-  If (Types[T].Width=2) And (OptionBits And 2=0) Then OverflowCheck(Not Types[T].Signed);
+  If (Types[T].Width=2) And (OptionBits And 2=0) Then OverflowCheck(Not
+    Types[T].Signed);
   If OptionBits And 2<>0 Then Begin
    If Types[T].Width>=2 Then Begin
-    If Types[T].Signed Then Emit2($71,3) Else Emit2($73,3); P:=Jump; Q:=Jump;
-    PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RuntimeError); PatchJump(Q,CodeSize);
+    If Types[T].Signed Then P:=JumpIf($71) Else P:=JumpIf($73);
+    Q:=Jump;
+    PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError));
+      PatchJump(Q,CodeSize);
    End;
    If Types[T].Width=1 Then A:=1 Else A:=T;
    RangeBounds(Types[T].LowBound,Types[T].HighBound,A);
@@ -5189,12 +8626,14 @@ Begin
   Need(tkLP); T:=VariableArgument;
   If Types[T].Typ<>ttSet Then Fail(26,'Variable ensemble attendue');
   Emit($06); Emit($57); Need(tkComma); Op:=Expression;
-  If Not (Op In [ttInteger,ttChar,ttBoolean,ttEnum]) Or (Types[ExprType].Width=4) Then Fail(39,'');
-  If (TypeExtras[T].ElementType<>0) And Not CompatibleTypes(ExprType,TypeExtras[T].ElementType) Then
+  If Not (Op In [ttInteger,ttChar,ttBoolean,
+    ttEnum]) Or (Types[ExprType].Width=4) Then Fail(39,'');
+  If (TypeExtras[T].ElementType<>0) And Not CompatibleTypes(ExprType,
+    TypeExtras[T].ElementType) Then
    Fail(26,'Type de l''element');
   Need(tkRP); Emit($5F); Emit($07);
   Emit($2D); EmitWord(Types[T].LowBound Div 8*8);
-  Emit($3D); EmitWord(TypeExtras[T].Size*8); Emit2($72,3); P:=Jump;
+  Emit($3D); EmitWord(TypeExtras[T].Size*8); P:=JumpIf($72);
   Emit2($89,$C3); Emit2($89,$C1); Emit2($80,$E1); Emit(7);
   Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB);
   If Name='INCLUDE' Then Begin Emit($26); Emit2($08,$11) End
@@ -5202,57 +8641,70 @@ Begin
   PatchJump(P,CodeSize);
  End Else If Name='RANDOMIZE' Then Begin
   If Token=tkLP Then Begin NextToken; Need(tkRP) End;
-  Emit2($B4,$2C); Emit2($CD,$21); Emit2($89,$D0); Emit($A3); DataAddress(RandomSeed);
+  Emit2($B4,$2C); Emit2($CD,$21); Emit2($89,$D0); Emit($A3);
+    DataAddress(RandomSeed);
   Emit2($89,$0E); DataAddress(RandomSeed+2);
  End Else If Name='STR' Then Begin
   Need(tkLP); T:=Expression;
   If T=ttReal Then Begin
    RealText; Emit($52); Emit($50); Need(tkComma); T:=VariableArgument;
-   If Types[T].Typ<>ttString Then Fail(66,'Destination Str non string'); Need(tkRP);
-   Emit($5E); Emit($5A); Emit($1E); Emit2($8E,$DA); Emit2($31,$C9); Emit2($8A,$0C);
-   Emit($BB); EmitWord(Types[T].Capacity); Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
+   If Types[T].Typ<>ttString Then Fail(66,'Destination Str non string');
+     Need(tkRP);
+   Emit($5E); Emit($5A); Emit($1E); Emit2($8E,$DA); Emit2($31,$C9); Emit2($8A,
+     $0C);
+   Emit($BB); EmitWord(Types[T].Capacity); Emit2($39,$D9); Emit2($76,2);
+     Emit2($89,$D9);
    Emit($26); Emit2($88,$0D); Emit($47); Emit($46); Emit2($F3,$A4); Emit($1F);
   End Else Begin
   RequireInteger(T);
-  If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
+  If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,
+    $D2) Else Emit($99) End;
   Emit($52); Emit($50);
-  If Token=tkColon Then Begin NextToken; RequireInteger(Expression) End Else LoadImmediate(0);
+  If Token=tkColon Then Begin NextToken;
+    RequireInteger(Expression) End Else LoadImmediate(0);
   Emit($50); Need(tkComma); T:=VariableArgument;
-  If Types[T].Typ<>ttString Then Fail(66,'Destination Str non string'); Need(tkRP);
-  Emit($59); Emit($58); Emit($5A); Emit($51); Emit($06); Emit($57); CallTo(RuntimeStandard[16]);
-  Emit($5F); Emit($07); Emit($59); Emit2($89,$C6); Emit($BB); EmitWord(Types[T].Capacity);
+  If Types[T].Typ<>ttString Then Fail(66,'Destination Str non string');
+    Need(tkRP);
+  Emit($59); Emit($58); Emit($5A); Emit($51); Emit($06); Emit($57);
+    CallTo(RtlTarget(RuntimeStandard[16]));
+  Emit($5F); Emit($07); Emit($59); Emit2($89,$C6); Emit($BB);
+    EmitWord(Types[T].Capacity);
   Emit2($09,$C9); Emit2($79,2); Emit2($31,$C9);
   Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
   Emit2($31,$D2); Emit2($8A,$14); Emit2($39,$DA); Emit2($76,2); Emit2($89,$DA);
   Emit2($39,$D1); Emit2($73,2); Emit2($89,$D1); Emit2($89,$CB);
-  Emit($26); Emit2($88,$1D); Emit($47); Emit2($29,$D1); LoadImmediate(32); Emit2($F3,$AA);
+  Emit($26); Emit2($88,$1D); Emit($47); Emit2($29,$D1); LoadImmediate(32);
+    Emit2($F3,$AA);
   Emit2($89,$D1); Emit($46); Emit2($F3,$A4);
   End;
  End Else If Name='VAL' Then Begin
   Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma);
-  T:=VariableArgument; If Not (Types[T].Typ In [ttInteger,ttReal]) Then Fail(38,'Destination Val non numerique');
+  T:=VariableArgument; If Not (Types[T].Typ In [ttInteger,ttReal]) Then Fail(38,
+    'Destination Val non numerique');
   Emit($06); Emit($57); Need(tkComma); A:=VariableArgument;
-  If (Types[A].Typ<>ttInteger) Or (Types[A].Width<>2) Then Fail(26,'Code Val doit etre Integer ou Word');
+  If (Types[A].Typ<>ttInteger) Or (Types[A].Width<>2) Then Fail(26,
+    'Code Val doit etre Integer ou Word');
   Emit($06); Emit($57); Need(tkRP); Emit($55); Emit2($89,$E5);
   If Types[T].Typ=ttReal Then Begin
    EnsureRealRuntime; Emit($06);
    Emit2($FF,$76); Emit(12); Emit2($FF,$76); Emit(10);
    Emit2($FF,$76); Emit(8); Emit2($FF,$76); Emit(6);
-   Emit2($FF,$76); Emit(4); Emit2($FF,$76); Emit(2); RealCall('RPARSE'); Emit($07);
+   Emit2($FF,$76); Emit(4); Emit2($FF,$76); Emit(2); RealCall('RPARSE');
+     Emit($07);
   End Else Begin
   Emit($1E);
   Emit2($8B,$46); Emit(12); Emit2($8E,$D8); Emit2($8B,$76); Emit(10);
-  CallTo(RuntimeStandard[17]); Emit($1F);
+  CallTo(RtlTarget(RuntimeStandard[17])); Emit($1F);
   If Types[T].Width<>4 Then Begin
    If Types[T].Signed Then Begin
     Emit2($89,$C3); Emit($51); Emit2($B1,15); Emit2($D3,$FB); Emit($59);
    End Else Emit2($31,$DB);
-   Emit2($39,$DA); Emit2($74,3); P:=Jump; Q:=0; R:=0;
+   Emit2($39,$DA); P:=JumpIf($74); Q:=0; R:=0;
    If Types[T].Width=1 Then Begin
     Emit($3D); EmitWord(Word(Types[T].LowBound));
-    If Types[T].Signed Then Emit2($7D,3) Else Emit2($73,3); Q:=Jump;
+    If Types[T].Signed Then Q:=JumpIf($7D) Else Q:=JumpIf($73);
     Emit($3D); EmitWord(Word(Types[T].HighBound));
-    If Types[T].Signed Then Emit2($7E,3) Else Emit2($76,3); R:=Jump;
+    If Types[T].Signed Then R:=JumpIf($7E) Else R:=JumpIf($76);
    End;
    Done:=Jump; PatchJump(P,CodeSize);
    If Q<>0 Then PatchJump(Q,CodeSize); If R<>0 Then PatchJump(R,CodeSize);
@@ -5267,96 +8719,166 @@ Begin
   If Types[T].Typ<>ttString Then Fail(66,'Chaine variable attendue');
   Emit($06); Emit($57); Need(tkComma); RequireInteger(Expression); Emit($50);
   Need(tkComma); RequireInteger(Expression); Emit2($89,$C1);
-  Emit($58); Emit($5F); Emit($07); Need(tkRP); CallTo(RuntimeStandard[4]);
+  Emit($58); Emit($5F); Emit($07); Need(tkRP);
+    CallTo(RtlTarget(RuntimeStandard[4]));
  End Else If Name='INSERT' Then Begin
   Need(tkLP); StringExpression; Emit($52); Emit($50); Need(tkComma);
-  T:=VariableArgument; If Types[T].Typ<>ttString Then Fail(66,'Chaine variable attendue');
+  T:=VariableArgument; If Types[T].Typ<>ttString Then Fail(66,
+    'Chaine variable attendue');
   Emit($06); Emit($57); Need(tkComma); RequireInteger(Expression); Need(tkRP);
   Emit($5F); Emit($07); Emit($5E); Emit($5A);
   Emit($1E); Emit2($8E,$DA); Emit($BB); EmitWord(Types[T].Capacity);
-  CallTo(RuntimeStandard[5]); Emit($1F);
+  CallTo(RtlTarget(RuntimeStandard[5])); Emit($1F);
  End Else If Name='FILLCHAR' Then Begin
   Need(tkLP); T:=VariableArgument; Emit($06); Emit($57);
   Need(tkComma); RequireInteger(Expression); Emit($50);
   Need(tkComma); RequireOrdinal(Expression); Need(tkRP);
-  Emit($59); Emit($5F); Emit($07); Emit2($09,$C9); Emit2($79,2); Emit2($31,$C9); Emit2($F3,$AA);
+  Emit($59); Emit($5F); Emit($07); Emit2($09,$C9); Emit2($79,2); Emit2($31,$C9);
+    Emit2($F3,$AA);
  End Else If Name='MOVE' Then Begin
   Need(tkLP); T:=VariableArgument; Emit($06); Emit($57);
   Need(tkComma); T:=VariableArgument; Emit($06); Emit($57);
   Need(tkComma); RequireInteger(Expression); Need(tkRP);
   Emit2($89,$C1); Emit($5F); Emit($07); Emit($5E); Emit($5A);
-  Emit($1E); Emit2($8E,$DA); CallTo(RuntimeStandard[12]); Emit($1F);
+  Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeStandard[12])); Emit($1F);
  End Else StandardProcedure:=False;
 End;
 
 Procedure AssignToDesignator(Dest: Word); Forward;
+
+Function ConstToLocal(RhsPos: Word; Disp: Longint; W: Byte): Boolean;
+{ Si le second membre est "mov ax,imm" (deja emis a RhsPos) : le remplace par
+  "mov [bp+d],imm". }
+Var V: Word;
+Begin
+ ConstToLocal:=False;
+ If (W<>1) And (W<>2) Then Exit;
+ If (CodeSize-RhsPos<>3) Or (Image[RhsPos]<>$B8) Then Exit;
+ V:=Image[RhsPos+1]+Word(Image[RhsPos+2])*256; CodeSize:=RhsPos;
+ If W=1 Then Begin Emit($C6); EmitBP(0,SmallInt(Disp)); Emit(V And 255) End
+ Else Begin Emit($C7); EmitBP(0,SmallInt(Disp)); EmitWord(V) End;
+ ConstToLocal:=True;
+End;
+
 Procedure Assignment(I: Word);
 Var
- T: Byte; Dest,SourceType,SourceBuffer: Word;
+ T: Byte; Dest,SourceType,SourceBuffer,RhsPos,FixMark,RelMark,PendMark: Word;
 Begin
  If Symbols[I].Kind<>skVar Then Fail(43,'Variable attendue');
  If SimpleScalar(I) And (Token=tkAssign) Then Begin
   { Variable scalaire simple: expression puis MOV direct. }
-  Dest:=SymbolType(I); NextToken; T:=Expression;
+  Dest:=SymbolType(I); NextToken;
+  RhsPos:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount;
+    PendMark:=PendCount;
+  T:=Expression;
   If IsCharPointer(Dest) And ExtendedSyntax Then Begin
    If ExprLiteral Then Begin LiteralToPChar; T:=ttPointer End
-   Else If (T=ttArray) And IsCharArray(ExprType) Then Begin T:=ttPointer; ExprType:=12 End;
+   Else If (T=ttArray) And IsCharArray(ExprType) Then Begin T:=ttPointer;
+     ExprType:=12 End;
   End;
   SourceType:=ExprType;
-  If (OptionBits And 2<>0) And (Types[Dest].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then
+  If (OptionBits And 2<>0) And (Types[Dest].Typ In [ttInteger,ttBoolean,ttChar,
+    ttEnum]) Then
    RangeBounds(Types[Dest].LowBound,Types[Dest].HighBound,SourceType);
   If Not CompatibleTypes(Dest,SourceType) Then Fail(26,'Identite du type');
   If ExprKnown And (Types[Dest].Typ<>ttPointer) Then
-   If (ExprValue<Types[Dest].LowBound) Or (ExprValue>Types[Dest].HighBound) Then Fail(76,'Affectation constante hors limites');
+   If (ExprValue<Types[Dest].LowBound) Or (ExprValue>Types[Dest].HighBound) Then
+     Fail(76,'Affectation constante hors limites');
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
+  If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope))
+    And (FixupCount=FixMark) And
+     (RelativeCount=RelMark) And (PendCount=PendMark) And
+     ConstToLocal(RhsPos,SmallInt(Symbols[I].Addr),Types[Dest].Width) Then Exit;
   StoreScalar(I); Exit;
  End;
- Dest:=Designator(I); AssignToDesignator(Dest);
+ Dest:=Designator(I);
+ If MethodCalled Then Begin MethodCalled:=False; Exit End;
+ AssignToDesignator(Dest);
 End;
 
 Procedure AssignToDesignator(Dest: Word);
 { ES:DI = adresse de la destination de type Dest; ":= expression" suit. }
 Var
- T: Byte; SourceType,SourceBuffer,N: Word;
+ T: Byte; SourceType,SourceBuffer,N,StartRhs,FixMark,RelMark,PendMark: Word;
+   Simple,Direct: Boolean;
+ DispD: Longint;
 Begin
- Emit($06); Emit($57);
  If Dest=0 Then Fail(26,'Affectation a une variable sans type');
- If Types[Dest].Typ In [ttFile,ttText] Then Fail(26,'Un fichier ne peut pas etre affecte');
+ { variable scalaire de la frame : la destination est adressee directement par
+   [bp+d] }
+ Direct:=DirectLocalOK(Dest,False);
+ If Direct Then Begin DispD:=TakeLeaBP;
+   DirIndexed:=False End Else Begin Emit($06); Emit($57) End;
+ StartRhs:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount;
+   PendMark:=PendCount;
+ If Types[Dest].Typ In [ttFile,ttText] Then Fail(26,
+   'Un fichier ne peut pas etre affecte');
  Need(tkAssign); T:=Expression;
  If IsCharPointer(Dest) And ExtendedSyntax Then Begin
   If ExprLiteral Then Begin LiteralToPChar; T:=ttPointer End
-  Else If (T=ttArray) And IsCharArray(ExprType) Then Begin T:=ttPointer; ExprType:=12 End;
+  Else If (T=ttArray) And IsCharArray(ExprType) Then Begin T:=ttPointer;
+    ExprType:=12 End;
  End;
- SourceType:=ExprType; Emit($5F); Emit($07);
- If (OptionBits And 2<>0) And (Types[Dest].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then
+ SourceType:=ExprType;
+ { second membre simple (mov ax,imm / mov ax,[bp+d] / xor ax,ax) : ES:DI n'est
+   pas modifie, inutile de le sauver sur la pile }
+ Simple:=Not Direct And (FixupCount=FixMark) And (RelativeCount=RelMark) And
+   (PendCount=PendMark) And (CodeSize>StartRhs) And
+  (((CodeSize-StartRhs=3) And ((Image[StartRhs]=$B8) Or ((Image[StartRhs]=$8B)
+    And (Image[StartRhs+1]=$46)))) Or
+   ((CodeSize-StartRhs=4) And (Image[StartRhs]=$8B) And (Image[StartRhs+1]=$86))
+     Or
+   ((CodeSize-StartRhs=2) And (Image[StartRhs]=$31) And
+     (Image[StartRhs+1]=$C0)));
+ If Direct Then
+ Else If Simple Then Begin
+  For N:=StartRhs To CodeSize-1 Do Image[N-2]:=Image[N];
+  Dec(CodeSize,2);
+ End Else Begin Emit($5F); Emit($07) End;
+ If (OptionBits And 2<>0) And (Types[Dest].Typ In [ttInteger,ttBoolean,ttChar,
+   ttEnum]) Then
   RangeBounds(Types[Dest].LowBound,Types[Dest].HighBound,SourceType);
  If Types[Dest].Typ=ttString Then Begin
   If T=ttChar Then Begin
    Emit($26); Emit2($88,$45); Emit(1);
    Emit($26); Emit2($C6,$05); Emit(1);
   End Else If T=ttString Then Begin
-   CallTo(RuntimeStandard[81]); EmitWord(Types[Dest].Capacity); { StringAssign ES:DI := DX:AX }
+   If Types[Dest].Capacity=255 Then CallTo(RtlTarget(RuntimeStandard[83]))
+   Else Begin CallTo(RtlTarget(RuntimeStandard[81]));
+     EmitWord(Types[Dest].Capacity) End; { StringAssign ES:DI := DX:AX }
   End Else Fail(26,'Chaine attendue');
  End Else If Types[Dest].Typ=ttSet Then Begin
-  If Not CompatibleTypes(Dest,SourceType) Then Fail(26,'Affectation set incompatible');
-  Emit($06); Emit($57); SourceBuffer:=AllocData(32); NormalizeSet(SourceType,SourceBuffer);
+  If Not CompatibleTypes(Dest,SourceType) Then Fail(26,
+    'Affectation set incompatible');
+  Emit($06); Emit($57); SourceBuffer:=AllocData(32); NormalizeSet(SourceType,
+    SourceBuffer);
   TrimSet(Dest,SourceBuffer);
-  Emit($5F); Emit($07); Emit($BE); DataAddress(SourceBuffer+Types[Dest].LowBound Div 8);
+  Emit($5F); Emit($07); Emit($BE);
+    DataAddress(SourceBuffer+Types[Dest].LowBound Div 8);
   Emit($B9); EmitWord(TypeExtras[Dest].Size); Emit2($F3,$A4);
+ End Else If (Types[Dest].Typ=ttReal) And (Types[Dest].Width<>6) Then Begin
+  { Single / Double := Real : conversion vers le format IEEE }
+  ToReal(SourceType); EnsureRealRuntime;
+  Emit($52); Emit($50); Emit($06); Emit($57);
+  If Types[Dest].Width=4 Then RealCall('RTOSINGLE') Else RealCall('RTODOUBLE');
  End Else If Types[Dest].Typ=ttReal Then Begin
-  ToReal(SourceType); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6); Emit($B9); EmitWord(6); Emit2($F3,$A4); Emit($1F);
- End Else If (Types[Dest].Typ=ttArray) And (TypeExtras[Dest].ElementType=6) And (T In [ttString,ttChar]) Then Begin
+  ToReal(SourceType); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6); Emit($B9);
+    EmitWord(6); Emit2($F3,$A4); Emit($1F);
+ End Else If (Types[Dest].Typ=ttArray) And (TypeExtras[Dest].ElementType=6) And
+   (T In [ttString,ttChar]) Then Begin
   { tableau de Char := constante chaine de meme longueur (TP), ou plus courte
     avec zero terminal pour un tableau a base zero ($X+) }
   If Not ExprLiteral Then Fail(26,'Longueur de la chaine');
   N:=Length(ExprLiteralText);
-  If (N<>TypeExtras[Dest].Size) And Not (IsCharArray(Dest) And ExtendedSyntax And (N<TypeExtras[Dest].Size)) Then
+  If (N<>TypeExtras[Dest].Size) And Not (IsCharArray(Dest) And ExtendedSyntax
+    And (N<TypeExtras[Dest].Size)) Then
    Fail(26,'Longueur de la chaine');
   If T=ttChar Then Begin
    Emit($26); Emit2($88,$05);
-   If N<TypeExtras[Dest].Size Then Begin Emit($26); Emit2($C6,$45); Emit(1); Emit(0) End;
+   If N<TypeExtras[Dest].Size Then Begin Emit($26); Emit2($C6,$45); Emit(1);
+     Emit(0) End;
   End Else Begin
    Emit($1E); Emit2($8E,$DA); Emit2($89,$C6); Emit($46);
    Emit($B9); EmitWord(N); Emit2($F3,$A4);
@@ -5364,7 +8886,8 @@ Begin
    Emit($1F);
   End;
  End Else If Types[Dest].Typ In [ttArray,ttRecord] Then Begin
-  If Not CompatibleTypes(Dest,SourceType) Then Fail(26,'Affectation structuree incompatible');
+  If Not CompatibleTypes(Dest,SourceType) Then Fail(26,
+    'Affectation structuree incompatible');
   Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
   Emit($B9); EmitWord(TypeExtras[Dest].Size); Emit2($F3,$A4); Emit($1F);
  End Else
@@ -5372,11 +8895,21 @@ Begin
   If Not CompatibleTypes(Dest,SourceType) Then Fail(26,'Identite du type');
   If ExprKnown And (Types[Dest].Typ<>ttPointer) Then
    If (ExprValue<Types[Dest].LowBound) Or
-       (ExprValue>Types[Dest].HighBound) Then Fail(76,'Affectation constante hors limites');
+       (ExprValue>Types[Dest].HighBound) Then Fail(76,
+         'Affectation constante hors limites');
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
-  StoreDesignator(Dest);
+  If Direct And (FixupCount=FixMark) And (RelativeCount=RelMark) And
+    (PendCount=PendMark) And
+     ConstToLocal(StartRhs,DispD,Types[Dest].Width) Then
+  Else If Direct Then Begin
+   DirIndexed:=False;
+   If Types[Dest].Width=1 Then EmitBPDisp($88,0,DispD) Else EmitBPDisp($89,0,
+     DispD);
+   If Types[Dest].Width=4 Then EmitBPDisp($89,2,DispD+2);
+  End Else If Simple Then StoreDesignatorN(Dest,CodeSize-(StartRhs-2))
+  Else StoreDesignator(Dest);
  End;
 End;
 
@@ -5388,7 +8921,8 @@ Begin
  Emit($06); Emit($52); Emit($50);
  If Token=tkColon Then Begin
   NextToken; RequireInteger(Expression); Emit($50);
-  If Token=tkColon Then Begin NextToken; RequireInteger(Expression) End Else LoadImmediate($FFFF);
+  If Token=tkColon Then Begin NextToken;
+    RequireInteger(Expression) End Else LoadImmediate($FFFF);
  End Else Begin LoadImmediate(0); Emit($50); LoadImmediate($FFFF) End;
  Emit($50);
  If L Then Begin Emit($16); Emit2($8D,$86); EmitWord(A) End
@@ -5403,33 +8937,39 @@ End;
 Procedure WriteStatement(NewLine: Boolean);
 Var T: Byte; P,Q,A,B,BinaryType,FileType: Word; First: Boolean;
 Begin
- CallTo(RuntimeStandard[73]); { WriteBegin: selection de Output, contexte empile }
+ CallTo(RtlTarget(RuntimeStandard[73])); { WriteBegin: selection de Output,
+   contexte empile }
  BinaryType:=0; First:=True;
  If Token=tkLP Then Begin
   NextToken;
-  If (Token=tkIdent) And (TokenText='OUTPUT') And (FindLexicalSymbol('OUTPUT')=0) Then Begin
+  If (Token=tkIdent) And (TokenText='OUTPUT') And
+    (FindLexicalSymbol('OUTPUT')=0) Then Begin
    NextToken; If Token=tkComma Then NextToken;
   End;
   While Token<>tkRP Do Begin
    T:=Expression;
-   If (T=ttReal) And (BinaryType=0) Then Begin RealText; T:=ttString; ExprType:=7 End;
+   If (T=ttReal) And (BinaryType=0) Then Begin RealText; T:=ttString;
+     ExprType:=7 End;
    If First And (T In [ttFile,ttText]) Then Begin
     FileType:=ExprType; First:=False;
     If T=ttFile Then Begin
-     If NewLine Or (TypeExtras[FileType].ElementType=0) Then Fail(26,'Write exige File type, WriteLn exige Text');
+     If NewLine Or (TypeExtras[FileType].ElementType=0) Then Fail(26,
+       'Write exige File type, WriteLn exige Text');
      BinaryType:=FileType; Emit($52); Emit($50);
     End Else Begin
      Emit2($89,$C7); Emit2($8E,$C2);
-     CallTo(RuntimeStandard[49]);
-     Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
-     Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); Q:=Jump;
-     Emit($26); Emit2($83,$7D); Emit(4); Emit(1); Emit2($75,3); A:=Jump;
-     Emit($26); Emit2($8B,$05); CallTo(RuntimeStandard[40]); B:=Jump;
-     PatchJump(P,CodeSize); LoadImmediate(105); P:=Jump; { non assigne: 105 comme TP }
+     CallTo(RtlTarget(RuntimeStandard[49]));
+     Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); P:=JumpIf($74);
+     Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Q:=JumpIf($75);
+     Emit($26); Emit2($83,$7D); Emit(4); Emit(1); A:=JumpIf($75);
+     Emit($26); Emit2($8B,$05); CallTo(RtlTarget(RuntimeStandard[40])); B:=Jump;
+     PatchJump(P,CodeSize); LoadImmediate(105); P:=Jump;
+       { non assigne: 105 comme TP }
      PatchJump(Q,CodeSize); LoadImmediate(103); Q:=Jump;
-     PatchJump(A,CodeSize); LoadImmediate(105); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
-     CallTo(RuntimeStandard[24]); PatchJump(B,CodeSize);
-     If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+     PatchJump(A,CodeSize); LoadImmediate(105); PatchJump(P,CodeSize);
+       PatchJump(Q,CodeSize);
+     CallTo(RtlTarget(RuntimeStandard[24])); PatchJump(B,CodeSize);
+     If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
     End;
    End Else Begin
     First:=False;
@@ -5440,12 +8980,13 @@ Begin
   If Token=tkColon Then Begin
    Case T Of
     ttInteger:Begin
-     If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End;
-     CallTo(RuntimeStandard[16]);
+     If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,
+       $D2) Else Emit($99) End;
+     CallTo(RtlTarget(RuntimeStandard[16]));
     End;
     ttChar:StringFromChar;
     ttBoolean:Begin
-     A:=StoreString('TRUE'); B:=StoreString('FALSE'); P:=JumpZero;
+     A:=LiteralString('TRUE'); B:=LiteralString('FALSE'); P:=JumpZero;
      Emit($B8); DataAddress(A); Q:=Jump; PatchJump(P,CodeSize);
      Emit($B8); DataAddress(B); PatchJump(Q,CodeSize); Emit2($8C,$DA);
     End;
@@ -5454,31 +8995,49 @@ Begin
    End;
    Emit($52); Emit($50); NextToken; RequireInteger(Expression);
    If Token=tkColon Then Unsupported('precision de champ non reelle');
-   Emit2($89,$C1); Emit($58); Emit($5A); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
+   Emit2($89,$C1); Emit($58); Emit($5A); Emit($1E); Emit2($8E,$DA); Emit2($89,
+     $C6);
    Emit2($31,$DB); Emit2($8A,$1C); Emit2($89,$C8); Emit2($29,$D8);
-   Emit2($7F,2); Emit2($31,$C0); Emit2($89,$C1); Emit2($09,$C9); Emit2($75,3); P:=Jump;
-   Q:=CodeSize; LoadImmediate(32); CallTo(RuntimeChar); Emit($E2); Emit(Byte(Longint(Q)-CodeSize-1));
-   PatchJump(P,CodeSize); Emit2($89,$F0); CallTo(RuntimeString); Emit($1F);
+   Emit2($7F,2); Emit2($31,$C0); Emit2($89,$C1); Emit2($09,$C9); P:=JumpIf($75);
+   Q:=CodeSize; LoadImmediate(32); CallTo(RtlTarget(RuntimeChar)); Emit($E2);
+     Emit(Byte(Longint(Q)-CodeSize-1));
+   PatchJump(P,CodeSize); Emit2($89,$F0); CallTo(RtlTarget(RuntimeString));
+     Emit($1F);
   End Else Begin
   Case T Of
-  ttString:Begin Emit($1E); Emit2($8E,$DA); CallTo(RuntimeString); Emit($1F) End;
-  ttChar:CallTo(RuntimeChar);
+  ttString:Begin
+   { chaine du segment de donnees ("mov ax,imm16;
+     mov dx,ds") : DS est deja le bon segment, pas de push/pop ds }
+   If (CodeSize>=5) And (Image[CodeSize-5]=$B8) And (Image[CodeSize-2]=$8C) And
+     (Image[CodeSize-1]=$DA) And
+      (LastJumpTarget<CodeSize-2) Then Begin Dec(CodeSize,2);
+        CallTo(RtlTarget(RuntimeString)) End
+   Else Begin Emit($1E); Emit2($8E,$DA); CallTo(RtlTarget(RuntimeString));
+     Emit($1F) End;
+  End;
+  ttChar:CallTo(RtlTarget(RuntimeChar));
   ttPointer,ttArray:Begin
-   If (T=ttArray) And (Types[ExprType].Typ=ttArray) And (TypeExtras[ExprType].ElementType=6) And
+   If (T=ttArray) And (Types[ExprType].Typ=ttArray) And
+     (TypeExtras[ExprType].ElementType=6) And
       Not IsCharArray(ExprType) Then Begin
-    { Tableau de caracteres non base a zero: imprime comme une chaine de sa taille. }
-    CharArrayToString(ExprType); Emit($1E); Emit2($8E,$DA); CallTo(RuntimeString); Emit($1F);
+    { Tableau de caracteres non base a zero: imprime comme une chaine de sa
+      taille. }
+    CharArrayToString(ExprType); Emit($1E); Emit2($8E,$DA);
+      CallTo(RtlTarget(RuntimeString)); Emit($1F);
    End Else Begin
-    If Not (((T=ttPointer) And IsCharPointer(ExprType)) Or ((T=ttArray) And IsCharArray(ExprType))) Or
+    If Not (((T=ttPointer) And IsCharPointer(ExprType)) Or ((T=ttArray) And
+      IsCharArray(ExprType))) Or
        Not ExtendedSyntax Then Fail(64,'Type non imprimable');
     WriteZString;
    End;
   End;
   ttInteger:Begin
-   If Types[ExprType].Width=4 Then Begin CallTo(RuntimeStandard[16]); CallTo(RuntimeString) End
-   Else If ExprUnsigned Then CallTo(RuntimeUnsigned) Else CallTo(RuntimeInteger);
+   If Types[ExprType].Width=4 Then Begin CallTo(RtlTarget(RuntimeStandard[16]));
+     CallTo(RtlTarget(RuntimeString)) End
+   Else If ExprUnsigned Then CallTo(RtlTarget(RuntimeUnsigned)) Else
+     CallTo(RtlTarget(RuntimeInteger));
   End;
-  ttBoolean:CallTo(RuntimeBoolean);
+  ttBoolean:CallTo(RtlTarget(RuntimeBoolean));
   Else Unsupported('type non imprimable');
  End;
  End;
@@ -5490,8 +9049,9 @@ Begin
   Need(tkRP);
  End;
  If BinaryType<>0 Then Begin Emit2($83,$C4); Emit(4) End;
- If NewLine Then CallTo(RuntimeStandard[75]) Else CallTo(RuntimeStandard[74]); { WriteLnEnd / WriteEnd }
- If OptionBits And 1<>0 Then CallTo(RuntimeStandard[25]);
+ If NewLine Then CallTo(RtlTarget(RuntimeStandard[75])) Else
+   CallTo(RtlTarget(RuntimeStandard[74])); { WriteLnEnd / WriteEnd }
+ If OptionBits And 1<>0 Then CallTo(RtlTarget(RuntimeStandard[25]));
 End;
 
 Function AsmRegister(Name: TShortString; var O: TAsmOperand): Boolean;
@@ -5501,7 +9061,8 @@ Var K: Byte;
 Begin
  AsmRegister:=True;
  For K:=0 To 19 Do If Name=Names[K] Then Begin
-  If K<16 Then Begin O.Kind:=1; O.Reg:=K Mod 8; If K<8 Then O.Width:=2 Else O.Width:=1 End
+  If K<16 Then Begin O.Kind:=1; O.Reg:=K Mod 8;
+    If K<8 Then O.Width:=2 Else O.Width:=1 End
   Else Begin O.Kind:=4; O.Reg:=K-16; O.Width:=2 End;
   Exit;
  End;
@@ -5509,23 +9070,29 @@ Begin
 End;
 
 Procedure AsmStatement;
-Var Name: TShortString; A,B,C: TAsmOperand; W,K,Op,Group,InstructionLine,I,P: Word;
+Var Name: TShortString; A,B,C: TAsmOperand; W,K,Op,Group,InstructionLine,I,
+  P: Word;
  LabelCount,RefCount: Word;
- Labels: Array[1..128] Of Record Name: String[63]; Address: Word; Defined: Boolean End;
- References: Array[1..256] Of Record Position,LabelIndex: Word End;
+ Labels: Array[1..1024] Of Record Name: String[63]; Address: Word;
+   Defined: Boolean End;
+ References: Array[1..8192] Of Record Position,LabelIndex: Word;
+   Absolute: Boolean; Addend: Integer End;
  SavedAssembler: Boolean;
 Function LabelIndex(S: TShortString): Word;
 Var J: Word;
 Begin
- For J:=1 To LabelCount Do If Labels[J].Name=S Then Begin LabelIndex:=J; Exit End;
- If LabelCount=128 Then Fail(123,'Trop de labels assembleur');
- Inc(LabelCount); Labels[LabelCount].Name:=S; Labels[LabelCount].Defined:=False; LabelIndex:=LabelCount;
+ For J:=1 To LabelCount Do If Labels[J].Name=S Then Begin LabelIndex:=J;
+   Exit End;
+ If LabelCount=1024 Then Fail(123,'Trop de labels assembleur');
+ Inc(LabelCount); Labels[LabelCount].Name:=S; Labels[LabelCount].Defined:=False;
+   LabelIndex:=LabelCount;
 End;
 Function ReadName: TShortString;
 Var S: TShortString;
 Begin
  S:=''; While Token=tkAt Do Begin S:=S+'@'; NextToken End;
- If (TokenText='') And (Token=tkConstant) And (S<>'') Then Str(TokenValue,TokenText); { @1, @@2 }
+ If (TokenText='') And (Token=tkConstant) And (S<>'') Then Str(TokenValue,
+   TokenText); { @1, @@2 }
  If TokenText='' Then Fail(2,'Nom assembleur attendu');
  S:=S+TokenText; NextToken; ReadName:=S;
 End;
@@ -5535,7 +9102,8 @@ Var Id: Word;
 Begin
  AsmConstStart:=True;
  If Token In [tkConstant,tkLP,tkNot,tkMinus,tkPlus] Then Exit;
- If (TokenText='LOW') Or (TokenText='HIGH') Or (TokenText='TRUE') Or (TokenText='FALSE') Then Exit;
+ If (TokenText='LOW') Or (TokenText='HIGH') Or (TokenText='TRUE') Or
+   (TokenText='FALSE') Or (TokenText='TYPE') Then Exit;
  If (Token=tkIdent) And (Peek<>'.') And (Peek<>'[') Then Begin
   Id:=FindSymbol(TokenText);
   If (Id<>0) And (Symbols[Id].Kind=skConst) Then Exit;
@@ -5543,21 +9111,25 @@ Begin
  AsmConstStart:=False;
 End;
 Function AsmExpr(Level: Byte): Longint;
-{ Expression constante assembleur: + - OR XOR / * DIV MOD AND SHL SHR / unaires - + NOT, LOW(), HIGH(), (). }
+{ Expression constante assembleur: + - OR XOR / * DIV MOD AND SHL SHR / unaires
+  - + NOT, LOW(), HIGH(), (). }
 Var V,W: Longint; Op: Byte; Id: Word; Name: TShortString;
 Begin
  V:=0;
  Case Level Of
   0:Begin
      V:=AsmExpr(1);
-     While (Token In [tkPlus,tkMinus,tkOr,tkXor]) And (TokenLine=InstructionLine) Do Begin
+     While (Token In [tkPlus,tkMinus,tkOr,
+       tkXor]) And (TokenLine=InstructionLine) Do Begin
       Op:=Token; NextToken; W:=AsmExpr(1);
-      Case Op Of tkPlus:V:=V+W; tkMinus:V:=V-W; tkOr:V:=V Or W; Else V:=V Xor W End;
+      Case Op Of tkPlus:V:=V+W; tkMinus:V:=V-W; tkOr:V:=V Or W;
+        Else V:=V Xor W End;
      End;
     End;
   1:Begin
      V:=AsmExpr(2);
-     While (Token In [tkTimes,tkSlash,tkDiv,tkMod,tkAnd,tkShl,tkShr]) And (TokenLine=InstructionLine) Do Begin
+     While (Token In [tkTimes,tkSlash,tkDiv,tkMod,tkAnd,tkShl,
+       tkShr]) And (TokenLine=InstructionLine) Do Begin
       Op:=Token; NextToken; W:=AsmExpr(2);
       Case Op Of
        tkTimes:V:=V*W;
@@ -5574,7 +9146,8 @@ Begin
    Else If Token=tkLP Then Begin NextToken; V:=AsmExpr(0); Need(tkRP) End
    Else If Token=tkConstant Then Begin
     If TokenIsString Then Begin
-     If Length(TokenText)<>1 Then Fail(7,'Caractere immediat attendu'); V:=Ord(TokenText[1]);
+     If Length(TokenText)<>1 Then Fail(7,'Caractere immediat attendu');
+       V:=Ord(TokenText[1]);
     End Else V:=TokenValue;
     NextToken;
    End Else Begin
@@ -5583,6 +9156,13 @@ Begin
      Need(tkLP); W:=AsmExpr(0); Need(tkRP);
      If Name='LOW' Then V:=W And $FF Else V:=(W Shr 8) And $FF;
     End Else If Name='TRUE' Then V:=1 Else If Name='FALSE' Then V:=0
+    Else If Name='TYPE' Then Begin
+     { TYPE nom : taille du type ou de la variable }
+     Name:=ReadName; Id:=ResolveSymbol(Name);
+     If Symbols[Id].Kind In [skType,
+       skVar] Then V:=TypeExtras[SymbolType(Id)].Size
+     Else Fail(5,'TYPE assembleur : type ou variable attendu');
+    End
     Else Begin
      Id:=ResolveSymbol(Name);
      If Symbols[Id].Kind<>skConst Then Fail(5,'Constante assembleur attendue');
@@ -5594,16 +9174,20 @@ Begin
  AsmExpr:=V;
 End;
 Function Operand: TAsmOperand;
-Var O,R: TAsmOperand; S: TShortString; Size,Mask,Id,T,F: Word; Sign: Integer; Bracket,ForceOffset,ForceSegment,Resolved,Again: Boolean;
+Var O,R: TAsmOperand; S: TShortString; Size,Mask,Id,T,F: Word; Sign: Integer;
+  Bracket,ForceOffset,ForceSegment,Resolved,Again: Boolean;
 Procedure Members(SymbolId: Word);
 Var T,F: Word;
 Begin
  T:=SymbolType(SymbolId);
- If (Token=tkDot) And Symbols[SymbolId].ByReference Then Unsupported('champ assembleur d''un parametre var: utiliser LES/LDS');
+ If (Token=tkDot) And Symbols[SymbolId].ByReference Then
+   Unsupported('champ assembleur d''un parametre var: utiliser LES/LDS');
  While Token=tkDot Do Begin
-  If Types[T].Typ<>ttRecord Then Break; { .Word / .Byte: suffixe de taille traite plus loin }
+  If Types[T].Typ<>ttRecord Then Break;
+    { .Word / .Byte: suffixe de taille traite plus loin }
   NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
-  F:=TypeExtras[T].FirstField; While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+  F:=TypeExtras[T].FirstField;
+    While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
   If F=0 Then Fail(3,'Champ assembleur inconnu');
   Inc(O.Displacement,Fields[F].Offset); T:=Fields[F].TypeId; NextToken;
  End;
@@ -5614,68 +9198,123 @@ Begin
   If Symbols[SymbolId].ByReference Then O.Width:=4;
  End;
 End;
+Procedure TypeChain;
+{ Jeton courant = nom d'un type enregistrement (apres le point) :
+  .Type.Champ.Sous }
+Var T2,F2: Word;
+Begin
+ F2:=0; If Token=tkIdent Then F2:=FindSymbol(TokenText);
+ If (F2=0) Or (Symbols[F2].Kind<>skType) Then Fail(3,
+   'Type assembleur inconnu: '+TokenText);
+ T2:=Symbols[F2].TypeId; NextToken;
+ While Token=tkDot Do Begin
+  If Types[T2].Typ<>ttRecord Then Break;
+  NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
+  F2:=TypeExtras[T2].FirstField;
+    While (F2<>0) And (Fields[F2].Name<>TokenText) Do F2:=Fields[F2].Next;
+  If F2=0 Then Fail(3,'Champ assembleur inconnu');
+  Inc(O.Displacement,Fields[F2].Offset); T2:=Fields[F2].TypeId; NextToken;
+ End;
+ If Size=0 Then Begin
+  O.Width:=Types[T2].Width;
+  If Types[T2].Typ=ttArray Then
+    O.Width:=Types[TypeExtras[T2].ElementType].Width;
+  If Types[T2].Typ=ttString Then O.Width:=1;
+ End;
+End;
 Procedure Atom;
 Begin
  If Token=tkConstant Then Begin
-  If TokenIsString Then Begin If Length(TokenText)<>1 Then Fail(7,'Caractere immediat attendu'); O.Displacement:=O.Displacement+Sign*Ord(TokenText[1]) End
+  If TokenIsString Then Begin If Length(TokenText)<>1 Then Fail(7,
+    'Caractere immediat attendu');
+      O.Displacement:=O.Displacement+Sign*Ord(TokenText[1]) End
   Else O.Displacement:=O.Displacement+Sign*TokenValue;
   NextToken;
  End Else Begin
   S:=ReadName; FillChar(R,SizeOf(R),0);
+  If (S[1]='@') And Not AsmRegister(S,R) And (FindSymbol(S)=0) Then Begin
+   { etiquette assembleur locale utilisee comme deplacement : [@Etiquette] }
+   If O.LabelRef Then Fail(5,'Une seule etiquette par operande');
+   O.LabelRef:=True; O.Name:=S;
+  End Else
   If AsmRegister(S,R) Then Begin
-   If (R.Kind<>1) Or (R.Width<>2) Or Not (R.Reg In [3,5,6,7]) Or (Sign<0) Then Fail(5,'Registre d''adresse 8086 invalide');
+   If (R.Kind<>1) Or (R.Width<>2) Or Not (R.Reg In [3,5,6,
+     7]) Or (Sign<0) Then Fail(5,'Registre d''adresse 8086 invalide');
    Case R.Reg Of 3:Id:=1; 5:Id:=2; 6:Id:=4; 7:Id:=8 End;
-   If Mask And Id<>0 Then Fail(5,'Registre d''adresse duplique'); Mask:=Mask Or Id;
+   If Mask And Id<>0 Then Fail(5,'Registre d''adresse duplique');
+     Mask:=Mask Or Id;
   End Else Begin
    Id:=ResolveSymbol(S);
-   If Symbols[Id].Kind=skConst Then O.Displacement:=O.Displacement+Sign*Symbols[Id].Value
+   If Symbols[Id].Kind=skConst Then
+     O.Displacement:=O.Displacement+Sign*Symbols[Id].Value
+   Else If Symbols[Id].Kind=skProc Then Begin
+    { [Proc + BX] : adresse dans le segment de code }
+    If (O.CodeSym<>0) Or (Sign<0) Then Fail(5,'Adresse assembleur invalide');
+    O.CodeSym:=Id; NoteRef(Id);
+    If Token=tkDot Then Begin NextToken; TypeChain End;
+   End
    Else Begin
-    If (Symbols[Id].Kind<>skVar) Or (Sign<0) Or (O.Sym<>0) Then Fail(5,'Adresse assembleur invalide');
-    If Symbols[Id].Native Then Unsupported('operande assembleur de donnees Borland');
+    If (Symbols[Id].Kind<>skVar) Or (Sign<0) Or (O.Sym<>0) Then Fail(5,
+      'Adresse assembleur invalide');
+    If Symbols[Id].Native Then
+      Unsupported('operande assembleur de donnees Borland');
     If Symbols[Id].Local Then Begin
-     If Symbols[Id].Scope<>CurrentScope Then Unsupported('capture de variable assembleur imbriquee');
+     If Symbols[Id].Scope<>CurrentScope Then
+       Unsupported('capture de variable assembleur imbriquee');
      Mask:=Mask Or 2; O.Displacement:=O.Displacement+SmallInt(Symbols[Id].Addr);
     End Else O.Sym:=Id;
-    If Size=0 Then Begin O.Width:=Symbols[Id].Width; If Symbols[Id].ByReference Then O.Width:=4 End;
+    If Size=0 Then Begin O.Width:=Symbols[Id].Width;
+      If Symbols[Id].ByReference Then O.Width:=4 End;
     Members(Id);
    End;
   End;
  End;
 End;
 Begin
- FillChar(O,SizeOf(O),0); Size:=0; Mask:=0; Sign:=1; ForceOffset:=False; ForceSegment:=False;
+ FillChar(O,SizeOf(O),0); Size:=0; Mask:=0; Sign:=1; ForceOffset:=False;
+   ForceSegment:=False;
  If TokenText='OFFSET' Then Begin ForceOffset:=True; NextToken End
  Else If TokenText='SEG' Then Begin ForceSegment:=True; NextToken End;
- If TokenText='SHORT' Then NextToken Else If (TokenText='NEAR') Or (TokenText='FAR') Then NextToken;
+ If TokenText='SHORT' Then NextToken Else If (TokenText='NEAR') Or
+   (TokenText='FAR') Then NextToken;
  If TokenText='BYTE' Then Size:=1 Else If TokenText='WORD' Then Size:=2
- Else If TokenText='DWORD' Then Size:=4 Else If TokenText='QWORD' Then Size:=8 Else If TokenText='TBYTE' Then Size:=10;
+ Else If TokenText='DWORD' Then Size:=4 Else If TokenText='QWORD' Then Size:=8
+   Else If TokenText='TBYTE' Then Size:=10;
  If Size<>0 Then Begin NextToken; If TokenText='PTR' Then NextToken End;
  O.Width:=Size;
  If (TokenText='ST') Then Begin
   NextToken; O.Kind:=6; O.Reg:=0;
-  If Token=tkLP Then Begin NextToken; If (Token<>tkConstant) Or (TokenValue<0) Or (TokenValue>7) Then Fail(7,'ST index 0..7'); O.Reg:=TokenValue; NextToken; Need(tkRP) End;
+  If Token=tkLP Then Begin NextToken;
+    If (Token<>tkConstant) Or (TokenValue<0) Or (TokenValue>7) Then Fail(7,
+      'ST index 0..7'); O.Reg:=TokenValue; NextToken; Need(tkRP) End;
   Operand:=O; Exit;
  End;
- If (Size=0) And Not ForceOffset And Not ForceSegment And AsmConstStart Then Begin
+ If (Size=0) And Not ForceOffset And Not ForceSegment And AsmConstStart Then
+   Begin
   O.Kind:=3; O.Displacement:=AsmExpr(0); Operand:=O; Exit;
  End;
- If Token=tkMinus Then Begin Sign:=-1; NextToken End Else If Token=tkPlus Then NextToken;
+ If Token=tkMinus Then Begin Sign:=-1;
+   NextToken End Else If Token=tkPlus Then NextToken;
  If (Token<>tkLB) And (Token<>tkAt) And (TokenText<>'') Then Begin
   S:=TokenText; FillChar(R,SizeOf(R),0);
   If AsmRegister(S,R) Then Begin
    NextToken;
    If (R.Kind=4) And (Token=tkColon) Then Begin
     O.Segment:=R.Reg+1; NextToken;
-   End Else Begin If Size<>0 Then Fail(5,'PTR sur registre'); Operand:=R; Exit End;
+   End Else Begin If Size<>0 Then Fail(5,'PTR sur registre'); Operand:=R;
+     Exit End;
   End;
  End;
  Bracket:=Token=tkLB;
  If Bracket Then Begin NextToken; O.Kind:=2; Atom;
-  While Token In [tkPlus,tkMinus] Do Begin If Token=tkMinus Then Sign:=-1 Else Sign:=1; NextToken; Atom End;
+  While Token In [tkPlus,
+    tkMinus] Do Begin If Token=tkMinus Then Sign:=-1 Else Sign:=1; NextToken;
+      Atom End;
   Need(tkRB);
  End Else Begin
   S:=ReadName; Resolved:=False;
-  If (Token=tkDot) And (FindBuildUnit(S)<>0) Then Begin Id:=ResolveSymbol(S); Resolved:=True End Else Id:=FindSymbol(S);
+  If (Token=tkDot) And (FindBuildUnit(S)<>0) Then Begin Id:=ResolveSymbol(S);
+    Resolved:=True End Else Id:=FindSymbol(S);
   If S='@RESULT' Then Begin
    { @Result: variable resultat de la fonction (TP 7) }
    Id:=Symbols[Scopes[RealScope(CurrentScope)].ProcSymbol].ResultSymbol;
@@ -5683,28 +9322,66 @@ Begin
    O.Kind:=2; Mask:=2; O.Displacement:=SmallInt(Symbols[Id].Addr);
    If Size=0 Then O.Width:=Symbols[Id].Width;
   End Else
-  If Id=0 Then Begin O.Kind:=5; O.Name:=S End
+  If Id=0 Then Begin
+   O.Kind:=5; O.Name:=S;
+   { etiquette.Word[BX],
+     etiquette[BX] : operande memoire dans le segment de code }
+   If (Token=tkDot) Or (Token=tkLB) Or (Size<>0) Or (O.Segment<>0) Then Begin
+     O.Kind:=2; O.LabelRef:=True; O.Name:=S End;
+  End
   Else Begin
    If Not Resolved Then Id:=ResolveSymbol(S);
-   If Symbols[Id].Kind=skConst Then Begin O.Kind:=3; O.Displacement:=Sign*Symbols[Id].Value End
-   Else If Symbols[Id].Kind=skProc Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S End
-   Else If Symbols[Id].Kind=skLabel Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S End
+   If Symbols[Id].Kind=skConst Then Begin O.Kind:=3;
+     O.Displacement:=Sign*Symbols[Id].Value End
+   Else If (Symbols[Id].Kind=skProc) And (Token=tkDot) Then Begin
+    { Proc.Type.Champ : champ d'un enregistrement place dans le code de la
+      procedure }
+    O.Kind:=2; O.CodeSym:=Id; O.Name:=S; T:=0; NoteRef(Id);
+    NextToken; If Token<>tkIdent Then Fail(2,'Type assembleur attendu');
+    F:=FindSymbol(TokenText);
+    If (F<>0) And (Symbols[F].Kind=skType) Then Begin
+     T:=Symbols[F].TypeId; NextToken;
+     While Token=tkDot Do Begin
+      If Types[T].Typ<>ttRecord Then Break;
+      NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
+      F:=TypeExtras[T].FirstField;
+        While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+      If F=0 Then Fail(3,'Champ assembleur inconnu');
+      Inc(O.Displacement,Fields[F].Offset); T:=Fields[F].TypeId; NextToken;
+     End;
+     If Size=0 Then Begin
+      O.Width:=Types[T].Width;
+      If Types[T].Typ=ttArray Then
+        O.Width:=Types[TypeExtras[T].ElementType].Width;
+      If Types[T].Typ=ttString Then O.Width:=1;
+     End;
+    End Else Fail(3,'Type ou champ assembleur inconnu: '+TokenText);
+   End
+   Else If Symbols[Id].Kind=skProc Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S;
+     NoteRef(Id) End
+   Else If Symbols[Id].Kind=skLabel Then Begin O.Kind:=5; O.Sym:=Id;
+     O.Name:=S End
    Else If Symbols[Id].Kind=skVar Then Begin
     O.Kind:=2;
-    If Symbols[Id].Native Then Unsupported('operande assembleur de donnees Borland');
+    If Symbols[Id].Native Then
+      Unsupported('operande assembleur de donnees Borland');
     If Symbols[Id].Local Then Begin
-     If Symbols[Id].Scope<>CurrentScope Then Unsupported('capture de variable assembleur imbriquee');
+     If Symbols[Id].Scope<>CurrentScope Then
+       Unsupported('capture de variable assembleur imbriquee');
      Mask:=2; O.Displacement:=SmallInt(Symbols[Id].Addr);
     End Else O.Sym:=Id;
-    If Size=0 Then Begin O.Width:=Symbols[Id].Width; If Symbols[Id].ByReference Then O.Width:=4 End;
+    If Size=0 Then Begin O.Width:=Symbols[Id].Width;
+      If Symbols[Id].ByReference Then O.Width:=4 End;
     Members(Id);
-   End Else If (Symbols[Id].Kind=skType) And (Token=tkDot) And ForceOffset Then Begin
+   End Else If (Symbols[Id].Kind=skType) And (Token=tkDot) And ForceOffset Then
+     Begin
     { OFFSET Type.Champ: deplacement constant du champ }
     T:=Symbols[Id].TypeId; O.Kind:=3; ForceOffset:=False;
     While Token=tkDot Do Begin
      If Types[T].Typ<>ttRecord Then Fail(26,'Champ assembleur hors record');
      NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
-     F:=TypeExtras[T].FirstField; While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+     F:=TypeExtras[T].FirstField;
+       While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
      If F=0 Then Fail(3,'Champ assembleur inconnu');
      Inc(O.Displacement,Fields[F].Offset); T:=Fields[F].TypeId; NextToken;
     End;
@@ -5712,22 +9389,47 @@ Begin
   End;
   If Token In [tkPlus,tkMinus] Then Begin
    If Token=tkMinus Then Sign:=-1 Else Sign:=1; NextToken;
-   If Token<>tkConstant Then Fail(7,'Deplacement constant attendu'); O.Displacement:=O.Displacement+Sign*TokenValue; NextToken;
+   If Token<>tkConstant Then Fail(7,'Deplacement constant attendu');
+     O.Displacement:=O.Displacement+Sign*TokenValue; NextToken;
   End;
  End;
  Repeat
   Again:=False;
   If (O.Kind=2) And (Token=tkLB) Then Begin
    NextToken; Sign:=1; Atom;
-   While Token In [tkPlus,tkMinus] Do Begin If Token=tkMinus Then Sign:=-1 Else Sign:=1; NextToken; Atom End;
+   While Token In [tkPlus,
+     tkMinus] Do Begin If Token=tkMinus Then Sign:=-1 Else Sign:=1; NextToken;
+       Atom End;
    Need(tkRB); Again:=True;
   End;
-  If (O.Kind=2) And (Token=tkDot) And (Peek In ['B','b','W','w','D','d']) Then Begin
-   { suffixe de taille: [BX].Word, [DI+2].Byte, Var.Word[2] }
+  If (O.Kind=2) And (Token=tkDot) Then Begin
+   { suffixe de taille: [BX].Word, [DI+2].Byte, Var.Word[2] ;
+     ou champ de type : [SI].Type.Champ, [BX].Type.Champ.Sous }
    NextToken;
-   If TokenText='BYTE' Then O.Width:=1 Else If TokenText='WORD' Then O.Width:=2
-   Else If TokenText='DWORD' Then O.Width:=4 Else Fail(5,'Suffixe de taille invalide');
-   NextToken; Again:=True;
+   If TokenText='BYTE' Then Begin O.Width:=1;
+     NextToken End Else If TokenText='WORD' Then Begin O.Width:=2; NextToken End
+   Else If TokenText='DWORD' Then Begin O.Width:=4; NextToken End
+   Else Begin
+    F:=0; If Token=tkIdent Then F:=FindSymbol(TokenText);
+    If (F=0) Or (Symbols[F].Kind<>skType) Then Fail(5,
+      'Suffixe de taille invalide');
+    T:=Symbols[F].TypeId; NextToken;
+    While Token=tkDot Do Begin
+     If Types[T].Typ<>ttRecord Then Break;
+     NextToken; If Token<>tkIdent Then Fail(2,'Champ assembleur attendu');
+     F:=TypeExtras[T].FirstField;
+       While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+     If F=0 Then Fail(3,'Champ assembleur inconnu');
+     Inc(O.Displacement,Fields[F].Offset); T:=Fields[F].TypeId; NextToken;
+    End;
+    If Size=0 Then Begin
+     O.Width:=Types[T].Width;
+     If Types[T].Typ=ttArray Then
+       O.Width:=Types[TypeExtras[T].ElementType].Width;
+     If Types[T].Typ=ttString Then O.Width:=1;
+    End;
+   End;
+   Again:=True;
   End;
  Until Not Again;
  If O.Kind=2 Then Begin
@@ -5738,13 +9440,29 @@ Begin
  End;
  If ForceOffset Or ForceSegment Then Begin
   If (O.Kind=2) And O.Direct And (O.Sym<>0) Then Begin
-   O.Kind:=3; O.Width:=2; O.OffsetValue:=ForceOffset; O.SegmentValue:=ForceSegment;
+   O.Kind:=3; O.Width:=2; O.OffsetValue:=ForceOffset;
+     O.SegmentValue:=ForceSegment;
   End Else If ForceOffset And (O.Kind=2) And (O.Sym=0) And (Mask=2) Then Begin
-   O.Kind:=3; O.Width:=2;  { OFFSET variable locale: deplacement BP constant (comme TP) }
+   O.Kind:=3; O.Width:=2;
+     { OFFSET variable locale: deplacement BP constant (comme TP) }
+  End Else If ForceOffset And (O.Kind=5) And (O.Sym=0) Then Begin
+   O.Kind:=3; O.Width:=2; O.LabelRef:=True;  { OFFSET @etiquette }
+  End Else If ForceOffset And (O.Kind=2) And O.LabelRef Then Begin
+   O.Kind:=3; O.Width:=2;  { OFFSET @etiquette[+n] }
+  End Else If ForceOffset And (O.Kind=2) And (O.CodeSym<>0) Then Begin
+   O.Kind:=3; O.Width:=2; O.CodeValue:=True; O.Sym:=O.CodeSym;
+     { OFFSET Proc.Type.Champ }
   End Else If ForceOffset And (O.Kind=5) And (O.Sym<>0) Then Begin
-   O.Kind:=3; O.Width:=2; O.CodeValue:=True;  { OFFSET procedure: adresse dans le code }
+   O.Kind:=3; O.Width:=2; O.CodeValue:=True;
+     { OFFSET procedure: adresse dans le code }
+  End Else If ForceSegment And (O.Kind=5) And (O.Sym=0) And (O.Name='@DATA')
+    Then Begin
+   O.Kind:=3; O.Width:=2; O.DataSegment:=True;
+     { SEG @Data : segment de donnees }
   End Else Unsupported('OFFSET/SEG sans variable globale');
  End;
+ If (O.Kind=2) And (O.LabelRef Or (O.CodeSym<>0)) And (O.Segment=0) Then
+   O.Segment:=2; { CS: automatique }
  Operand:=O;
 End;
 Procedure Prefix(O: TAsmOperand);
@@ -5756,47 +9474,87 @@ Begin
  If O.Kind=1 Then Begin Emit($C0+RegField*8+O.Reg); Exit End;
  If O.Kind<>2 Then Fail(5,'Registre ou memoire attendu');
  If O.Direct Then Mode:=0
- Else If O.Sym<>0 Then Mode:=2
+ Else If (O.Sym<>0) Or O.LabelRef Or (O.CodeSym<>0) Then Mode:=2
  Else If (O.Displacement=0) And (O.RM<>6) Then Mode:=0
- Else If (O.Displacement>=-128) And (O.Displacement<=127) Then Mode:=1 Else Mode:=2;
+ Else If (O.Displacement>=-128) And (O.Displacement<=127) Then Mode:=1 Else
+   Mode:=2;
  Emit(Mode*64+RegField*8+O.RM);
  If O.Sym<>0 Then DataAddress(Word(Symbols[O.Sym].Addr+O.Displacement))
+ Else If O.LabelRef Then Begin
+  If RefCount=8192 Then Fail(123,'Trop de references assembleur');
+  Inc(RefCount); References[RefCount].Position:=CodeSize;
+    References[RefCount].LabelIndex:=LabelIndex(O.Name);
+  References[RefCount].Absolute:=True;
+    References[RefCount].Addend:=O.Displacement; EmitWord(0);
+ End
+ Else If O.CodeSym<>0 Then Begin
+  If CrossSegment(O.CodeSym) Then EmitProcOffsetWord(O.CodeSym,O.Displacement)
+  Else If Symbols[O.CodeSym].Unresolved Then Begin AddPending(CodeSize,
+    O.CodeSym,True,O.Displacement-UnitBias(Symbols[O.CodeSym].Owner));
+      EmitWord(0) End
+  Else
+    EmitWord(Word(Longint(Symbols[O.CodeSym].Addr)+O.Displacement-
+      UnitBias(Symbols[O.CodeSym].Owner)));
+ End
  Else If O.Direct Or (Mode=2) Then EmitWord(Word(O.Displacement))
  Else If Mode=1 Then Emit(Byte(O.Displacement));
 End;
 Procedure Immediate(O: TAsmOperand; Size: Word);
 Begin
  If O.Kind<>3 Then Fail(5,'Operande immediat attendu');
- If O.SegmentValue Then Begin AddSegmentRelocation(CodeSize,0); EmitWord(0) End
- Else If O.CodeValue Then Begin
-  If CurrentUnit<>0 Then Unsupported('OFFSET de procedure dans une unite');
-  If Not Symbols[O.Sym].HasBody Then Fail(5,'Procedure non encore definie');
-  EmitWord(Symbols[O.Sym].Addr);
+ If O.LabelRef Then Begin
+  If RefCount=8192 Then Fail(123,'Trop de references assembleur');
+  Inc(RefCount); References[RefCount].Position:=CodeSize;
+    References[RefCount].LabelIndex:=LabelIndex(O.Name);
+  References[RefCount].Absolute:=True;
+    References[RefCount].Addend:=O.Displacement; EmitWord(0);
  End
- Else If O.OffsetValue Then DataAddress(Word(Symbols[O.Sym].Addr+O.Displacement))
- Else If Size=1 Then Begin If (O.Displacement<-128) Or (O.Displacement>255) Then Fail(76,'Immediat byte hors limites'); Emit(Byte(O.Displacement)) End
- Else Begin If (O.Displacement<-32768) Or (O.Displacement>65535) Then Fail(76,'Immediat word hors limites'); EmitWord(Word(O.Displacement)) End;
+ Else If O.DataSegment Then Begin AddSegmentRelocation(CodeSize,3);
+   EmitWord(0) End
+ Else If O.SegmentValue Then Begin AddSegmentRelocation(CodeSize,0);
+   EmitWord(0) End
+ Else If O.CodeValue Then Begin
+  If CrossSegment(O.Sym) Then EmitProcOffsetWord(O.Sym,O.Displacement)
+  Else If Symbols[O.Sym].Unresolved Then Begin AddPending(CodeSize,O.Sym,True,
+    O.Displacement-UnitBias(Symbols[O.Sym].Owner)); EmitWord(0) End
+  Else
+    EmitWord(Word(Longint(Symbols[O.Sym].Addr)+O.Displacement-
+      UnitBias(Symbols[O.Sym].Owner)));
+ End
+ Else If O.OffsetValue Then
+   DataAddress(Word(Symbols[O.Sym].Addr+O.Displacement))
+ Else If Size=1 Then Begin If (O.Displacement<-128) Or (O.Displacement>255) Then
+   Fail(76,'Immediat byte hors limites'); Emit(Byte(O.Displacement)) End
+ Else Begin If (O.Displacement<-32768) Or (O.Displacement>65535) Then Fail(76,
+   'Immediat word hors limites'); EmitWord(Word(O.Displacement)) End;
 End;
 Procedure MatchWidth;
 Begin
  If A.Width=0 Then A.Width:=B.Width; If B.Width=0 Then B.Width:=A.Width;
- If (A.Width<>B.Width) Or Not (A.Width In [1,2]) Then Fail(26,'Largeurs assembleur incompatibles'); W:=A.Width-1;
+ If (A.Width<>B.Width) Or Not (A.Width In [1,2]) Then Fail(26,
+   'Largeurs assembleur incompatibles'); W:=A.Width-1;
 End;
 Procedure RelativeTarget(O: TAsmOperand);
 Begin
  If O.Kind<>5 Then Fail(5,'Label assembleur attendu');
  If (O.Sym<>0) And (Symbols[O.Sym].Kind=skLabel) Then Begin
   { etiquette Pascal: resolue par DefineLabel/CheckLabels comme un GOTO }
-  If Symbols[O.Sym].HasBody Then Begin P:=CodeSize; EmitWord(0); PatchJump(P,Symbols[O.Sym].Addr) End
+  If Symbols[O.Sym].HasBody Then Begin P:=CodeSize; EmitWord(0); PatchJump(P,
+    Symbols[O.Sym].Addr) End
   Else Begin
    If LabelJumpCount=512 Then Fail(123,'Trop de sauts');
-   Inc(LabelJumpCount); LabelJumps[LabelJumpCount].Sym:=O.Sym; LabelJumps[LabelJumpCount].Position:=CodeSize; EmitWord(0);
+   Inc(LabelJumpCount); LabelJumps[LabelJumpCount].Sym:=O.Sym;
+     LabelJumps[LabelJumpCount].Position:=CodeSize; EmitWord(0);
   End;
  End Else
- If O.Sym<>0 Then Begin If Symbols[O.Sym].Native Then Unsupported('saut assembleur vers Borland'); P:=CodeSize; EmitWord(0); PatchJump(P,Symbols[O.Sym].Addr) End
+ If O.Sym<>0 Then Begin If Symbols[O.Sym].Native Then
+   Unsupported('saut assembleur vers Borland'); P:=CodeSize; EmitWord(0);
+     PatchJump(P,Symbols[O.Sym].Addr) End
  Else Begin
-  If RefCount=256 Then Fail(123,'Trop de references assembleur');
-  Inc(RefCount); References[RefCount].Position:=CodeSize; References[RefCount].LabelIndex:=LabelIndex(O.Name); EmitWord(0);
+  If RefCount=8192 Then Fail(123,'Trop de references assembleur');
+  Inc(RefCount); References[RefCount].Position:=CodeSize;
+    References[RefCount].LabelIndex:=LabelIndex(O.Name);
+      References[RefCount].Absolute:=False; EmitWord(0);
  End;
 End;
 Function Condition(S: TShortString): Byte;
@@ -5805,15 +9563,21 @@ Begin
  If S='JO' Then Condition:=$70 Else If S='JNO' Then Condition:=$71
  Else If (S='JB') Or (S='JC') Or (S='JNAE') Then Condition:=$72
  Else If (S='JAE') Or (S='JNC') Or (S='JNB') Then Condition:=$73
- Else If (S='JE') Or (S='JZ') Then Condition:=$74 Else If (S='JNE') Or (S='JNZ') Then Condition:=$75
- Else If (S='JBE') Or (S='JNA') Then Condition:=$76 Else If (S='JA') Or (S='JNBE') Then Condition:=$77
+ Else If (S='JE') Or (S='JZ') Then Condition:=$74 Else If (S='JNE') Or (S='JNZ')
+   Then Condition:=$75
+ Else If (S='JBE') Or (S='JNA') Then Condition:=$76 Else If (S='JA') Or
+   (S='JNBE') Then Condition:=$77
  Else If S='JS' Then Condition:=$78 Else If S='JNS' Then Condition:=$79
- Else If (S='JP') Or (S='JPE') Then Condition:=$7A Else If (S='JNP') Or (S='JPO') Then Condition:=$7B
- Else If (S='JL') Or (S='JNGE') Then Condition:=$7C Else If (S='JGE') Or (S='JNL') Then Condition:=$7D
- Else If (S='JLE') Or (S='JNG') Then Condition:=$7E Else If (S='JG') Or (S='JNLE') Then Condition:=$7F;
+ Else If (S='JP') Or (S='JPE') Then Condition:=$7A Else If (S='JNP') Or
+   (S='JPO') Then Condition:=$7B
+ Else If (S='JL') Or (S='JNGE') Then Condition:=$7C Else If (S='JGE') Or
+   (S='JNL') Then Condition:=$7D
+ Else If (S='JLE') Or (S='JNG') Then Condition:=$7E Else If (S='JG') Or
+   (S='JNLE') Then Condition:=$7F;
 End;
 Procedure Need286;
-Begin If OptionBits And $2000=0 Then Unsupported('instruction 286 exige $G+'); UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 2 End;
+Begin If OptionBits And $2000=0 Then Unsupported('instruction 286 exige $G+');
+  UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 2 End;
 Procedure EmulatedFPU;
 Var Operation,Width,Index,G: Word; Memory: Boolean;
 Begin
@@ -5824,58 +9588,88 @@ Begin
  Else If (Name='FLD1') Or (Name='FLDZ') Or (Name='FLDPI') Or (Name='FLDL2T') Or
   (Name='FLDL2E') Or (Name='FLDLG2') Or (Name='FLDLN2') Then Begin
   Operation:=3; If Name='FLDZ' Then Index:=1 Else If Name='FLDPI' Then Index:=2
-  Else If Name='FLDL2T' Then Index:=3 Else If Name='FLDL2E' Then Index:=4 Else If Name='FLDLG2' Then Index:=5 Else If Name='FLDLN2' Then Index:=6;
- End Else If (Name='FSQRT') Or (Name='FABS') Or (Name='FCHS') Or (Name='FTST') Or
+  Else If Name='FLDL2T' Then Index:=3 Else If Name='FLDL2E' Then Index:=4 Else
+    If Name='FLDLG2' Then Index:=5 Else If Name='FLDLN2' Then Index:=6;
+ End Else If (Name='FSQRT') Or (Name='FABS') Or (Name='FCHS') Or (Name='FTST')
+   Or
   (Name='FXAM') Or (Name='FRNDINT') Or (Name='F2XM1') Then Begin
-  Operation:=4; If Name='FABS' Then Index:=1 Else If Name='FCHS' Then Index:=2 Else If Name='FTST' Then Index:=3
-  Else If Name='FXAM' Then Index:=4 Else If Name='FRNDINT' Then Index:=5 Else If Name='F2XM1' Then Index:=6;
- End Else If Name='FCOMPP' Then Operation:=19 Else If Name='FSCALE' Then Operation:=20
+  Operation:=4;
+    If Name='FABS' Then Index:=1 Else If Name='FCHS' Then Index:=2 Else If
+      Name='FTST' Then Index:=3
+  Else If Name='FXAM' Then Index:=4 Else If Name='FRNDINT' Then Index:=5 Else If
+    Name='F2XM1' Then Index:=6;
+ End Else If Name='FCOMPP' Then Operation:=19 Else If Name='FSCALE' Then
+   Operation:=20
  Else If Name='FPREM' Then Operation:=21 Else If Name='FYL2X' Then Operation:=22
- Else If Name='FYL2XP1' Then Operation:=23 Else If Name='FPATAN' Then Operation:=24
- Else If Name='FPTAN' Then Operation:=25 Else If Name='FXTRACT' Then Operation:=26
- Else If Name='FDECSTP' Then Operation:=27 Else If Name='FINCSTP' Then Operation:=28
+ Else If Name='FYL2XP1' Then Operation:=23 Else If Name='FPATAN' Then
+   Operation:=24
+ Else If Name='FPTAN' Then Operation:=25 Else If Name='FXTRACT' Then
+   Operation:=26
+ Else If Name='FDECSTP' Then Operation:=27 Else If Name='FINCSTP' Then
+   Operation:=28
  Else Begin
-  If (Name='FADDP') Or (Name='FMULP') Or (Name='FSUBP') Or (Name='FSUBRP') Or (Name='FDIVP') Or (Name='FDIVRP') Then Begin
+  If (Name='FADDP') Or (Name='FMULP') Or (Name='FSUBP') Or (Name='FSUBRP') Or
+    (Name='FDIVP') Or (Name='FDIVRP') Then Begin
    FillChar(A,SizeOf(A),0); A.Kind:=6; A.Reg:=1;
    If (TokenLine=InstructionLine) And Not (Token In [tkEnd,tkSemi]) Then Begin
-    A:=Operand; If Token=tkComma Then Begin NextToken; B:=Operand; If (B.Kind<>6) Or (B.Reg<>0) Then Fail(5,'ST(0) attendu') End;
+    A:=Operand; If Token=tkComma Then Begin NextToken; B:=Operand;
+      If (B.Kind<>6) Or (B.Reg<>0) Then Fail(5,'ST(0) attendu') End;
    End;
    If A.Kind<>6 Then Fail(5,'Registre ST attendu'); G:=0;
-   If Name='FMULP' Then G:=1 Else If Name='FSUBP' Then G:=4 Else If Name='FSUBRP' Then G:=5
+   If Name='FMULP' Then G:=1 Else If Name='FSUBP' Then G:=4 Else If
+     Name='FSUBRP' Then G:=5
    Else If Name='FDIVP' Then G:=6 Else If Name='FDIVRP' Then G:=7;
    Operation:=15; Index:=G+A.Reg*8+128+256;
   End Else Begin
    A:=Operand;
-   If (Name='FLD') Or (Name='FST') Or (Name='FSTP') Or (Name='FILD') Or (Name='FIST') Or (Name='FISTP') Then Begin
-    If Name='FLD' Then Operation:=5 Else If Name='FST' Then Operation:=6 Else If Name='FSTP' Then Operation:=7
-    Else If Name='FILD' Then Operation:=8 Else If Name='FIST' Then Operation:=9 Else Operation:=10;
+   If (Name='FLD') Or (Name='FST') Or (Name='FSTP') Or (Name='FILD') Or
+     (Name='FIST') Or (Name='FISTP') Then Begin
+    If Name='FLD' Then Operation:=5 Else If Name='FST' Then Operation:=6 Else If
+      Name='FSTP' Then Operation:=7
+    Else If Name='FILD' Then Operation:=8 Else If Name='FIST' Then Operation:=9
+      Else Operation:=10;
     If A.Kind=6 Then Begin
-     If Operation=5 Then Operation:=11 Else If Operation=6 Then Operation:=12 Else If Operation=7 Then Operation:=13 Else Fail(5,'Memoire entiere attendue');
+     If Operation=5 Then Operation:=11 Else If Operation=6 Then Operation:=12
+       Else If Operation=7 Then Operation:=13 Else Fail(5,
+         'Memoire entiere attendue');
      Index:=A.Reg;
     End Else Begin
      Memory:=True; Width:=A.Width;
-     If (Operation<=7) And Not (Width In [4,8,10]) Then Fail(26,'Taille reelle 8087');
-     If (Operation>=8) And Not (Width In [2,4,8]) Then Fail(26,'Taille entiere 8087');
+     If (Operation<=7) And Not (Width In [4,8,10]) Then Fail(26,
+       'Taille reelle 8087');
+     If (Operation>=8) And Not (Width In [2,4,8]) Then Fail(26,
+       'Taille entiere 8087');
     End;
-   End Else If Name='FXCH' Then Begin If A.Kind<>6 Then Fail(5,'Registre ST attendu'); Operation:=14; Index:=A.Reg End
-   Else If (Name='FLDCW') Or (Name='FSTCW') Or (Name='FNSTCW') Or (Name='FSTSW') Or (Name='FNSTSW') Then Begin
-    Operation:=17; If Name='FLDCW' Then Operation:=16 Else If (Name='FSTSW') Or (Name='FNSTSW') Then Operation:=18;
+   End Else If Name='FXCH' Then Begin If A.Kind<>6 Then Fail(5,
+     'Registre ST attendu'); Operation:=14; Index:=A.Reg End
+   Else If (Name='FLDCW') Or (Name='FSTCW') Or (Name='FNSTCW') Or (Name='FSTSW')
+     Or (Name='FNSTSW') Then Begin
+    Operation:=17;
+      If Name='FLDCW' Then Operation:=16 Else If (Name='FSTSW') Or
+        (Name='FNSTSW') Then Operation:=18;
     Memory:=True; Width:=2;
    End Else Begin
     G:=0;
-    If (Name='FMUL') Or (Name='FIMUL') Then G:=1 Else If (Name='FCOM') Or (Name='FICOM') Then G:=2
-    Else If (Name='FCOMP') Or (Name='FICOMP') Then G:=3 Else If (Name='FSUB') Or (Name='FISUB') Then G:=4
-    Else If (Name='FSUBR') Or (Name='FISUBR') Then G:=5 Else If (Name='FDIV') Or (Name='FIDIV') Then G:=6
+    If (Name='FMUL') Or (Name='FIMUL') Then G:=1 Else If (Name='FCOM') Or
+      (Name='FICOM') Then G:=2
+    Else If (Name='FCOMP') Or (Name='FICOMP') Then G:=3 Else If (Name='FSUB') Or
+      (Name='FISUB') Then G:=4
+    Else If (Name='FSUBR') Or (Name='FISUBR') Then G:=5 Else If (Name='FDIV') Or
+      (Name='FIDIV') Then G:=6
     Else If (Name='FDIVR') Or (Name='FIDIVR') Then G:=7
-    Else If (Name<>'FADD') And (Name<>'FIADD') Then Unsupported('instruction 8087 emulee: '+Name);
+    Else If (Name<>'FADD') And (Name<>'FIADD') Then
+      Unsupported('instruction 8087 emulee: '+Name);
     Operation:=15; Index:=G;
     If A.Kind=6 Then Begin
-     If Token=tkComma Then Begin NextToken; B:=Operand; If B.Kind<>6 Then Fail(5,'Registre ST attendu');
-      If A.Reg=0 Then A.Reg:=B.Reg Else Begin If B.Reg<>0 Then Fail(5,'ST(0) attendu'); Index:=Index+128 End;
+     If Token=tkComma Then Begin NextToken; B:=Operand;
+       If B.Kind<>6 Then Fail(5,'Registre ST attendu');
+      If A.Reg=0 Then A.Reg:=B.Reg Else Begin If B.Reg<>0 Then Fail(5,
+        'ST(0) attendu'); Index:=Index+128 End;
      End; Index:=Index+A.Reg*8;
     End Else Begin
      Memory:=True; Width:=A.Width;
-     If Name[2]='I' Then Begin If Not (Width In [2,4]) Then Fail(26,'Taille entiere 8087'); Inc(Width,16) End
+     If Name[2]='I' Then Begin If Not (Width In [2,4]) Then Fail(26,
+       'Taille entiere 8087'); Inc(Width,16) End
      Else If Not (Width In [4,8]) Then Fail(26,'Taille reelle 8087');
     End;
    End;
@@ -5883,16 +9677,20 @@ Begin
  End;
  If Memory And (A.Kind<>2) Then Fail(5,'Operande memoire attendu');
  { x87 instructions leave integer registers, segments and flags intact. }
- Emit($9C); Emit($50); Emit($51); Emit($52); Emit($53); Emit($56); Emit($57); Emit($55); Emit($1E); Emit($06);
+ Emit($9C); Emit($50); Emit($51); Emit($52); Emit($53); Emit($56); Emit($57);
+   Emit($55); Emit($1E); Emit($06);
  Emit($FC); { runtime string copies require DF=0; POPF restores caller DF }
  If Memory Then Begin
   Emit($8D); RM(0,A);
-  G:=A.Segment; If G=0 Then Begin If Not A.Direct And (A.RM In [2,3,6]) Then G:=3 Else G:=4 End;
+  G:=A.Segment; If G=0 Then Begin If Not A.Direct And (A.RM In [2,3,
+    6]) Then G:=3 Else G:=4 End;
   Emit($8C); Case G Of 1:Emit($C2); 2:Emit($CA); 3:Emit($D2); 4:Emit($DA) End;
  End Else Begin Emit2($31,$C0); Emit2($8C,$DA) End;
- Emit2($89,$C6); LoadImmediate(Operation); Emit($50); LoadImmediate(Width); Emit($50); LoadImmediate(Index); Emit($50);
+ Emit2($89,$C6); LoadImmediate(Operation); Emit($50); LoadImmediate(Width);
+   Emit($50); LoadImmediate(Index); Emit($50);
  Emit($52); Emit($56); RealCall('REMU');
- Emit($07); Emit($1F); Emit($5D); Emit($5F); Emit($5E); Emit($5B); Emit($5A); Emit($59); Emit($58); Emit($9D);
+ Emit($07); Emit($1F); Emit($5D); Emit($5F); Emit($5E); Emit($5B); Emit($5A);
+   Emit($59); Emit($58); Emit($9D);
 End;
 Procedure FPU;
 Begin
@@ -5905,48 +9703,71 @@ Begin
  Else If Name='FCLEX' Then Begin Emit($9B); Emit2($DB,$E2) End
  Else If Name='FNCLEX' Then Emit2($DB,$E2)
  Else If Name='FLD1' Then Emit2($D9,$E8) Else If Name='FLDZ' Then Emit2($D9,$EE)
- Else If Name='FLDPI' Then Emit2($D9,$EB) Else If Name='FLDL2T' Then Emit2($D9,$E9)
- Else If Name='FLDL2E' Then Emit2($D9,$EA) Else If Name='FLDLG2' Then Emit2($D9,$EC)
- Else If Name='FLDLN2' Then Emit2($D9,$ED) Else If Name='FSQRT' Then Emit2($D9,$FA)
+ Else If Name='FLDPI' Then Emit2($D9,$EB) Else If Name='FLDL2T' Then Emit2($D9,
+   $E9)
+ Else If Name='FLDL2E' Then Emit2($D9,$EA) Else If Name='FLDLG2' Then Emit2($D9,
+   $EC)
+ Else If Name='FLDLN2' Then Emit2($D9,$ED) Else If Name='FSQRT' Then Emit2($D9,
+   $FA)
  Else If Name='FABS' Then Emit2($D9,$E1) Else If Name='FCHS' Then Emit2($D9,$E0)
  Else If Name='FTST' Then Emit2($D9,$E4) Else If Name='FXAM' Then Emit2($D9,$E5)
- Else If Name='F2XM1' Then Emit2($D9,$F0) Else If Name='FYL2X' Then Emit2($D9,$F1)
- Else If Name='FPTAN' Then Emit2($D9,$F2) Else If Name='FPATAN' Then Emit2($D9,$F3)
- Else If Name='FXTRACT' Then Emit2($D9,$F4) Else If Name='FPREM' Then Emit2($D9,$F8)
- Else If Name='FYL2XP1' Then Emit2($D9,$F9) Else If Name='FRNDINT' Then Emit2($D9,$FC)
- Else If Name='FSCALE' Then Emit2($D9,$FD) Else If Name='FDECSTP' Then Emit2($D9,$F6)
- Else If Name='FINCSTP' Then Emit2($D9,$F7) Else If Name='FCOMPP' Then Emit2($DE,$D9)
- Else If (Name='FADDP') Or (Name='FMULP') Or (Name='FSUBP') Or (Name='FSUBRP') Or (Name='FDIVP') Or (Name='FDIVRP') Then Begin
+ Else If Name='F2XM1' Then Emit2($D9,$F0) Else If Name='FYL2X' Then Emit2($D9,
+   $F1)
+ Else If Name='FPTAN' Then Emit2($D9,$F2) Else If Name='FPATAN' Then Emit2($D9,
+   $F3)
+ Else If Name='FXTRACT' Then Emit2($D9,$F4) Else If Name='FPREM' Then Emit2($D9,
+   $F8)
+ Else If Name='FYL2XP1' Then Emit2($D9,
+   $F9) Else If Name='FRNDINT' Then Emit2($D9,$FC)
+ Else If Name='FSCALE' Then Emit2($D9,
+   $FD) Else If Name='FDECSTP' Then Emit2($D9,$F6)
+ Else If Name='FINCSTP' Then Emit2($D9,
+   $F7) Else If Name='FCOMPP' Then Emit2($DE,$D9)
+ Else If (Name='FADDP') Or (Name='FMULP') Or (Name='FSUBP') Or (Name='FSUBRP')
+   Or (Name='FDIVP') Or (Name='FDIVRP') Then Begin
   A.Kind:=6; A.Reg:=1;
-  If (TokenLine=InstructionLine) And Not (Token In [tkEnd,tkSemi]) Then Begin A:=Operand; If Token=tkComma Then Begin NextToken; B:=Operand; If (B.Kind<>6) Or (B.Reg<>0) Then Fail(5,'ST(0) attendu') End End;
+  If (TokenLine=InstructionLine) And Not (Token In [tkEnd,
+    tkSemi]) Then Begin A:=Operand; If Token=tkComma Then Begin NextToken;
+      B:=Operand; If (B.Kind<>6) Or (B.Reg<>0) Then Fail(5,
+        'ST(0) attendu') End End;
   If A.Kind<>6 Then Fail(5,'Registre ST attendu'); Group:=0;
-  If Name='FMULP' Then Group:=1 Else If Name='FSUBRP' Then Group:=4 Else If Name='FSUBP' Then Group:=5
+  If Name='FMULP' Then Group:=1 Else If Name='FSUBRP' Then Group:=4 Else If
+    Name='FSUBP' Then Group:=5
   Else If Name='FDIVRP' Then Group:=6 Else If Name='FDIVP' Then Group:=7;
   Emit2($DE,$C0+Group*8+A.Reg);
  End Else Begin
   A:=Operand; Group:=0; Op:=0;
   If (Name='FLD') Or (Name='FST') Or (Name='FSTP') Then Begin
    If A.Kind=6 Then Begin
-    If Name='FLD' Then Emit2($D9,$C0+A.Reg) Else If Name='FST' Then Emit2($DD,$D0+A.Reg) Else Emit2($DD,$D8+A.Reg); Exit;
+    If Name='FLD' Then Emit2($D9,$C0+A.Reg) Else If Name='FST' Then Emit2($DD,
+      $D0+A.Reg) Else Emit2($DD,$D8+A.Reg); Exit;
    End;
    If Name='FST' Then Group:=2 Else If Name='FSTP' Then Group:=3;
    If A.Width=4 Then Op:=$D9 Else If A.Width=8 Then Op:=$DD
-   Else If (A.Width=10) And (Name<>'FST') Then Begin Op:=$DB; If Name='FLD' Then Group:=5 Else Group:=7 End;
+   Else If (A.Width=10) And (Name<>'FST') Then Begin Op:=$DB;
+     If Name='FLD' Then Group:=5 Else Group:=7 End;
   End Else If (Name='FILD') Or (Name='FIST') Or (Name='FISTP') Then Begin
    If Name='FIST' Then Group:=2 Else If Name='FISTP' Then Group:=3;
    If A.Width=2 Then Op:=$DF Else If A.Width=4 Then Op:=$DB
-   Else If (A.Width=8) And (Name<>'FIST') Then Begin Op:=$DF; If Name='FILD' Then Group:=5 Else Group:=7 End;
-  End Else If Name='FXCH' Then Begin If A.Kind<>6 Then Fail(5,'Registre ST attendu'); Emit2($D9,$C8+A.Reg); Exit End
+   Else If (A.Width=8) And (Name<>'FIST') Then Begin Op:=$DF;
+     If Name='FILD' Then Group:=5 Else Group:=7 End;
+  End Else If Name='FXCH' Then Begin If A.Kind<>6 Then Fail(5,
+    'Registre ST attendu'); Emit2($D9,$C8+A.Reg); Exit End
   Else If (Name='FLDCW') Or (Name='FSTCW') Or (Name='FNSTCW') Then Begin
-   Op:=$D9; Group:=5; If Name<>'FLDCW' Then Begin Group:=7; If Name='FSTCW' Then Emit($9B) End; A.Width:=2;
+   Op:=$D9; Group:=5; If Name<>'FLDCW' Then Begin Group:=7;
+     If Name='FSTCW' Then Emit($9B) End; A.Width:=2;
   End Else If (Name='FSTSW') Or (Name='FNSTSW') Then Begin
    If A.Kind=1 Then Unsupported('FSTSW AX exige un 80287');
    Op:=$DD; Group:=7; If Name='FSTSW' Then Emit($9B); A.Width:=2;
   End Else Begin
-   If (Name='FADD') Or (Name='FIADD') Then Group:=0 Else If (Name='FMUL') Or (Name='FIMUL') Then Group:=1
-   Else If (Name='FCOM') Or (Name='FICOM') Then Group:=2 Else If (Name='FCOMP') Or (Name='FICOMP') Then Group:=3
-   Else If (Name='FSUB') Or (Name='FISUB') Then Group:=4 Else If (Name='FSUBR') Or (Name='FISUBR') Then Group:=5
-   Else If (Name='FDIV') Or (Name='FIDIV') Then Group:=6 Else If (Name='FDIVR') Or (Name='FIDIVR') Then Group:=7
+   If (Name='FADD') Or (Name='FIADD') Then Group:=0 Else If (Name='FMUL') Or
+     (Name='FIMUL') Then Group:=1
+   Else If (Name='FCOM') Or (Name='FICOM') Then Group:=2 Else If (Name='FCOMP')
+     Or (Name='FICOMP') Then Group:=3
+   Else If (Name='FSUB') Or (Name='FISUB') Then Group:=4 Else If (Name='FSUBR')
+     Or (Name='FISUBR') Then Group:=5
+   Else If (Name='FDIV') Or (Name='FIDIV') Then Group:=6 Else If (Name='FDIVR')
+     Or (Name='FIDIVR') Then Group:=7
    Else Unsupported('instruction 8087: '+Name);
    If A.Kind=6 Then Begin
     If Name[2]='I' Then Fail(5,'Operande memoire entier attendu');
@@ -5961,31 +9782,45 @@ Begin
     End;
     Emit2($D8,$C0+Group*8+A.Reg); Exit;
    End;
-   If Name[2]='I' Then Begin If A.Width=2 Then Op:=$DE Else If A.Width=4 Then Op:=$DA End
+   If Name[2]='I' Then Begin If A.Width=2 Then Op:=$DE Else If A.Width=4 Then
+     Op:=$DA End
    Else Begin If A.Width=4 Then Op:=$D8 Else If A.Width=8 Then Op:=$DC End;
   End;
-  If (A.Kind<>2) Or (Op=0) Then Fail(26,'Operande memoire 8087 ou taille invalide'); Prefix(A); Emit(Op); RM(Group,A);
+  If (A.Kind<>2) Or (Op=0) Then Fail(26,
+    'Operande memoire 8087 ou taille invalide'); Prefix(A); Emit(Op); RM(Group,
+      A);
  End;
 End;
 Begin
  SavedAssembler:=InAssembler; InAssembler:=True; LabelCount:=0; RefCount:=0;
  NextToken;
  While Token<>tkEnd Do Begin
-  If Token=tkEOF Then Fail(37,'END assembleur manquant'); If Token=tkSemi Then Begin NextToken; Continue End;
+  If Token=tkEOF Then Fail(37,'END assembleur manquant');
+    If Token=tkSemi Then Begin NextToken; Continue End;
   DebugLineEntry; InstructionLine:=TokenLine; Name:=ReadName;
   { Le debut de l'instruction est l'adresse de debug, avant emission. }
-  If Token=tkColon Then Begin K:=LabelIndex(Name); If Labels[K].Defined Then Fail(4,'Label assembleur duplique'); Labels[K].Defined:=True; Labels[K].Address:=CodeSize; NextToken; Continue End;
+  If Token=tkColon Then Begin K:=LabelIndex(Name);
+    If Labels[K].Defined Then Fail(4,'Label assembleur duplique');
+      Labels[K].Defined:=True; Labels[K].Address:=CodeSize; NextToken;
+        Continue End;
   FillChar(A,SizeOf(A),0); FillChar(B,SizeOf(B),0);
-  If Name='NOP' Then Emit($90) Else If Name='CLD' Then Emit($FC) Else If Name='STD' Then Emit($FD)
-  Else If Name='CLI' Then Emit($FA) Else If Name='STI' Then Emit($FB) Else If Name='CLC' Then Emit($F8)
-  Else If Name='STC' Then Emit($F9) Else If Name='CMC' Then Emit($F5) Else If Name='CBW' Then Emit($98)
-  Else If Name='CWD' Then Emit($99) Else If Name='LAHF' Then Emit($9F) Else If Name='SAHF' Then Emit($9E)
+  If Name='NOP' Then Emit($90) Else If Name='CLD' Then Emit($FC) Else If
+    Name='STD' Then Emit($FD)
+  Else If Name='CLI' Then Emit($FA) Else If Name='STI' Then Emit($FB) Else If
+    Name='CLC' Then Emit($F8)
+  Else If Name='STC' Then Emit($F9) Else If Name='CMC' Then Emit($F5) Else If
+    Name='CBW' Then Emit($98)
+  Else If Name='CWD' Then Emit($99) Else If Name='LAHF' Then Emit($9F) Else If
+    Name='SAHF' Then Emit($9E)
   Else If Name='PUSHF' Then Emit($9C) Else If Name='POPF' Then Emit($9D)
-  Else If Name='WAIT' Then Begin If OptionBits And $400<>0 Then Emit($90) Else Emit($9B) End
-  Else If Name='XLAT' Then Emit($D7) Else If Name='HLT' Then Emit($F4) Else If Name='INTO' Then Emit($CE)
+  Else If Name='WAIT' Then Begin If OptionBits And $400<>0 Then Emit($90) Else
+    Emit($9B) End
+  Else If Name='XLAT' Then Emit($D7) Else If Name='HLT' Then Emit($F4) Else If
+    Name='INTO' Then Emit($CE)
   Else If Name='IRET' Then Emit($CF) Else If Name='INT3' Then Emit($CC)
   Else If Name='INT' Then Begin A:=Operand; Emit($CD); Immediate(A,1) End
-  Else If Name='DAA' Then Emit($27) Else If Name='DAS' Then Emit($2F) Else If Name='AAA' Then Emit($37) Else If Name='AAS' Then Emit($3F)
+  Else If Name='DAA' Then Emit($27) Else If Name='DAS' Then Emit($2F) Else If
+    Name='AAA' Then Emit($37) Else If Name='AAS' Then Emit($3F)
   Else If Name='AAM' Then Emit2($D4,10) Else If Name='AAD' Then Emit2($D5,10)
   Else If Name='MOVSB' Then Emit($A4) Else If Name='MOVSW' Then Emit($A5)
   Else If Name='CMPSB' Then Emit($A6) Else If Name='CMPSW' Then Emit($A7)
@@ -5993,104 +9828,175 @@ Begin
   Else If Name='LODSB' Then Emit($AC) Else If Name='LODSW' Then Emit($AD)
   Else If Name='SCASB' Then Emit($AE) Else If Name='SCASW' Then Emit($AF)
   Else If (Name='REP') Or (Name='REPE') Or (Name='REPZ') Then Emit($F3)
-  Else If (Name='REPNE') Or (Name='REPNZ') Then Emit($F2) Else If Name='LOCK' Then Emit($F0)
-  Else If Name='PUSHA' Then Begin Need286; Emit($60) End Else If Name='POPA' Then Begin Need286; Emit($61) End
+  Else If (Name='REPNE') Or (Name='REPNZ') Then Emit($F2) Else If Name='LOCK'
+    Then Emit($F0)
+  Else If Name='PUSHA' Then Begin Need286;
+    Emit($60) End Else If Name='POPA' Then Begin Need286; Emit($61) End
   Else If Name='LEAVE' Then Begin Need286; Emit($C9) End
-  Else If Name='ENTER' Then Begin Need286; A:=Operand; Need(tkComma); B:=Operand; Emit($C8); Immediate(A,2); Immediate(B,1) End
-  Else If Name='INSB' Then Begin Need286; Emit($6C) End Else If Name='INSW' Then Begin Need286; Emit($6D) End
-  Else If Name='OUTSB' Then Begin Need286; Emit($6E) End Else If Name='OUTSW' Then Begin Need286; Emit($6F) End
+  Else If Name='ENTER' Then Begin Need286; A:=Operand; Need(tkComma);
+    B:=Operand; Emit($C8); Immediate(A,2); Immediate(B,1) End
+  Else If Name='INSB' Then Begin Need286;
+    Emit($6C) End Else If Name='INSW' Then Begin Need286; Emit($6D) End
+  Else If Name='OUTSB' Then Begin Need286;
+    Emit($6E) End Else If Name='OUTSW' Then Begin Need286; Emit($6F) End
   Else If (Name='DB') Or (Name='DW') Or (Name='DD') Then Begin
    Repeat
-    If (Name='DB') And TokenIsString Then Begin For K:=1 To Length(TokenText) Do Emit(Ord(TokenText[K])); NextToken End
-    Else Begin A:=Operand; If A.Kind<>3 Then Fail(7,'Donnee immediat attendue'); If Name='DB' Then Immediate(A,1) Else If Name='DW' Then Immediate(A,2) Else Begin EmitWord(Word(A.Displacement)); EmitWord(Word(A.Displacement Shr 16)) End End;
+    If (Name='DB') And TokenIsString Then Begin For K:=1 To Length(TokenText) Do
+      Emit(Ord(TokenText[K])); NextToken End
+    Else Begin A:=Operand;
+     If (A.Kind=5) And (A.Sym=0) Then Begin A.Kind:=3; A.LabelRef:=True;
+       A.Width:=2 End
+     Else If (A.Kind=5) And (A.Sym<>0) And (Symbols[A.Sym].Kind=skProc) Then
+       Begin A.Kind:=3; A.CodeValue:=True; A.Width:=2 End;
+     If A.Kind<>3 Then Fail(7,'Donnee immediat attendue');
+       If Name='DB' Then Immediate(A,1) Else If Name='DW' Then Immediate(A,
+         2) Else Begin EmitWord(Word(A.Displacement));
+           EmitWord(Word(A.Displacement Shr 16)) End End;
     If Token<>tkComma Then Break; NextToken;
    Until False;
   End Else If Name[1]='F' Then FPU
   Else If (Name='JMP') Or (Name='CALL') Or (Condition(Name)<>0) Or
-   (Name='LOOP') Or (Name='LOOPE') Or (Name='LOOPZ') Or (Name='LOOPNE') Or (Name='LOOPNZ') Or (Name='JCXZ') Then Begin
+   (Name='LOOP') Or (Name='LOOPE') Or (Name='LOOPZ') Or (Name='LOOPNE') Or
+     (Name='LOOPNZ') Or (Name='JCXZ') Then Begin
    A:=Operand;
    If (Name='JMP') Or (Name='CALL') Then Begin
     If (Name='CALL') And (A.Sym<>0) And (A.Kind=5) Then Begin
      If Symbols[A.Sym].Native Then Begin
-      If Symbols[A.Sym].ParamCount<>0 Then Unsupported('CALL assembleur Borland avec parametres'); W:=NativeCall(A.Sym);
+      If Symbols[A.Sym].ParamCount<>0 Then
+        Unsupported('CALL assembleur Borland avec parametres');
+          W:=NativeCall(A.Sym);
      End Else EmitLocalCall(A.Sym);
     End
-    Else If A.Kind In [1,2] Then Begin Group:=4; If Name='CALL' Then Group:=2; If A.Width=4 Then Inc(Group); Prefix(A); Emit($FF); RM(Group,A) End
-    Else Begin If Name='CALL' Then Emit($E8) Else Emit($E9); RelativeTarget(A) End;
+    Else If A.Kind In [1,2] Then Begin Group:=4; If Name='CALL' Then Group:=2;
+      If A.Width=4 Then Inc(Group); Prefix(A); Emit($FF); RM(Group,A) End
+    Else Begin If Name='CALL' Then Emit($E8) Else Emit($E9);
+      RelativeTarget(A) End;
    End Else Begin
     Op:=Condition(Name);
     If Op<>0 Then Emit2(Op Xor 1,3)
-    Else Begin Op:=$E2; If Name='JCXZ' Then Op:=$E3 Else If (Name='LOOPE') Or (Name='LOOPZ') Then Op:=$E1 Else If (Name='LOOPNE') Or (Name='LOOPNZ') Then Op:=$E0; Emit2(Op,2); Emit2($EB,3) End;
+    Else Begin Op:=$E2;
+      If Name='JCXZ' Then Op:=$E3 Else If (Name='LOOPE') Or (Name='LOOPZ') Then
+        Op:=$E1 Else If (Name='LOOPNE') Or (Name='LOOPNZ') Then Op:=$E0;
+          Emit2(Op,2); Emit2($EB,3) End;
     Emit($E9); RelativeTarget(A);
    End;
   End Else If (Name='RET') Or (Name='RETF') Then Begin
-   If (TokenLine=InstructionLine) And (Token=tkConstant) Then Begin A:=Operand; If Name='RET' Then Emit($C2) Else Emit($CA); Immediate(A,2) End
+   If (TokenLine=InstructionLine) And (Token=tkConstant) Then Begin A:=Operand;
+     If Name='RET' Then Emit($C2) Else Emit($CA); Immediate(A,2) End
    Else If (Name='RET') And (CurrentScope<>0) Then ProcedureExit
    Else If Name='RET' Then Emit($C3) Else Emit($CB);
   End Else If Name='INT' Then Begin A:=Operand; Emit($CD); Immediate(A,1) End
   Else If (Name='PUSH') Or (Name='POP') Then Begin
    A:=Operand;
-   If (A.Kind=1) And (A.Width=2) Then Begin Op:=$50; If Name='POP' Then Op:=$58; Emit(Op+A.Reg) End
-   Else If A.Kind=4 Then Begin If (Name='POP') And (A.Reg=1) Then Fail(5,'POP CS invalide'); Op:=6; If Name='POP' Then Op:=7; Emit(Op+A.Reg*8) End
-   Else If (A.Kind=3) And (Name='PUSH') Then Begin Need286; Emit($68); Immediate(A,2) End
-   Else If A.Kind=2 Then Begin If (A.Width<>0) And (A.Width<>2) Then Fail(26,'Pile assembleur Word'); Prefix(A); If Name='PUSH' Then Begin Emit($FF); RM(6,A) End Else Begin Emit($8F); RM(0,A) End End
+   If (A.Kind=1) And (A.Width=2) Then Begin Op:=$50; If Name='POP' Then Op:=$58;
+     Emit(Op+A.Reg) End
+   Else If A.Kind=4 Then Begin If (Name='POP') And (A.Reg=1) Then Fail(5,
+     'POP CS invalide'); Op:=6; If Name='POP' Then Op:=7; Emit(Op+A.Reg*8) End
+   Else If (A.Kind=3) And (Name='PUSH') Then Begin Need286; Emit($68);
+     Immediate(A,2) End
+   Else If A.Kind=2 Then Begin If (A.Width<>0) And (A.Width<>2) Then Fail(26,
+     'Pile assembleur Word'); Prefix(A); If Name='PUSH' Then Begin Emit($FF);
+       RM(6,A) End Else Begin Emit($8F); RM(0,A) End End
    Else Fail(5,'Operande PUSH/POP invalide');
   End Else If (Name='INC') Or (Name='DEC') Or (Name='NEG') Or (Name='NOT') Or
    (Name='MUL') Or (Name='IMUL') Or (Name='DIV') Or (Name='IDIV') Then Begin
-   A:=Operand; If Not (A.Width In [1,2]) Then Fail(26,'Taille assembleur requise'); W:=A.Width-1; Prefix(A);
+   A:=Operand; If Not (A.Width In [1,2]) Then Fail(26,
+     'Taille assembleur requise'); W:=A.Width-1; Prefix(A);
    If (Name='IMUL') And (Token=tkComma) Then Begin
-    Need286; If (A.Kind<>1) Or (A.Width<>2) Then Fail(26,'IMUL destination Word attendue');
+    Need286; If (A.Kind<>1) Or (A.Width<>2) Then Fail(26,
+      'IMUL destination Word attendue');
     NextToken; B:=Operand; Need(tkComma); C:=Operand;
-    If Not (B.Kind In [1,2]) Or Not (B.Width In [0,2]) Then Fail(26,'IMUL source Word attendue');
+    If Not (B.Kind In [1,2]) Or Not (B.Width In [0,2]) Then Fail(26,
+      'IMUL source Word attendue');
     Prefix(B); Emit($69); RM(A.Reg,B); Immediate(C,2); Continue;
    End;
-   If (Name='INC') Or (Name='DEC') Then Begin Group:=0; If Name='DEC' Then Group:=1; Emit($FE+W) End
-   Else Begin Group:=2; If Name='NEG' Then Group:=3 Else If Name='MUL' Then Group:=4 Else If Name='IMUL' Then Group:=5 Else If Name='DIV' Then Group:=6 Else If Name='IDIV' Then Group:=7; Emit($F6+W) End; RM(Group,A);
+   If (Name='INC') Or (Name='DEC') Then Begin Group:=0;
+     If Name='DEC' Then Group:=1; Emit($FE+W) End
+   Else Begin Group:=2;
+     If Name='NEG' Then Group:=3 Else If Name='MUL' Then Group:=4 Else If
+       Name='IMUL' Then Group:=5 Else If Name='DIV' Then Group:=6 Else If
+         Name='IDIV' Then Group:=7; Emit($F6+W) End; RM(Group,A);
   End Else Begin
    A:=Operand; Need(tkComma); B:=Operand;
    If (Name='IN') Or (Name='OUT') Then Begin
     If Name='OUT' Then Begin C:=A; A:=B; B:=C End;
-    If (A.Kind<>1) Or (A.Reg<>0) Or Not (A.Width In [1,2]) Then Fail(5,'IN/OUT exige AL ou AX');
+    If (A.Kind<>1) Or (A.Reg<>0) Or Not (A.Width In [1,2]) Then Fail(5,
+      'IN/OUT exige AL ou AX');
     W:=A.Width-1;
-    If B.Kind=3 Then Begin Op:=$E4; If Name='OUT' Then Op:=$E6; Emit(Op+W); Immediate(B,1) End
-    Else If (B.Kind=1) And (B.Reg=2) And (B.Width=2) Then Begin Op:=$EC; If Name='OUT' Then Op:=$EE; Emit(Op+W) End
+    If B.Kind=3 Then Begin Op:=$E4; If Name='OUT' Then Op:=$E6; Emit(Op+W);
+      Immediate(B,1) End
+    Else If (B.Kind=1) And (B.Reg=2) And (B.Width=2) Then Begin Op:=$EC;
+      If Name='OUT' Then Op:=$EE; Emit(Op+W) End
     Else Fail(5,'IN/OUT exige DX ou un port byte');
    End Else If (Name='LEA') Or (Name='LES') Or (Name='LDS') Then Begin
-    If (A.Kind<>1) Or (A.Width<>2) Or (B.Kind<>2) Then Fail(5,'Operande LEA/LES/LDS invalide'); Prefix(B);
-    If Name='LEA' Then Emit($8D) Else If Name='LES' Then Emit($C4) Else Emit($C5); RM(A.Reg,B);
+    If (A.Kind<>1) Or (A.Width<>2) Or (B.Kind<>2) Then Fail(5,
+      'Operande LEA/LES/LDS invalide'); Prefix(B);
+    If Name='LEA' Then Emit($8D) Else If Name='LES' Then Emit($C4) Else
+      Emit($C5); RM(A.Reg,B);
    End Else If Name='MOV' Then Begin
-    If A.Kind=4 Then Begin If A.Reg=1 Then Fail(5,'MOV CS invalide'); If Not (B.Width In [0,2]) Then Fail(26,'Registre segment exige Word'); Prefix(B); Emit($8E); RM(A.Reg,B) End
-    Else If B.Kind=4 Then Begin If Not (A.Width In [0,2]) Then Fail(26,'Registre segment exige Word'); Prefix(A); Emit($8C); RM(B.Reg,A) End
-    Else If B.Kind=3 Then Begin If Not (A.Width In [1,2]) Then Fail(26,'Taille MOV byte/word requise'); W:=A.Width-1;
-     If A.Kind=1 Then Emit($B0+W*8+A.Reg) Else Begin Prefix(A); Emit($C6+W); RM(0,A) End; Immediate(B,A.Width);
-    End Else Begin MatchWidth; If A.Kind=1 Then Begin Prefix(B); Emit($8A+W); RM(A.Reg,B) End
-     Else If B.Kind=1 Then Begin Prefix(A); Emit($88+W); RM(B.Reg,A) End Else Fail(5,'MOV memoire/memoire invalide') End;
+    If A.Kind=4 Then Begin If A.Reg=1 Then Fail(5,'MOV CS invalide');
+      If Not (B.Width In [0,2]) Then Fail(26,'Registre segment exige Word');
+        Prefix(B); Emit($8E); RM(A.Reg,B) End
+    Else If B.Kind=4 Then Begin If Not (A.Width In [0,2]) Then Fail(26,
+      'Registre segment exige Word'); Prefix(A); Emit($8C); RM(B.Reg,A) End
+    Else If B.Kind=3 Then Begin If Not (A.Width In [1,2]) Then Fail(26,
+      'Taille MOV byte/word requise'); W:=A.Width-1;
+     If A.Kind=1 Then Emit($B0+W*8+A.Reg) Else Begin Prefix(A); Emit($C6+W);
+       RM(0,A) End; Immediate(B,A.Width);
+    End Else Begin MatchWidth; If A.Kind=1 Then Begin Prefix(B); Emit($8A+W);
+      RM(A.Reg,B) End
+     Else If B.Kind=1 Then Begin Prefix(A); Emit($88+W); RM(B.Reg,
+       A) End Else Fail(5,'MOV memoire/memoire invalide') End;
    End Else If (Name='SHL') Or (Name='SAL') Or (Name='SHR') Or (Name='SAR') Or
     (Name='ROL') Or (Name='ROR') Or (Name='RCL') Or (Name='RCR') Then Begin
-    If Not (A.Width In [1,2]) Then Fail(26,'Taille decalage requise'); W:=A.Width-1; Group:=4;
-    If Name='SHR' Then Group:=5 Else If Name='SAR' Then Group:=7 Else If Name='ROL' Then Group:=0 Else If Name='ROR' Then Group:=1 Else If Name='RCL' Then Group:=2 Else If Name='RCR' Then Group:=3;
-    Prefix(A); If (B.Kind=1) And (B.Width=1) And (B.Reg=1) Then Begin Emit($D2+W); RM(Group,A) End
-    Else If (B.Kind=3) And (B.Displacement=1) Then Begin Emit($D0+W); RM(Group,A) End
-    Else If B.Kind=3 Then Begin Need286; Emit($C0+W); RM(Group,A); Immediate(B,1) End Else Fail(5,'CL ou immediat attendu');
-   End Else If Name='XCHG' Then Begin MatchWidth; If A.Kind=1 Then Begin C:=A; A:=B; B:=C End; If B.Kind<>1 Then Fail(5,'XCHG avec registre attendu'); Prefix(A); Emit($86+W); RM(B.Reg,A) End
+    If Not (A.Width In [1,2]) Then Fail(26,'Taille decalage requise');
+      W:=A.Width-1; Group:=4;
+    If Name='SHR' Then Group:=5 Else If Name='SAR' Then Group:=7 Else If
+      Name='ROL' Then Group:=0 Else If Name='ROR' Then Group:=1 Else If
+        Name='RCL' Then Group:=2 Else If Name='RCR' Then Group:=3;
+    Prefix(A);
+      If (B.Kind=1) And (B.Width=1) And (B.Reg=1) Then Begin Emit($D2+W);
+        RM(Group,A) End
+    Else If (B.Kind=3) And (B.Displacement=1) Then Begin Emit($D0+W); RM(Group,
+      A) End
+    Else If B.Kind=3 Then Begin Need286; Emit($C0+W); RM(Group,A); Immediate(B,
+      1) End Else Fail(5,'CL ou immediat attendu');
+   End Else If Name='XCHG' Then Begin MatchWidth; If A.Kind=1 Then Begin C:=A;
+     A:=B; B:=C End; If B.Kind<>1 Then Fail(5,'XCHG avec registre attendu');
+       Prefix(A); Emit($86+W); RM(B.Reg,A) End
    Else Begin
     Op:=0; Group:=0;
-    If Name='ADD' Then Begin Op:=$00; Group:=0 End Else If Name='OR' Then Begin Op:=$08; Group:=1 End
-    Else If Name='ADC' Then Begin Op:=$10; Group:=2 End Else If Name='SBB' Then Begin Op:=$18; Group:=3 End
-    Else If Name='AND' Then Begin Op:=$20; Group:=4 End Else If Name='SUB' Then Begin Op:=$28; Group:=5 End
-    Else If Name='XOR' Then Begin Op:=$30; Group:=6 End Else If Name='CMP' Then Begin Op:=$38; Group:=7 End
-    Else If Name='TEST' Then Op:=$84 Else Unsupported('instruction assembleur: '+Name);
-    If B.Kind=3 Then Begin If Not (A.Width In [1,2]) Then Fail(26,'Taille arithmetique requise'); W:=A.Width-1; Prefix(A);
-     If Name='TEST' Then Begin Emit($F6+W); RM(0,A) End Else Begin Emit($80+W); RM(Group,A) End; Immediate(B,A.Width);
+    If Name='ADD' Then Begin Op:=$00;
+      Group:=0 End Else If Name='OR' Then Begin Op:=$08; Group:=1 End
+    Else If Name='ADC' Then Begin Op:=$10;
+      Group:=2 End Else If Name='SBB' Then Begin Op:=$18; Group:=3 End
+    Else If Name='AND' Then Begin Op:=$20;
+      Group:=4 End Else If Name='SUB' Then Begin Op:=$28; Group:=5 End
+    Else If Name='XOR' Then Begin Op:=$30;
+      Group:=6 End Else If Name='CMP' Then Begin Op:=$38; Group:=7 End
+    Else If Name='TEST' Then Op:=$84 Else
+      Unsupported('instruction assembleur: '+Name);
+    If B.Kind=3 Then Begin If Not (A.Width In [1,2]) Then Fail(26,
+      'Taille arithmetique requise'); W:=A.Width-1; Prefix(A);
+     If Name='TEST' Then Begin Emit($F6+W); RM(0,A) End Else Begin Emit($80+W);
+       RM(Group,A) End; Immediate(B,A.Width);
     End Else Begin MatchWidth;
-     If Name='TEST' Then Begin If B.Kind<>1 Then Fail(5,'TEST avec registre attendu'); Prefix(A); Emit(Op+W); RM(B.Reg,A) End
+     If Name='TEST' Then Begin If B.Kind<>1 Then Fail(5,
+       'TEST avec registre attendu'); Prefix(A); Emit(Op+W); RM(B.Reg,A) End
      Else If A.Kind=1 Then Begin Prefix(B); Emit(Op+2+W); RM(A.Reg,B) End
-     Else If B.Kind=1 Then Begin Prefix(A); Emit(Op+W); RM(B.Reg,A) End Else Fail(5,'Operation memoire/memoire invalide');
+     Else If B.Kind=1 Then Begin Prefix(A); Emit(Op+W); RM(B.Reg,
+       A) End Else Fail(5,'Operation memoire/memoire invalide');
     End;
    End;
   End;
  End;
- For I:=1 To RefCount Do Begin K:=References[I].LabelIndex; If Not Labels[K].Defined Then Fail(3,'Label assembleur inconnu: '+Labels[K].Name); PatchJump(References[I].Position,Labels[K].Address) End;
+ For I:=1 To RefCount Do Begin K:=References[I].LabelIndex;
+   If Not Labels[K].Defined Then Fail(3,
+     'Label assembleur inconnu: '+Labels[K].Name);
+       If References[I].Absolute Then PatchWord(References[I].Position,
+         Word(Longint(Labels[K].Address)+References[I].Addend-
+           UnitBias(CurrentUnit))) Else PatchJump(References[I].Position,
+             Labels[K].Address) End;
  InAssembler:=SavedAssembler; Need(tkEnd);
 End;
 
@@ -6103,7 +10009,8 @@ Procedure LoopLeave(BreakTarget,ContinueTarget: Word);
 { Resout les Break/Continue du niveau courant puis ferme la boucle. }
 Begin
  While (LoopJumpCount>0) And (LoopJumps[LoopJumpCount].Depth=LoopDepth) Do Begin
-  If LoopJumps[LoopJumpCount].IsBreak Then PatchJump(LoopJumps[LoopJumpCount].Position,BreakTarget)
+  If LoopJumps[LoopJumpCount].IsBreak Then
+    PatchJump(LoopJumps[LoopJumpCount].Position,BreakTarget)
   Else PatchJump(LoopJumps[LoopJumpCount].Position,ContinueTarget);
   Dec(LoopJumpCount);
  End;
@@ -6116,19 +10023,22 @@ Begin
  If LoopDepth=0 Then Fail(109,'');
  If LoopJumpCount=MaxLoopJumps Then Fail(124,'Trop de Break/Continue');
  Inc(LoopJumpCount); LoopJumps[LoopJumpCount].Depth:=LoopDepth;
- LoopJumps[LoopJumpCount].IsBreak:=IsBreak; LoopJumps[LoopJumpCount].Position:=Jump;
+ LoopJumps[LoopJumpCount].IsBreak:=IsBreak;
+   LoopJumps[LoopJumpCount].Position:=Jump;
 End;
 
 Procedure Load32(I: Word);
 { DX:AX := variable Longint locale ou globale (FOR Longint). }
 Begin
- If Symbols[I].ByReference Or Symbols[I].Native Then Unsupported('variable FOR Longint indirecte');
+ If Symbols[I].ByReference Or Symbols[I].Native Then
+   Unsupported('variable FOR Longint indirecte');
  If Symbols[I].Local Then Begin
   ScopeAddress(Symbols[I].Scope);
   Emit($36); Emit2($8B,$87); EmitWord(Symbols[I].Addr);
   Emit($36); Emit2($8B,$97); EmitWord(Symbols[I].Addr+2);
  End Else Begin
-  Emit($A1); DataAddress(Symbols[I].Addr); Emit2($8B,$16); DataAddress(Symbols[I].Addr+2);
+  Emit($A1); DataAddress(Symbols[I].Addr); Emit2($8B,$16);
+    DataAddress(Symbols[I].Addr+2);
  End;
 End;
 
@@ -6139,42 +10049,50 @@ Begin
   Emit($36); Emit2($89,$87); EmitWord(Symbols[I].Addr);
   Emit($36); Emit2($89,$97); EmitWord(Symbols[I].Addr+2);
  End Else Begin
-  Emit($A3); DataAddress(Symbols[I].Addr); Emit2($89,$16); DataAddress(Symbols[I].Addr+2);
+  Emit($A3); DataAddress(Symbols[I].Addr); Emit2($89,$16);
+    DataAddress(Symbols[I].Addr+2);
  End;
 End;
 
 Procedure ForLongint(I: Word);
 { FOR sur une variable Longint: la borne (hi,lo) reste sur la pile. }
-Var Start,P1,P2,P3,Q1,ContinueAt: Word; Direction,Ignored: Byte;
+Var Start,P1,P2,P3,Q1,S1,ContinueAt: Word; Direction,Ignored: Byte;
 Procedure Extend;
-Begin If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End End;
+Begin If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,
+  $D2) Else Emit($99) End End;
 Begin
- Need(tkAssign); Ignored:=Expression; RequireInteger(Ignored); Extend; Store32(I);
+ Need(tkAssign); Ignored:=Expression; RequireInteger(Ignored); Extend;
+   Store32(I);
  Direction:=Token;
  If Not (Direction In [tkTo,tkDownto]) Then Fail(58,'');
  NextToken; Ignored:=Expression; RequireInteger(Ignored); Extend;
- Emit($52); Emit($50); Need(tkDo);
+ Emit($52); Emit($50); Need(tkDo); Inc(StackLoops);
  Start:=CodeSize; Load32(I); Emit2($89,$E3);                 { mov bx,sp }
- Emit($36); Emit2($3B,$57); Emit(2);                          { cmp dx,ss:[bx+2] }
+ Emit($36); Emit2($3B,$57); Emit(2);
+   { cmp dx,ss:[bx+2] }
  { Le motif "Jcc +3; JMP cible" saute vers la cible quand cc est faux. }
  If Direction=tkTo Then Begin
-  Emit2($7D,3); P1:=Jump; Emit2($7E,3); P2:=Jump;             { dx<hi: corps; dx>hi: sortie }
-  Emit($36); Emit2($3B,$07); Emit2($76,3); P3:=Jump;          { cmp ax,ss:[bx]; ax>lo: sortie }
+  P1:=JumpIf($7D); P2:=JumpIf($7E);             { dx<hi: corps; dx>hi: sortie }
+  Emit($36); Emit2($3B,$07); P3:=JumpIf($76);          { cmp ax,ss:[bx];
+    ax>lo: sortie }
  End Else Begin
-  Emit2($7E,3); P1:=Jump; Emit2($7D,3); P2:=Jump;             { dx>hi: corps; dx<hi: sortie }
-  Emit($36); Emit2($3B,$07); Emit2($73,3); P3:=Jump;          { cmp ax,ss:[bx]; ax<lo: sortie }
+  P1:=JumpIf($7E); P2:=JumpIf($7D);             { dx>hi: corps; dx<hi: sortie }
+  Emit($36); Emit2($3B,$07); P3:=JumpIf($73);          { cmp ax,ss:[bx];
+    ax<lo: sortie }
  End;
  PatchJump(P1,CodeSize); LoopEnter; Statement;
  ContinueAt:=CodeSize;
  { Egalite avec la borne testee AVANT l'increment (pas de debordement). }
- Load32(I); Emit2($89,$E3); Emit($36); Emit2($3B,$57); Emit(2); Emit2($75,8);
- Emit($36); Emit2($3B,$07); Emit2($75,3); Q1:=Jump;
- If Direction=tkTo Then Begin Emit($05); EmitWord(1); Emit2($83,$D2); Emit(0) End
+ Load32(I); Emit2($89,$E3); Emit($36); Emit2($3B,$57); Emit(2); S1:=JumpIf($74);
+ Emit($36); Emit2($3B,$07); Q1:=JumpIf($75);
+ PatchJump(S1,CodeSize);
+ If Direction=tkTo Then Begin Emit($05); EmitWord(1); Emit2($83,$D2);
+   Emit(0) End
  Else Begin Emit($2D); EmitWord(1); Emit2($83,$DA); Emit(0) End;
  Store32(I); JumpTo(Start);
  PatchJump(P2,CodeSize); PatchJump(P3,CodeSize); PatchJump(Q1,CodeSize);
  LoopLeave(CodeSize,ContinueAt);
- Emit2($83,$C4); Emit(4);
+ Emit2($83,$C4); Emit(4); Dec(StackLoops);
 End;
 
 Procedure CaseStatement;
@@ -6188,7 +10106,8 @@ Procedure CheckLabel(V: TConstValue);
 Begin
  If Not (Types[V.TypeId].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Or
     Not CompatibleTypes(SelType,V.TypeId) Then Fail(74,'');
- If (V.Value<Types[SelType].LowBound) Or (V.Value>Types[SelType].HighBound) Then Fail(112,'');
+ If (V.Value<Types[SelType].LowBound) Or (V.Value>Types[SelType].HighBound) Then
+   Fail(112,'');
 End;
 Procedure Jcc(SignedCode,UnsignedCode: Byte);
 Begin If Signed Then Emit2(SignedCode,3) Else Emit2(UnsignedCode,3) End;
@@ -6211,9 +10130,9 @@ Begin
     Inc(BodyCount); BodyJumps[BodyCount]:=Jump;
     PatchJump(N1,CodeSize); PatchJump(N2,CodeSize);
    End Else Begin
-    Emit($3D); EmitWord(Word(V1.Value)); Emit2($74,3); N1:=Jump;
+    Emit($3D); EmitWord(Word(V1.Value)); N1:=JumpIf($74);
     If Wide Then Begin
-     Emit2($81,$FA); EmitWord(Word(V1.Value Shr 16)); Emit2($74,3); N2:=Jump;
+     Emit2($81,$FA); EmitWord(Word(V1.Value Shr 16)); N2:=JumpIf($74);
     End Else N2:=0;
     Inc(BodyCount); BodyJumps[BodyCount]:=Jump;
     PatchJump(N1,CodeSize); If N2<>0 Then PatchJump(N2,CodeSize);
@@ -6227,7 +10146,8 @@ Begin
   If EndCount=512 Then Fail(124,'Trop de branches CASE');
   Inc(EndCount); EndJumps[EndCount]:=Jump;
   PatchJump(NextLabel,CodeSize);
-  If Token=tkSemi Then NextToken Else If Not (Token In [tkEnd,tkElse]) Then Need(tkSemi);
+  If Token=tkSemi Then NextToken Else If Not (Token In [tkEnd,
+    tkElse]) Then Need(tkSemi);
  End;
  If Token=tkElse Then Begin NextToken; StatementList(tkEnd) End;
  Need(tkEnd);
@@ -6251,12 +10171,16 @@ Begin
  S:=''; Need(tkLP);
  Repeat
   Size:=0;
-  If Token=tkLess Then Begin Size:=1; NextToken End Else If Token=tkGreater Then Begin Size:=2; NextToken End;
+  If Token=tkLess Then Begin Size:=1;
+    NextToken End Else If Token=tkGreater Then Begin Size:=2; NextToken End;
   I:=0; If Token=tkIdent Then I:=FindLexicalSymbol(TokenText);
   If (I<>0) And (Symbols[I].Kind=skVar) Then Begin
-   If Not Direct Or Symbols[I].Local Or Symbols[I].ByReference Then Fail(105,'');
+   If Not Direct Or Symbols[I].Local Or Symbols[I].ByReference Then Fail(105,
+     '');
    Name:=TokenText; NextToken; V.Value:=0;
-   If Token In [tkPlus,tkMinus] Then Begin Size:=Token; NextToken; V:=ConstFactor; ConstInteger(V); If Size=tkMinus Then V.Value:=-V.Value End;
+   If Token In [tkPlus,tkMinus] Then Begin Size:=Token; NextToken;
+     V:=ConstFactor; ConstInteger(V);
+       If Size=tkMinus Then V.Value:=-V.Value End;
    For I:=1 To Length(S) Do Emit(Ord(S[I])); S:='';
    DataAddress(Symbols[FindLexicalSymbol(Name)].Addr+V.Value);
   End Else Begin
@@ -6296,18 +10220,22 @@ Begin
   Scopes[W].Parent:=CurrentScope; Scopes[W].Owner:=CurrentUnit;
   Scopes[W].ProcSymbol:=Scopes[CurrentScope].ProcSymbol; Scopes[W].Pseudo:=True;
   CurrentScope:=W;
-  P:=NewSymbol('$WITH'); Symbols[P].Kind:=skVar; ApplyType(P,8); AllocateVariable(P);
+  P:=NewSymbol('$WITH'); Symbols[P].Kind:=skVar; ApplyType(P,8);
+    AllocateVariable(P);
   Symbols[P].DebugVisible:=False;
   If Symbols[P].Local Then Begin
    ScopeAddress(W); Emit($36); Emit2($89,$BF); EmitWord(Symbols[P].Addr);
    Emit($36); Emit2($8C,$87); EmitWord(Symbols[P].Addr+2);
   End Else Begin
-   Emit2($89,$3E); DataAddress(Symbols[P].Addr); Emit2($8C,$06); DataAddress(Symbols[P].Addr+2);
+   Emit2($89,$3E); DataAddress(Symbols[P].Addr); Emit2($8C,$06);
+     DataAddress(Symbols[P].Addr+2);
   End;
   F:=TypeExtras[T].FirstField;
   While F<>0 Do Begin
-   I:=NewSymbol(Fields[F].Name); Symbols[I].Kind:=skVar; ApplyType(I,Fields[F].TypeId);
-   Symbols[I].Local:=Symbols[P].Local; Symbols[I].ByReference:=True; Symbols[I].Addr:=Symbols[P].Addr;
+   I:=NewSymbol(Fields[F].Name); Symbols[I].Kind:=skVar; ApplyType(I,
+     Fields[F].TypeId);
+   Symbols[I].Local:=Symbols[P].Local; Symbols[I].ByReference:=True;
+     Symbols[I].Addr:=Symbols[P].Addr;
    Symbols[I].WithOffset:=Fields[F].Offset; Symbols[I].DebugVisible:=False;
    F:=Fields[F].Next;
   End;
@@ -6319,7 +10247,8 @@ End;
 
 Function IsMemPort(Name: TShortString): Boolean;
 Begin
- IsMemPort:=(Name='MEM') Or (Name='MEMW') Or (Name='MEML') Or (Name='PORT') Or (Name='PORTW');
+ IsMemPort:=(Name='MEM') Or (Name='MEMW') Or (Name='MEML') Or (Name='PORT') Or
+   (Name='PORTW');
 End;
 
 Procedure MemPortIndex(Name: TShortString);
@@ -6327,7 +10256,8 @@ Procedure MemPortIndex(Name: TShortString);
 Begin
  Need(tkLB); RequireInteger(Expression);
  If Name[1]='M' Then Begin
-  Emit($50); Need(tkColon); RequireInteger(Expression); Emit2($89,$C7); Emit($07);
+  Emit($50); Need(tkColon); RequireInteger(Expression); Emit2($89,$C7);
+    Emit($07);
  End Else Emit2($89,$C2);
  Need(tkRB);
 End;
@@ -6335,9 +10265,11 @@ End;
 Function MemPortLoad(Name: TShortString): Word;
 Begin
  MemPortIndex(Name);
- If Name='MEM' Then Begin Emit($26); Emit2($8A,$05); Emit2($30,$E4); MemPortLoad:=2 End
+ If Name='MEM' Then Begin Emit($26); Emit2($8A,$05); Emit2($30,$E4);
+   MemPortLoad:=2 End
  Else If Name='MEMW' Then Begin Emit($26); Emit2($8B,$05); MemPortLoad:=3 End
- Else If Name='MEML' Then Begin Emit($26); Emit2($8B,$05); Emit($26); Emit2($8B,$55); Emit(2); MemPortLoad:=9 End
+ Else If Name='MEML' Then Begin Emit($26); Emit2($8B,$05); Emit($26); Emit2($8B,
+   $55); Emit(2); MemPortLoad:=9 End
  Else If Name='PORT' Then Begin Emit($EC); Emit2($30,$E4); MemPortLoad:=2 End
  Else Begin Emit($ED); MemPortLoad:=3 End;
 End;
@@ -6349,24 +10281,27 @@ Begin
  If Name[1]='M' Then Begin Emit($06); Emit($57) End Else Emit($52);
  Need(tkAssign); T:=Expression;
  If Not (T In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(26,'');
- If Name='MEML' Then Begin If Types[ExprType].Width<>4 Then Begin If ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End End;
+ If Name='MEML' Then Begin If Types[ExprType].Width<>4 Then Begin If
+   ExprUnsigned Then Emit2($31,$D2) Else Emit($99) End End;
  If Name[1]='M' Then Begin Emit($5F); Emit($07) End Else Emit($5A);
  If Name='MEM' Then Begin Emit($26); Emit2($88,$05) End
  Else If Name='MEMW' Then Begin Emit($26); Emit2($89,$05) End
- Else If Name='MEML' Then Begin Emit($26); Emit2($89,$05); Emit($26); Emit2($89,$55); Emit(2) End
+ Else If Name='MEML' Then Begin Emit($26); Emit2($89,$05); Emit($26); Emit2($89,
+   $55); Emit(2) End
  Else If Name='PORT' Then Emit($EE) Else Emit($EF);
 End;
 
 Procedure StatementBody;
 Var
- I, Start, P, Q, ContinueAt: Word;
+ I, Start, P, Q, ContinueAt: Word; ForDisp: Longint; ForFrame: Boolean;
  Direction, Ignored: Byte;
  Name, VarName: TShortString;
 Begin
  DebugLineEntry;
  { Etiquettes: "1:" ou "Ident:" devant l'instruction. }
  While ((Token=tkConstant) And Not TokenIsString And Not TokenIsReal) Or
-       ((Token=tkIdent) And (FindLexicalSymbol(TokenText)<>0) And (Symbols[FindLexicalSymbol(TokenText)].Kind=skLabel)) Do Begin
+       ((Token=tkIdent) And (FindLexicalSymbol(TokenText)<>0) And
+         (Symbols[FindLexicalSymbol(TokenText)].Kind=skLabel)) Do Begin
   I:=FindLexicalSymbol(TokenText);
   If (I=0) Or (Symbols[I].Kind<>skLabel) Then Fail(113,'');
   DefineLabel(I); NextToken; Need(tkColon); DebugLineEntry;
@@ -6377,13 +10312,15 @@ Begin
  tkGoto:
  Begin
   NextToken;
-  If Not ((Token=tkIdent) Or ((Token=tkConstant) And Not TokenIsString And Not TokenIsReal)) Then Fail(35,'');
+  If Not ((Token=tkIdent) Or ((Token=tkConstant) And Not TokenIsString And Not
+    TokenIsReal)) Then Fail(35,'');
   I:=FindLexicalSymbol(TokenText);
   If (I=0) Or (Symbols[I].Kind<>skLabel) Then Fail(35,'');
   If Symbols[I].HasBody Then JumpTo(Symbols[I].Addr)
   Else Begin
    If LabelJumpCount=512 Then Fail(124,'Trop de GOTO');
-   Inc(LabelJumpCount); LabelJumps[LabelJumpCount].Sym:=I; LabelJumps[LabelJumpCount].Position:=Jump;
+   Inc(LabelJumpCount); LabelJumps[LabelJumpCount].Sym:=I;
+     LabelJumps[LabelJumpCount].Position:=Jump;
   End;
   NextToken;
  End;
@@ -6400,7 +10337,8 @@ Begin
   End Else PatchJump(P,CodeSize);
  End;
  tkCase:CaseStatement;
- tkInline:Begin NextToken; VarName:=InlineBytes(True); For P:=1 To Length(VarName) Do Emit(Ord(VarName[P])) End;
+ tkInline:Begin NextToken; VarName:=InlineBytes(True);
+   For P:=1 To Length(VarName) Do Emit(Ord(VarName[P])) End;
  tkWhile:
  Begin
   NextToken; Start:=CodeSize; RequireBoolean(Expression); Need(tkDo);
@@ -6419,66 +10357,105 @@ Begin
   NextToken;
   If Token<>tkIdent Then Fail(2,'Variable de boucle attendue');
   Name:=TokenText; NextToken; I:=ResolveSymbol(Name);
-  If (Symbols[I].Kind<>skVar) Or Not (Symbols[I].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then
+  If (Symbols[I].Kind<>skVar) Or Not (Symbols[I].Typ In [ttInteger,ttChar,
+    ttBoolean,ttEnum]) Then
    Fail(97,'Variable de controle FOR non ordinale');
   If Symbols[I].Width=4 Then Begin ForLongint(I); Exit End;
   Need(tkAssign); Ignored:=Expression;
-  If Not CompatibleTypes(SymbolType(I),ExprType) Then Fail(26,'Valeur initiale FOR');
-  If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,Types[SymbolType(I)].HighBound,ExprType);
+  If Not CompatibleTypes(SymbolType(I),ExprType) Then Fail(26,
+    'Valeur initiale FOR');
+  If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,
+    Types[SymbolType(I)].HighBound,ExprType);
   SaveSymbol(I);
   Direction:=Token;
   If Not (Direction In [tkTo,tkDownto]) Then Fail(58,'TO ou DOWNTO attendu');
   NextToken; Ignored:=Expression;
   If Not CompatibleTypes(SymbolType(I),ExprType) Then Fail(26,'Borne FOR');
-  If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,Types[SymbolType(I)].HighBound,ExprType);
+  If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,
+    Types[SymbolType(I)].HighBound,ExprType);
   { Comme TP, la borne est tronquee a la taille de la variable de controle
     (For B:=1 To -1 avec B: Byte boucle jusqu'a 255 puis s'arrete). }
-  If Symbols[I].Width=1 Then Emit2($30,$E4);
-  Emit($50); Need(tkDo);
-  Start:=CodeSize; LoadSymbol(I); Emit2($89,$E3); Emit($36); Emit2($3B,$07);
+  If Symbols[I].Width=1 Then ZeroAH;
+  { borne : dans la frame (un mot de plus) si on est dans une routine,
+    sinon sur la pile }
+  ForFrame:=RealScope(CurrentScope)<>0;
+  If ForFrame Then Begin
+   Inc(Scopes[RealScope(CurrentScope)].LocalSize,2);
+   ForDisp:=-Longint(Scopes[RealScope(CurrentScope)].LocalSize);
+   If Scopes[RealScope(CurrentScope)].LocalSize>65500 Then Fail(49,
+     'Variables locales trop grandes');
+   Emit($89); EmitBP(0,SmallInt(ForDisp));
+  End Else Begin Emit($50); Inc(StackLoops) End;
+  Need(tkDo);
+  Start:=CodeSize; LoadSymbol(I);
+  If ForFrame Then Begin Emit($3B); EmitBP(0,
+    SmallInt(ForDisp)) End Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,
+      $07) End;
   If Types[SymbolType(I)].Signed Then Begin
-   If Direction=tkTo Then Emit2($7E,$03) Else Emit2($7D,$03);
+   If Direction=tkTo Then P:=JumpIf($7E) Else P:=JumpIf($7D);
   End Else Begin
-   If Direction=tkTo Then Emit2($76,$03) Else Emit2($73,$03);
+   If Direction=tkTo Then P:=JumpIf($76) Else P:=JumpIf($73);
   End;
-  P:=Jump; LoopEnter; Statement;
+  LoopEnter; Statement;
       { Tester l'egalite AVANT inc/dec evite le debordement a +/-32768. }
   ContinueAt:=CodeSize;
-  LoadSymbol(I); Emit2($89,$E3); Emit($36); Emit2($3B,$07); Emit2($75,$03); Q:=Jump;
-  If Direction=tkTo Then Emit($40) Else Emit($48);
-  SaveSymbol(I); JumpTo(Start); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
+  LoadSymbol(I);
+  If ForFrame Then Begin Emit($3B); EmitBP(0,SmallInt(ForDisp));
+    Q:=JumpIf($75) End
+  Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,$07); Q:=JumpIf($75) End;
+  If SimpleScalar(I) And Symbols[I].Local And
+    (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (Symbols[I].Width
+      In [1,2]) Then Begin
+   { inc/dec [bp+d] directement }
+   If Symbols[I].Width=1 Then Emit($FE) Else Emit($FF);
+   If Direction=tkTo Then EmitBP(0,SmallInt(Symbols[I].Addr)) Else EmitBP(1,
+     SmallInt(Symbols[I].Addr));
+  End Else Begin
+   If Direction=tkTo Then Emit($40) Else Emit($48);
+   SaveSymbol(I);
+  End;
+  JumpTo(Start); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
   { Break sort avant la liberation de la borne empilee, comme P et Q. }
   LoopLeave(CodeSize,ContinueAt);
-  Emit2($83,$C4); Emit(2);
+  If Not ForFrame Then Begin Emit2($83,$C4); Emit(2); Dec(StackLoops) End;
  End;
  tkIdent:
  Begin
   Name:=TokenText; NextToken;
   I:=FindLexicalSymbol(Name);
-  If (Token=tkLP) And (((I<>0) And (Symbols[I].Kind=skType)) Or ((I=0) And (BuiltinType(Name)<>0))) Then Begin
+  If (Token=tkLP) And (((I<>0) And (Symbols[I].Kind=skType)) Or ((I=0) And
+    (BuiltinType(Name)<>0))) Then Begin
    { Type(Variable) := expression : transtypage de variable en destination }
    If I<>0 Then P:=Symbols[I].TypeId Else P:=BuiltinType(Name);
-   NextToken; Q:=VariableArgument; Need(tkRP); AssignToDesignator(P);
+   NextToken; Q:=VariableArgument; Need(tkRP);
+   If Token In [tkLB,tkDot] Then P:=DesignatorTail(P);
+   AssignToDesignator(P);
   End Else
   If (I=0) And (Token=tkLB) And IsMemPort(Name) Then MemPortStore(Name)
   Else If (I=0) And (Token<>tkDot) And StandardProcedure(Name) Then
-  Else If (I=0) And (Token<>tkDot) And ((Name='WRITE') Or (Name='WRITELN')) Then WriteStatement(Name=
+  Else If (I=0) And (Token<>tkDot) And ((Name='WRITE') Or (Name='WRITELN')) Then
+    WriteStatement(Name=
   'WRITELN')
-  Else If (I=0) And (Token<>tkDot) And ((Name='BREAK') Or (Name='CONTINUE')) Then LoopJump(Name='BREAK')
+  Else If (I=0) And (Token<>tkDot) And ((Name='BREAK') Or (Name='CONTINUE'))
+    Then LoopJump(Name='BREAK')
   Else If (I=0) And (Token<>tkDot) And (Name='HALT') Then Begin
    If Token=tkLP Then Begin
     NextToken; RequireInteger(Expression); Need(tkRP)
    End
    Else LoadImmediate(0);
-   CallTo(RuntimeHalt);
+   CallTo(RtlTarget(RuntimeHalt));
   End Else If (I=0) And (Token<>tkDot) And (Name='EXIT') Then Begin
-   If Not InProcedure Then Begin LoadImmediate(0); CallTo(RuntimeHalt) End
-   Else If RealScope(CurrentScope)<>0 Then ProcedureExit Else Emit($C3);
-  End Else If (I=0) And (Token<>tkDot) And ((Name='INC') Or (Name='DEC')) Then Begin
+   If Not InProcedure Then Begin LoadImmediate(0);
+     CallTo(RtlTarget(RuntimeHalt)) End
+   Else If RealScope(CurrentScope)<>0 Then ProcedureExit Else If MultiSeg Then
+     Emit($CB) Else Emit($C3);
+  End Else If (I=0) And (Token<>tkDot) And ((Name='INC') Or (Name='DEC')) Then
+    Begin
    Need(tkLP);
    If Token<>tkIdent Then Fail(2,'Variable attendue');
    VarName:=TokenText; NextToken; I:=ResolveSymbol(VarName);
-   If (Symbols[I].Kind<>skVar) Or (Symbols[I].Typ<>ttInteger) Then          Fail(38,
+   If (Symbols[I].Kind<>skVar) Or (Symbols[I].Typ<>ttInteger) Then
+     Fail(38,
    'Variable entiere attendue');
    LoadSymbol(I);
    If Token=tkComma Then Begin
@@ -6492,7 +10469,8 @@ Begin
    I:=ResolveSymbol(Name);
    If Symbols[I].Kind=skProc Then Begin
     { $X+: le resultat (AX ou DX:AX) d'une fonction est simplement ignore. }
-    If (Symbols[I].Typ<>ttVoid) And Not ExtendedSyntax Then Fail(91,'Resultat de fonction ignore sans $X+');
+    If (Symbols[I].Typ<>ttVoid) And Not ExtendedSyntax Then Fail(91,
+      'Resultat de fonction ignore sans $X+');
     If Symbols[I].Native Then Ignored:=NativeCall(I) Else Ignored:=UserCall(I);
    End Else Assignment(I);
   End;
@@ -6514,7 +10492,8 @@ Begin
 End;
 
 Procedure ConstInteger(V: TConstValue);
-Begin If Types[V.TypeId].Typ<>ttInteger Then Fail(26,'Constante entiere attendue') End;
+Begin If Types[V.TypeId].Typ<>ttInteger Then Fail(26,
+  'Constante entiere attendue') End;
 { forward: ConstInteger }
 
 Function ConstReal(V: TConstValue): Double;
@@ -6564,9 +10543,11 @@ Begin
   Else Begin ConstInteger(V); V.Value:=Not V.Value; V.TypeId:=1 End;
  End Else If Token=tkIdent Then Begin
   Name:=TokenText; NextToken;
-  If (FindLexicalSymbol(Name)=0) And (Token<>tkDot) And ((Name='TRUE') Or (Name='FALSE')) Then Begin
+  If (FindLexicalSymbol(Name)=0) And (Token<>tkDot) And ((Name='TRUE') Or
+    (Name='FALSE')) Then Begin
    V.TypeId:=5; If Name='TRUE' Then V.Value:=1;
-  End Else If (FindLexicalSymbol(Name)=0) And (Token<>tkDot) And (Token=tkLP) And
+  End Else If (FindLexicalSymbol(Name)=0) And (Token<>tkDot) And (Token=tkLP)
+    And
    ((Name='ORD') Or (Name='CHR') Or (Name='LENGTH') Or (Name='ABS') Or
     (Name='SQR') Or (Name='SUCC') Or (Name='PRED') Or (Name='SIZEOF') Or
     (Name='HIGH') Or (Name='LOW')) Then Begin
@@ -6577,27 +10558,36 @@ Begin
     T:=SizeArgument;
     If Types[T].Typ=ttArray Then T:=TypeExtras[T].IndexType;
     If Types[T].Typ=ttString Then Begin
-     If Name='HIGH' Then V.Value:=Types[T].Capacity Else V.Value:=0; V.TypeId:=1;
+     If Name='HIGH' Then V.Value:=Types[T].Capacity Else V.Value:=0;
+       V.TypeId:=1;
     End Else Begin
-     If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(29,'');
-     If Name='HIGH' Then V.Value:=Types[T].HighBound Else V.Value:=Types[T].LowBound;
+     If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(29,
+       '');
+     If Name='HIGH' Then V.Value:=Types[T].HighBound Else
+       V.Value:=Types[T].LowBound;
      V.TypeId:=T;
     End;
    End Else Begin
     V:=ConstExpression;
     If Name='ORD' Then Begin
-     If Not (Types[V.TypeId].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(26,'Constante ordinale attendue');
+     If Not (Types[V.TypeId].Typ In [ttInteger,ttChar,ttBoolean,
+       ttEnum]) Then Fail(26,'Constante ordinale attendue');
      V.TypeId:=1;
     End Else If Name='CHR' Then Begin
-     ConstInteger(V); If (V.Value<0) Or (V.Value>255) Then Fail(76,'CHR hors limites'); V.TypeId:=6;
-    End Else If Name='LENGTH' Then Begin V.Value:=Length(ConstText(V)); V.TypeId:=1 End
+     ConstInteger(V); If (V.Value<0) Or (V.Value>255) Then Fail(76,
+       'CHR hors limites'); V.TypeId:=6;
+    End Else If Name='LENGTH' Then Begin V.Value:=Length(ConstText(V));
+      V.TypeId:=1 End
     Else If (Name='SUCC') Or (Name='PRED') Then Begin
-     If Not (Types[V.TypeId].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(26,'Constante ordinale attendue');
+     If Not (Types[V.TypeId].Typ In [ttInteger,ttChar,ttBoolean,
+       ttEnum]) Then Fail(26,'Constante ordinale attendue');
      If Name='SUCC' Then Inc(V.Value) Else Dec(V.Value);
-     If (V.Value<Types[V.TypeId].LowBound) Or (V.Value>Types[V.TypeId].HighBound) Then
+     If (V.Value<Types[V.TypeId].LowBound) Or
+       (V.Value>Types[V.TypeId].HighBound) Then
       Fail(76,'SUCC/PRED hors limites');
     End Else If Types[V.TypeId].Typ=ttReal Then Begin
-     If Name='ABS' Then V.RealValue:=Abs(V.RealValue) Else V.RealValue:=V.RealValue*V.RealValue;
+     If Name='ABS' Then V.RealValue:=Abs(V.RealValue) Else
+       V.RealValue:=V.RealValue*V.RealValue;
     End Else Begin
      ConstInteger(V);
      If (V.Value=-2147483647-1) Or ((Name='SQR') And (Abs(V.Value)>46340)) Then
@@ -6611,15 +10601,20 @@ Begin
    { Transtypage ordinal: Byte(' '), Char(65), Word(-1)... }
    T:=ConstCastType(Name); NextToken; V:=ConstExpression; Need(tkRP);
    If Not (Types[V.TypeId].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Or
-      Not (Types[T].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(61,'');
-   If Types[T].Width=1 Then V.Value:=V.Value And $FF Else If Types[T].Width=2 Then V.Value:=V.Value And $FFFF;
-   If Types[T].Signed And (Types[T].Width=1) And (V.Value>127) Then Dec(V.Value,256);
-   If Types[T].Signed And (Types[T].Width=2) And (V.Value>32767) Then Dec(V.Value,65536);
+      Not (Types[T].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(61,
+        '');
+   If Types[T].Width=1 Then V.Value:=V.Value And $FF Else If Types[T].Width=2
+     Then V.Value:=V.Value And $FFFF;
+   If Types[T].Signed And (Types[T].Width=1) And (V.Value>127) Then Dec(V.Value,
+     256);
+   If Types[T].Signed And (Types[T].Width=2) And (V.Value>32767) Then
+     Dec(V.Value,65536);
    V.TypeId:=T; V.Text:='';
   End Else Begin
    I:=ResolveSymbol(Name);
    If Symbols[I].Kind<>skConst Then Fail(31,'Constante attendue: '+Name);
-   V.TypeId:=SymbolType(I); V.Value:=Symbols[I].Value; V.Text:=Symbols[I].StrValue;
+   V.TypeId:=SymbolType(I); V.Value:=Symbols[I].Value;
+     V.Text:=Symbols[I].StrValue;
    If Types[V.TypeId].Typ=ttReal Then V.RealValue:=RealHost(Symbols[I].Addr);
   End;
  End Else Begin Fail(31,'Expression constante attendue') End;
@@ -6632,10 +10627,12 @@ Begin
  V:=ConstFactor;
  While Token In [tkTimes,tkDiv,tkMod,tkAnd,tkShl,tkShr,tkSlash] Do Begin
   Op:=Token; NextToken; R:=ConstFactor;
-  If (Op=tkSlash) Or (Types[V.TypeId].Typ=ttReal) Or (Types[R.TypeId].Typ=ttReal) Then Begin
+  If (Op=tkSlash) Or (Types[V.TypeId].Typ=ttReal) Or
+    (Types[R.TypeId].Typ=ttReal) Then Begin
    If Not (Op In [tkTimes,tkSlash]) Then Fail(26,'Operation constante reelle');
    If Op=tkTimes Then V.RealValue:=ConstReal(V)*ConstReal(R)
-   Else Begin If ConstReal(R)=0 Then Fail(62,'Division constante par zero'); V.RealValue:=ConstReal(V)/ConstReal(R) End;
+   Else Begin If ConstReal(R)=0 Then Fail(62,'Division constante par zero');
+     V.RealValue:=ConstReal(V)/ConstReal(R) End;
    V.TypeId:=11; Continue;
   End;
   If (Op=tkAnd) And (Types[V.TypeId].Typ=ttBoolean) Then Begin
@@ -6646,18 +10643,23 @@ Begin
    Case Op Of
     tkTimes:Begin
      Check:=V.Value; Check:=Check*R.Value;
-     If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,'Debordement constant');
+     If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,
+       'Debordement constant');
      V.Value:=V.Value*R.Value;
     End;
     tkDiv,tkMod:Begin
      If R.Value=0 Then Fail(62,'Division constante par zero');
-     If (V.Value=-2147483647-1) And (R.Value=-1) Then Fail(76,'Debordement constant');
-     If Op=tkDiv Then V.Value:=V.Value Div R.Value Else V.Value:=V.Value Mod R.Value;
+     If (V.Value=-2147483647-1) And (R.Value=-1) Then Fail(76,
+       'Debordement constant');
+     If Op=tkDiv Then V.Value:=V.Value Div R.Value Else V.Value:=V.Value Mod
+       R.Value;
     End;
     tkAnd:V.Value:=V.Value And R.Value;
     tkShl,tkShr:Begin
-     If (R.Value<0) Or (R.Value>31) Then Fail(76,'Decalage constant hors limites');
-     If Op=tkShl Then V.Value:=V.Value Shl R.Value Else V.Value:=V.Value Shr R.Value;
+     If (R.Value<0) Or (R.Value>31) Then Fail(76,
+       'Decalage constant hors limites');
+     If Op=tkShl Then V.Value:=V.Value Shl R.Value Else V.Value:=V.Value Shr
+       R.Value;
     End;
    End;
    V.TypeId:=1;
@@ -6673,7 +10675,8 @@ Begin
  If Token In [tkPlus,tkMinus] Then Begin Sign:=Token; NextToken End;
  V:=ConstTerm;
  If (Sign<>0) And (Types[V.TypeId].Typ<>ttReal) Then ConstInteger(V);
- If (Sign=tkMinus) And (Types[V.TypeId].Typ=ttReal) Then V.RealValue:=-V.RealValue
+ If (Sign=tkMinus) And (Types[V.TypeId].Typ=ttReal) Then
+   V.RealValue:=-V.RealValue
  Else If Sign=tkMinus Then Begin
   If V.Value=-2147483647-1 Then Fail(76,'Debordement constant');
   V.Value:=-V.Value; V.TypeId:=1;
@@ -6682,22 +10685,27 @@ Begin
   Op:=Token; NextToken; R:=ConstTerm;
   If (Types[V.TypeId].Typ=ttReal) Or (Types[R.TypeId].Typ=ttReal) Then Begin
    If Not (Op In [tkPlus,tkMinus]) Then Fail(26,'Operation constante reelle');
-   If Op=tkPlus Then V.RealValue:=ConstReal(V)+ConstReal(R) Else V.RealValue:=ConstReal(V)-ConstReal(R);
+   If Op=tkPlus Then V.RealValue:=ConstReal(V)+ConstReal(R) Else
+     V.RealValue:=ConstReal(V)-ConstReal(R);
    V.TypeId:=11; Continue;
   End;
   If (Op=tkPlus) And (Types[V.TypeId].Typ In [ttString,ttChar]) Then Begin
    S:=ConstText(V);
    V.Text:=S+ConstText(R); V.TypeId:=7; { TP tronque silencieusement a 255 }
-  End Else If (Op In [tkOr,tkXor]) And (Types[V.TypeId].Typ=ttBoolean) Then Begin
-   If Types[R.TypeId].Typ<>ttBoolean Then Fail(26,'Operation booleenne constante');
-   If Op=tkOr Then V.Value:=V.Value Or R.Value Else V.Value:=V.Value Xor R.Value;
+  End Else If (Op In [tkOr,
+    tkXor]) And (Types[V.TypeId].Typ=ttBoolean) Then Begin
+   If Types[R.TypeId].Typ<>ttBoolean Then Fail(26,
+     'Operation booleenne constante');
+   If Op=tkOr Then V.Value:=V.Value Or R.Value Else V.Value:=V.Value Xor
+     R.Value;
   End Else Begin
    ConstInteger(V); ConstInteger(R); Check:=V.Value;
    Case Op Of
     tkPlus:Begin Check:=Check+R.Value End;
     tkMinus:Begin Check:=Check-R.Value End;
    End;
-   If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,'Debordement constant');
+   If (Check<-2147483647.0-1) Or (Check>2147483647.0) Then Fail(76,
+     'Debordement constant');
    Case Op Of
     tkPlus:V.Value:=V.Value+R.Value; tkMinus:V.Value:=V.Value-R.Value;
     tkOr:V.Value:=V.Value Or R.Value; tkXor:V.Value:=V.Value Xor R.Value;
@@ -6715,11 +10723,15 @@ Begin
  If Token In [tkEqual,tkNE,tkLess,tkGreater,tkLE,tkGE] Then Begin
   Op:=Token; NextToken; R:=ConstSimple;
   If (Types[V.TypeId].Typ=ttReal) Or (Types[R.TypeId].Typ=ttReal) Then Begin
-   C:=0; If ConstReal(V)<ConstReal(R) Then C:=-1 Else If ConstReal(V)>ConstReal(R) Then C:=1;
+   C:=0;
+     If ConstReal(V)<ConstReal(R) Then C:=-1 Else If ConstReal(V)>ConstReal(R)
+       Then C:=1;
   End Else If Types[V.TypeId].Typ In [ttString,ttChar] Then Begin
-   S:=ConstText(V); T:=ConstText(R); C:=0; If S<T Then C:=-1 Else If S>T Then C:=1;
+   S:=ConstText(V); T:=ConstText(R); C:=0;
+     If S<T Then C:=-1 Else If S>T Then C:=1;
   End Else Begin
-   If Not CompatibleTypes(V.TypeId,R.TypeId) Then Fail(26,'Comparaison constante incompatible');
+   If Not CompatibleTypes(V.TypeId,R.TypeId) Then Fail(26,
+     'Comparaison constante incompatible');
    C:=0; If V.Value<R.Value Then C:=-1 Else If V.Value>R.Value Then C:=1;
   End;
   B:=False;
@@ -6737,20 +10749,25 @@ Var F: Word;
 Begin
  ContainsFile:=True;
  If Types[T].Typ In [ttFile,ttText] Then Exit;
- If Types[T].Typ=ttArray Then Begin ContainsFile:=ContainsFile(TypeExtras[T].ElementType); Exit End;
+ If Types[T].Typ=ttArray Then Begin
+   ContainsFile:=ContainsFile(TypeExtras[T].ElementType); Exit End;
  If Types[T].Typ=ttRecord Then Begin
   F:=TypeExtras[T].FirstField;
-  While F<>0 Do Begin If ContainsFile(Fields[F].TypeId) Then Exit; F:=Fields[F].Next End;
+  While F<>0 Do Begin If ContainsFile(Fields[F].TypeId) Then Exit;
+    F:=Fields[F].Next End;
  End;
  ContainsFile:=False;
 End;
 
 Function ReadType: Word;
-Var T,I,E,K,Element,Dimensions: Word; First,Last: TConstValue; Name: TShortString; W: Byte;
+Var T,I,E,K,Element,Dimensions: Word; First,Last: TConstValue;
+  Name: TShortString; W: Byte;
  IndexTypes: Array[1..16] Of Word;
  Size: Longint;
-  SavedPos: Longint; SavedLine, SavedColumn, SavedTokenLine, SavedTokenColumn: Word;
-Procedure RecordField(FieldName: TShortString; FieldType: Word; var Offset: Longint);
+  SavedPos: Longint; SavedLine, SavedColumn, SavedTokenLine,
+    SavedTokenColumn: Word;
+Procedure RecordField(FieldName: TShortString; FieldType: Word;
+  var Offset: Longint);
 Var Field: Word;
 Begin
  Field:=TypeExtras[T].FirstField;
@@ -6759,7 +10776,8 @@ Begin
   Field:=Fields[Field].Next;
  End;
  If FieldCount=MaxFields Then Fail(123,'Table des champs pleine');
- If Offset+TypeExtras[FieldType].Size>MaxImage Then Fail(49,'Record trop grand');
+ If Offset+TypeExtras[FieldType].Size>MaxImage Then Fail(49,
+   'Record trop grand');
  Inc(FieldCount); Field:=FieldCount; Fields[Field].Name:=FieldName;
  Fields[Field].TypeId:=FieldType; Fields[Field].Offset:=Offset;
  Fields[Field].Next:=TypeExtras[T].FirstField; TypeExtras[T].FirstField:=Field;
@@ -6770,7 +10788,8 @@ Var Names: Array[1..32] Of TShortString; Count,J,Component,Tag,I: Word;
  BaseOffset,ArmOffset,MaxOffset: Longint; TagName: TShortString;
  LabelValue: TConstValue; Labels: Array[1..256] Of Longint; LabelCount: Word;
 Begin
- While Token<>StopToken Do Begin
+ While (Token<>StopToken) And Not (ObjectFieldsMode And (Token In [tkProcedure,
+   tkFunction])) Do Begin
   If Token=tkCase Then Begin
    NextToken; TagName:='';
    If Token<>tkIdent Then Fail(2,'Type ou champ discriminant attendu');
@@ -6779,23 +10798,32 @@ Begin
     NextToken; Tag:=ReadType; RecordField(TagName,Tag,Offset);
    End Else Begin
     I:=FindLexicalSymbol(TagName); Tag:=BuiltinType(TagName);
-    If I<>0 Then Begin If Symbols[I].Kind<>skType Then Fail(27,'Type discriminant attendu'); Tag:=Symbols[I].TypeId End;
+    If I<>0 Then Begin If Symbols[I].Kind<>skType Then Fail(27,
+      'Type discriminant attendu'); Tag:=Symbols[I].TypeId End;
     If Tag=0 Then Fail(3,TagName);
    End;
-   If Not (Types[Tag].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(27,'Discriminant non ordinal');
-   Need(tkOf); BaseOffset:=Offset; MaxOffset:=Offset; LabelCount:=0; FillChar(Labels,SizeOf(Labels),0);
+   If Not (Types[Tag].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(27,
+     'Discriminant non ordinal');
+   Need(tkOf); BaseOffset:=Offset; MaxOffset:=Offset; LabelCount:=0;
+     FillChar(Labels,SizeOf(Labels),0);
    While Token<>StopToken Do Begin
     Repeat
      LabelValue:=ConstExpression;
-     If Not (Types[LabelValue.TypeId].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(26,'Label variant non ordinal');
-     If Not CompatibleTypes(Tag,LabelValue.TypeId) Then Fail(26,'Type de label variant');
-     If (LabelValue.Value<Types[Tag].LowBound) Or (LabelValue.Value>Types[Tag].HighBound) Then Fail(76,'Label variant hors limites');
-     For J:=1 To LabelCount Do If Labels[J]=LabelValue.Value Then Fail(4,'Label variant duplique');
+     If Not (Types[LabelValue.TypeId].Typ In [ttInteger,ttChar,ttBoolean,
+       ttEnum]) Then Fail(26,'Label variant non ordinal');
+     If Not CompatibleTypes(Tag,LabelValue.TypeId) Then Fail(26,
+       'Type de label variant');
+     If (LabelValue.Value<Types[Tag].LowBound) Or
+       (LabelValue.Value>Types[Tag].HighBound) Then Fail(76,
+         'Label variant hors limites');
+     For J:=1 To LabelCount Do If Labels[J]=LabelValue.Value Then Fail(4,
+       'Label variant duplique');
      If LabelCount=256 Then Fail(123,'Trop de labels variants');
      Inc(LabelCount); Labels[LabelCount]:=LabelValue.Value;
      If Token<>tkComma Then Break; NextToken;
     Until False;
-    Need(tkColon); Need(tkLP); ArmOffset:=BaseOffset; RecordFields(ArmOffset,tkRP); Need(tkRP);
+    Need(tkColon); Need(tkLP); ArmOffset:=BaseOffset; RecordFields(ArmOffset,
+      tkRP); Need(tkRP);
     If ArmOffset>MaxOffset Then MaxOffset:=ArmOffset;
     If Token=tkSemi Then NextToken Else If Token<>StopToken Then Need(tkSemi);
    End;
@@ -6815,35 +10843,42 @@ Begin
 End;
 Begin
  If Token=tkPacked Then NextToken;
- If Token In [tkObject,tkProcedure,tkFunction] Then
-  Unsupported('objet ou type procedural');
- If (Token=tkIdent) And ((TokenText='SINGLE') Or (TokenText='DOUBLE') Or (TokenText='EXTENDED') Or (TokenText='COMP')) Then
+ If Token In [tkProcedure,tkFunction] Then
+  Unsupported('type procedural');
+ If (Token=tkIdent) And ((TokenText='EXTENDED') Or (TokenText='COMP')) And
+   (FindLexicalSymbol(TokenText)=0) Then
   Unsupported('type: '+TokenText);
  If Token=tkFile Then Begin
   NextToken; Element:=0;
   If Token=tkOf Then Begin
    NextToken; Element:=ReadType;
-   If ContainsFile(Element) Or (TypeExtras[Element].Size=0) Then Fail(26,'Type de composant file invalide');
+   If ContainsFile(Element) Or (TypeExtras[Element].Size=0) Then Fail(26,
+     'Type de composant file invalide');
   End;
-  T:=NewType(ttFile,0,0,False,0,0,0); TypeExtras[T].Size:=128; TypeExtras[T].ElementType:=Element;
+  T:=NewType(ttFile,0,0,False,0,0,0); TypeExtras[T].Size:=128;
+    TypeExtras[T].ElementType:=Element;
  End Else If Token=tkSet Then Begin
   NextToken; Need(tkOf); Element:=ReadType;
   If Not (Types[Element].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Or
      (Types[Element].LowBound<0) Or (Types[Element].HighBound>255) Then
    Fail(23,'Type de base set hors 0..255');
-  T:=NewType(ttSet,0,0,False,Types[Element].LowBound,Types[Element].HighBound,0);
+  T:=NewType(ttSet,0,0,False,Types[Element].LowBound,Types[Element].HighBound,
+    0);
   TypeExtras[T].ElementType:=Element;
-  TypeExtras[T].Size:=Types[Element].HighBound Div 8-Types[Element].LowBound Div 8+1;
+  TypeExtras[T].Size:=Types[Element].HighBound Div 8-Types[Element].LowBound Div
+    8+1;
  End Else If Token=tkCaret Then Begin
   NextToken;
   If Token=tkString Then Begin
-   NextToken; T:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[T].ElementType:=7;
+   NextToken; T:=NewType(ttPointer,4,0,False,0,0,0);
+     TypeExtras[T].ElementType:=7;
    ReadType:=T; Exit;
   End;
   If Token<>tkIdent Then Fail(12,'Type pointe attendu');
   Name:=TokenText; I:=FindSymbol(Name); T:=NewType(ttPointer,4,0,False,0,0,0);
   If (I<>0) And (Symbols[I].Kind=skType) And (Symbols[I].TypeId<>0) Then Begin
-   NextToken; I:=ResolveSymbol(Name); TypeExtras[T].ElementType:=Symbols[I].TypeId;
+   NextToken; I:=ResolveSymbol(Name);
+     TypeExtras[T].ElementType:=Symbols[I].TypeId;
   End Else Begin TypeExtras[T].ForwardName:=Name; NextToken End;
  End Else If Token=tkArray Then Begin
   NextToken;
@@ -6851,7 +10886,8 @@ Begin
    { Parametre tableau ouvert (TP 7.0): pointeur far + High sur la pile. }
    NextToken; Element:=ReadType;
    T:=NewType(ttArray,0,0,False,0,0,0);
-   TypeExtras[T].Size:=6; TypeExtras[T].IndexType:=3; TypeExtras[T].ElementType:=Element;
+   TypeExtras[T].Size:=6; TypeExtras[T].IndexType:=3;
+     TypeExtras[T].ElementType:=Element;
    TypeExtras[T].FieldCount:=$FFFF;
    ReadType:=T; Exit;
   End;
@@ -6860,22 +10896,41 @@ Begin
    If Dimensions=16 Then Fail(123,'Trop de dimensions');
    Inc(Dimensions); IndexTypes[Dimensions]:=ReadType;
    I:=IndexTypes[Dimensions];
-   If Not (Types[I].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(27,'Index non ordinal');
+   If Not (Types[I].Typ In [ttInteger,ttBoolean,ttChar,ttEnum]) Then Fail(27,
+     'Index non ordinal');
    If Token<>tkComma Then Break; NextToken;
   Until False;
   Need(tkRB); Need(tkOf); Element:=ReadType;
   For K:=Dimensions Downto 1 Do Begin
    I:=IndexTypes[K];
-   Size:=(Types[I].HighBound-Types[I].LowBound+1)*Longint(TypeExtras[Element].Size);
+   Size:=(Types[I].HighBound-Types[I].LowBound+1)*
+     Longint(TypeExtras[Element].Size);
    If (Size<=0) Or (Size>65535) Then Fail(22,'Tableau trop grand');
    T:=NewType(ttArray,0,0,False,0,0,0);
-   TypeExtras[T].Size:=Size; TypeExtras[T].IndexType:=I; TypeExtras[T].ElementType:=Element;
+   TypeExtras[T].Size:=Size; TypeExtras[T].IndexType:=I;
+     TypeExtras[T].ElementType:=Element;
    Element:=T;
   End;
  End Else If Token=tkRecord Then Begin
   NextToken; T:=NewType(ttRecord,0,0,False,0,0,0); Size:=0;
   RecordFields(Size,tkEnd);
   Need(tkEnd); TypeExtras[T].Size:=Size;
+ End Else If Token=tkObject Then Begin
+  { objet sans heritage ni methode virtuelle : un enregistrement dont les
+    methodes recoivent Self }
+  If TypeNameBeingDeclared='' Then Unsupported('objet anonyme');
+  If CurrentScope<>0 Then Unsupported('objet local');
+  NextToken;
+  If Token=tkLP Then Unsupported('heritage d''objet');
+  T:=NewType(ttRecord,0,0,False,0,0,0); Size:=0;
+  ObjectFieldsMode:=True; RecordFields(Size,tkEnd); ObjectFieldsMode:=False;
+  TypeExtras[T].Size:=Size;
+  ObjectDeclName:=TypeNameBeingDeclared; ObjectDeclType:=T;
+    TypeNameBeingDeclared:='';
+  InObjectDecl:=True;
+  While Token In [tkProcedure,tkFunction] Do ProcedureDeclaration;
+  InObjectDecl:=False;
+  Need(tkEnd);
  End Else If Token=tkString Then Begin
   NextToken; T:=7;
   If Token=tkLB Then Begin
@@ -6887,7 +10942,8 @@ Begin
   NextToken; T:=NewType(ttEnum,1,0,False,0,0,0); E:=0;
   Repeat
    If Token<>tkIdent Then Fail(2,'Identificateur enumere attendu');
-   I:=NewSymbol(TokenText); Symbols[I].Kind:=skConst; ApplyType(I,T); Symbols[I].Value:=E;
+   I:=NewSymbol(TokenText); Symbols[I].Kind:=skConst; ApplyType(I,T);
+     Symbols[I].Value:=E;
    Inc(E); NextToken;
    If Token<>tkComma Then Break;
    NextToken;
@@ -6907,7 +10963,8 @@ Begin
    End Else If I=0 Then Begin
     T:=BuiltinType(TokenText); If T<>0 Then NextToken;
     If (T=0) And (FindBuildUnit(TokenText)=0) And
-      (TokenText<>'TRUE') And (TokenText<>'FALSE') Then Fail(12,'Type inconnu: '+TokenText);
+      (TokenText<>'TRUE') And (TokenText<>'FALSE') Then Fail(12,
+        'Type inconnu: '+TokenText);
    End;
    If (T=0) And (Token=tkIdent) And (Peek<>#0) Then Begin
     { Une reference qualifiee peut designer un type ou une constante borne. }
@@ -6926,15 +10983,19 @@ Begin
   End;
   If T=0 Then First:=ConstExpression;
   If (T=0) Or (T=$FFFF) Then Begin
-   If Not (Types[First.TypeId].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(27,'Borne non ordinale');
+   If Not (Types[First.TypeId].Typ In [ttInteger,ttChar,ttBoolean,
+     ttEnum]) Then Fail(27,'Borne non ordinale');
    Need(tkRange); Last:=ConstExpression;
-   If Not CompatibleTypes(First.TypeId,Last.TypeId) Then Fail(26,'Types des bornes');
+   If Not CompatibleTypes(First.TypeId,Last.TypeId) Then Fail(26,
+     'Types des bornes');
    If First.Value>Last.Value Then Fail(28,'Bornes inversees');
-   If (First.Value<-32768) Or (Last.Value>65535) Then Unsupported('sous-intervalle >16 bits');
+   If (First.Value<-32768) Or (Last.Value>65535) Then
+     Unsupported('sous-intervalle >16 bits');
    W:=2;
    If (First.Value>=0) And (Last.Value<=255) Then W:=1;
    If (First.Value>=-128) And (Last.Value<=127) Then W:=1;
-   T:=NewType(Types[First.TypeId].Typ,W,0,First.Value<0,First.Value,Last.Value,Types[First.TypeId].Base);
+   T:=NewType(Types[First.TypeId].Typ,W,0,First.Value<0,First.Value,Last.Value,
+     Types[First.TypeId].Base);
   End;
  End;
  ReadType:=T;
@@ -6946,8 +11007,10 @@ Begin
  NextToken;
  While Token=tkIdent Do Begin
   I:=NewSymbol(TokenText); Symbols[I].Kind:=skType; NextToken; Need(tkEqual);
-  T:=ReadType;
-  If (Types[T].Typ In [ttEnum,ttArray,ttRecord,ttPointer]) And (Types[T].IdentityName='') Then Begin
+  TypeNameBeingDeclared:=Symbols[I].Name;
+  T:=ReadType; TypeNameBeingDeclared:='';
+  If (Types[T].Typ In [ttEnum,ttArray,ttRecord,
+    ttPointer]) And (Types[T].IdentityName='') Then Begin
    If CurrentUnit=0 Then Types[T].IdentityUnit:='$PROGRAM'
    Else If CurrentUnit=254 Then Types[T].IdentityUnit:='$REAL'
    Else If CurrentUnit=253 Then Types[T].IdentityUnit:='$8087'
@@ -6968,13 +11031,16 @@ End;
 Procedure CheckConstType(T: Word; V: TConstValue);
 Begin
  If Types[T].Typ=ttReal Then Begin
-  If Not (Types[V.TypeId].Typ In [ttReal,ttInteger]) Then Fail(26,'Constante numerique attendue');
+  If Not (Types[V.TypeId].Typ In [ttReal,ttInteger]) Then Fail(26,
+    'Constante numerique attendue');
  End Else If Types[T].Typ=ttString Then Begin
-  If Not (Types[V.TypeId].Typ In [ttChar,ttString]) Then Fail(26,'Chaine constante attendue');
+  If Not (Types[V.TypeId].Typ In [ttChar,ttString]) Then Fail(26,
+    'Chaine constante attendue');
   { TP 7.0 tronque silencieusement une constante plus longue que String[n]. }
  End Else Begin
   If Not CompatibleTypes(T,V.TypeId) Then Fail(26,'Type constant incompatible');
-  If (V.Value<Types[T].LowBound) Or (V.Value>Types[T].HighBound) Then Fail(76,'Constante hors limites du type');
+  If (V.Value<Types[T].LowBound) Or (V.Value>Types[T].HighBound) Then Fail(76,
+    'Constante hors limites du type');
  End;
 End;
 
@@ -6984,7 +11050,8 @@ Begin
  N:=TypeExtras[SymbolType(I)].Size; R:=RealScope(CurrentScope);
  If R<>0 Then Begin
   N:=(N+1) And $FFFE;
-  If Longint(Scopes[R].LocalSize)+N>65520 Then Fail(49,'Variables locales trop grandes');
+  If Longint(Scopes[R].LocalSize)+N>65520 Then Fail(49,
+    'Variables locales trop grandes');
   Inc(Scopes[R].LocalSize,N); Symbols[I].Local:=True;
   Symbols[I].Addr:=Word(-Longint(Scopes[R].LocalSize));
  End Else If (CurrentUnit=0) And (N<>0) Then Symbols[I].Addr:=AllocBss(N)
@@ -7013,9 +11080,11 @@ Begin
  Repeat
   V2:=V;
   If Token=tkRange Then Begin NextToken; V2:=ConstExpression End;
-  If (TypeExtras[T].ElementType<>0) And Not CompatibleTypes(TypeExtras[T].ElementType,V.TypeId) Then Fail(26,'');
+  If (TypeExtras[T].ElementType<>0) And Not
+    CompatibleTypes(TypeExtras[T].ElementType,V.TypeId) Then Fail(26,'');
   For X:=V.Value To V2.Value Do Begin
-   If (X<Types[T].LowBound) Or (X>Types[T].HighBound) Then Fail(76,'Element hors de l''ensemble');
+   If (X<Types[T].LowBound) Or (X>Types[T].HighBound) Then Fail(76,
+     'Element hors de l''ensemble');
    Data[A+(X-Lo) Div 8]:=Data[A+(X-Lo) Div 8] Or (1 Shl ((X-Lo) Mod 8));
   End;
   If Token<>tkComma Then Break; NextToken; V:=ConstExpression;
@@ -7026,12 +11095,14 @@ Procedure ConstInit(T, A: Word);
 { Initialisation d'une constante typee a l'adresse A de Data, selon T:
   (v1,v2,...) pour un tableau, (champ:v;...) pour un record, [..] pour un
   ensemble, et une valeur scalaire sinon. }
-Var V,V2: TConstValue; S: TShortString; K: Integer; F,Element,Count,N: Word; Lo,Hi,X: Longint;
+Var V,V2: TConstValue; S: TShortString; K: Integer; F,Element,Count,N: Word; Lo,
+  Hi,X: Longint;
 Begin
  Case Types[T].Typ Of
   ttArray:Begin
    Element:=TypeExtras[T].ElementType;
-   Lo:=Types[TypeExtras[T].IndexType].LowBound; Hi:=Types[TypeExtras[T].IndexType].HighBound;
+   Lo:=Types[TypeExtras[T].IndexType].LowBound;
+     Hi:=Types[TypeExtras[T].IndexType].HighBound;
    If (Token=tkConstant) And TokenIsString And (Element=6) Then Begin
     { tableau de Char initialise par une chaine }
     V:=ConstExpression; S:=ConstText(V);
@@ -7070,28 +11141,34 @@ Begin
    For K:=1 To Length(S) Do Data[A+K]:=Ord(S[K]);
   End;
   ttReal:Begin
-   V:=ConstExpression; CheckConstType(T,V); F:=StoreReal(ConstReal(V)); Move(Data[F],Data[A],6);
+   V:=ConstExpression; CheckConstType(T,V); F:=StoreReal(ConstReal(V));
+     Move(Data[F],Data[A],6);
   End;
   ttPointer:Begin
    If Token=tkNil Then Begin NextToken; FillChar(Data[A],4,0) End
    Else If Token=tkAt Then Begin
-    { @Variable globale: offset + segment de donnees (relocalise par la table MZ) }
+    { @Variable globale: offset + segment de donnees (relocalise par la table
+      MZ) }
     NextToken; If Token<>tkIdent Then Fail(2,'');
     Element:=ResolveSymbol(TokenText); NextToken;
-    If (Symbols[Element].Kind<>skVar) Or Symbols[Element].Local Then Fail(20,'Variable globale attendue');
+    If (Symbols[Element].Kind<>skVar) Or Symbols[Element].Local Then Fail(20,
+      'Variable globale attendue');
     N:=Symbols[Element].Addr;
     While Token In [tkDot,tkLB] Do Begin
      If Token=tkDot Then Begin
       NextToken; If Token<>tkIdent Then Fail(2,'');
-      F:=TypeExtras[SymbolType(Element)].FirstField; While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
+      F:=TypeExtras[SymbolType(Element)].FirstField;
+        While (F<>0) And (Fields[F].Name<>TokenText) Do F:=Fields[F].Next;
       If F=0 Then Fail(3,''); Inc(N,Fields[F].Offset); NextToken;
      End Else Fail(31,'Indice non constant dans une adresse');
     End;
     Data[A]:=N And 255; Data[A+1]:=N Shr 8; Data[A+2]:=0; Data[A+3]:=0;
-    If DataFixupCount=4096 Then Unsupported('trop de constantes pointeur'); Inc(DataFixupCount); DataFixups[DataFixupCount]:=A;
+    If DataFixupCount=4096 Then Unsupported('trop de constantes pointeur');
+      Inc(DataFixupCount); DataFixups[DataFixupCount]:=A;
    End Else Begin
     V:=ConstExpression;
-    If IsCharPointer(T) And (Types[V.TypeId].Typ In [ttChar,ttString]) And ExtendedSyntax Then
+    If IsCharPointer(T) And (Types[V.TypeId].Typ In [ttChar,
+      ttString]) And ExtendedSyntax Then
      StorePCharConst(A,ConstText(V))
     Else Fail(26,'');
    End;
@@ -7100,7 +11177,8 @@ Begin
    V:=ConstExpression; CheckConstType(T,V);
    Data[A]:=Word(V.Value) And 255;
    If Types[T].Width>=2 Then Data[A+1]:=Word(V.Value) Shr 8;
-   If Types[T].Width=4 Then For K:=1 To 3 Do Data[A+K]:=(V.Value Shr (K*8)) And 255;
+   If Types[T].Width=4 Then For K:=1 To 3 Do Data[A+K]:=(V.Value Shr (K*8)) And
+     255;
   End;
  Else Fail(26,'Type de constante typee non pris en charge');
  End;
@@ -7125,14 +11203,17 @@ Begin
    If Token<>tkRB Then Begin
     V:=ConstExpression;
     A:=V.TypeId; If Types[A].Typ=ttInteger Then A:=2;
-    If Not (Types[A].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(26,'');
+    If Not (Types[A].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then Fail(26,
+      '');
     T:=NewType(ttSet,0,0,False,Types[A].LowBound,Types[A].HighBound,0);
     TypeExtras[T].ElementType:=A;
     TypeExtras[T].Size:=Types[A].HighBound Div 8-Types[A].LowBound Div 8+1;
-    ApplyType(I,T); Symbols[I].Kind:=skVar; A:=AllocData(TypeExtras[T].Size); Symbols[I].Addr:=A;
+    ApplyType(I,T); Symbols[I].Kind:=skVar; A:=AllocData(TypeExtras[T].Size);
+      Symbols[I].Addr:=A;
     ConstSetElements(T,A,V);
    End Else Begin
-    T:=NewType(ttSet,0,0,False,0,255,0); TypeExtras[T].ElementType:=2; TypeExtras[T].Size:=32;
+    T:=NewType(ttSet,0,0,False,0,255,0); TypeExtras[T].ElementType:=2;
+      TypeExtras[T].Size:=32;
     ApplyType(I,T); Symbols[I].Kind:=skVar; Symbols[I].Addr:=AllocData(32);
    End;
    Need(tkRB);
@@ -7142,12 +11223,14 @@ Begin
    T:=V.TypeId;
    If Types[T].Typ=ttInteger Then Begin
     If (V.Value<-32768) Or (V.Value>65535) Then T:=9
-    Else If (V.Value>=0) And (V.Value>32767) And (V.Value<=65535) Then T:=3 Else T:=1;
+    Else If (V.Value>=0) And (V.Value>32767) And (V.Value<=65535) Then T:=3 Else
+      T:=1;
    End;
    ApplyType(I,T); Symbols[I].Value:=V.Value; Symbols[I].StrValue:=V.Text;
    If Symbols[I].Typ=ttString Then Symbols[I].Addr:=StoreString(V.Text);
    If Symbols[I].Typ=ttReal Then Begin
-    Symbols[I].Addr:=StoreReal(V.RealValue); Symbols[I].StrValue[0]:=#6; Move(Data[Symbols[I].Addr],Symbols[I].StrValue[1],6);
+    Symbols[I].Addr:=StoreReal(V.RealValue); Symbols[I].StrValue[0]:=#6;
+      Move(Data[Symbols[I].Addr],Symbols[I].StrValue[1],6);
    End;
   End;
   Need(tkSemi);
@@ -7175,17 +11258,24 @@ Begin
     Name:=TokenText; NextToken; J:=ResolveSymbol(Name);
     If Symbols[J].Kind<>skVar Then Fail(20,'');
     For I:=First To Last Do Begin
-     ApplyType(I,T); Symbols[I].Addr:=Symbols[J].Addr; Symbols[I].Local:=Symbols[J].Local;
-     Symbols[I].ByReference:=Symbols[J].ByReference; Symbols[I].Native:=Symbols[J].Native;
-     Symbols[I].WithOffset:=Symbols[J].WithOffset; Symbols[I].IsAbsolute:=Symbols[J].IsAbsolute;
-     Symbols[I].AbsoluteSeg:=Symbols[J].AbsoluteSeg; Symbols[I].Scope:=Symbols[J].Scope;
+     ApplyType(I,T); Symbols[I].Addr:=Symbols[J].Addr;
+       Symbols[I].Local:=Symbols[J].Local;
+     Symbols[I].ByReference:=Symbols[J].ByReference;
+       Symbols[I].Native:=Symbols[J].Native;
+     Symbols[I].WithOffset:=Symbols[J].WithOffset;
+       Symbols[I].IsAbsolute:=Symbols[J].IsAbsolute;
+     Symbols[I].AbsoluteSeg:=Symbols[J].AbsoluteSeg;
+       Symbols[I].Scope:=Symbols[J].Scope;
      Symbols[I].DebugVisible:=False;
     End;
    End Else Begin
-    V1:=ConstExpression; ConstInteger(V1); Need(tkColon); V2:=ConstExpression; ConstInteger(V2);
-    If (V1.Value<0) Or (V1.Value>65535) Or (V2.Value<0) Or (V2.Value>65535) Then Fail(76,'');
+    V1:=ConstExpression; ConstInteger(V1); Need(tkColon); V2:=ConstExpression;
+      ConstInteger(V2);
+    If (V1.Value<0) Or (V1.Value>65535) Or (V2.Value<0) Or (V2.Value>65535) Then
+      Fail(76,'');
     For I:=First To Last Do Begin
-     ApplyType(I,T); Symbols[I].IsAbsolute:=True; Symbols[I].AbsoluteSeg:=V1.Value;
+     ApplyType(I,T); Symbols[I].IsAbsolute:=True;
+       Symbols[I].AbsoluteSeg:=V1.Value;
      Symbols[I].Addr:=V2.Value; Symbols[I].DebugVisible:=False;
     End;
    End;
@@ -7198,27 +11288,119 @@ Begin
 End;
 
 Procedure DeclarationPart; Forward;
+Procedure FlushKernelData; Forward;
+
+Procedure SegSave;
+{ Mode multi-segments : conserve le segment de code courant (image,
+  fixups de donnees, relocalisations
+  MZ, references de code a resoudre a l'edition de liens). }
+Begin
+ With SegSaved[CurSeg] Do Begin
+  GetMem(Img,CodeSize+1); Move(Image,Img^,CodeSize); Size:=CodeSize;
+  FixN:=FixupCount; GetMem(Fix,(Longint(FixN)+1)*SizeOf(TAddressFixup));
+  Move(Fixups,Fix^,Longint(FixN)*SizeOf(TAddressFixup));
+  RelN:=RelocationCount; GetMem(Rel,(Longint(RelN)+1)*SizeOf(TMZRelocation));
+    GetMem(Kinds,RelN+1);
+  Move(Relocations,Rel^,Longint(RelN)*SizeOf(TMZRelocation));
+    Move(RelocationKinds,Kinds^,RelN);
+  RefN:=CodeRefCount; GetMem(Refs,(Longint(RefN)+1)*SizeOf(TCodeRef));
+  Move(CodeRefs,Refs^,Longint(RefN)*SizeOf(TCodeRef));
+ End;
+ SegSavedCount:=CurSeg+1;
+End;
+
+Procedure SegFreeAll;
+Var K: Word;
+Begin
+ For K:=1 To SegSavedCount Do With SegSaved[K-1] Do Begin
+  FreeMem(Img,Size+1); FreeMem(Fix,(Longint(FixN)+1)*SizeOf(TAddressFixup));
+  FreeMem(Rel,(Longint(RelN)+1)*SizeOf(TMZRelocation)); FreeMem(Kinds,RelN+1);
+  FreeMem(Refs,(Longint(RefN)+1)*SizeOf(TCodeRef));
+ End;
+ SegSavedCount:=0;
+End;
+
+Procedure SegNext;
+{ Ferme le segment de code courant et en ouvre un nouveau qui commence par une
+  copie du runtime
+  (octets 0..RuntimeEnd-1 de l'image, avec leurs fixups et relocalisations). }
+Begin
+ If CurSeg+1>=MaxSegs Then Fail(48,
+   'Trop de segments de code (maximum '+NumText(MaxSegs)+')');
+ If PendCount<>0 Then
+   Unsupported('reference en avant non resolue a la frontiere de segment');
+ SegSave;
+ Inc(CurSeg); SegCount:=CurSeg+1;
+ { le debut de l'image (runtime) est intact : seul le reste est a reprendre }
+ CodeSize:=RuntimeEnd; FixupCount:=RtlFix; RelocationCount:=RtlReloc;
+   RelativeCount:=0; CodeRefCount:=0;
+ LastJumpTarget:=CodeSize; CondTail:=0;
+End;
+
+Procedure SegRoom(Need: Word);
+{ Segment suivant si Need octets ne tiennent plus dans le segment courant. }
+Begin
+ If (CodeSize>RuntimeEnd) And
+   (Longint(CodeSize)+Need>Longint(SegCap)-SegReserve) Then SegNext;
+End;
+
+Procedure EmitInitCall(U: Byte);
+{ Appel du bloc d'initialisation d'une unite. }
+Begin
+ If Not MultiSeg Then CallTo(Units[U].InitAddress)
+ Else If Units[U].InitSeg=CurSeg Then Begin Emit($0E);
+   CallTo(Units[U].InitAddress) End
+ Else Begin Emit($9A); EmitWord(Units[U].InitAddress);
+   AddSegmentRelocation(CodeSize,8+Units[U].InitSeg); EmitWord(0) End;
+End;
 
 Procedure ProcedureDeclaration;
 Var
  I,Parent,FramePatch,StackCheckPatch,Skip,J,K,T,V,ParamOffset,Size,Link: Word;
- SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,IsExternal,IsConst: Boolean;
- Sig: TSymbol; Name: TShortString;
+ SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,
+   IsExternal,IsConst,DeadHere: Boolean;
+ MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur,
+   MRefs: Word; MTot: Longint;
+ SavedDead: Boolean;
+ Sig: TSymbol; Name,ShortName,SavedObjName: TShortString; MyOrd,MethodObj,
+   SelfSym,FieldIdx: Word;
  Names: Array[1..MaxNativeParams] Of String[63]; N: Byte;
 Begin
- IsFunction:=Token=tkFunction; FillChar(Sig,SizeOf(Sig),0);
+ IsFunction:=Token=tkFunction; MyOrd:=0; FillChar(Sig,SizeOf(Sig),0);
  Sig.Kind:=skProc; Sig.Typ:=ttVoid;
  NextToken;
  If Token<>tkIdent Then Fail(2,'Nom de procedure attendu');
- Name:=TokenText;
- I:=FindOwnSymbol(TokenText);
+ Name:=TokenText; ShortName:=Name; MethodObj:=0;
+ If InObjectDecl Then Begin
+  { entete d'une methode dans la declaration de l'objet }
+  Name:=ObjectDeclName+'.'+TokenText; MethodObj:=ObjectDeclType; NextToken;
+ End Else Begin
+  NextToken;
+  If Token=tkDot Then Begin
+   { Procedure Objet.Methode : implementation d'une methode }
+   I:=FindSymbol(Name);
+   If (I=0) Or (Symbols[I].Kind<>skType) Or
+     (Types[Symbols[I].TypeId].Typ<>ttRecord) Then Fail(26,
+       'Objet attendu : '+Name);
+   MethodObj:=Symbols[I].TypeId; NextToken;
+   If Token<>tkIdent Then Fail(2,'Nom de methode attendu');
+   ShortName:=TokenText; Name:=Name+'.'+TokenText; NextToken;
+  End;
+ End;
+ I:=FindOwnSymbol(Name);
  Existing:=I<>0;
  If Existing Then Begin
   If (Symbols[I].Kind<>skProc) Or Symbols[I].HasBody Then      Fail(4,
-  'Identificateur duplique: '+TokenText);
+  'Identificateur duplique: '+Name);
  End;
- NextToken;
  FullHeading:=Token=tkLP;
+ If MethodObj<>0 Then Begin
+  { parametre implicite Self (var) }
+  Sig.ParamCount:=1; Sig.ParamNames[1]:='SELF'; Sig.ParamTypeIds[1]:=MethodObj;
+    Sig.ParamTypes[1]:=ttRecord;
+  Sig.ParamWidths[1]:=0; Sig.ParamSigned[1]:=False; Sig.ParamFlags[1]:=6;
+    Sig.ParamBytes:=4; Sig.IsMethod:=True;
+ End;
  If Token=tkLP Then Begin
   NextToken;
   While Token<>tkRP Do Begin
@@ -7234,24 +11416,31 @@ Begin
     If Token<>tkComma Then Break;
     NextToken;
    Until False;
-   If (ByVar Or IsConst) And (Token In [tkSemi,tkRP]) Then Begin T:=0; ByVar:=True End
+   If (ByVar Or IsConst) And (Token In [tkSemi,tkRP]) Then Begin T:=0;
+     ByVar:=True End
    Else Begin Need(tkColon); T:=ReadType End;
-   If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttArray,ttRecord,ttString,ttSet,ttReal]) And
+   If (T<>0) And (Types[T].Typ=ttReal) And (Types[T].Width<>6) And Not ByVar
+     Then Unsupported('parametre Single/Double par valeur');
+   If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttArray,
+     ttRecord,ttString,ttSet,ttReal]) And
       Not (ByVar And ((T=0) Or (Types[T].Typ In [ttFile,ttText]))) Then
     Unsupported('type de parametre utilisateur');
    For J:=1 To N Do Begin
     If Sig.ParamCount=MaxNativeParams Then Unsupported('plus de 16 parametres');
     Inc(Sig.ParamCount); K:=Sig.ParamCount;
-    For V:=1 To K-1 Do If Sig.ParamNames[V]=Names[J] Then Fail(4,'Parametre duplique');
+    For V:=1 To K-1 Do If Sig.ParamNames[V]=Names[J] Then Fail(4,
+      'Parametre duplique');
     Sig.ParamNames[K]:=Names[J]; Sig.ParamTypeIds[K]:=T;
     Sig.ParamTypes[K]:=Types[T].Typ; Sig.ParamWidths[K]:=Types[T].Width;
     Sig.ParamSigned[K]:=Types[T].Signed And (Types[T].Width=1);
-    If (Types[T].Typ=ttArray) And (TypeExtras[T].FieldCount=$FFFF) Then Begin Sig.ParamFlags[K]:=7; Inc(Sig.ParamBytes,6) End
+    If (Types[T].Typ=ttArray) And (TypeExtras[T].FieldCount=$FFFF) Then Begin
+      Sig.ParamFlags[K]:=7; Inc(Sig.ParamBytes,6) End
     Else If ByVar Then Begin Sig.ParamFlags[K]:=6; Inc(Sig.ParamBytes,4) End
     Else Begin
      Sig.ParamFlags[K]:=2; Size:=(TypeExtras[T].Size+1) And $FFFE;
      If Size<2 Then Size:=2;
-     If Longint(Sig.ParamBytes)+Size>32766 Then Fail(49,'Parametres trop grands');
+     If Longint(Sig.ParamBytes)+Size>32766 Then Fail(49,
+       'Parametres trop grands');
      Inc(Sig.ParamBytes,Size);
     End;
    End;
@@ -7263,7 +11452,8 @@ Begin
  If IsFunction Then Begin
   If Token=tkColon Then Begin
    FullHeading:=True; NextToken; T:=ReadType;
-   If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttReal,ttString]) Then
+   If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttReal,
+     ttString]) Then
     Fail(34,'Resultat de fonction non ordinal');
    Sig.TypeId:=T; Sig.Typ:=Types[T].Typ; Sig.Width:=Types[T].Width;
    Sig.SignedByte:=Types[T].Signed And (Types[T].Width=1);
@@ -7274,30 +11464,40 @@ Begin
  Sig.FarRoutine:=InInterface Or (OptionBits And $20<>0);
  If Token=tkInline Then Begin
   { Procedure X; Inline(...): les octets sont inseres a chaque appel. }
-  NextToken; Sig.StrValue:=InlineBytes(False); Need(tkSemi); Sig.InlineBody:=True;
+  NextToken; Sig.StrValue:=InlineBytes(False); Need(tkSemi);
+    Sig.InlineBody:=True;
  End;
- While (Token=tkIdent) And ((TokenText='FORWARD') Or (TokenText='NEAR') Or (TokenText='FAR') Or (TokenText='EXTERNAL') Or (TokenText='ASSEMBLER')) Do Begin
+ While (Token=tkIdent) And ((TokenText='FORWARD') Or (TokenText='NEAR') Or
+   (TokenText='FAR') Or (TokenText='EXTERNAL') Or (TokenText='ASSEMBLER') Or
+     (TokenText='INTERRUPT')) Do Begin
   If TokenText='FORWARD' Then IsForward:=True
   Else If TokenText='EXTERNAL' Then IsExternal:=True
   Else If TokenText='ASSEMBLER' Then Sig.AssemblerBody:=True
+  Else If TokenText='INTERRUPT' Then Begin Sig.InterruptRoutine:=True;
+    Sig.FarRoutine:=True; HasDistance:=True End
   Else Begin
    If HasDistance Then Fail(5,'Directive de distance dupliquee');
    HasDistance:=True; Sig.FarRoutine:=TokenText='FAR';
   End;
   NextToken; Need(tkSemi);
  End;
+ If InObjectDecl Then IsForward:=True;
  If IsExternal And IsForward Then Fail(5,'EXTERNAL et FORWARD incompatibles');
  If Existing Then Begin
-  If IsFunction<>(Symbols[I].Typ<>ttVoid) Then Fail(131,'Procedure/fonction differente');
+  If IsFunction<>(Symbols[I].Typ<>ttVoid) Then Fail(131,
+    'Procedure/fonction differente');
   If FullHeading Then Begin
-   If (Sig.ParamCount<>Symbols[I].ParamCount) Or (Sig.TypeId<>Symbols[I].TypeId) Then
+   If (Sig.ParamCount<>Symbols[I].ParamCount) Or (Sig.TypeId<>Symbols[I].TypeId)
+     Then
     Fail(131,'Signature de routine differente');
    For J:=1 To Sig.ParamCount Do
     If (Sig.ParamNames[J]<>Symbols[I].ParamNames[J]) Or
       (Sig.ParamTypeIds[J]<>Symbols[I].ParamTypeIds[J]) Or
-      (Sig.ParamFlags[J]<>Symbols[I].ParamFlags[J]) Then Fail(131,'Signature de parametre differente');
+      (Sig.ParamFlags[J]<>Symbols[I].ParamFlags[J]) Then Fail(131,
+        'Signature de parametre differente');
   End;
-  If HasDistance And (Sig.FarRoutine<>Symbols[I].FarRoutine) Then Fail(131,'Distance near/far differente');
+  If HasDistance And (Sig.FarRoutine<>Symbols[I].FarRoutine) And Not (MultiSeg
+    And SegFar[I]) Then Fail(131,'Distance near/far differente');
   If InInterface Or IsForward Then Fail(4,'Declaration de routine dupliquee');
  End Else Begin
   I:=NewSymbol(Name);
@@ -7307,21 +11507,51 @@ Begin
   Symbols[I].ParamCount:=Sig.ParamCount; Symbols[I].ParamBytes:=Sig.ParamBytes;
   Symbols[I].FarRoutine:=Sig.FarRoutine;
   Symbols[I].AssemblerBody:=Sig.AssemblerBody;
+  Symbols[I].InterruptRoutine:=Sig.InterruptRoutine;
+    Symbols[I].IsMethod:=Sig.IsMethod;
   Symbols[I].InlineBody:=Sig.InlineBody; Symbols[I].StrValue:=Sig.StrValue;
   For J:=1 To Sig.ParamCount Do Begin
-   Symbols[I].ParamTypeIds[J]:=Sig.ParamTypeIds[J]; Symbols[I].ParamNames[J]:=Sig.ParamNames[J];
-   Symbols[I].ParamTypes[J]:=Sig.ParamTypes[J]; Symbols[I].ParamWidths[J]:=Sig.ParamWidths[J];
-   Symbols[I].ParamSigned[J]:=Sig.ParamSigned[J]; Symbols[I].ParamFlags[J]:=Sig.ParamFlags[J];
+   Symbols[I].ParamTypeIds[J]:=Sig.ParamTypeIds[J];
+     Symbols[I].ParamNames[J]:=Sig.ParamNames[J];
+   Symbols[I].ParamTypes[J]:=Sig.ParamTypes[J];
+     Symbols[I].ParamWidths[J]:=Sig.ParamWidths[J];
+   Symbols[I].ParamSigned[J]:=Sig.ParamSigned[J];
+     Symbols[I].ParamFlags[J]:=Sig.ParamFlags[J];
   End;
-  Symbols[I].Addr:=CodeSize; Symbols[I].ForwardJump:=Jump;
+  Symbols[I].Addr:=0; Symbols[I].Unresolved:=True;
  End;
  If Sig.AssemblerBody Then Symbols[I].AssemblerBody:=True;
- If Sig.InlineBody Then Begin Symbols[I].HasBody:=True; Symbols[I].InlineBody:=True; Symbols[I].StrValue:=Sig.StrValue; Exit End;
- If InInterface Or IsForward Then Begin Symbols[I].ForwardDeclared:=True; Exit End;
- PatchJump(Symbols[I].ForwardJump,CodeSize);
+ If InInterface Then RootProc[I]:=True;
+ If Sig.InterruptRoutine Then Begin Symbols[I].InterruptRoutine:=True;
+   Symbols[I].FarRoutine:=True End;
+ If Sig.InlineBody Then Begin Symbols[I].HasBody:=True;
+   Symbols[I].InlineBody:=True; Symbols[I].StrValue:=Sig.StrValue; Exit End;
+ { mode multi-segments : toute routine globale devient FAR (retour RETF,
+   appel PUSH CS/CALL dans le
+   segment, CALL FAR entre segments) ;
+     les routines imbriquees restent NEAR dans le segment de leur parent }
+ If MultiSeg And (CurrentScope=0) Then Begin
+  If IsExternal Then
+    Unsupported('routine EXTERNAL en mode multi-segments (code > 64 Ko)');
+  Symbols[I].FarRoutine:=True; SegFar[I]:=True;
+ End;
+ If InInterface Or IsForward Then Begin Symbols[I].ForwardDeclared:=True;
+   Exit End;
+ { routine imbriquee : le parent saute par-dessus son corps (une seule fois) }
+ If (CurrentScope<>0) And (Scopes[CurrentScope].SkipJump=0) Then
+   Scopes[CurrentScope].SkipJump:=Jump;
+ If MultiSeg And (SegDepth=0) And Not DeadProc[I] Then Begin
+  { routine globale : segment suivant si le corps (taille de la passe
+    precedente) ne tient plus }
+  If RoutSize[I]=0 Then V:=256 Else V:=RoutSize[I]+RoutSize[I] Div 16+32;
+  SegRoom(V);
+ End;
+ Symbols[I].Addr:=CodeSize; Symbols[I].Unresolved:=False; ResolvePending(I);
+ SymSeg[I]:=CurSeg;
  Symbols[I].HasBody:=True;
  If IsExternal Then Begin
-  If Symbols[I].Typ=ttReal Then Unsupported('resultat Real externe: ABI Borland non portee');
+  If Symbols[I].Typ=ttReal Then
+    Unsupported('resultat Real externe: ABI Borland non portee');
   If CurrentScope<>0 Then Unsupported('EXTERNAL imbrique');
   If ObjectCallCount=MaxSymbols Then Unsupported('trop de routines EXTERNAL');
   { Pont ABI locale (lien statique) vers ABI Pascal OBJ far sans lien.
@@ -7331,7 +11561,7 @@ Begin
   Link:=4; If Symbols[I].FarRoutine Then Link:=6;
   J:=Symbols[I].ParamBytes;
   While J<>0 Do Begin
-   Emit2($FF,$B6); EmitWord(Link+J); Dec(J,2);
+   Emit2($FF,$B6); EmitWord(Link+J-2); Dec(J,2);
   End;
   Emit($9A); Inc(ObjectCallCount);
   ObjectCalls[ObjectCallCount].Name:=Name;
@@ -7339,9 +11569,19 @@ Begin
   EmitWord(0); EmitWord(0);
   Emit($5F); Emit($5E); Emit($5B); Emit($07); Emit($1F); Emit($5D);
   If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
-  EmitWord(Symbols[I].ParamBytes+2);
+  EmitWord(Symbols[I].ParamBytes);
   Exit;
  End;
+ { edition de liens intelligente : corps compile puis annule si jamais reference
+   }
+ DeadHere:=(Not AnalysisPass) And DeadProc[I];
+ SavedCur:=CurProc; CurProc:=I; MTot:=TotalEmitted;
+ MCode:=CodeSize; MFix:=FixupCount; MRel:=RelativeCount; MNat:=NativeRefCount;
+   MReloc:=RelocationCount;
+ MObj:=ObjectCallCount; MPend:=PendCount; MDbg:=DebugCount;
+   MLab:=LabelJumpCount; MData:=DataSize; MDataFix:=DataFixupCount;
+ MRefs:=CodeRefCount; SavedDead:=InDeadBody; Inc(SegDepth);
+ If DeadHere And MultiSeg Then InDeadBody:=True;
  Parent:=CurrentScope; SavedProcedure:=InProcedure;
  If ScopeCount=MaxScopes Then Unsupported('plus de 128 portees');
  Inc(ScopeCount); CurrentScope:=ScopeCount;
@@ -7350,7 +11590,9 @@ Begin
  FillChar(Scopes[CurrentScope].Temps,SizeOf(TTempPool),0);
  If Symbols[I].FarRoutine Then Link:=6 Else Link:=4;
  Scopes[CurrentScope].LinkOffset:=Link;
- ParamOffset:=Link+2+Symbols[I].ParamBytes;
+ { ABI Turbo Pascal 7 : lien statique seulement pour une routine imbriquee }
+ If Symbols[I].Scope<>0 Then ParamOffset:=Link+2+Symbols[I].ParamBytes
+ Else ParamOffset:=Link+Symbols[I].ParamBytes;
  For J:=1 To Symbols[I].ParamCount Do Begin
   Size:=(TypeExtras[Symbols[I].ParamTypeIds[J]].Size+1) And $FFFE;
   If Size<2 Then Size:=2; If Symbols[I].ParamFlags[J]=6 Then Size:=4;
@@ -7360,27 +11602,109 @@ Begin
   Symbols[V].Local:=True; Symbols[V].Addr:=ParamOffset;
   Symbols[V].ByReference:=Symbols[I].ParamFlags[J] In [6,7];
  End;
+ SavedObjName:=CurObjName;
+ If Symbols[I].IsMethod Then Begin
+  { les champs de l'objet sont visibles comme dans un WITH Self }
+  CurObjName:=Copy(Name,1,Pos('.',Name)-1);
+  SelfSym:=FindOwnSymbol('SELF');
+  FieldIdx:=TypeExtras[Symbols[I].ParamTypeIds[1]].FirstField;
+  While FieldIdx<>0 Do Begin
+   If FindOwnSymbol(Fields[FieldIdx].Name)=0 Then Begin
+    V:=NewSymbol(Fields[FieldIdx].Name); Symbols[V].Kind:=skVar; ApplyType(V,
+      Fields[FieldIdx].TypeId);
+    Symbols[V].Local:=True; Symbols[V].ByReference:=True;
+      Symbols[V].Addr:=Symbols[SelfSym].Addr;
+    Symbols[V].WithOffset:=Fields[FieldIdx].Offset;
+      Symbols[V].DebugVisible:=False;
+   End;
+   FieldIdx:=Fields[FieldIdx].Next;
+  End;
+ End;
  If IsFunction Then Begin
-  V:=NewSymbol(Name); Symbols[V].Kind:=skVar; ApplyType(V,Symbols[I].TypeId);
-  AllocateVariable(V); Symbols[V].ResultVariable:=True; Symbols[V].RoutineSymbol:=I;
+  V:=NewSymbol(ShortName); Symbols[V].Kind:=skVar; ApplyType(V,
+    Symbols[I].TypeId);
+  AllocateVariable(V); Symbols[V].ResultVariable:=True;
+    Symbols[V].RoutineSymbol:=I;
   Symbols[I].ResultSymbol:=V;
  End;
  InProcedure:=True;
  If Token=tkAsm Then Symbols[I].AssemblerBody:=True;
- Emit($55); Emit2($89,$E5); StackCheckPatch:=0;
- If OptionBits And 4<>0 Then Begin
-  CallTo(RuntimeStandard[72]); StackCheckPatch:=CodeSize; EmitWord(0);
+ { Comme Turbo Pascal : une routine assembleur sans parametre ni variable
+   locale n'a ni cadre de pile ni prologue (le noyau en depend : les
+   gestionnaires d'interruption recoivent les registres intacts). }
+ Symbols[I].NoFrame:=(Symbols[I].AssemblerBody Or Symbols[I].InterruptRoutine)
+   And
+   (Symbols[I].ParamCount=0) And (Token=tkAsm);
+ StackCheckPatch:=0; FramePatch:=0; Skip:=0;
+ If Not Symbols[I].NoFrame Then Begin
+  { procedure interrupt a corps Pascal (comme Turbo Pascal) : sauvegarde de AX
+    BX CX DX SI DI DS ES BP, DS = segment
+    de donnees,
+      puis deux mots factices tenant lieu d'adresse de retour (les parametres
+        Flags,CS,IP,AX..BP
+    se lisent alors comme ceux d'une routine FAR) }
+  If Symbols[I].InterruptRoutine And Not Symbols[I].AssemblerBody Then Begin
+   Emit($50); Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($1E);
+     Emit($06); Emit($55);
+   Emit($B8); AddSegmentRelocation(CodeSize,3); EmitWord(0); Emit2($8E,$D8);
+   Emit2($83,$EC); Emit(4);
+  End;
+  Emit($55); Emit2($89,$E5);
+  If OptionBits And 4<>0 Then Begin
+   CallTo(RtlTarget(RuntimeStandard[72])); StackCheckPatch:=CodeSize;
+     EmitWord(0);
+  End;
+  { frame sans variable locale (prediction de la passe precedente) : ni "sub sp"
+    ni "mov sp,bp" }
+  Inc(ProcOrd); MyOrd:=ProcOrd; If MyOrd>8000 Then MyOrd:=0;
+  Symbols[I].SkipSub:=(MyOrd<>0) And FramePred[MyOrd] And Not FrameForce[MyOrd]
+    And Not Symbols[I].AssemblerBody;
+  If Not Symbols[I].SkipSub Then Begin Emit2($81,$EC); FramePatch:=CodeSize;
+    EmitWord(0) End;
+  { saut des declarations (routines imbriquees) seulement s'il y en a }
+  Scopes[CurrentScope].SkipJump:=0;
+  DeclarationPart;
+  If Scopes[CurrentScope].SkipJump<>0 Then
+    PatchJump(Scopes[CurrentScope].SkipJump,CodeSize);
  End;
- Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0);
- Skip:=Jump; DeclarationPart; PatchJump(Skip,CodeSize);
  For J:=1 To SymbolCount Do If (Symbols[J].Owner=CurrentUnit) And
    (Symbols[J].Scope=CurrentScope) And (Symbols[J].Kind=skProc) And
    Not Symbols[J].HasBody Then Fail(59,Symbols[J].Name);
  If Token=tkAsm Then Symbols[I].AssemblerBody:=True;
  Statement; ProcedureExit; CheckLabels(CurrentScope);
  { La taille de la frame inclut les temporaires alloues par les WITH. }
- PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
- If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,Scopes[CurrentScope].LocalSize+256);
+ If FramePatch<>0 Then PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
+ If (MyOrd<>0) And Not Symbols[I].NoFrame And Not Symbols[I].AssemblerBody And
+   (Scopes[CurrentScope].LocalSize=0) Then FrameNext[MyOrd]:=True;
+ If Symbols[I].SkipSub And (Scopes[CurrentScope].LocalSize<>0) Then Begin
+  { la prediction etait fausse : refaire une passe avec la frame complete }
+  If MyOrd<>0 Then FrameForce[MyOrd]:=True; JumpOverflow:=True;
+ End;
+ If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,
+   Scopes[CurrentScope].LocalSize+256);
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',
+   CodeSize-Symbols[I].Addr,' seg=',CurSeg,' at=',Symbols[I].Addr);
+ { taille mesuree pour repartir les routines en segments a la passe suivante }
+ If Not DeadHere Then Begin
+  If MultiSeg And (CodeSize>=MCode) Then RoutSize[I]:=CodeSize-MCode
+  Else If TotalEmitted-MTot>65000 Then RoutSize[I]:=65000 Else
+    RoutSize[I]:=TotalEmitted-MTot;
+ End;
+ CurProc:=SavedCur; Dec(SegDepth); InDeadBody:=SavedDead;
+   CurObjName:=SavedObjName;
+ If DeadHere Then Begin
+  CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat;
+    RelocationCount:=MReloc; CodeRefCount:=MRefs;
+  ObjectCallCount:=MObj; PendCount:=MPend; DebugCount:=MDbg;
+    LabelJumpCount:=MLab; DataFixupCount:=MDataFix;
+  If DataSize>MData Then FillChar(Data[MData],DataSize-MData,0);
+  DataSize:=MData; TrimLiterals(DataSize);
+  Symbols[I].Addr:=MCode; TotalEmitted:=MTot;
+  { copies de runtime emises dans le corps annule }
+  While (CloneCount>0) And KernelMode And (CloneDst[CloneCount]>=MCode) Do
+    Dec(CloneCount);
+ End;
+ If KernelMode And (Parent=0) Then FlushKernelData;
  CurrentScope:=Parent; InProcedure:=SavedProcedure; Need(tkSemi);
 End;
 
@@ -7389,8 +11713,10 @@ Var I: Word;
 Begin
  NextToken;
  Repeat
-  If Not ((Token=tkIdent) Or ((Token=tkConstant) And Not TokenIsString And Not TokenIsReal)) Then Fail(35,'');
-  I:=NewSymbol(TokenText); Symbols[I].Kind:=skLabel; Symbols[I].DebugVisible:=False; NextToken;
+  If Not ((Token=tkIdent) Or ((Token=tkConstant) And Not TokenIsString And Not
+    TokenIsReal)) Then Fail(35,'');
+  I:=NewSymbol(TokenText); Symbols[I].Kind:=skLabel;
+    Symbols[I].DebugVisible:=False; NextToken;
   If Token<>tkComma Then Break; NextToken;
  Until False;
  Need(tkSemi);
@@ -7402,11 +11728,13 @@ Var K: Word;
 Begin
  For K:=1 To LabelJumpCount Do
   If (LabelJumps[K].Sym<>0) And (Symbols[LabelJumps[K].Sym].Scope=Scope) And
-     (Symbols[LabelJumps[K].Sym].Owner=CurrentUnit) Then Fail(82,Symbols[LabelJumps[K].Sym].Name);
+     (Symbols[LabelJumps[K].Sym].Owner=CurrentUnit) Then Fail(82,
+       Symbols[LabelJumps[K].Sym].Name);
 End;
 
 Procedure DeclarationPart;Begin
- While Token In [tkConst,tkType,tkVar,tkProcedure,tkFunction,tkLabel] Do Case Token Of
+ While Token In [tkConst,tkType,tkVar,tkProcedure,tkFunction,
+   tkLabel] Do Case Token Of
  tkConst:ConstDeclarations; tkVar:VarDeclarations;
  tkType:TypeDeclarations; tkLabel:LabelDeclarations;
  tkProcedure,tkFunction:ProcedureDeclaration;
@@ -7425,10 +11753,12 @@ Procedure SaveParser(Var P: PParserState);Begin
  P^.Line:=Line; P^.Column:=Column;
  P^.TokenLine:=TokenLine; P^.TokenColumn:=TokenColumn;
  P^.Token:=Token; P^.TokenText:=TokenText; P^.TokenValue:=TokenValue;
- P^.TokenIsString:=TokenIsString; P^.TokenIsReal:=TokenIsReal; P^.TokenReal:=TokenReal; P^.Active:=Active;
+ P^.TokenIsString:=TokenIsString; P^.TokenIsReal:=TokenIsReal;
+   P^.TokenReal:=TokenReal; P^.Active:=Active;
  P^.InProcedure:=InProcedure; P^.InInterface:=InInterface;
  P^.CondDepth:=CondDepth; P^.CurrentUnit:=CurrentUnit; P^.Imports:=Imports;
- Move(ImportOrder,P^.ImportOrder,SizeOf(ImportOrder)); P^.ImportCount:=ImportCount;
+ Move(ImportOrder,P^.ImportOrder,SizeOf(ImportOrder));
+   P^.ImportCount:=ImportCount;
  Move(Conditions,P^.Conditions,SizeOf(Conditions));
  Move(Defines,P^.Defines,SizeOf(Defines)); P^.DefineCount:=DefineCount;
  P^.OptionBits:=OptionBits; P^.StackSize:=StackSize;
@@ -7442,16 +11772,107 @@ Procedure RestoreParser(P: PParserState);Begin
  Line:=P^.Line; Column:=P^.Column;
  TokenLine:=P^.TokenLine; TokenColumn:=P^.TokenColumn;
  Token:=P^.Token; TokenText:=P^.TokenText; TokenValue:=P^.TokenValue;
- TokenIsString:=P^.TokenIsString; TokenIsReal:=P^.TokenIsReal; TokenReal:=P^.TokenReal; Active:=P^.Active;
+ TokenIsString:=P^.TokenIsString; TokenIsReal:=P^.TokenIsReal;
+   TokenReal:=P^.TokenReal; Active:=P^.Active;
  InProcedure:=P^.InProcedure; InInterface:=P^.InInterface;
  CondDepth:=P^.CondDepth; CurrentUnit:=P^.CurrentUnit; Imports:=P^.Imports;
- Move(P^.ImportOrder,ImportOrder,SizeOf(ImportOrder)); ImportCount:=P^.ImportCount;
+ Move(P^.ImportOrder,ImportOrder,SizeOf(ImportOrder));
+   ImportCount:=P^.ImportCount;
  Move(P^.Conditions,Conditions,SizeOf(Conditions));
  Move(P^.Defines,Defines,SizeOf(Defines)); DefineCount:=P^.DefineCount;
  OptionBits:=P^.OptionBits; StackSize:=P^.StackSize;
  CurrentScope:=P^.CurrentScope;
  MinHeap:=P^.MinHeap; MaxHeap:=P^.MaxHeap;
  Dispose(P^.Buffer); Dispose(P);
+End;
+
+Function SourceHasKernel: Boolean;
+{ Vrai si le source declare "Procedure BEGIN_KERNEL". }
+Const Key='BEGIN_KERNEL';
+Var I,K,J: Longint; Ok: Boolean;
+Begin
+ SourceHasKernel:=False;
+ For I:=1 To SourceSize-Length(Key)-10 Do
+  If UpCase(Source[I])='B' Then Begin
+   Ok:=True;
+   For K:=1 To Length(Key) Do If UpCase(Source[I+K-1])<>Key[K] Then Begin
+     Ok:=False; Break End;
+   If Ok Then Begin
+    J:=I-1; While (J>0) And (Source[J]=' ') Do Dec(J);
+    If (J>=9) And (UpCase(Source[J])='E') And (UpCase(Source[J-1])='R') And
+      (UpCase(Source[J-2])='U') And
+       (UpCase(Source[J-3])='D') And (UpCase(Source[J-4])='E') Then Begin
+         SourceHasKernel:=True; Exit End;
+   End;
+  End;
+End;
+
+Procedure FlushKernelData;
+{ Place dans le segment du noyau (apres la routine qui vient d'etre
+  compilee) les donnees allouees depuis le dernier appel : chaines, constantes
+  typees, tampons. Les references en attente sont alors resolues. }
+Var Lo,Hi,At,K,J: Word;
+Begin
+ If DataSize<=KDataFlushed Then Exit;
+ If ChunkCount=1024 Then Fail(123,'Trop de blocs de donnees dans le noyau');
+ Lo:=KDataFlushed; Hi:=DataSize; At:=CodeSize;
+ For K:=Lo To Hi-1 Do Emit(Data[K]);
+ Inc(ChunkCount); ChunkLo[ChunkCount]:=Lo; ChunkHi[ChunkCount]:=Hi;
+   ChunkAt[ChunkCount]:=At;
+ K:=KFixBase+1;
+ While K<=FixupCount Do Begin
+  If (Fixups[K].DataOffset>=Lo) And (Fixups[K].DataOffset<Hi) Then Begin
+   PatchWord(Fixups[K].Position,At+Fixups[K].DataOffset-Lo);
+   Fixups[K]:=Fixups[FixupCount]; Dec(FixupCount);
+  End Else Inc(K);
+ End;
+ KDataFlushed:=Hi;
+End;
+
+Procedure EnterKernel(U: Byte);
+Begin
+ Units[U].Kernel:=True; KUnit:=U; KernelSeen:=True;
+ New(SavedImg); Move(Image,SavedImg^,SizeOf(Image));
+ New(SavedOwn); Move(CodeOwners,SavedOwn^,SizeOf(CodeOwners));
+ New(SavedRel); Move(RelativeFixups,SavedRel^,SizeOf(RelativeFixups));
+ New(SavedOrd); Move(OrdAt,SavedOrd^,SizeOf(OrdAt));
+ SCode:=CodeSize; SFix:=FixupCount; SRel:=RelativeCount; SNat:=NativeRefCount;
+   SReloc:=RelocationCount;
+ SObj:=ObjectCallCount; SPend:=PendCount; SDbg:=DebugCount;
+   SLab:=LabelJumpCount; SDataFix:=DataFixupCount;
+ CodeSize:=0; RelativeCount:=0; KFixBase:=FixupCount;
+ KDataStart:=DataSize; KDataFlushed:=DataSize; ChunkCount:=0; CloneCount:=0;
+ SRing:=StringRing; SRingPos:=StringRingPos;
+ StringRingMask:=1023; { 4 tampons de 256 octets dans le noyau }
+ StringRing:=AllocData(1024); StringRingPos:=AllocData(2);
+ KDataStart:=StringRing; KDataFlushed:=StringRing;
+   { donnees du noyau : a partir du tampon de chaines }
+ KernelMode:=True;
+End;
+
+Procedure LeaveKernel(U: Byte);
+Begin
+ FlushKernelData;
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,
+   'NOYAU octets emis (passe courante) ',TotalEmitted);
+ If FixupCount<>KFixBase Then Fail(72,
+   'Le noyau contient une reference a une donnee non resolue');
+ KernelMode:=False;
+ New(KImage); Move(Image,KImage^,SizeOf(Image)); KSize:=CodeSize;
+   HaveKernel:=True;
+ Move(SavedImg^,Image,SizeOf(Image)); Dispose(SavedImg);
+ Move(SavedOwn^,CodeOwners,SizeOf(CodeOwners)); Dispose(SavedOwn);
+ Move(SavedRel^,RelativeFixups,SizeOf(RelativeFixups)); Dispose(SavedRel);
+ Move(SavedOrd^,OrdAt,SizeOf(OrdAt)); Dispose(SavedOrd);
+ CodeSize:=SCode; FixupCount:=SFix; RelativeCount:=SRel; NativeRefCount:=SNat;
+   RelocationCount:=SReloc;
+ ObjectCallCount:=SObj; PendCount:=SPend; DebugCount:=SDbg;
+   LabelJumpCount:=SLab; DataFixupCount:=SDataFix;
+ { les donnees du noyau sont maintenant dans son segment }
+ FillChar(Data[KDataStart-0],DataSize-KDataStart,0);
+ StringRing:=SRing; StringRingPos:=SRingPos; StringRingMask:=2047;
+ DataSize:=SRing; TrimLiterals(DataSize);
+   { memes allocations que celles reservees avant l'unite }
 End;
 
 Procedure CompileSourceUnit(U: Byte; Path: TShortString);
@@ -7470,6 +11891,8 @@ Begin
  OptionBits:=InitialOptions;
  If OptionBits And $800<>0 Then UnitFeatures[U]:=UnitFeatures[U] Or 4;
  LoadSource;
+ { unite noyau : celle qui declare la procedure BEGIN_KERNEL }
+ If SourceHasKernel Then EnterKernel(U);
  ImportLibrarySystem;
  NextToken; Need(tkUnit);
  If Token<>tkIdent Then Fail(2,'Nom d''unite attendu');
@@ -7480,22 +11903,38 @@ Begin
  Units[U].Checksum:=0; { calcule apres compilation; sources /B prioritaires }
  Need(tkImplementation); InInterface:=False;
  UsesClause; DeclarationPart;
- For I:=1 To SymbolCount Do    If (Symbols[I].Owner=U) And (Symbols[I].Kind=skProc) And
+ For I:=1 To SymbolCount Do    If (Symbols[I].Owner=U) And
+   (Symbols[I].Kind=skProc) And
  Not Symbols[I].HasBody Then Fail(59,Symbols[I].Name);
  If Token=tkBegin Then Begin
-  Units[U].HasInit:=True; Units[U].InitAddress:=CodeSize;
+  Units[U].HasInit:=True;
+  If MultiSeg And (SegDepth=0) Then SegRoom(1024);
+  Units[U].InitAddress:=CodeSize; Units[U].InitSeg:=CurSeg;
     { EXIT dans le bloc d'initialisation revient a l'appelant. }
-  InProcedure:=True; Statement; InProcedure:=False; Emit($C3);
+  InProcedure:=True; Statement; InProcedure:=False;
+  If MultiSeg Then Emit($CB) Else Emit($C3);
+    { RETF : appele depuis le segment du programme principal }
  End Else Need(tkEnd);
  Need(tkDot);
+ If Units[U].Kernel Then Begin
+  If Units[U].HasInit Then Fail(72,
+    'Une unite noyau ne peut pas avoir de bloc d''initialisation');
+  LeaveKernel(U);
+ End;
  Units[U].State:=2;
  If Units[U].HasInit Then Begin
   Inc(InitCount); InitOrder[InitCount]:=U
  End;
  If Units[U].Name='CRT' Then
-  For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And (Symbols[I].Scope=0) And
+  For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And (Symbols[I].Scope=0)
+    And
    (Symbols[I].Kind=skProc) And (Symbols[I].Name='CRTWRITE') Then Begin
-   Data[CrtHook]:=Symbols[I].Addr And 255; Data[CrtHook+1]:=Symbols[I].Addr Shr 8;
+   Data[CrtHook]:=Symbols[I].Addr And 255;
+     Data[CrtHook+1]:=Symbols[I].Addr Shr 8;
+   If MultiSeg Then Begin CrtHookSet:=True; CrtHookSeg:=SymSeg[I] End;
+     { pointeur FAR : segment relocalise a l'edition de liens }
+   Inc(EdgeCount); EdgeFrom[EdgeCount]:=0; EdgeTo[EdgeCount]:=I;
+     { le crochet Crt est une racine }
   End;
  If Not Units[U].Embedded Then ReportSource;
  RestoreParser(P);
@@ -7557,7 +11996,8 @@ Begin
   End;
  End;
  FSplit(SourceName,D,N,E); FSplit(MainSourceName,MainDir,N,E);
- If Length(D)+Length(MainDir)+Length(UnitDirs)+Length(TurboDirs)+5>255 Then    CLIError(
+ If Length(D)+Length(MainDir)+Length(UnitDirs)+Length(TurboDirs)+5>255 Then
+   CLIError(
  'Liste de recherche des unites trop longue');
  If Extension='.OBJ' Then S:=D+';'+MainDir+';.;'+ObjectDirs+';'+UnitDirs
  Else S:=D+';'+MainDir+';.;'+UnitDirs+';'+TurboDirs;
@@ -7607,11 +12047,14 @@ Begin
  If Error<>0 Then Fail(15,'OBJ introuvable: '+Path);
  ObjectFiles[ObjectCount].Length:=FileSize(F);
  If (ObjectFiles[ObjectCount].Length<4) Or
-    (ObjectFiles[ObjectCount].Length>SizeOf(TBinaryBuffer)) Then Fail(72,'Taille OBJ invalide');
+    (ObjectFiles[ObjectCount].Length>SizeOf(TBinaryBuffer)) Then Fail(72,
+      'Taille OBJ invalide');
  New(ObjectFiles[ObjectCount].Bytes);
- {$I-} BlockRead(F,ObjectFiles[ObjectCount].Bytes^,ObjectFiles[ObjectCount].Length,Count);
+ {$I-} BlockRead(F,ObjectFiles[ObjectCount].Bytes^,
+   ObjectFiles[ObjectCount].Length,Count);
  Error:=IOResult; Close(F); If IOResult<>0 Then Error:=1; {$I+}
- If (Error<>0) Or (Count<>ObjectFiles[ObjectCount].Length) Then Fail(72,'Lecture OBJ impossible');
+ If (Error<>0) Or (Count<>ObjectFiles[ObjectCount].Length) Then Fail(72,
+   'Lecture OBJ impossible');
 End;
 
 { OMF86 Use16. Les index du fichier sont traduits en index globaux lors
@@ -7698,7 +12141,9 @@ Begin
  Finish:=LastLength; Length:=Finish-Start;
  If RepeatCount=0 Then LastLength:=Start
  Else Begin
-  If Longint(LastOffset)+Start+Length*RepeatCount>ObjectSegments[LastSegment].Length Then
+  If
+    Longint(LastOffset)+Start+Length*
+      RepeatCount>ObjectSegments[LastSegment].Length Then
    Fail(72,'Expansion LIDATA hors segment');
   For K:=2 To RepeatCount Do Begin
    Move(ObjectSegments[LastSegment].Bytes^[LastOffset+Start],
@@ -7709,7 +12154,8 @@ Begin
 End;
 Begin
  SegCount:=0; GroupCount:=0; ExtCount:=0; NameCount:=0;
- LastSegment:=0; LastOffset:=0; LastLength:=0; P:=0; Started:=False; Ended:=False;
+ LastSegment:=0; LastOffset:=0; LastLength:=0; P:=0; Started:=False;
+   Ended:=False;
  FillChar(FrameDefined,SizeOf(FrameDefined),0);
  FillChar(TargetDefined,SizeOf(TargetDefined),0);
  While P<FileLength Do Begin
@@ -7744,7 +12190,8 @@ Begin
      Unsupported('SEGDEF absolu/Use32/alignement/combinaison');
     If C In [4,7] Then C:=2; { synonymes PUBLIC OMF86 }
     L:=GetWord;
-    If (A And 2<>0) And (L<>0) Then Fail(72,'SEGDEF Big avec longueur non nulle');
+    If (A And 2<>0) And (L<>0) Then Fail(72,
+      'SEGDEF Big avec longueur non nulle');
     Inc(ObjectSegmentCount); S:=ObjectSegmentCount;
     FillChar(ObjectSegments[S],SizeOf(TObjectSegment),0);
     ObjectSegments[S].Length:=L;
@@ -7755,7 +12202,8 @@ Begin
     If Name<>'' Then Unsupported('overlay OBJ');
     ObjectSegments[S].Combine:=C; ObjectSegments[S].Alignment:=D;
     ObjectSegments[S].Root:=S;
-    New(ObjectSegments[S].Bytes); FillChar(ObjectSegments[S].Bytes^,SizeOf(TBinaryBuffer),0);
+    New(ObjectSegments[S].Bytes); FillChar(ObjectSegments[S].Bytes^,
+      SizeOf(TBinaryBuffer),0);
     Inc(SegCount); SegMap[SegCount]:=S;
    End;
    $9A:Begin
@@ -7764,15 +12212,18 @@ Begin
     If G=0 Then Begin
      If ObjectGroupCount=MaxObjGroups Then Unsupported('trop de groupes OBJ');
      Inc(ObjectGroupCount); G:=ObjectGroupCount;
-     FillChar(ObjectGroups[G],SizeOf(TObjectGroup),0); ObjectGroups[G].Name:=Name;
+     FillChar(ObjectGroups[G],SizeOf(TObjectGroup),0);
+       ObjectGroups[G].Name:=Name;
     End;
     If GroupCount=MaxObjGroups Then Unsupported('trop de GRPDEF OBJ');
     Inc(GroupCount); GroupMap[GroupCount]:=G;
     While P<Last Do Begin
      If GetByte<>$FF Then Unsupported('composant GRPDEF non segment');
      X:=GetIndex; S:=SegmentIndex(X);
-     If ObjectGroups[G].Count=MaxObjSegments Then Unsupported('groupe OBJ trop grand');
-     Inc(ObjectGroups[G].Count); ObjectGroups[G].Members[ObjectGroups[G].Count]:=S;
+     If ObjectGroups[G].Count=MaxObjSegments Then
+       Unsupported('groupe OBJ trop grand');
+     Inc(ObjectGroups[G].Count);
+       ObjectGroups[G].Members[ObjectGroups[G].Count]:=S;
     End;
    End;
    $8C:While P<Last Do Begin
@@ -7802,12 +12253,14 @@ Begin
    $A0,$A2:Begin
     X:=GetIndex; LastSegment:=SegmentIndex(X); LastOffset:=GetWord;
     LastLength:=0;
-    If LastOffset>ObjectSegments[LastSegment].Length Then Fail(72,'Donnees OBJ hors segment');
+    If LastOffset>ObjectSegments[LastSegment].Length Then Fail(72,
+      'Donnees OBJ hors segment');
     If RecType=$A0 Then Begin
      If Longint(LastOffset)+Last-P>ObjectSegments[LastSegment].Length Then
       Fail(72,'LEDATA hors segment');
      LastLength:=Last-P;
-     Move(B^[P],ObjectSegments[LastSegment].Bytes^[LastOffset],LastLength); P:=Last;
+     Move(B^[P],ObjectSegments[LastSegment].Bytes^[LastOffset],LastLength);
+       P:=Last;
     End Else Begin
      While P<Last Do IteratedBlock(0);
      { FIXUPP sur LIDATA exige les offsets du flux encode; refuse clairement. }
@@ -7832,13 +12285,16 @@ Begin
      If LastSegment=0 Then Fail(72,'FIXUPP sans LEDATA');
      Loc:=(A Shr 2) And 15; Relative:=A And $40=0;
      Offs:=Word(A And 3)*256+GetByte;
-     If Not (Loc In [0,1,2,3,5]) Then Unsupported('location FIXUPP non 16 bits');
+     If Not (Loc In [0,1,2,3,
+       5]) Then Unsupported('location FIXUPP non 16 bits');
      L:=2; If Loc=0 Then L:=1 Else If Loc=3 Then L:=4;
      If Longint(Offs)+L>LastLength Then Fail(72,'FIXUPP hors LEDATA');
-     If Relative And Not (Loc In [0,1,5]) Then Fail(72,'FIXUPP relatif de segment');
+     If Relative And Not (Loc In [0,1,5]) Then Fail(72,
+       'FIXUPP relatif de segment');
      FD:=GetByte; FM:=(FD Shr 4) And 7; FI:=0;
      If FD And $80<>0 Then Begin
-      I:=FM And 3; If Not FrameDefined[I] Then Fail(72,'Thread frame OBJ indefini');
+      I:=FM And 3; If Not FrameDefined[I] Then Fail(72,
+        'Thread frame OBJ indefini');
       FM:=FrameMethods[I]; FI:=FrameIndices[I];
      End Else If FM<3 Then Begin X:=GetIndex; FI:=MethodIndex(FM,X) End;
      If Not (FM In [0,1,2,4,5]) Then Unsupported('methode frame FIXUPP');
@@ -7887,13 +12343,15 @@ Begin
  UnitFileSize:=Size;
 End;
 
-Procedure ValidateUnitHeader(Name: TShortString; Limit: Longint; Var H: TUnitHeader);Begin
+Procedure ValidateUnitHeader(Name: TShortString; Limit: Longint;
+  Var H: TUnitHeader);Begin
  If (H.Signature[0]<>'T') Or (H.Signature[1]<>'P') Or
  (H.Signature[2]<>'U') Then    Fail(72,
  'Signature TPU attendue: '+Name);
  { Une unite d'une autre version (TPU0, TPU5, TPU6, TPU9) n'est pas
    compatible: TPC 7.0 signale alors "Unit version mismatch". }
- If H.Signature[3]<>TPUVersion Then Fail(70,Name+' est au format TPU'+H.Signature[3]+
+ If H.Signature[3]<>TPUVersion Then Fail(70,
+   Name+' est au format TPU'+H.Signature[3]+
   ', TPU'+TPUVersion+' attendu');
  If (H.EndTrace<SizeOf(H)) Or (UnitFileSize(H)>Limit) Or
  (H.Name<SizeOf(H)) Or (H.Name>=H.EndTrace) Or
@@ -7901,7 +12359,8 @@ Procedure ValidateUnitHeader(Name: TShortString; Limit: Longint; Var H: TUnitHea
  'En-tete TPU incoherent: '+Name);
 End;
 
-Procedure ReadUnitHeaderAt(Name: TShortString; Base, Limit: Longint; Var H: TUnitHeader);
+Procedure ReadUnitHeaderAt(Name: TShortString; Base, Limit: Longint;
+  Var H: TUnitHeader);
 Var
  F: File;
  Count: Word;
@@ -7965,24 +12424,29 @@ Begin
   (H.CodeMap>H.ConstMap) Or (H.ConstMap>H.DataMap) Or
   (H.DataMap>H.EndMaps) Or (H.EndMaps>H.Units) Or
   (H.Units>H.Sources) Or (H.Sources>H.Trace) Or
-  (H.Trace>H.EndTrace) Or (H.Name+Longint(SizeOf(Prefix))>H.ProcMap) Then      Fail(72,
+  (H.Trace>H.EndTrace) Or (H.Name+Longint(SizeOf(Prefix))>H.ProcMap) Then
+    Fail(72,
   'Sections TPL incoherentes: '+Name);
-    {$I-} Seek(F,Base+H.Name); BlockRead(F,Prefix,SizeOf(Prefix),Count); E:=IOResult; {$I+}
+    {$I-} Seek(F,Base+H.Name); BlockRead(F,Prefix,SizeOf(Prefix),Count);
+      E:=IOResult; {$I+}
   If (E<>0) Or (Count<>SizeOf(Prefix)) Or (Prefix.Typ<>89) Or
   (Prefix.NameLength=0) Or (Prefix.NameLength>63) Or
-  (H.Name+Longint(SizeOf(Prefix))+Prefix.NameLength+8>H.ProcMap) Then      Fail(72,
+  (H.Name+Longint(SizeOf(Prefix))+Prefix.NameLength+8>H.ProcMap) Then
+    Fail(72,
   'Nom d''unite TPL invalide: '+Name);
   S:=''; S[0]:=Chr(Prefix.NameLength);
     {$I-} BlockRead(F,S[1],Prefix.NameLength,Count); E:=IOResult; {$I+}
   If (E<>0) Or (Count<>Prefix.NameLength) Then Fail(72,'Nom TPL tronque');
   S:=Upper(S);
-  For I:=1 To Length(S) Do      If Not (S[I] In ['A'..'Z','_','0'..'9']) Then Fail(72,
+  For I:=1 To Length(S) Do      If Not (S[I] In ['A'..'Z','_',
+    '0'..'9']) Then Fail(72,
   'Identificateur TPL invalide');
   If S[1] In ['0'..'9'] Then Fail(72,'Identificateur TPL invalide');
   If FindLibraryUnit(S)<>0 Then Fail(72,'Unite TPL dupliquee: '+S);
   If LibraryCount=MaxLibraryUnits Then Unsupported('plus de 256 unites TPL');
   Inc(LibraryCount); LibraryUnits[LibraryCount].Name:=S;
-  LibraryUnits[LibraryCount].Offset:=Base; LibraryUnits[LibraryCount].Size:=Span;
+  LibraryUnits[LibraryCount].Offset:=Base;
+    LibraryUnits[LibraryCount].Size:=Span;
   LibraryUnits[LibraryCount].Header:=H;
   Inc(Base,Span);
  End;
@@ -8000,7 +12464,8 @@ Var
 Begin
  LibraryCount:=0; LibraryName:='';
  FSplit(FExpand(ParamStr(0)),D,N,E);
- If Length(TurboDirs)+Length(D)+4>255 Then CLIError('Liste de recherche TPL trop longue');
+ If Length(TurboDirs)+Length(D)+4>255 Then
+   CLIError('Liste de recherche TPL trop longue');
  S:='.;'+TurboDirs+';'+D;
  Repeat
  P:=Pos(';',S);
@@ -8048,7 +12513,8 @@ Begin
  N:=0; Last:=0;
  If Limit<>0 Then
  For I:=0 To Limit-1 Do Begin
-  If (IsCode And (CodeOwners[I]=U)) Or (Not IsCode And (DataOwners[I]=U)) Then Begin
+  If (IsCode And (CodeOwners[I]=U)) Or (Not IsCode And (DataOwners[I]=U)) Then
+    Begin
    If N=Offset Then Begin
     GlobalOffset:=I; Exit
    End;
@@ -8061,7 +12527,8 @@ Begin
  Fail(72,'Offset hors section d''unite'); GlobalOffset:=0;
 End;
 
-Function InterfaceChecksumMode(U: Byte; WithTypes, WithCalls, WithStructures: Boolean): Word;
+Function InterfaceChecksumMode(U: Byte; WithTypes, WithCalls,
+  WithStructures: Boolean): Word;
 Var
  I, K, N, Temp, T, Root: Word;
  J: Integer;
@@ -8082,10 +12549,13 @@ Begin
  Mix(Word(Types[T].LowBound)); Mix(Word(Types[T].LowBound Shr 16));
  Mix(Word(Types[T].HighBound)); Mix(Word(Types[T].HighBound Shr 16));
  Root:=Types[T].Base;
- For I:=1 To Length(Types[Root].IdentityUnit) Do Mix(Ord(Types[Root].IdentityUnit[I]));
- For I:=1 To Length(Types[Root].IdentityName) Do Mix(Ord(Types[Root].IdentityName[I]));
+ For I:=1 To Length(Types[Root].IdentityUnit) Do
+   Mix(Ord(Types[Root].IdentityUnit[I]));
+ For I:=1 To Length(Types[Root].IdentityName) Do
+   Mix(Ord(Types[Root].IdentityName[I]));
  If Types[T].Typ=ttArray Then MixStructure(TypeExtras[T].IndexType,Depth+1);
- If Types[T].Typ In [ttArray,ttSet,ttPointer] Then MixStructure(TypeExtras[T].ElementType,Depth+1);
+ If Types[T].Typ In [ttArray,ttSet,
+   ttPointer] Then MixStructure(TypeExtras[T].ElementType,Depth+1);
  If Types[T].Typ=ttRecord Then Begin
   C:=0; F:=TypeExtras[T].FirstField;
   While F<>0 Do Begin Inc(C); Ordered[C]:=F; F:=Fields[F].Next End;
@@ -8094,7 +12564,8 @@ Begin
    While J>1 Do Begin
     F:=Ordered[J]; K:=Ordered[J-1];
     If (Fields[K].Offset<Fields[F].Offset) Or
-       ((Fields[K].Offset=Fields[F].Offset) And (Fields[K].Name<Fields[F].Name)) Then Break;
+       ((Fields[K].Offset=Fields[F].Offset) And (Fields[K].Name<Fields[F].Name))
+         Then Break;
     Ordered[J]:=K; Ordered[J-1]:=F; Dec(J);
    End;
   End;
@@ -8108,13 +12579,15 @@ Begin
 End;
 Procedure MixExtra(T: Word);
 Begin
- If WithStructures And (Types[T].Typ In [ttArray,ttRecord,ttSet,ttPointer]) Then Begin
+ If WithStructures And (Types[T].Typ In [ttArray,ttRecord,ttSet,
+   ttPointer]) Then Begin
   FillChar(Seen,SizeOf(Seen),0); MixStructure(T,0);
  End;
 End;
 Begin
  H:=0; N:=0;
- For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And Symbols[I].Exported Then Begin
+ For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And Symbols[I].Exported Then
+   Begin
   Inc(N); Order[N]:=I;
  End;
  For I:=2 To N Do Begin
@@ -8129,16 +12602,20 @@ Begin
   For J:=1 To Length(Symbols[I].Name) Do Mix(Ord(Symbols[I].Name[J]));
   Mix(Symbols[I].Kind); Mix(Symbols[I].Typ);
   If WithCalls And (Symbols[I].Kind=skProc) Then Begin
-   Mix(Ord(Symbols[I].FarRoutine)); Mix(Symbols[I].ParamCount); Mix(Symbols[I].ParamBytes);
+   Mix(Ord(Symbols[I].FarRoutine)); Mix(Symbols[I].ParamCount);
+     Mix(Symbols[I].ParamBytes);
    For J:=1 To Symbols[I].ParamCount Do Begin
     Mix(Symbols[I].ParamFlags[J]); T:=Symbols[I].ParamTypeIds[J];
     MixExtra(T);
-    Mix(Types[T].Typ); Mix(Types[T].Width); Mix(Types[T].Capacity); Mix(Ord(Types[T].Signed));
+    Mix(Types[T].Typ); Mix(Types[T].Width); Mix(Types[T].Capacity);
+      Mix(Ord(Types[T].Signed));
     Mix(Word(Types[T].LowBound)); Mix(Word(Types[T].LowBound Shr 16));
     Mix(Word(Types[T].HighBound)); Mix(Word(Types[T].HighBound Shr 16));
     Root:=Types[T].Base;
-    For Temp:=1 To Length(Types[Root].IdentityUnit) Do Mix(Ord(Types[Root].IdentityUnit[Temp]));
-    For Temp:=1 To Length(Types[Root].IdentityName) Do Mix(Ord(Types[Root].IdentityName[Temp]));
+    For Temp:=1 To Length(Types[Root].IdentityUnit) Do
+      Mix(Ord(Types[Root].IdentityUnit[Temp]));
+    For Temp:=1 To Length(Types[Root].IdentityName) Do
+      Mix(Ord(Types[Root].IdentityName[Temp]));
    End;
   End;
   T:=SymbolType(I);
@@ -8148,8 +12625,10 @@ Begin
    Mix(Word(Types[T].LowBound)); Mix(Word(Types[T].LowBound Shr 16));
    Mix(Word(Types[T].HighBound)); Mix(Word(Types[T].HighBound Shr 16));
    Root:=Types[T].Base;
-   For J:=1 To Length(Types[Root].IdentityUnit) Do Mix(Ord(Types[Root].IdentityUnit[J]));
-   For J:=1 To Length(Types[Root].IdentityName) Do Mix(Ord(Types[Root].IdentityName[J]));
+   For J:=1 To Length(Types[Root].IdentityUnit) Do
+     Mix(Ord(Types[Root].IdentityUnit[J]));
+   For J:=1 To Length(Types[Root].IdentityName) Do
+     Mix(Ord(Types[Root].IdentityName[J]));
   End;
   If Symbols[I].Kind=skConst Then Begin
    Mix(0); Mix(0)
@@ -8175,9 +12654,12 @@ Function SoftwareChecksum: Word; Forward;
 Function RuntimeNumber(Target: Word): Word;
 Var K: Word;
 Begin
- If RealReady And (Target>=RealCodeBase) And (Target<RealCodeEnd) Then Begin RuntimeNumber:=1024+Target-RealCodeBase; Exit End;
- If EmulatorReady And (Target>=EmulatorCodeBase) And (Target<EmulatorCodeEnd) Then Begin RuntimeNumber:=$8000+Target-EmulatorCodeBase; Exit End;
- For K:=1 To 96 Do If (RuntimeStandard[K]<>0) And (Target=RuntimeStandard[K]) Then Begin
+ If RealReady And (Target>=RealCodeBase) And (Target<RealCodeEnd) Then Begin
+   RuntimeNumber:=1024+Target-RealCodeBase; Exit End;
+ If EmulatorReady And (Target>=EmulatorCodeBase) And (Target<EmulatorCodeEnd)
+   Then Begin RuntimeNumber:=$8000+Target-EmulatorCodeBase; Exit End;
+ For K:=1 To 96 Do If (RuntimeStandard[K]<>0) And (Target=RuntimeStandard[K])
+   Then Begin
   RuntimeNumber:=512+K; Exit;
  End;
  If Target=RuntimeUnsigned Then RuntimeNumber:=221 Else
@@ -8200,12 +12682,16 @@ Begin
  If N>=1024 Then Begin
   EnsureRealRuntime;
   If N>=$8000 Then Begin
-   P:=RealSymbol('REMU'); P:=N-$8000; If P>=EmulatorCodeEnd-EmulatorCodeBase Then Fail(72,'Offset runtime 8087 invalide'); RuntimeAddress:=EmulatorCodeBase+P;
-  End Else Begin P:=N-1024; If P>=RealCodeEnd-RealCodeBase Then Fail(72,'Offset runtime Real invalide'); RuntimeAddress:=RealCodeBase+P End;
+   P:=RealSymbol('REMU'); P:=N-$8000;
+     If P>=EmulatorCodeEnd-EmulatorCodeBase Then Fail(72,
+       'Offset runtime 8087 invalide'); RuntimeAddress:=EmulatorCodeBase+P;
+  End Else Begin P:=N-1024; If P>=RealCodeEnd-RealCodeBase Then Fail(72,
+    'Offset runtime Real invalide'); RuntimeAddress:=RealCodeBase+P End;
   Exit;
  End;
  If (N>512) And (N<=608) And (RuntimeStandard[N-512]<>0) Then Begin
-  If (N=538) Or (N=539) Or (N=541) Or (N=542) Or (N=545) Or (N=558) Then HeapNeeded:=True;
+  If (N=538) Or (N=539) Or (N=541) Or (N=542) Or (N=545) Or (N=558) Then
+    HeapNeeded:=True;
   RuntimeAddress:=RuntimeStandard[N-512]; Exit;
  End;
  Case N Of
@@ -8224,8 +12710,10 @@ End;
 
 Function RuntimeDataNumber(P: Word): Word;
 Begin
- If RealReady And (P>=RealDataBase) And (P<RealDataEnd) Then Begin RuntimeDataNumber:=1024+P-RealDataBase; Exit End;
- If EmulatorReady And (P>=EmulatorDataBase) And (P<EmulatorDataEnd) Then Begin RuntimeDataNumber:=$8000+P-EmulatorDataBase; Exit End;
+ If RealReady And (P>=RealDataBase) And (P<RealDataEnd) Then Begin
+   RuntimeDataNumber:=1024+P-RealDataBase; Exit End;
+ If EmulatorReady And (P>=EmulatorDataBase) And (P<EmulatorDataEnd) Then Begin
+   RuntimeDataNumber:=$8000+P-EmulatorDataBase; Exit End;
  If P=RandomSeed Then RuntimeDataNumber:=1
  Else If P=FileModeAddress Then RuntimeDataNumber:=2
  Else If P=StandardInputAddress Then RuntimeDataNumber:=3
@@ -8238,7 +12726,8 @@ Begin
  Else If P=RuntimeErrorText Then RuntimeDataNumber:=10
  Else If P=PrefixSeg Then RuntimeDataNumber:=11
  Else If P=InputError Then RuntimeDataNumber:=12
- Else Begin Unsupported('donnee runtime TPU inconnue'); RuntimeDataNumber:=0 End;
+ Else Begin Unsupported('donnee runtime TPU inconnue');
+   RuntimeDataNumber:=0 End;
 End;
 
 Function RuntimeDataAddress(N: Word): Word;
@@ -8246,8 +12735,12 @@ Var P: Word;
 Begin
  If N>=1024 Then Begin
   EnsureRealRuntime;
-  If N>=$8000 Then Begin P:=RealSymbol('REMU'); P:=N-$8000; If P>=EmulatorDataEnd-EmulatorDataBase Then Fail(72,'Donnee runtime 8087 invalide'); RuntimeDataAddress:=EmulatorDataBase+P End
-  Else Begin P:=N-1024; If P>=RealDataEnd-RealDataBase Then Fail(72,'Donnee runtime Real invalide'); RuntimeDataAddress:=RealDataBase+P End;
+  If N>=$8000 Then Begin P:=RealSymbol('REMU'); P:=N-$8000;
+    If P>=EmulatorDataEnd-EmulatorDataBase Then Fail(72,
+      'Donnee runtime 8087 invalide');
+        RuntimeDataAddress:=EmulatorDataBase+P End
+  Else Begin P:=N-1024; If P>=RealDataEnd-RealDataBase Then Fail(72,
+    'Donnee runtime Real invalide'); RuntimeDataAddress:=RealDataBase+P End;
   Exit;
  End;
  If N=1 Then RuntimeDataAddress:=RandomSeed
@@ -8329,7 +12822,8 @@ Begin
  Prev:=Stubs[U];
  If V<>U Then Begin
   Prev:=H.Name;
-  While GetWord(Prev+4+B^[Prev+3]+4)<>0 Do        Prev:=GetWord(Prev+4+B^[Prev+3]+4);
+  While GetWord(Prev+4+B^[Prev+3]+4)<>0 Do
+    Prev:=GetWord(Prev+4+B^[Prev+3]+4);
  End;
  A:=SymbolEntry(S,89); Stubs[V]:=A;
  PutWord(0); PutWord(Check); PutWord(0); PutWord(0);
@@ -8361,7 +12855,8 @@ Begin
  SetWord(Posn,Flags Or Refs[TargetOwner]); Inc(Posn,2);
  If TargetOwner=0 Then Begin
   SetWord(Posn,$FFFF); Inc(Posn,2);
-  If IsData Then SetWord(Posn,RuntimeDataNumber(Target)) Else SetWord(Posn,RuntimeNumber(Target)); Inc(Posn,2);
+  If IsData Then SetWord(Posn,RuntimeDataNumber(Target)) Else SetWord(Posn,
+    RuntimeNumber(Target)); Inc(Posn,2);
  End Else
  Begin
   SetWord(Posn,0); Inc(Posn,2); SetWord(Posn,Number); Inc(Posn,2);
@@ -8373,23 +12868,29 @@ Begin
     directement les types SYSTEM historiques. La compatibilite du layout
     est testee; une validation avec le linker Borland reste necessaire. }
  CaptureDebugSymbols(U);
- MetadataCount:=0; For I:=1 To DebugCount Do If DebugEntries[I].U=U Then Inc(MetadataCount);
+ MetadataCount:=0;
+   For I:=1 To DebugCount Do If DebugEntries[I].U=U Then Inc(MetadataCount);
  NativeConstants:=(MetadataCount=0) And UnitOutput And (U=1) And
  Not Units[U].HasInit And (Units[U].Dependencies=[]);
- For I:=1 To ObjectCount Do If ObjectFiles[I].Owner=U Then NativeConstants:=False;
+ For I:=1 To ObjectCount Do If ObjectFiles[I].Owner=U Then
+   NativeConstants:=False;
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And
- ((Symbols[I].Kind<>skConst) Or (Symbols[I].Typ=ttReal)) Then NativeConstants:=False;
+ ((Symbols[I].Kind<>skConst) Or (Symbols[I].Typ=ttReal)) Then
+   NativeConstants:=False;
   For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And Symbols[I].Exported And
     (Symbols[I].Kind=skConst) And (Symbols[I].Typ<>ttString) And
-    ((Symbols[I].Width=4) Or (Symbols[I].Value<-32768) Or (Symbols[I].Value>65535)) Then NativeConstants:=False;
+    ((Symbols[I].Width=4) Or (Symbols[I].Value<-32768) Or
+      (Symbols[I].Value>65535)) Then NativeConstants:=False;
  New(B); FillChar(B^,SizeOf(TBinaryBuffer),0); FillChar(H,SizeOf(H),0);
  FillChar(MapStubs,SizeOf(MapStubs),0); FillChar(Refs,SizeOf(Refs),0);
  FillChar(SymbolEntries,SizeOf(SymbolEntries),0);
  FillChar(Stubs,SizeOf(Stubs),0);
- H.Signature[0]:='T'; H.Signature[1]:='P'; H.Signature[2]:='U'; H.Signature[3]:=TPUVersion;
+ H.Signature[0]:='T'; H.Signature[1]:='P'; H.Signature[2]:='U';
+   H.Signature[3]:=TPUVersion;
  H.Flags:=$8000; H.Reserved[0]:=$5054; H.Reserved[1]:=$3143; H.Reserved[2]:=6;
  If (MetadataCount<>0) Or (UnitFeatures[U]<>0) Then H.Reserved[2]:=7;
- If UnitFeatures[U] And 24<>0 Then Begin H.Reserved[2]:=8; H.OverlayLength:=SoftwareChecksum End;
+ If UnitFeatures[U] And 24<>0 Then Begin H.Reserved[2]:=8;
+   H.OverlayLength:=SoftwareChecksum End;
  If H.Reserved[2]>=7 Then H.CodeLength:=UnitFeatures[U] And 31;
  Units[U].Checksum:=InterfaceChecksum(U);
  Posn:=TPUHeaderSize; H.Interf:=Posn; PutWord(126);
@@ -8399,15 +12900,18 @@ Begin
                     Else UnitEntry(U,Units[U].Name,Units[U].Checksum);
  CheckPos:=H.Name+4+Length(Units[U].Name)+2;
  UnitEntry(0,'SYSTEM',0);
- For V:=1 To UnitCount Do If V In Units[U].Dependencies Then    UnitEntry(V,Units[V].Name,
+ For V:=1 To UnitCount Do If V In Units[U].Dependencies Then    UnitEntry(V,
+   Units[V].Name,
  Units[V].Checksum);
   { Types locaux: la partie segment reference le symbole d'unite. }
- For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And Symbols[I].Exported Then Begin
+ For I:=1 To SymbolCount Do If (Symbols[I].Owner=U) And Symbols[I].Exported Then
+   Begin
   TypAddr:=Posn; PutByte(Symbols[I].Typ);
   If Symbols[I].Typ=ttInteger Then Begin
    If Symbols[I].Width=1 Then PutByte(2) Else PutByte(5);
   End Else PutByte(0);
-  If (Symbols[I].Typ=ttString) And (Symbols[I].Kind=skConst) Then PutWord(256) Else
+  If (Symbols[I].Typ=ttString) And (Symbols[I].Kind=skConst) Then PutWord(256)
+    Else
   If Symbols[I].Typ=ttString Then PutWord(Word(Symbols[I].Capacity)+1) Else
   If Symbols[I].Kind=skConst Then Begin
    If Symbols[I].Typ=ttInteger Then PutWord(2) Else PutWord(1);
@@ -8457,7 +12961,8 @@ Begin
  skProc:
  Begin
   A:=SymbolEntry(Symbols[I].Name,83); MapStubs[I]:=A+4+Length(Symbols[I].Name);
-  PutByte(Ord(Symbols[I].FarRoutine)); PutByte(0); PutWord(0); PutWord(0); PutWord(0); PutWord(0);
+  PutByte(Ord(Symbols[I].FarRoutine)); PutByte(0); PutWord(0); PutWord(0);
+    PutWord(0); PutWord(0);
   PutByte(ttProc); PutByte(0); PutWord(0); PutWord(0);
   PutWord(0); PutWord(0); PutWord(0);
  End;
@@ -8467,7 +12972,8 @@ End;
 If Not NativeConstants Then Begin
  H.Reserved[5]:=Posn; PutWord(TypeCount);
  For I:=1 To TypeCount Do Begin
-  If Longint(Posn)+SizeOf(TTypeInfo)>MaxImage Then Fail(123,'Types TPU trop grands');
+  If Longint(Posn)+SizeOf(TTypeInfo)>MaxImage Then Fail(123,
+    'Types TPU trop grands');
   Move(Types[I],B^[Posn],SizeOf(TTypeInfo)); Inc(Posn,SizeOf(TTypeInfo));
  End;
  For I:=1 To TypeCount Do Begin
@@ -8480,16 +12986,21 @@ If Not NativeConstants Then Begin
   End;
  End;
  MetadataCount:=0;
- For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And (SymbolType(I)<>0) Then Inc(MetadataCount);
+ For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And (SymbolType(I)<>0) Then
+   Inc(MetadataCount);
  PutWord(MetadataCount);
- For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And (SymbolType(I)<>0) Then Begin
+ For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And (SymbolType(I)<>0) Then
+   Begin
   PutWord(SymbolEntries[I]); PutWord(SymbolType(I));
  End;
  MetadataCount:=0;
- For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And (Symbols[I].Kind=skProc) Then Inc(MetadataCount);
+ For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And
+   (Symbols[I].Kind=skProc) Then Inc(MetadataCount);
  PutWord(MetadataCount);
- For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And (Symbols[I].Kind=skProc) Then Begin
-  PutWord(SymbolEntries[I]); PutWord(Symbols[I].ParamCount); PutWord(Symbols[I].ParamBytes);
+ For I:=1 To SymbolCount Do If (SymbolEntries[I]<>0) And
+   (Symbols[I].Kind=skProc) Then Begin
+  PutWord(SymbolEntries[I]); PutWord(Symbols[I].ParamCount);
+    PutWord(Symbols[I].ParamBytes);
   PutWord(Ord(Symbols[I].FarRoutine));
   For J:=1 To Symbols[I].ParamCount Do Begin
    PutWord(Symbols[I].ParamTypeIds[J]); PutWord(Symbols[I].ParamFlags[J]);
@@ -8497,18 +13008,23 @@ If Not NativeConstants Then Begin
  End;
  H.Reserved[6]:=Posn;
  MetadataCount:=0;
- For V:=1 To UnitCount Do If V In Units[U].NativeDependencies Then Inc(MetadataCount);
+ For V:=1 To UnitCount Do If V In Units[U].NativeDependencies Then
+   Inc(MetadataCount);
  PutWord(MetadataCount);
  For V:=1 To UnitCount Do If V In Units[U].NativeDependencies Then Begin
   PutString(Units[V].Name); PutWord(Units[V].Checksum);
  End;
  MetadataCount:=0;
- For I:=1 To NativeRefCount Do If CodeOwners[NativeRefs[I].Position]=U Then Inc(MetadataCount);
+ For I:=1 To NativeRefCount Do If CodeOwners[NativeRefs[I].Position]=U Then
+   Inc(MetadataCount);
  PutWord(MetadataCount);
- For I:=1 To NativeRefCount Do If CodeOwners[NativeRefs[I].Position]=U Then Begin
+ For I:=1 To NativeRefCount Do If CodeOwners[NativeRefs[I].Position]=U Then
+   Begin
   PutWord(LocalOffset(NativeRefs[I].Position,U,True));
-  PutString(Units[NativeRefs[I].U].Name); PutWord(Units[NativeRefs[I].U].Checksum);
-  PutWord(NativeRefs[I].Kind); PutWord(NativeRefs[I].Map); PutWord(NativeRefs[I].Target);
+  PutString(Units[NativeRefs[I].U].Name);
+    PutWord(Units[NativeRefs[I].U].Checksum);
+  PutWord(NativeRefs[I].Kind); PutWord(NativeRefs[I].Map);
+    PutWord(NativeRefs[I].Target);
  End;
  MetadataCount:=0;
  For I:=1 To RelocationCount Do If (Relocations[I].Segm=0) And
@@ -8520,24 +13036,30 @@ If Not NativeConstants Then Begin
  End;
  MetadataCount:=0;
  For I:=1 To ObjectCount Do If ObjectFiles[I].Owner=U Then Inc(MetadataCount);
- For I:=1 To ObjectCallCount Do If CodeOwners[ObjectCalls[I].Position]=U Then Inc(MetadataCount);
+ For I:=1 To ObjectCallCount Do If CodeOwners[ObjectCalls[I].Position]=U Then
+   Inc(MetadataCount);
  If (MetadataCount<>0) Or (H.Reserved[2]>=6) Then Begin
   H.Reserved[7]:=Posn;
   MetadataCount:=0;
-  For I:=1 To ObjectCallCount Do If CodeOwners[ObjectCalls[I].Position]=U Then Inc(MetadataCount);
+  For I:=1 To ObjectCallCount Do If CodeOwners[ObjectCalls[I].Position]=U Then
+    Inc(MetadataCount);
   PutWord(MetadataCount);
-  For I:=1 To ObjectCallCount Do If CodeOwners[ObjectCalls[I].Position]=U Then Begin
-   PutWord(LocalOffset(ObjectCalls[I].Position,U,True)); PutString(ObjectCalls[I].Name);
+  For I:=1 To ObjectCallCount Do If CodeOwners[ObjectCalls[I].Position]=U Then
+    Begin
+   PutWord(LocalOffset(ObjectCalls[I].Position,U,True));
+     PutString(ObjectCalls[I].Name);
   End;
  End;
  If H.Reserved[2]>=7 Then Begin
   H.DebugHash:=Posn; MetadataCount:=0;
   For I:=1 To DebugCount Do If DebugEntries[I].U=U Then Inc(MetadataCount);
   PutWord(MetadataCount); LastDebugFile:='';
-  For I:=1 To DebugCount Do If DebugEntries[I].U=U Then With DebugEntries[I] Do Begin
+  For I:=1 To DebugCount Do If DebugEntries[I].U=U Then With DebugEntries[I] Do
+    Begin
    PutByte(Kind);
    If Kind In [0,1] Then PutWord(LocalOffset(Address,U,True))
-   Else If Kind=2 Then PutWord(LocalOffset(Address,U,False)) Else PutWord(Address);
+   Else If Kind=2 Then PutWord(LocalOffset(Address,U,
+     False)) Else PutWord(Address);
    PutWord(Line); PutWord(Column); PutWord(Size);
    { Un nom vide signifie "meme fichier que l'entree precedente". }
    If FileName=LastDebugFile Then PutString('') Else PutString(FileName);
@@ -8580,7 +13102,8 @@ For I:=1 To FixupCount Do If CodeOwners[Fixups[I].Position]=U Then Begin
  If FixLen>MaxImage-8 Then Unsupported('trop de fixups dans une unite');
  Inc(FixLen,8);
 End;
-For I:=1 To RelativeCount Do If CodeOwners[RelativeFixups[I].Position]=U Then Begin
+For I:=1 To RelativeCount Do If CodeOwners[RelativeFixups[I].Position]=U Then
+  Begin
  If FixLen>MaxImage-8 Then Unsupported('trop de fixups dans une unite');
  Inc(FixLen,8);
 End;
@@ -8622,7 +13145,8 @@ RelStart:=DataStart+Align16(DataLen);
 Posn:=H.EndTrace;
 For I:=1 To FixupCount Do If CodeOwners[Fixups[I].Position]=U Then    Reloc(
 Fixups[I].Position,Fixups[I].DataOffset,True);
-For I:=1 To RelativeCount Do If CodeOwners[RelativeFixups[I].Position]=U Then    Reloc(
+For I:=1 To RelativeCount Do If CodeOwners[RelativeFixups[I].Position]=U Then
+  Reloc(
 RelativeFixups[I].Position,RelativeFixups[I].Target,False);
 Move(B^[H.EndTrace],B^[RelStart],FixLen);
   { Effacer seulement la zone entre dictionnaire et code: elle avait servi
@@ -8640,10 +13164,14 @@ FilePos:=RelStart+Align16(FixLen);
 If H.Reserved[2]>=5 Then Begin
  MetadataCount:=0;
  For I:=1 To ObjectCount Do If ObjectFiles[I].Owner=U Then Inc(MetadataCount);
- If FilePos+2>SizeOf(TBinaryBuffer) Then Unsupported('TPU avec OBJ trop grande');
- B^[FilePos]:=MetadataCount And 255; B^[FilePos+1]:=MetadataCount Shr 8; Inc(FilePos,2);
+ If FilePos+2>SizeOf(TBinaryBuffer) Then
+   Unsupported('TPU avec OBJ trop grande');
+ B^[FilePos]:=MetadataCount And 255; B^[FilePos+1]:=MetadataCount Shr 8;
+   Inc(FilePos,2);
  For I:=1 To ObjectCount Do If ObjectFiles[I].Owner=U Then Begin
-  If FilePos+5+Length(ObjectFiles[I].Path)+ObjectFiles[I].Length>SizeOf(TBinaryBuffer) Then
+  If
+    FilePos+5+Length(ObjectFiles[I].Path)+
+      ObjectFiles[I].Length>SizeOf(TBinaryBuffer) Then
    Unsupported('TPU avec OBJ trop grande');
   For J:=0 To 3 Do B^[FilePos+J]:=(ObjectFiles[I].Length Shr (J*8)) And 255;
   Inc(FilePos,4); B^[FilePos]:=Length(ObjectFiles[I].Path); Inc(FilePos);
@@ -8652,13 +13180,15 @@ If H.Reserved[2]>=5 Then Begin
   Move(ObjectFiles[I].Bytes^,B^[FilePos],ObjectFiles[I].Length);
   Inc(FilePos,ObjectFiles[I].Length);
  End;
- If Align16(FilePos)>SizeOf(TBinaryBuffer) Then Unsupported('TPU avec OBJ trop grande');
+ If Align16(FilePos)>SizeOf(TBinaryBuffer) Then
+   Unsupported('TPU avec OBJ trop grande');
  FilePos:=Align16(FilePos);
  H.Reserved[8]:=Word(FilePos-RelStart-Align16(FixLen));
  H.Reserved[9]:=(FilePos-RelStart-Align16(FixLen)) Shr 16;
 End;
 PayloadCheck:=0;
-For CodeStart:=TPUHeaderSize To FilePos-1 Do    PayloadCheck:=((PayloadCheck Shl 1) Or (
+For CodeStart:=TPUHeaderSize To FilePos-1 Do    PayloadCheck:=((PayloadCheck Shl
+  1) Or (
 PayloadCheck Shr 15))+B^[CodeStart];
 If Not NativeConstants Then H.Reserved[4]:=PayloadCheck;
 Move(H,B^,SizeOf(H));
@@ -8685,13 +13215,16 @@ Var
  U, V: Byte;
 Begin
   { Checksums connus avant l'ecriture pour les cycles d'implementation. }
- For U:=1 To UnitCount Do If Units[U].FromSource Then    Units[U].Checksum:=
+ For U:=1 To UnitCount Do If Units[U].FromSource And Not Units[U].Kernel Then
+   Units[U].Checksum:=
  InterfaceChecksum(U);
  For U:=1 To UnitCount Do
  For V:=1 To UnitCount Do    If (Units[U].DependencyChecks[V]<>0) And
- (Units[U].DependencyChecks[V]<>Units[V].Checksum) Then      Fail(70,Units[U].Name+' / '+
+ (Units[U].DependencyChecks[V]<>Units[V].Checksum) Then      Fail(70,
+   Units[U].Name+' / '+
  Units[V].Name);
- For U:=1 To UnitCount Do If Units[U].FromSource And Not Units[U].Embedded Then WriteCompiledUnit(U);
+ For U:=1 To UnitCount Do If Units[U].FromSource And Not Units[U].Embedded And
+   Not Units[U].Kernel Then WriteCompiledUnit(U);
 End;
 Procedure LoadCompiledUnit(U: Byte; Path: TShortString);Forward;
 Function DecodeNativeType(U: Byte; Offset: Word): Word; Forward;
@@ -8702,24 +13235,36 @@ Var SavedUnit: Byte; SavedScope,I,K: Word; SavedInterface: Boolean;
 Begin
  SavedUnit:=CurrentUnit; SavedScope:=CurrentScope; SavedInterface:=InInterface;
  CurrentUnit:=U; CurrentScope:=0; InInterface:=True;
- I:=NewSymbol('OVRRESULT'); Symbols[I].Kind:=skVar; ApplyType(I,1); Symbols[I].Addr:=OverlayResult;
- I:=NewSymbol('OVROK'); Symbols[I].Kind:=skConst; ApplyType(I,1); Symbols[I].Value:=0;
- I:=NewSymbol('OVRERROR'); Symbols[I].Kind:=skConst; ApplyType(I,1); Symbols[I].Value:=-1;
- I:=NewSymbol('OVRNOMEMORY'); Symbols[I].Kind:=skConst; ApplyType(I,1); Symbols[I].Value:=-2;
- Names[1]:='OVRINIT'; Names[2]:='OVRDONE'; Names[3]:='OVRCLEARBUF'; Names[4]:='OVRGETBUF'; Names[5]:='OVRSETBUF'; Names[6]:='';
+ I:=NewSymbol('OVRRESULT'); Symbols[I].Kind:=skVar; ApplyType(I,1);
+   Symbols[I].Addr:=OverlayResult;
+ I:=NewSymbol('OVROK'); Symbols[I].Kind:=skConst; ApplyType(I,1);
+   Symbols[I].Value:=0;
+ I:=NewSymbol('OVRERROR'); Symbols[I].Kind:=skConst; ApplyType(I,1);
+   Symbols[I].Value:=-1;
+ I:=NewSymbol('OVRNOMEMORY'); Symbols[I].Kind:=skConst; ApplyType(I,1);
+   Symbols[I].Value:=-2;
+ Names[1]:='OVRINIT'; Names[2]:='OVRDONE'; Names[3]:='OVRCLEARBUF';
+   Names[4]:='OVRGETBUF'; Names[5]:='OVRSETBUF'; Names[6]:='';
  For K:=1 To 5 Do Begin
-  I:=NewSymbol(Names[K]); Symbols[I].Kind:=skProc; Symbols[I].Addr:=RuntimeStandard[57+K];
-  Symbols[I].FarRoutine:=True; Symbols[I].HasBody:=True; Symbols[I].DebugVisible:=False;
+  I:=NewSymbol(Names[K]); Symbols[I].Kind:=skProc;
+    Symbols[I].Addr:=RuntimeStandard[57+K];
+  Symbols[I].FarRoutine:=True; Symbols[I].HasBody:=True;
+    Symbols[I].DebugVisible:=False;
   If K=1 Then Begin
-   Symbols[I].ParamCount:=1; Symbols[I].ParamBytes:=256; Symbols[I].ParamTypeIds[1]:=7;
-   Symbols[I].ParamTypes[1]:=ttString; Symbols[I].ParamFlags[1]:=2; Symbols[I].ParamNames[1]:='FILENAME';
+   Symbols[I].ParamCount:=1; Symbols[I].ParamBytes:=256;
+     Symbols[I].ParamTypeIds[1]:=7;
+   Symbols[I].ParamTypes[1]:=ttString; Symbols[I].ParamFlags[1]:=2;
+     Symbols[I].ParamNames[1]:='FILENAME';
   End Else If K=4 Then ApplyType(I,9)
   Else If K=5 Then Begin
-   Symbols[I].ParamCount:=1; Symbols[I].ParamBytes:=4; Symbols[I].ParamTypeIds[1]:=9;
-   Symbols[I].ParamTypes[1]:=ttInteger; Symbols[I].ParamWidths[1]:=4; Symbols[I].ParamFlags[1]:=2; Symbols[I].ParamNames[1]:='SIZE';
+   Symbols[I].ParamCount:=1; Symbols[I].ParamBytes:=4;
+     Symbols[I].ParamTypeIds[1]:=9;
+   Symbols[I].ParamTypes[1]:=ttInteger; Symbols[I].ParamWidths[1]:=4;
+     Symbols[I].ParamFlags[1]:=2; Symbols[I].ParamNames[1]:='SIZE';
   End;
  End;
- Units[U].Checksum:=InterfaceChecksum(U); Units[U].State:=2; Units[U].InterfaceReady:=True;
+ Units[U].Checksum:=InterfaceChecksum(U); Units[U].State:=2;
+   Units[U].InterfaceReady:=True;
  CurrentUnit:=SavedUnit; CurrentScope:=SavedScope; InInterface:=SavedInterface;
 End;
 
@@ -8728,11 +13273,13 @@ Var H,I,J: Word;
 Begin
  H:=$8087;
  For I:=1 To High(RealSource) Do Begin
-  For J:=1 To Length(RealSource[I]) Do H:=((H Shl 1) Or (H Shr 15))+Ord(RealSource[I][J]);
+  For J:=1 To Length(RealSource[I]) Do H:=((H Shl 1) Or (H Shr
+    15))+Ord(RealSource[I][J]);
   H:=((H Shl 1) Or (H Shr 15))+10;
  End;
  For I:=1 To High(EmulatorSource) Do Begin
-  For J:=1 To Length(EmulatorSource[I]) Do H:=((H Shl 1) Or (H Shr 15))+Ord(EmulatorSource[I][J]);
+  For J:=1 To Length(EmulatorSource[I]) Do H:=((H Shl 1) Or (H Shr
+    15))+Ord(EmulatorSource[I][J]);
   H:=((H Shl 1) Or (H Shr 15))+10;
  End;
  If H=0 Then H:=$FFFF; SoftwareChecksum:=H;
@@ -8756,17 +13303,24 @@ Begin
   Move(S[1],Source[SourceSize+1],Length(S)); Inc(SourceSize,Length(S));
   Inc(SourceSize); Source[SourceSize]:=#10;
  End;
+ Inc(SegDepth);
+   { jamais de changement de segment au milieu du code qui declenche cette
+     compilation }
  NextToken; DeclarationPart;
+ Dec(SegDepth);
  If Token<>tkEOF Then Fail(10,'Declaration runtime interne incomplete');
  For I:=1 To SymbolCount Do If (Symbols[I].Owner=CurrentUnit) And
-  (Symbols[I].Kind=skProc) And Not Symbols[I].HasBody Then Fail(59,Symbols[I].Name);
- If Emulator Then Begin EmulatorCodeEnd:=CodeSize; EmulatorDataEnd:=DataSize; EmulatorReady:=True End
+  (Symbols[I].Kind=skProc) And Not Symbols[I].HasBody Then Fail(59,
+    Symbols[I].Name);
+ If Emulator Then Begin EmulatorCodeEnd:=CodeSize; EmulatorDataEnd:=DataSize;
+   EmulatorReady:=True End
  Else Begin RealCodeEnd:=CodeSize; RealDataEnd:=DataSize; RealReady:=True End;
  RestoreParser(P);
 End;
 Function EmbeddedUnit(Name: TShortString): Boolean;
 Begin
- EmbeddedUnit:=(Name='CRT') Or (Name='DOS') Or (Name='STRINGS') Or (Name='PRINTER');
+ EmbeddedUnit:=(Name='CRT') Or (Name='DOS') Or (Name='STRINGS') Or
+   (Name='PRINTER') Or (Name='GRAPH');
 End;
 
 Procedure LoadEmbeddedSource(Name: TShortString);
@@ -8774,11 +13328,16 @@ Procedure LoadEmbeddedSource(Name: TShortString);
 Var I,N: Word; S: TShortString;
 Begin
  SourceSize:=0;
- If Name='CRT' Then N:=High(CrtSource) Else If Name='DOS' Then N:=High(DosSource)
- Else If Name='STRINGS' Then N:=High(StringsSource) Else N:=High(PrinterSource);
+ If Name='CRT' Then N:=High(CrtSource) Else If Name='DOS' Then
+   N:=High(DosSource)
+ Else If Name='STRINGS' Then N:=High(StringsSource) Else If Name='GRAPH' Then
+   N:=High(GraphSource)
+ Else N:=High(PrinterSource);
  For I:=1 To N Do Begin
   If Name='CRT' Then S:=CrtSource[I] Else If Name='DOS' Then S:=DosSource[I]
-  Else If Name='STRINGS' Then S:=StringsSource[I] Else S:=PrinterSource[I];
+  Else If Name='STRINGS' Then S:=StringsSource[I] Else If Name='GRAPH' Then
+    S:=GraphSource[I]
+  Else S:=PrinterSource[I];
   Move(S[1],Source[SourceSize+1],Length(S)); Inc(SourceSize,Length(S));
   Inc(SourceSize); Source[SourceSize]:=#10;
  End;
@@ -8799,7 +13358,8 @@ Begin
  If UnitCount=MaxUnits Then Unsupported('plus de 64 unites');
  If Name='OVERLAY' Then Begin
   Inc(UnitCount); U:=UnitCount; FillChar(Units[U],SizeOf(TBuildUnit),0);
-  Units[U].Name:=Name; Units[U].Path:='<runtime local>'; InstallOverlayUnit(U); Exit;
+  Units[U].Name:=Name; Units[U].Path:='<runtime local>'; InstallOverlayUnit(U);
+    Exit;
  End;
  Entry:=FindLibraryUnit(Name);
  Path:=''; If (Entry=0) And BuildMode Then Path:=FindUnitPath(Name,'.PAS');
@@ -8820,7 +13380,7 @@ Begin
  Begin
   Path:=FindUnitPath(Name,'.TPU');
   If (Path='') And EmbeddedUnit(Name) Then Begin
-   { Unite standard integree (CRT, DOS, STRINGS, PRINTER). }
+   { Unite standard integree (CRT, DOS, STRINGS, PRINTER, GRAPH). }
    Units[U].Embedded:=True; CompileSourceUnit(U,'<'+Name+'>'); Exit;
   End;
   If Path='' Then Fail(15,'Fichier introuvable: '+Name+'.TPU');
@@ -8828,12 +13388,17 @@ Begin
  End;
 End;
 Procedure EnsureRealRuntime;
-Var P,SavedType: Word; SavedKnown,SavedUnsigned,SavedAssembler: Boolean; SavedValue: Longint;
+Var P,SavedType: Word; SavedKnown,SavedUnsigned,SavedAssembler: Boolean;
+  SavedValue: Longint;
 Begin
- SavedType:=ExprType; SavedKnown:=ExprKnown; SavedUnsigned:=ExprUnsigned; SavedValue:=ExprValue; SavedAssembler:=InAssembler;
- If Not RealReady Then Begin P:=Jump; CompileSoftwareRuntime(False); PatchJump(P,CodeSize) End;
- If (CurrentUnit>0) And (CurrentUnit<=MaxUnits) Then UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 8;
- ExprType:=SavedType; ExprKnown:=SavedKnown; ExprUnsigned:=SavedUnsigned; ExprValue:=SavedValue; InAssembler:=SavedAssembler;
+ SavedType:=ExprType; SavedKnown:=ExprKnown; SavedUnsigned:=ExprUnsigned;
+   SavedValue:=ExprValue; SavedAssembler:=InAssembler;
+ If Not RealReady Then Begin P:=Jump; CompileSoftwareRuntime(False);
+   PatchJump(P,CodeSize) End;
+ If (CurrentUnit>0) And (CurrentUnit<=MaxUnits) Then
+   UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 8;
+ ExprType:=SavedType; ExprKnown:=SavedKnown; ExprUnsigned:=SavedUnsigned;
+   ExprValue:=SavedValue; InAssembler:=SavedAssembler;
 End;
 Function RealSymbol(Name: TShortString): Word;
 Var I,P: Word; SavedAssembler: Boolean;
@@ -8841,12 +13406,16 @@ Begin
  EnsureRealRuntime;
  If Name='REMU' Then Begin
   If Not EmulatorReady Then Begin
-   SavedAssembler:=InAssembler; P:=Jump; CompileSoftwareRuntime(True); PatchJump(P,CodeSize); InAssembler:=SavedAssembler;
+   SavedAssembler:=InAssembler; P:=Jump; CompileSoftwareRuntime(True);
+     PatchJump(P,CodeSize); InAssembler:=SavedAssembler;
   End;
-  If (CurrentUnit>0) And (CurrentUnit<=MaxUnits) Then UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 16;
+  If (CurrentUnit>0) And (CurrentUnit<=MaxUnits) Then
+    UnitFeatures[CurrentUnit]:=UnitFeatures[CurrentUnit] Or 16;
  End;
- For I:=1 To SymbolCount Do If ((Symbols[I].Owner=254) Or ((Name='REMU') And (Symbols[I].Owner=253))) And
-  (Symbols[I].Scope=0) And (Symbols[I].Name=Name) Then Begin RealSymbol:=I; Exit End;
+ For I:=1 To SymbolCount Do If ((Symbols[I].Owner=254) Or ((Name='REMU') And
+   (Symbols[I].Owner=253))) And
+  (Symbols[I].Scope=0) And (Symbols[I].Name=Name) Then Begin RealSymbol:=I;
+    Exit End;
  Fail(3,'Runtime Real: '+Name); RealSymbol:=0;
 End;
 
@@ -8880,7 +13449,8 @@ End;
 
 Procedure DictBounds(P, N: Longint);Begin
  Bounds(P,N);
- If (P<TPUHeaderSize) Or (P+N>H.ProcMap) Then Fail(72,'Reference hors dictionnaire TPU');
+ If (P<TPUHeaderSize) Or (P+N>H.ProcMap) Then Fail(72,
+   'Reference hors dictionnaire TPU');
 End;
 
 Function ReadWord(P: Longint): Word;Begin
@@ -8938,14 +13508,16 @@ Begin
  If ProjectForeign Then Begin
   Addr:=H.Name; Limit:=0; UnitName:='';
   While Addr<>0 Do Begin
-   Inc(Limit); If Limit>MaxUnits+2 Then Fail(72,'Cycle des stubs de types Borland');
+   Inc(Limit); If Limit>MaxUnits+2 Then Fail(72,
+     'Cycle des stubs de types Borland');
    StubAddr:=SymbolStub(Addr); DictBounds(StubAddr,8);
    If S=StubAddr Then Begin UnitName:=Upper(ReadString(Addr+3)); Break End;
    Addr:=ReadWord(StubAddr+4);
   End;
   If UnitName='' Then Fail(72,'Proprietaire de type Borland invalide');
   If (UnitName='SYSTEM') And (FindBuildUnit('SYSTEM')=0) And
-     (FindLibraryUnit('SYSTEM')=0) And (FindUnitPath('SYSTEM','.TPU')='') Then Begin
+     (FindLibraryUnit('SYSTEM')=0) And (FindUnitPath('SYSTEM',
+       '.TPU')='') Then Begin
    { Import de constantes sans runtime: offsets standard verifies dans
      COMPILER.INC. Aucun code n'est lie par ce chemin de secours. }
    Case T Of
@@ -8955,23 +13527,28 @@ Begin
    Else Begin Reject('type SYSTEM sans descripteur disponible'); Exit End;
    End;
    Typ:=Types[DecodedTypeId].Typ; Width:=Types[DecodedTypeId].Width;
-   Capacity:=Types[DecodedTypeId].Capacity; TypeSigned:=Types[DecodedTypeId].Signed;
+   Capacity:=Types[DecodedTypeId].Capacity;
+     TypeSigned:=Types[DecodedTypeId].Signed;
    Exit;
   End;
   If UnitName=Units[U].Name Then V:=U Else RequireUnit(UnitName,V);
   DecodedTypeId:=DecodeNativeType(V,T);
-  If DecodedTypeId=0 Then Begin Reject('descripteur de type Borland non pris en charge'); Exit End;
+  If DecodedTypeId=0 Then Begin
+    Reject('descripteur de type Borland non pris en charge'); Exit End;
   Typ:=Types[DecodedTypeId].Typ; Width:=Types[DecodedTypeId].Width;
-  Capacity:=Types[DecodedTypeId].Capacity; TypeSigned:=Types[DecodedTypeId].Signed;
+  Capacity:=Types[DecodedTypeId].Capacity;
+    TypeSigned:=Types[DecodedTypeId].Signed;
   Exit;
  End;
  If S=SymbolStub(H.Name) Then Begin
   DictBounds(T,6); Typ:=B^[T]; W:=ReadWord(T+2);
-  If IsLocal And (H.Reserved[2]>=6) And (Typ In [ttArray,ttRecord,ttSet,ttFile,ttText]) Then Begin
+  If IsLocal And (H.Reserved[2]>=6) And (Typ In [ttArray,ttRecord,ttSet,ttFile,
+    ttText]) Then Begin
    Width:=0; Exit;
   End;
   TypeSigned:=(Typ=ttInteger) And (B^[T+1] And 1<>0);
-  If (Typ<>ttString) And Not (IsLocal And (Typ=ttReal) And (W=6)) And (W>4) Then Begin
+  If (Typ<>ttString) And Not (IsLocal And (Typ=ttReal) And (W=6)) And (W>4) Then
+    Begin
    Reject('taille de type TPU'); Exit
   End;
   Width:=W;
@@ -8980,7 +13557,8 @@ Begin
    If (W<2) Or (W>256) Then Fail(72,'Type string TPU invalide');
    Capacity:=W-1; Width:=0;
   End;
-  If (Typ=ttInteger) And Not (Width In [1,2]) And Not ((Width=4) And IsLocal And (H.Reserved[2]>=6)) And
+  If (Typ=ttInteger) And Not (Width In [1,
+    2]) And Not ((Width=4) And IsLocal And (H.Reserved[2]>=6)) And
   Not ((Kind=80) And (Width=4) And Not IsLocal) Then Begin
    Reject('type entier TPU > 16 bits'); Exit
   End;
@@ -8990,7 +13568,8 @@ Begin
         pas un segment hote. Types SYSTEM standards dans COMPILER.INC. }
   Addr:=H.Name; Limit:=0; UnitName:='';
   While Addr<>0 Do Begin
-   Inc(Limit); If Limit>MaxUnits+2 Then Fail(72,'Cycle des stubs d''unites TPU');
+   Inc(Limit); If Limit>MaxUnits+2 Then Fail(72,
+     'Cycle des stubs d''unites TPU');
    StubAddr:=SymbolStub(Addr); DictBounds(StubAddr,8);
    If S=StubAddr Then Begin
     UnitName:=Upper(ReadString(Addr+3)); Break
@@ -9036,11 +13615,13 @@ Begin
   End;
  End;
 End;
-  If IsLocal And (H.Reserved[2]>=6) And (Typ In [ttPointer,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal]) Then Exit;
+  If IsLocal And (H.Reserved[2]>=6) And (Typ In [ttPointer,ttArray,ttRecord,
+    ttSet,ttFile,ttText,ttReal]) Then Exit;
   If Not (Typ In [ttString,ttInteger,ttBoolean,ttChar,ttEnum]) Then Begin
  Reject('type TPU non pris en charge'); Exit;
 End;
-If (Typ In [ttChar,ttBoolean]) And (Width<>1) Then Fail(72,'Taille ordinale TPU invalide')
+If (Typ In [ttChar,ttBoolean]) And (Width<>1) Then Fail(72,
+  'Taille ordinale TPU invalide')
 ;
 End;
 Begin
@@ -9076,14 +13657,16 @@ Begin
  Units[U].Checksum:=ReadWord(A+2);
  IsLocal:=(H.Flags=$8000) And (H.Reserved[0]=$5054) And (H.Reserved[1]=$3143);
  ProjectForeign:=Not IsLocal;
-  If IsLocal And Not (H.Reserved[2] In [1,2,3,4,5,6,7,8]) Then Fail(72,'Version du profil TPC1 inconnue');
+  If IsLocal And Not (H.Reserved[2] In [1,2,3,4,5,6,7,8]) Then Fail(72,
+    'Version du profil TPC1 inconnue');
  If IsLocal Then Begin
   W:=0;
   For X:=TPUHeaderSize To Size-1 Do W:=((W Shl 1) Or (W Shr 15))+B^[X];
   If W<>H.Reserved[4] Then Fail(72,'Integrite de la TPU TPC1 invalide');
  End;
  If IsLocal And (H.Reserved[2]=8) Then Begin
-  If H.OverlayLength<>SoftwareChecksum Then Fail(70,'Runtime Real/8087 interne modifie: reconstruire la TPU');
+  If H.OverlayLength<>SoftwareChecksum Then Fail(70,
+    'Runtime Real/8087 interne modifie: reconstruire la TPU');
   CurrentUnit:=0; { resident runtime precedes this unit's imported code }
   If H.CodeLength And 8<>0 Then EnsureRealRuntime;
   If H.CodeLength And 16<>0 Then W:=RealSymbol('REMU');
@@ -9103,7 +13686,8 @@ Begin
   'Tailles code natif incoherentes');
   MapSum:=0; FixSum:=0; X:=H.ConstMap;
   While X<H.DataMap Do Begin
-    If ReadWord(X+4) Mod 8<>0 Then Fail(72,'Fixups constantes Borland non alignes');
+    If ReadWord(X+4) Mod 8<>0 Then Fail(72,
+      'Fixups constantes Borland non alignes');
    Inc(MapSum,ReadWord(X+2)); Inc(FixSum,ReadWord(X+4)); Inc(X,8);
   End;
   If (MapSum<>H.ConstSize) Or (FixSum<>H.DataFixupSize) Then Fail(72,
@@ -9125,7 +13709,8 @@ Begin
   (H.CodeFixupSize Mod 8<>0) Then Fail(72,'Cartes du profil TPC1 invalides');
   If (ReadWord(H.CodeMap+2)<>H.CodeSize) Or
   (ReadWord(H.CodeMap+4)<>H.CodeFixupSize) Or
-  (ReadWord(H.ConstMap+2)<>H.ConstSize) Then Fail(72,'Tailles cartes incoherentes');
+  (ReadWord(H.ConstMap+2)<>H.ConstSize) Then Fail(72,
+    'Tailles cartes incoherentes');
   If H.CodeSize<>0 Then
   For I:=0 To H.CodeSize-1 Do Emit(B^[CodeStart+I]);
   A:=AllocData(H.ConstSize);
@@ -9149,9 +13734,11 @@ Begin
     I:=NewSymbol(Name);
         If Kind=81 Then Begin
           Symbols[I].Kind:=skType; DecodeType(Stub);
-          If Not TypeSupported Or ((Width>2) And Not IsLocal) Then Symbols[I].Kind:=skForeign
+          If Not TypeSupported Or ((Width>2) And Not IsLocal) Then
+            Symbols[I].Kind:=skForeign
           Else Begin
-            Symbols[I].Typ:=Typ; Symbols[I].Width:=Width; Symbols[I].Capacity:=Capacity;
+            Symbols[I].Typ:=Typ; Symbols[I].Width:=Width;
+              Symbols[I].Capacity:=Capacity;
             If ProjectForeign Then Begin
               ApplyType(I,DecodedTypeId);
             End;
@@ -9160,7 +13747,8 @@ Begin
      Symbols[I].Kind:=skForeign;
      DictBounds(Stub,22); ParamN:=ReadWord(Stub+20);
      Map:=ReadWord(Stub+2);
-     If (Map Mod 8<>0) Or (Map+Longint(8)>H.CodeMap-H.ProcMap) Then            Fail(72,
+     If (Map Mod 8<>0) Or (Map+Longint(8)>H.CodeMap-H.ProcMap) Then
+       Fail(72,
      'Carte procedure native invalide');
      If (ParamN<=MaxNativeParams) And (B^[Stub] And $F6=0) And
      (B^[Stub] And 1<>0) And (ReadWord(H.ProcMap+Map+4)<>$FFFF) Then Begin
@@ -9208,7 +13796,8 @@ Begin
      If Not IsLocal Then Unsupported('procedure TPU Borland');
      DictBounds(Stub,22);
      Map:=ReadWord(Stub+2);
-     If (Map Mod 8<>0) Or (Map>=H.CodeMap-H.ProcMap) Then Fail(72,'ProcMap TPU invalide');
+     If (Map Mod 8<>0) Or (Map>=H.CodeMap-H.ProcMap) Then Fail(72,
+       'ProcMap TPU invalide');
      Target:=ReadWord(H.ProcMap+Map+6);
      If Target>=H.CodeSize Then Fail(72,'Procedure TPU hors code');
      Symbols[I].Kind:=skProc; Symbols[I].HasBody:=True;
@@ -9224,28 +13813,36 @@ Begin
        DictBounds(Stub+4,1); DictBounds(Stub+4,1+B^[Stub+4]);
        Symbols[I].StrValue:=ReadString(Stub+4);
        If Typ=ttReal Then Begin
-        If Length(Symbols[I].StrValue)<>6 Then Fail(72,'Constante Real TPU invalide');
-        Symbols[I].Addr:=AllocData(6); Move(Symbols[I].StrValue[1],Data[Symbols[I].Addr],6);
+        If Length(Symbols[I].StrValue)<>6 Then Fail(72,
+          'Constante Real TPU invalide');
+        Symbols[I].Addr:=AllocData(6); Move(Symbols[I].StrValue[1],
+          Data[Symbols[I].Addr],6);
        End Else Symbols[I].Addr:=StoreString(Symbols[I].StrValue);
       End Else
       Begin
        DictBounds(Stub+4,4); Value:=ReadWord(Stub+4);
               If IsLocal And (H.Reserved[2]>=2) Then Begin
                 Move(B^[Stub+4],Value,4);
-                If (H.Reserved[2]<6) And ((Value<-32768) Or (Value>65535)) Then Fail(72,'Constante locale hors 16 bits');
+                If (H.Reserved[2]<6) And ((Value<-32768) Or (Value>65535)) Then
+                  Fail(72,'Constante locale hors 16 bits');
               End Else If Width=4 Then Begin
         Move(B^[Stub+4],Value,4);
                 If (Value<-32768) Or (Value>65535) Then Begin
          If ProjectForeign Then Symbols[I].Kind:=skForeign
-                           Else Unsupported('constante TPU Longint hors Integer');
+                           Else
+                             Unsupported('constante TPU Longint hors Integer');
         End;
         Width:=2;
         If Symbols[I].Kind<>skForeign Then Symbols[I].TypeId:=1;
-       End Else If (Typ=ttInteger) And (Width=2) And (Value>32767) Then Dec(Value,65536);
-       If (Typ=ttBoolean) And (Value>1) Then Fail(72,'Constante Boolean TPU invalide');
-       If (Typ=ttChar) And (Value>255) Then Fail(72,'Constante Char TPU invalide');
+       End Else If (Typ=ttInteger) And (Width=2) And (Value>32767) Then
+         Dec(Value,65536);
+       If (Typ=ttBoolean) And (Value>1) Then Fail(72,
+         'Constante Boolean TPU invalide');
+       If (Typ=ttChar) And (Value>255) Then Fail(72,
+         'Constante Char TPU invalide');
               Symbols[I].Value:=Value;
-              If (Typ=ttInteger) And (Value>32767) And (Value<=65535) Then Symbols[I].TypeId:=3;
+              If (Typ=ttInteger) And (Value>32767) And (Value<=65535) Then
+                Symbols[I].TypeId:=3;
       End;
      End Else
      Begin
@@ -9253,10 +13850,12 @@ Begin
       DictBounds(Stub,9); Symbols[I].Kind:=skVar;
       DecodeType(Stub+5); Target:=ReadWord(Stub+1);
       If Typ=ttString Then J:=Word(Capacity)+1 Else J:=Width;
-      If Longint(Target)+J>H.ConstSize Then Fail(72,'Variable TPU hors donnees');
+      If Longint(Target)+J>H.ConstSize Then Fail(72,
+        'Variable TPU hors donnees');
       Symbols[I].Addr:=Units[U].DataBase+Target;
      End;
-     Symbols[I].Typ:=Typ; Symbols[I].Width:=Width; Symbols[I].Capacity:=Capacity;
+     Symbols[I].Typ:=Typ; Symbols[I].Width:=Width;
+       Symbols[I].Capacity:=Capacity;
     End;
    End Else If Not (Kind In [89]) Then Begin
     If ProjectForeign Then Begin
@@ -9268,44 +13867,64 @@ Begin
   End;
  End;
   If IsLocal And (H.Reserved[2]>=2) Then Begin
-    MetaPos:=H.Reserved[5]; DictBounds(MetaPos,2); DiskCount:=ReadWord(MetaPos); Inc(MetaPos,2);
-    If (DiskCount<7) Or (DiskCount>MaxTypes) Then Fail(72,'Table des types TPU invalide');
-    If (H.Reserved[2]>=6) And (DiskCount<10) Then Fail(72,'Types standard TPU v6 manquants');
+    MetaPos:=H.Reserved[5]; DictBounds(MetaPos,2); DiskCount:=ReadWord(MetaPos);
+      Inc(MetaPos,2);
+    If (DiskCount<7) Or (DiskCount>MaxTypes) Then Fail(72,
+      'Table des types TPU invalide');
+    If (H.Reserved[2]>=6) And (DiskCount<10) Then Fail(72,
+      'Types standard TPU v6 manquants');
     DictBounds(MetaPos,Longint(DiskCount)*SizeOf(TTypeInfo));
     For K:=1 To DiskCount Do Begin
-      Move(B^[MetaPos],DiskTypes[K],SizeOf(TTypeInfo)); Inc(MetaPos,SizeOf(TTypeInfo));
+      Move(B^[MetaPos],DiskTypes[K],SizeOf(TTypeInfo)); Inc(MetaPos,
+        SizeOf(TTypeInfo));
       If (DiskTypes[K].Base=0) Or (DiskTypes[K].Base>DiskCount) Or
-        (DiskTypes[K].IdentityUnit[0]>Chr(63)) Or (DiskTypes[K].IdentityName[0]>Chr(63)) Or
-        Not (DiskTypes[K].Typ In [ttInteger,ttBoolean,ttChar,ttString,ttEnum,ttPointer,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal]) Or
-        (DiskTypes[K].LowBound>DiskTypes[K].HighBound) Then Fail(72,'Descripteur de type TPU invalide');
+        (DiskTypes[K].IdentityUnit[0]>Chr(63)) Or
+          (DiskTypes[K].IdentityName[0]>Chr(63)) Or
+        Not (DiskTypes[K].Typ In [ttInteger,ttBoolean,ttChar,ttString,ttEnum,
+          ttPointer,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal]) Or
+        (DiskTypes[K].LowBound>DiskTypes[K].HighBound) Then Fail(72,
+          'Descripteur de type TPU invalide');
       If DiskTypes[K].Typ=ttString Then Begin
-        If (DiskTypes[K].Width<>0) Or (DiskTypes[K].Capacity=0) Then Fail(72,'Taille string de metadonnees TPU');
-      End Else If DiskTypes[K].Typ In [ttArray,ttRecord,ttSet,ttFile,ttText] Then Begin
-       If (H.Reserved[2]<6) Or (DiskTypes[K].Width<>0) Then Fail(72,'Type structure TPU invalide');
+        If (DiskTypes[K].Width<>0) Or (DiskTypes[K].Capacity=0) Then Fail(72,
+          'Taille string de metadonnees TPU');
+      End Else If DiskTypes[K].Typ In [ttArray,ttRecord,ttSet,ttFile,
+        ttText] Then Begin
+       If (H.Reserved[2]<6) Or (DiskTypes[K].Width<>0) Then Fail(72,
+         'Type structure TPU invalide');
       End Else If DiskTypes[K].Typ=ttReal Then Begin
        If DiskTypes[K].Width<>6 Then Fail(72,'Taille Real TPU invalide');
       End Else If DiskTypes[K].Typ=ttPointer Then Begin
-       If (H.Reserved[2]<6) Or (DiskTypes[K].Width<>4) Then Fail(72,'Type pointeur TPU invalide');
+       If (H.Reserved[2]<6) Or (DiskTypes[K].Width<>4) Then Fail(72,
+         'Type pointeur TPU invalide');
       End Else If Not (DiskTypes[K].Width In [1,2,4]) Or
         ((DiskTypes[K].Width=4) And (DiskTypes[K].Typ<>ttInteger)) Or
-        ((DiskTypes[K].Width<>4) And ((DiskTypes[K].LowBound<-32768) Or (DiskTypes[K].HighBound>65535))) Then
+        ((DiskTypes[K].Width<>4) And ((DiskTypes[K].LowBound<-32768) Or
+          (DiskTypes[K].HighBound>65535))) Then
           Fail(72,'Taille ou bornes ordinales de metadonnees TPU');
-      If (K<=7) Or ((H.Reserved[2]>=6) And (K<=10)) Or ((K=11) And (DiskTypes[K].Typ=ttReal)) Then
-        If (DiskTypes[K].Typ<>Types[K].Typ) Or (DiskTypes[K].Width<>Types[K].Width) Or
-          (DiskTypes[K].Capacity<>Types[K].Capacity) Or (DiskTypes[K].Base<>Types[K].Base) Or
-          (DiskTypes[K].LowBound<>Types[K].LowBound) Or (DiskTypes[K].HighBound<>Types[K].HighBound) Or
-          (DiskTypes[K].Signed<>Types[K].Signed) Then Fail(72,'Types standard TPU incompatibles');
-      If (K<=7) Or ((H.Reserved[2]>=6) And (K<=10)) Or ((K=11) And (DiskTypes[K].Typ=ttReal)) Then TypeMap[K]:=K
+      If (K<=7) Or ((H.Reserved[2]>=6) And (K<=10)) Or ((K=11) And
+        (DiskTypes[K].Typ=ttReal)) Then
+        If (DiskTypes[K].Typ<>Types[K].Typ) Or
+          (DiskTypes[K].Width<>Types[K].Width) Or
+          (DiskTypes[K].Capacity<>Types[K].Capacity) Or
+            (DiskTypes[K].Base<>Types[K].Base) Or
+          (DiskTypes[K].LowBound<>Types[K].LowBound) Or
+            (DiskTypes[K].HighBound<>Types[K].HighBound) Or
+          (DiskTypes[K].Signed<>Types[K].Signed) Then Fail(72,
+            'Types standard TPU incompatibles');
+      If (K<=7) Or ((H.Reserved[2]>=6) And (K<=10)) Or ((K=11) And
+        (DiskTypes[K].Typ=ttReal)) Then TypeMap[K]:=K
       Else Begin
         NewIndex:=0;
         If DiskTypes[K].Typ In [ttEnum,ttArray,ttRecord,ttPointer] Then
           For TIndex:=8 To TypeCount Do
-            If (Types[TIndex].Typ=DiskTypes[K].Typ) And (Types[TIndex].Base=TIndex) And
+            If (Types[TIndex].Typ=DiskTypes[K].Typ) And
+              (Types[TIndex].Base=TIndex) And
               (Types[TIndex].IdentityUnit=DiskTypes[K].IdentityUnit) And
               (Types[TIndex].IdentityName=DiskTypes[K].IdentityName) And
               (Types[TIndex].IdentityName<>'') Then NewIndex:=TIndex;
         If NewIndex=0 Then Begin
-          NewIndex:=NewType(DiskTypes[K].Typ,DiskTypes[K].Width,DiskTypes[K].Capacity,
+          NewIndex:=NewType(DiskTypes[K].Typ,DiskTypes[K].Width,
+            DiskTypes[K].Capacity,
             DiskTypes[K].Signed,DiskTypes[K].LowBound,DiskTypes[K].HighBound,0);
           Types[NewIndex].IdentityUnit:=DiskTypes[K].IdentityUnit;
           Types[NewIndex].IdentityName:=DiskTypes[K].IdentityName;
@@ -9315,7 +13934,8 @@ Begin
     End;
     For K:=1 To DiskCount Do Begin
       TIndex:=DiskTypes[K].Base;
-      If (DiskTypes[TIndex].Base<>TIndex) Or (DiskTypes[TIndex].Typ<>DiskTypes[K].Typ) Then
+      If (DiskTypes[TIndex].Base<>TIndex) Or
+        (DiskTypes[TIndex].Typ<>DiskTypes[K].Typ) Then
         Fail(72,'Graphe des types TPU incoherent');
     End;
     For K:=8 To DiskCount Do Types[TypeMap[K]].Base:=TypeMap[DiskTypes[K].Base];
@@ -9323,22 +13943,29 @@ Begin
      For K:=1 To DiskCount Do Begin
       NewIndex:=TypeMap[K]; DictBounds(MetaPos,8);
       TypeExtras[NewIndex].Size:=ReadWord(MetaPos);
-      TIndex:=ReadWord(MetaPos+2); FieldType:=ReadWord(MetaPos+4); FieldN:=ReadWord(MetaPos+6);
+      TIndex:=ReadWord(MetaPos+2); FieldType:=ReadWord(MetaPos+4);
+        FieldN:=ReadWord(MetaPos+6);
       Inc(MetaPos,8);
-      If (TIndex>DiskCount) Or (FieldType>DiskCount) Or (FieldN>MaxFields-FieldCount) Then
+      If (TIndex>DiskCount) Or (FieldType>DiskCount) Or
+        (FieldN>MaxFields-FieldCount) Then
        Fail(72,'Liens de type structure TPU invalides');
       If TIndex<>0 Then TypeExtras[NewIndex].ElementType:=TypeMap[TIndex];
       If FieldType<>0 Then TypeExtras[NewIndex].IndexType:=TypeMap[FieldType];
-      TypeExtras[NewIndex].FirstField:=0; TypeExtras[NewIndex].FieldCount:=FieldN;
+      TypeExtras[NewIndex].FirstField:=0;
+        TypeExtras[NewIndex].FieldCount:=FieldN;
       For FieldIndex:=1 To FieldN Do Begin
        DictBounds(MetaPos,1); Name:=ReadString(MetaPos);
-       If (Length(Name)=0) Or (Length(Name)>63) Then Fail(72,'Nom de champ TPU invalide');
+       If (Length(Name)=0) Or (Length(Name)>63) Then Fail(72,
+         'Nom de champ TPU invalide');
        DictBounds(MetaPos,Length(Name)+5); Inc(MetaPos,Length(Name)+1);
-       FieldType:=ReadWord(MetaPos); FieldOffset:=ReadWord(MetaPos+2); Inc(MetaPos,4);
-       If (FieldType=0) Or (FieldType>DiskCount) Or (FieldOffset>TypeExtras[NewIndex].Size) Then
+       FieldType:=ReadWord(MetaPos); FieldOffset:=ReadWord(MetaPos+2);
+         Inc(MetaPos,4);
+       If (FieldType=0) Or (FieldType>DiskCount) Or
+         (FieldOffset>TypeExtras[NewIndex].Size) Then
         Fail(72,'Champ TPU hors type');
        Inc(FieldCount); Fields[FieldCount].Name:=Upper(Name);
-       Fields[FieldCount].TypeId:=TypeMap[FieldType]; Fields[FieldCount].Offset:=FieldOffset;
+       Fields[FieldCount].TypeId:=TypeMap[FieldType];
+         Fields[FieldCount].Offset:=FieldOffset;
        Fields[FieldCount].Next:=TypeExtras[NewIndex].FirstField;
        TypeExtras[NewIndex].FirstField:=FieldCount;
       End;
@@ -9347,18 +13974,25 @@ Begin
       NewIndex:=TypeMap[K]; TIndex:=TypeExtras[NewIndex].ElementType;
       If Types[NewIndex].Typ=ttArray Then Begin
        FieldType:=TypeExtras[NewIndex].IndexType;
-       If (TIndex=0) Or (FieldType=0) Then Fail(72,'Tableau TPU sans index/element');
+       If (TIndex=0) Or (FieldType=0) Then Fail(72,
+         'Tableau TPU sans index/element');
        If Not (Types[FieldType].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Or
-          ((Types[FieldType].HighBound-Types[FieldType].LowBound+1)*Longint(TypeExtras[TIndex].Size)<>
-            TypeExtras[NewIndex].Size) Then Fail(72,'Taille tableau TPU incoherente');
+          ((Types[FieldType].HighBound-Types[FieldType].LowBound+1)*
+            Longint(TypeExtras[TIndex].Size)<>
+            TypeExtras[NewIndex].Size) Then Fail(72,
+              'Taille tableau TPU incoherente');
       End Else If Types[NewIndex].Typ=ttRecord Then Begin
        FieldType:=TypeExtras[NewIndex].FirstField;
        While FieldType<>0 Do Begin
-        If Longint(Fields[FieldType].Offset)+TypeExtras[Fields[FieldType].TypeId].Size>TypeExtras[NewIndex].Size Then
+        If
+          Longint(Fields[FieldType].Offset)+
+            TypeExtras[Fields[FieldType].TypeId].Size>TypeExtras[NewIndex].Size
+              Then
          Fail(72,'Champ TPU hors record'); FieldType:=Fields[FieldType].Next;
        End;
       End Else If Types[NewIndex].Typ=ttPointer Then Begin
-       If TypeExtras[NewIndex].Size<>4 Then Fail(72,'Taille pointeur TPU invalide');
+       If TypeExtras[NewIndex].Size<>4 Then Fail(72,
+         'Taille pointeur TPU invalide');
       End;
      End;
     End;
@@ -9368,7 +14002,8 @@ Begin
     For K:=1 To MetaCount Do Begin
       A:=ReadWord(MetaPos); TIndex:=ReadWord(MetaPos+2); Inc(MetaPos,4);
       W:=SymbolStub(A);
-      If (TIndex=0) Or (TIndex>DiskCount) Then Fail(72,'Identite de type TPU invalide');
+      If (TIndex=0) Or (TIndex>DiskCount) Then Fail(72,
+        'Identite de type TPU invalide');
       Name:=Upper(ReadString(A+3)); I:=FindOwnSymbol(Name);
       If I=0 Then Fail(72,'Metadonnees de symbole TPU inconnues');
       ApplyType(I,TypeMap[TIndex]);
@@ -9379,7 +14014,8 @@ Begin
      For K:=1 To MetaCount Do Begin
       DictBounds(MetaPos,8); A:=ReadWord(MetaPos); W:=SymbolStub(A);
       Name:=Upper(ReadString(A+3)); I:=FindOwnSymbol(Name);
-      If (I=0) Or (Symbols[I].Kind<>skProc) Then Fail(72,'Signature TPU hors procedure');
+      If (I=0) Or (Symbols[I].Kind<>skProc) Then Fail(72,
+        'Signature TPU hors procedure');
       ParamN:=ReadWord(MetaPos+2);
       If ParamN>MaxNativeParams Then Fail(72,'Signature TPU trop longue');
       Symbols[I].ParamCount:=ParamN; Symbols[I].ParamBytes:=ReadWord(MetaPos+4);
@@ -9389,53 +14025,70 @@ Begin
       For J:=1 To ParamN Do Begin
        TIndex:=ReadWord(MetaPos); W:=ReadWord(MetaPos+2); Inc(MetaPos,4);
        If (TIndex>DiskCount) Or Not (W In [2,6,7]) Or
-          ((TIndex=0) And ((W<>6) Or (H.Reserved[2]<6))) Then Fail(72,'Parametre TPU invalide');
+          ((TIndex=0) And ((W<>6) Or (H.Reserved[2]<6))) Then Fail(72,
+            'Parametre TPU invalide');
        If TIndex<>0 Then TIndex:=TypeMap[TIndex];
-       If Not (Types[TIndex].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttArray,ttRecord,ttString,ttSet,ttFile,ttText,ttReal]) Or
+       If Not (Types[TIndex].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,
+         ttPointer,ttArray,ttRecord,ttString,ttSet,ttFile,ttText,ttReal]) Or
           ((Types[TIndex].Typ In [ttFile,ttText]) And (W<>6)) Then
          If TIndex<>0 Then Fail(72,'Type parametre TPU');
        Symbols[I].ParamTypeIds[J]:=TIndex; Symbols[I].ParamFlags[J]:=W;
-       Symbols[I].ParamTypes[J]:=Types[TIndex].Typ; Symbols[I].ParamWidths[J]:=Types[TIndex].Width;
+       Symbols[I].ParamTypes[J]:=Types[TIndex].Typ;
+         Symbols[I].ParamWidths[J]:=Types[TIndex].Width;
        If W=6 Then Inc(MapSum,4) Else If W=7 Then Inc(MapSum,6)
        Else Begin
-        FieldOffset:=(TypeExtras[TIndex].Size+1) And $FFFE; If FieldOffset<2 Then FieldOffset:=2;
+        FieldOffset:=(TypeExtras[TIndex].Size+1) And $FFFE;
+          If FieldOffset<2 Then FieldOffset:=2;
         Inc(MapSum,FieldOffset);
        End;
       End;
-      If MapSum<>Symbols[I].ParamBytes Then Fail(72,'Taille parametres TPU incoherente');
+      If MapSum<>Symbols[I].ParamBytes Then Fail(72,
+        'Taille parametres TPU incoherente');
      End;
     End;
   End;
   If IsLocal And (H.Reserved[2]>=7) Then Begin
-   MetaPos:=H.DebugHash; If MetaPos<TPUHeaderSize Then Fail(72,'Offset debug TPU invalide');
+   MetaPos:=H.DebugHash; If MetaPos<TPUHeaderSize Then Fail(72,
+     'Offset debug TPU invalide');
    DictBounds(MetaPos,2); MetaCount:=ReadWord(MetaPos); Inc(MetaPos,2);
-   If MetaCount>MaxDebugEntries-DebugCount Then Fail(72,'Trop d''entrees debug TPU');
+   If MetaCount>MaxDebugEntries-DebugCount Then Fail(72,
+     'Trop d''entrees debug TPU');
    DebugSymbolPresent:=False; LoadCompiledUnitLastFile:='';
    For K:=1 To MetaCount Do Begin
     DictBounds(MetaPos,10); W:=B^[MetaPos]; Inc(MetaPos);
     If W>3 Then Fail(72,'Kind debug TPU invalide');
     If W<>0 Then DebugSymbolPresent:=True;
     A:=ReadWord(MetaPos); Inc(MetaPos,2);
-    If (W In [0,1]) And (A>=H.CodeSize) Then Fail(72,'Adresse code debug TPU invalide');
-    If (W=2) And (Longint(A)+ReadWord(MetaPos+4)>Longint(H.ConstSize)+H.DataSize) Then Fail(72,'Adresse data debug TPU invalide');
+    If (W In [0,1]) And (A>=H.CodeSize) Then Fail(72,
+      'Adresse code debug TPU invalide');
+    If (W=2) And
+      (Longint(A)+ReadWord(MetaPos+4)>Longint(H.ConstSize)+H.DataSize) Then
+        Fail(72,'Adresse data debug TPU invalide');
     Inc(DebugCount); DebugEntries[DebugCount].U:=U;
     With DebugEntries[DebugCount] Do Begin
      Kind:=W;
      If W In [0,1] Then Address:=GlobalOffset(A,DebugEntries[DebugCount].U,True)
-     Else If W=2 Then Address:=GlobalOffset(A,DebugEntries[DebugCount].U,False) Else Address:=A;
-     Line:=ReadWord(MetaPos); Column:=ReadWord(MetaPos+2); Size:=ReadWord(MetaPos+4); Inc(MetaPos,6);
-     DictBounds(MetaPos,1); DictBounds(MetaPos,1+B^[MetaPos]); FileName:=ReadString(MetaPos); Inc(MetaPos,1+Length(FileName));
-     If FileName='' Then FileName:=LoadCompiledUnitLastFile Else LoadCompiledUnitLastFile:=FileName;
-     DictBounds(MetaPos,1); DictBounds(MetaPos,1+B^[MetaPos]); Name:=ReadString(MetaPos); Inc(MetaPos,1+Length(Name));
+     Else If W=2 Then Address:=GlobalOffset(A,DebugEntries[DebugCount].U,
+       False) Else Address:=A;
+     Line:=ReadWord(MetaPos); Column:=ReadWord(MetaPos+2);
+       Size:=ReadWord(MetaPos+4); Inc(MetaPos,6);
+     DictBounds(MetaPos,1); DictBounds(MetaPos,1+B^[MetaPos]);
+       FileName:=ReadString(MetaPos); Inc(MetaPos,1+Length(FileName));
+     If FileName='' Then FileName:=LoadCompiledUnitLastFile Else
+       LoadCompiledUnitLastFile:=FileName;
+     DictBounds(MetaPos,1); DictBounds(MetaPos,1+B^[MetaPos]);
+       Name:=ReadString(MetaPos); Inc(MetaPos,1+Length(Name));
     End;
    End;
-   If DebugSymbolPresent Then DebugCaptured:=DebugCaptured+[U]; If MetaCount<>0 Then DebugRequested:=True;
+   If DebugSymbolPresent Then DebugCaptured:=DebugCaptured+[U];
+     If MetaCount<>0 Then DebugRequested:=True;
    If ((H.Reserved[2]=7) And (H.CodeLength And Not 7<>0)) Or
       (H.CodeLength And Not 31<>0) Then Fail(72,'Features TPU invalides');
    UnitFeatures[U]:=H.CodeLength;
   End;
   Units[U].InterfaceReady:=True;
-  If IsLocal And (InterfaceChecksumMode(U,H.Reserved[2]>=2,H.Reserved[2]>=3,H.Reserved[2]>=6)<>Units[U].Checksum) Then Begin
+  If IsLocal And (InterfaceChecksumMode(U,H.Reserved[2]>=2,H.Reserved[2]>=3,
+    H.Reserved[2]>=6)<>Units[U].Checksum) Then Begin
     { L'ordre des buckets differe de l'ordre des declarations: le checksum
       est verifie par la representation canonique triee ci-dessous. }
   Fail(72,'Checksum d''interface TPU invalide');
@@ -9444,7 +14097,8 @@ Begin
  While X<H.Sources Do Begin
   If RefCount>MaxUnits+1 Then Fail(72,'Trop de references TPU');
   Bounds(X,3); Name:=Upper(ReadString(X+2));
-  If (Length(Name)=0) Or (Length(Name)>63) Or (X+3+Length(Name)>H.Sources) Then      Fail(
+  If (Length(Name)=0) Or (Length(Name)>63) Or (X+3+Length(Name)>H.Sources) Then
+    Fail(
   72,'Liste de dependances TPU invalide');
   RefOffsets[RefCount]:=X-H.Units;
   RefChecks[RefCount]:=CheckForUnit(Name);
@@ -9470,7 +14124,8 @@ Begin
    If J=RefCount Then Fail(72,'Reference d''unite TPU invalide');
    V:=RefUnits[J]; A:=A+Units[U].CodeBase;
    If R And $F000=$8000 Then Begin
-    If (V=0) And (Map=$FFFF) And (H.Reserved[2]>=6) Then Target:=RuntimeDataAddress(Target)
+    If (V=0) And (Map=$FFFF) And (H.Reserved[2]>=6) Then
+      Target:=RuntimeDataAddress(Target)
     Else Begin
      If (V=0) Or (Map<>0) Then Fail(72,'Fixup de donnees TPU invalide');
      Target:=GlobalOffset(Target,V,False);
@@ -9497,8 +14152,10 @@ Begin
   If MetaCount>MaxUnits Then Fail(72,'Trop de dependances natives TPU');
   For K:=1 To MetaCount Do Begin
    DictBounds(X,1); Name:=Upper(ReadString(X));
-   If (Length(Name)=0) Or (Length(Name)>63) Then Fail(72,'Nom de dependance native TPU invalide');
-   DictBounds(X,Length(Name)+3); Inc(X,Length(Name)+1); W:=ReadWord(X); Inc(X,2);
+   If (Length(Name)=0) Or (Length(Name)>63) Then Fail(72,
+     'Nom de dependance native TPU invalide');
+   DictBounds(X,Length(Name)+3); Inc(X,Length(Name)+1); W:=ReadWord(X); Inc(X,
+     2);
    RequireUnit(Name,V);
    If NativeBuffers[V]=Nil Then Fail(72,'Dependance native TPU non Borland');
    If W<>Units[V].Checksum Then Fail(70,Name);
@@ -9506,34 +14163,44 @@ Begin
    NativeNeeded:=True; ActivateNative(V);
   End;
   DictBounds(X,2); MetaCount:=ReadWord(X); Inc(X,2);
-  If MetaCount>MaxNativeRefs-NativeRefCount Then Fail(72,'Trop de references natives TPU');
+  If MetaCount>MaxNativeRefs-NativeRefCount Then Fail(72,
+    'Trop de references natives TPU');
   For K:=1 To MetaCount Do Begin
    DictBounds(X,3); A:=ReadWord(X); Inc(X,2); Name:=Upper(ReadString(X));
-   If (Length(Name)=0) Or (Length(Name)>63) Then Fail(72,'Nom de cible native TPU invalide');
+   If (Length(Name)=0) Or (Length(Name)>63) Then Fail(72,
+     'Nom de cible native TPU invalide');
    DictBounds(X,Length(Name)+9); Inc(X,Length(Name)+1);
-   W:=ReadWord(X); R:=ReadWord(X+2); Map:=ReadWord(X+4); Target:=ReadWord(X+6); Inc(X,8);
-   If (Longint(A)+2>H.CodeSize) Or Not (R In [1,2,3]) Then Fail(72,'Reference native TPU invalide');
+   W:=ReadWord(X); R:=ReadWord(X+2); Map:=ReadWord(X+4); Target:=ReadWord(X+6);
+     Inc(X,8);
+   If (Longint(A)+2>H.CodeSize) Or Not (R In [1,2,3]) Then Fail(72,
+     'Reference native TPU invalide');
    RequireUnit(Name,V);
    If (NativeBuffers[V]=Nil) Or Not (V In Units[U].NativeDependencies) Then
     Fail(72,'Cible native TPU non declaree');
    If W<>Units[V].Checksum Then Fail(70,Name);
-   Inc(NativeRefCount); NativeRefs[NativeRefCount].Position:=Units[U].CodeBase+A;
+   Inc(NativeRefCount);
+     NativeRefs[NativeRefCount].Position:=Units[U].CodeBase+A;
    NativeRefs[NativeRefCount].U:=V; NativeRefs[NativeRefCount].Kind:=R;
-   NativeRefs[NativeRefCount].Map:=Map; NativeRefs[NativeRefCount].Target:=Target;
+   NativeRefs[NativeRefCount].Map:=Map;
+     NativeRefs[NativeRefCount].Target:=Target;
    PatchWord(Units[U].CodeBase+A,0);
   End;
   DictBounds(X,2); MetaCount:=ReadWord(X); Inc(X,2);
-  If MetaCount>MaxNativeRefs-RelocationCount Then Fail(72,'Trop de relocalisations natives TPU');
+  If MetaCount>MaxNativeRefs-RelocationCount Then Fail(72,
+    'Trop de relocalisations natives TPU');
   DictBounds(X,Longint(MetaCount)*4);
   For K:=1 To MetaCount Do Begin
    A:=ReadWord(X); W:=ReadWord(X+2); Inc(X,4);
-   If (Longint(A)+2>H.CodeSize) Or (W>3) Then Fail(72,'Relocalisation native TPU invalide');
-   AddSegmentRelocation(Units[U].CodeBase+A,W); PatchWord(Units[U].CodeBase+A,0);
+   If (Longint(A)+2>H.CodeSize) Or (W>3) Then Fail(72,
+     'Relocalisation native TPU invalide');
+   AddSegmentRelocation(Units[U].CodeBase+A,W); PatchWord(Units[U].CodeBase+A,
+     0);
   End;
  End;
  If IsLocal And (H.Reserved[2]>=5) Then Begin
   X:=H.Reserved[7]; DictBounds(X,2); MetaCount:=ReadWord(X); Inc(X,2);
-  If MetaCount>MaxSymbols-ObjectCallCount Then Fail(72,'Trop de references OBJ TPU');
+  If MetaCount>MaxSymbols-ObjectCallCount Then Fail(72,
+    'Trop de references OBJ TPU');
   For K:=1 To MetaCount Do Begin
    DictBounds(X,3); A:=ReadWord(X); Inc(X,2); Name:=ReadString(X);
    If (Length(Name)=0) Or (Length(Name)>63) Or (Longint(A)+4>H.CodeSize) Then
@@ -9542,19 +14209,22 @@ Begin
    Inc(ObjectCallCount); ObjectCalls[ObjectCallCount].Name:=Upper(Name);
    ObjectCalls[ObjectCallCount].Position:=Units[U].CodeBase+A;
   End;
-  X:=Align16(H.EndTrace)+Align16(H.CodeSize)+Align16(H.ConstSize)+Align16(H.CodeFixupSize);
+  X:=Align16(H.EndTrace)+Align16(H.CodeSize)+Align16(H.ConstSize)+
+    Align16(H.CodeFixupSize);
   Bounds(X,2); MetaCount:=ReadWord(X); Inc(X,2);
   If MetaCount>MaxObjects-ObjectCount Then Fail(72,'Trop de fichiers OBJ TPU');
   For K:=1 To MetaCount Do Begin
    Bounds(X,5); Value:=ReadWord(X)+Longint(ReadWord(X+2))*65536; Inc(X,4);
-   If (Value<4) Or (Value>SizeOf(TBinaryBuffer)) Then Fail(72,'Taille OBJ TPU invalide');
+   If (Value<4) Or (Value>SizeOf(TBinaryBuffer)) Then Fail(72,
+     'Taille OBJ TPU invalide');
    Name:=ReadString(X); Bounds(X,Length(Name)+1); Inc(X,Length(Name)+1);
    Bounds(X,Value); Inc(ObjectCount); ObjectFiles[ObjectCount].Owner:=U;
    ObjectFiles[ObjectCount].Path:=Name; ObjectFiles[ObjectCount].Length:=Value;
    New(ObjectFiles[ObjectCount].Bytes);
    Move(B^[X],ObjectFiles[ObjectCount].Bytes^,Value); Inc(X,Value);
   End;
-  If (Align16(X)<>Size) Or (UnitFileSize(H)<>Size) Then Fail(72,'Payload OBJ TPU incoherent');
+  If (Align16(X)<>Size) Or (UnitFileSize(H)<>Size) Then Fail(72,
+    'Payload OBJ TPU incoherent');
  End;
  Units[U].State:=2;
  If Units[U].HasInit Then Begin
@@ -9574,21 +14244,26 @@ Begin
 End;
 
 Function NativeWord(U: Byte; P: Longint): Word;Begin
- If (NativeBuffers[U]=Nil) Or (P<0) Or (P+2>UnitFileSize(NativeHeaders[U])) Then    Fail(
+ If (NativeBuffers[U]=Nil) Or (P<0) Or (P+2>UnitFileSize(NativeHeaders[U])) Then
+   Fail(
  72,'Reference native hors unite');
  NativeWord:=NativeBuffers[U]^[P]+Word(NativeBuffers[U]^[P+1])*256;
 End;
 
 Function DecodeNativeType(U: Byte; Offset: Word): Word;
-Var B: PBinaryBuffer; H: TUnitHeader; T,I,BaseId: Word; Typ,Width,Capacity,Modifier: Byte;
+Var B: PBinaryBuffer; H: TUnitHeader; T,I,BaseId: Word; Typ,Width,Capacity,
+  Modifier: Byte;
   L,R: Longint; Signed: Boolean; S: TShortString;
 Begin
  DecodeNativeType:=0;
- If NativeBuffers[U]=Nil Then Unsupported('type provenant d''une unite non native');
+ If NativeBuffers[U]=Nil Then
+   Unsupported('type provenant d''une unite non native');
  H:=NativeHeaders[U]; B:=NativeBuffers[U];
- If (Offset<TPUHeaderSize) Or (Longint(Offset)+6>H.ProcMap) Then Fail(72,'Descripteur Borland hors dictionnaire');
+ If (Offset<TPUHeaderSize) Or (Longint(Offset)+6>H.ProcMap) Then Fail(72,
+   'Descripteur Borland hors dictionnaire');
  For I:=8 To TypeCount Do
-  If (NativeTypeOwners[I]=U) And (NativeTypeOffsets[I]=Offset) Then Begin DecodeNativeType:=I; Exit End;
+  If (NativeTypeOwners[I]=U) And (NativeTypeOffsets[I]=Offset) Then Begin
+    DecodeNativeType:=I; Exit End;
  Typ:=B^[Offset]; Modifier:=B^[Offset+1]; T:=NativeWord(U,Offset+2);
  Signed:=(Modifier And 1)<>0; Capacity:=0;
  If Typ=ttString Then Begin
@@ -9597,29 +14272,38 @@ Begin
   Width:=0; Capacity:=T-1; L:=0; R:=Capacity; BaseId:=7;
  End Else If Typ In [ttInteger,ttBoolean,ttChar,ttEnum] Then Begin
   If Not (T In [1,2,4]) Then Fail(72,'Taille ordinale Borland invalide');
-  If (Typ<>ttInteger) And (T>2) Then Fail(72,'Taille ordinale Borland non entiere');
-  If Longint(Offset)+18>H.ProcMap Then Fail(72,'Bornes ordinales Borland tronquees');
+  If (Typ<>ttInteger) And (T>2) Then Fail(72,
+    'Taille ordinale Borland non entiere');
+  If Longint(Offset)+18>H.ProcMap Then Fail(72,
+    'Bornes ordinales Borland tronquees');
   Width:=T; Move(B^[Offset+6],L,4); Move(B^[Offset+10],R,4);
   If L>R Then Fail(72,'Bornes ordinales Borland inversees');
   If (T=1) And ((L<-128) Or (R>255)) Then Fail(72,'Bornes Borland hors octet');
-  If (T=2) And ((L<-32768) Or (R>65535)) Then Fail(72,'Bornes Borland hors mot');
+  If (T=2) And ((L<-32768) Or (R>65535)) Then Fail(72,
+    'Bornes Borland hors mot');
   Case Typ Of
    ttBoolean:Begin
-    If (T<>1) Or (L<0) Or (R>1) Then Fail(72,'Descripteur Boolean Borland invalide');
+    If (T<>1) Or (L<0) Or (R>1) Then Fail(72,
+      'Descripteur Boolean Borland invalide');
     If (L=0) And (R=1) Then Begin DecodeNativeType:=5; Exit End;
     BaseId:=5;
    End;
    ttChar:Begin
-  If (T<>1) Or (L<0) Or (R>255) Then Fail(72,'Descripteur Char Borland invalide');
+  If (T<>1) Or (L<0) Or (R>255) Then Fail(72,
+    'Descripteur Char Borland invalide');
   If (L=0) And (R=255) Then Begin DecodeNativeType:=6; Exit End;
   BaseId:=6;
    End;
    ttInteger:Begin
   BaseId:=1;
-  If (T=1) And (L=0) And (R=255) And Not Signed Then Begin DecodeNativeType:=2; Exit End;
-  If (T=1) And (L=-128) And (R=127) And Signed Then Begin DecodeNativeType:=4; Exit End;
-  If (T=2) And (L=-32768) And (R=32767) And Signed Then Begin DecodeNativeType:=1; Exit End;
-  If (T=2) And (L=0) And (R=65535) And Not Signed Then Begin DecodeNativeType:=3; Exit End;
+  If (T=1) And (L=0) And (R=255) And Not Signed Then Begin DecodeNativeType:=2;
+    Exit End;
+  If (T=1) And (L=-128) And (R=127) And Signed Then Begin DecodeNativeType:=4;
+    Exit End;
+  If (T=2) And (L=-32768) And (R=32767) And Signed Then Begin
+    DecodeNativeType:=1; Exit End;
+  If (T=2) And (L=0) And (R=65535) And Not Signed Then Begin
+    DecodeNativeType:=3; Exit End;
    End;
    ttEnum:BaseId:=0;
   End;
@@ -9627,7 +14311,8 @@ Begin
  I:=NewType(Typ,Width,Capacity,Signed,L,R,BaseId);
  NativeTypeOwners[I]:=U; NativeTypeOffsets[I]:=Offset;
  If Typ=ttEnum Then Begin
-  Types[I].IdentityUnit:=Units[U].Name; Str(Offset,S); Types[I].IdentityName:='$TPU'+S;
+  Types[I].IdentityUnit:=Units[U].Name; Str(Offset,S);
+    Types[I].IdentityName:='$TPU'+S;
  End;
  DecodeNativeType:=I;
 End;
@@ -9641,7 +14326,8 @@ Var
  V: Byte;
 Begin
  If NativeActive[U] Then Exit;
- If NativeBuffers[U]=Nil Then Unsupported('dependance native non Borland: '+Units[U].Name)
+ If NativeBuffers[U]=Nil Then
+   Unsupported('dependance native non Borland: '+Units[U].Name)
  ;
  H:=NativeHeaders[U];
  If Units[U].Name='OVERLAY' Then Unsupported('gestion des overlays Borland');
@@ -9712,9 +14398,11 @@ Begin
 End;
 
 Procedure NativeDataRelocation(P: Word; Kind: Byte);Begin
- If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
+ If RelocationCount=MaxNativeRefs Then
+   Unsupported('trop de relocalisations MZ');
  Inc(RelocationCount); Relocations[RelocationCount].Offs:=P;
- Relocations[RelocationCount].Segm:=$FFFF; RelocationKinds[RelocationCount]:=Kind;
+ Relocations[RelocationCount].Segm:=$FFFF;
+   RelocationKinds[RelocationCount]:=Kind;
 End;
 
 Function NativeMapLength(U, Category: Byte; Map: Word): Word;
@@ -9780,7 +14468,8 @@ Begin
  H:=NativeHeaders[U]; Raw:=0; FixRaw:=0;
  If InConst Then Begin
   M:=H.ConstMap; EndMap:=H.DataMap;
-  Q:=Align16(H.EndTrace)+Align16(H.CodeSize)+Align16(H.ConstSize)+Align16(H.CodeFixupSize)
+  Q:=Align16(H.EndTrace)+Align16(H.CodeSize)+Align16(H.ConstSize)+
+    Align16(H.CodeFixupSize)
   ;
  End Else
  Begin
@@ -9790,7 +14479,8 @@ Begin
  While M<EndMap Do Begin
   L:=NativeWord(U,M+2); FS:=NativeWord(U,M+4);
   If FS Mod 8<>0 Then Fail(72,'Taille fixups natifs invalide');
-  If InConst Then Source:=NativeConstBases[U]+Raw Else Source:=NativeCodeBases[U]+Raw;
+  If InConst Then Source:=NativeConstBases[U]+Raw Else
+    Source:=NativeCodeBases[U]+Raw;
   For N:=1 To FS Div 8 Do Begin
    Posn:=FixRaw+(N-1)*8;
    R:=NativeWord(U,Q+Posn); TM:=NativeWord(U,Q+Posn+2);
@@ -9801,14 +14491,17 @@ Begin
    If R And $8000<>0 Then Begin
     SG:=1;
     If R And $4000<>0 Then Begin
-     If (R And $1000<>0) And (T>=NativeMapLength(V,2,TM)) Then Fail(72,'Cible constante hors carte native');
+     If (R And $1000<>0) And (T>=NativeMapLength(V,2,TM)) Then Fail(72,
+       'Cible constante hors carte native');
      W:=NativeMapAddress(V,2,TM)+T;
     End Else Begin
-     If (R And $1000<>0) And (T>=NativeMapLength(V,1,TM)) Then Fail(72,'Cible donnee hors carte native');
+     If (R And $1000<>0) And (T>=NativeMapLength(V,1,TM)) Then Fail(72,
+       'Cible donnee hors carte native');
      W:=NativeMapAddress(V,1,TM)+T;
     End;
     End Else If R And $4000<>0 Then Begin
-    If (R And $1000<>0) And (T>NativeMapLength(V,0,TM)) Then Fail(72,'Cible code hors carte native');
+    If (R And $1000<>0) And (T>NativeMapLength(V,0,TM)) Then Fail(72,
+      'Cible code hors carte native');
     W:=NativeMapAddress(V,0,TM)+T;
     End Else W:=NativeProcAddress(V,TM)+T;
     At:=At+Source;
@@ -9819,7 +14512,8 @@ Begin
    End;
    If R And $2000<>0 Then Begin
     WriteAt(At,0,InConst);
-    If InConst Then NativeDataRelocation(At,SG) Else AddSegmentRelocation(At,SG);
+    If InConst Then NativeDataRelocation(At,SG) Else AddSegmentRelocation(At,
+      SG);
    End;
   End;
   Inc(Raw,L); Inc(FixRaw,FS); Inc(M,8);
@@ -9841,7 +14535,8 @@ Begin
   If Longint(NativeDataSize)+H.ConstSize>MaxImage Then Fail(49,
   'Constantes natives trop grandes');
   ConstStart:=CodeStart+Align16(H.CodeSize);
-  If H.ConstSize<>0 Then Move(NativeBuffers[U]^[ConstStart],NativeData[NativeDataSize],
+  If H.ConstSize<>0 Then Move(NativeBuffers[U]^[ConstStart],
+    NativeData[NativeDataSize],
   H.ConstSize);
   Inc(NativeDataSize,H.ConstSize);
  End;
@@ -9860,9 +14555,11 @@ Begin
   If NativeRefs[I].Kind=3 Then Value:=NativeProcAddress(U,NativeRefs[I].Map)+
   NativeRefs[I].Target
   Else Begin
-   If NativeRefs[I].Target>=NativeMapLength(U,NativeRefs[I].Kind,NativeRefs[I].Map) Then
+   If NativeRefs[I].Target>=NativeMapLength(U,NativeRefs[I].Kind,
+     NativeRefs[I].Map) Then
     Fail(72,'Reference native hors carte de donnees');
-   Value:=NativeMapAddress(U,NativeRefs[I].Kind,NativeRefs[I].Map)+NativeRefs[I].Target;
+   Value:=NativeMapAddress(U,NativeRefs[I].Kind,
+     NativeRefs[I].Map)+NativeRefs[I].Target;
   End;
   PatchWord(NativeRefs[I].Position,Value);
  End;
@@ -9877,14 +14574,16 @@ Begin
  End;
  For I:=1 To NativeInitCount Do Begin
   U:=NativeInitOrder[I];
-  If U<>Sys Then      If NativeWord(U,NativeHeaders[U].ProcMap+4)<>$FFFF Then FarCallTo(
+  If U<>Sys Then      If NativeWord(U,
+    NativeHeaders[U].ProcMap+4)<>$FFFF Then FarCallTo(
   NativeProcAddress(U,0));
  End;
  Emit($5D); Emit($07); Emit($1F); JumpTo(MainEntry);
  If (Sys<>0) And NativeActive[Sys] Then Begin
     { _HaltTurbo restitue les vecteurs installees par _InitTurbo. }
   Offset:=RuntimeHalt;
-  Image[Offset]:=$E8; PatchWord(Offset+1,Word(Longint(RuntimeStandard[56])-Offset-3)); Inc(Offset,3);
+  Image[Offset]:=$E8; PatchWord(Offset+1,
+    Word(Longint(RuntimeStandard[56])-Offset-3)); Inc(Offset,3);
   Image[Offset]:=$BA; PatchWord(Offset+1,0); AddSegmentRelocation(Offset+1,1);
   Image[Offset+3]:=$8E; Image[Offset+4]:=$DA; Image[Offset+5]:=$9A;
   PatchWord(Offset+6,NativeProcAddress(Sys,24)); PatchWord(Offset+8,0);
@@ -9909,7 +14608,8 @@ Begin
   NativeHeaders[U].CodeMap-NativeHeaders[U].ProcMap>=8) And
   (NativeWord(U,NativeHeaders[U].ProcMap+4)<>$FFFF) Then Begin
           If CurrentUnit<>0 Then
-           Units[CurrentUnit].NativeDependencies:=Units[CurrentUnit].NativeDependencies+[U];
+           Units[CurrentUnit].NativeDependencies:=
+             Units[CurrentUnit].NativeDependencies+[U];
    NativeNeeded:=True; ActivateNative(U);
   End;
  End;
@@ -9922,12 +14622,15 @@ End;
 Procedure EmitTextRuntime;
 Var P,Q,R,S,Done,LoopStart,ErrorClosed,ErrorMode: Word;
 Begin
- RuntimeStandard[54]:=CodeSize; { buffer console initialise a la premiere utilisation }
+ RuntimeStandard[54]:=CodeSize;
+   { buffer console initialise a la premiere utilisation }
  Emit($26); Emit2($83,$7D); Emit(100); Emit(0); Emit2($74,1); Emit($C3);
- Emit($50); Emit2($89,$F8); Emit($05); EmitWord(128); Emit($26); Emit2($89,$45); Emit(96);
+ Emit($50); Emit2($89,$F8); Emit($05); EmitWord(128); Emit($26); Emit2($89,$45);
+   Emit(96);
  Emit2($8C,$C0); Emit($26); Emit2($89,$45); Emit(98);
  Emit($26); Emit2($C7,$45); Emit(100); EmitWord(1); Emit($58); Emit($C3);
- RuntimeStandard[49]:=CodeSize; { selection du Text de sortie DX:AX, nil=console }
+ RuntimeStandard[49]:=CodeSize; { selection du Text de sortie DX:AX,
+   nil=console }
  Emit2($87,$06); DataAddress(OutputFilePointer);
  Emit2($87,$16); DataAddress(OutputFilePointer+2); Emit($C3);
 
@@ -9938,10 +14641,10 @@ Begin
  Emit($26); Emit2($C7,$45); Emit(106); EmitWord(0); Emit($C3);
 
  RuntimeStandard[51]:=CodeSize; { SetTextBuf ES:DI, DX:AX buffer, CX taille }
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
- Emit2($09,$C9); Emit2($75,3); Q:=Jump;
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); P:=JumpIf($74);
+ Emit2($09,$C9); Q:=JumpIf($75);
  Emit($26); Emit2($89,$45); Emit(96); Emit($26); Emit2($89,$55); Emit(98);
- Emit($26); Emit2($89,$4D); Emit(100); CallTo(RuntimeStandard[53]);
+ Emit($26); Emit2($89,$4D); Emit(100); CallTo(RtlTarget(RuntimeStandard[53]));
  Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit($C3);
  PatchJump(P,CodeSize); LoadImmediate(102); P:=Jump;
  PatchJump(Q,CodeSize); LoadImmediate(106); PatchJump(P,CodeSize);
@@ -9949,84 +14652,103 @@ Begin
 
  RuntimeStandard[52]:=CodeSize; { Flush buffer ES:DI, rend AX=erreur }
  Emit($1E); Emit($53); Emit($51); Emit($52);
- Emit($26); Emit2($83,$7D); Emit(8); Emit(1); Emit2($74,3); P:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($74,3); Q:=Jump;
- Emit($26); Emit2($8B,$4D); Emit(106); Emit2($09,$C9); Emit2($75,3); R:=Jump;
- Emit($26); Emit2($8B,$55); Emit(96); Emit($26); Emit2($8B,$45); Emit(98); Emit2($8E,$D8);
+ Emit($26); Emit2($83,$7D); Emit(8); Emit(1); P:=JumpIf($74);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Q:=JumpIf($74);
+ Emit($26); Emit2($8B,$4D); Emit(106); Emit2($09,$C9); R:=JumpIf($75);
+ Emit($26); Emit2($8B,$55); Emit(96); Emit($26); Emit2($8B,$45); Emit(98);
+   Emit2($8E,$D8);
  { Unite Crt: la sortie standard (handle 1) passe par CrtWrite(Seg,Ofs,Count). }
- Emit($1E); EmitLoadDS;                                     { push ds(tampon); ds=donnees }
- Emit2($83,$3E); DataAddress(CrtHook); Emit(0); Emit2($75,3); ErrorClosed:=Jump;
- Emit($26); Emit2($83,$3D); Emit(1); Emit2($74,3); ErrorMode:=Jump;
+ Emit($1E); EmitLoadDS;                                     { push ds(tampon);
+   ds=donnees }
+ Emit2($83,$3E); DataAddress(CrtHook); Emit(0); ErrorClosed:=JumpIf($75);
+ Emit($26); Emit2($83,$3D); Emit(1); ErrorMode:=JumpIf($74);
  Emit($06); Emit($57); Emit($51);                            { push es,di,cx }
- Emit2($89,$E3); Emit($36); Emit2($FF,$77); Emit(6);         { push ss:[bx+6] = segment du tampon }
- Emit($52); Emit($51); Emit($53); Emit2($FF,$16); DataAddress(CrtHook); { push dx,cx,lien; call [hook] }
+ Emit2($89,$E3); Emit($36); Emit2($FF,$77); Emit(6);
+   { push ss:[bx+6] = segment du tampon }
+ Emit($52); Emit($51); If MultiSeg Then Emit2($FF,$1E) Else Emit2($FF,$16);
+   DataAddress(CrtHook); { push dx,cx;
+     call [hook] (ABI TP7 : pas de lien statique) ; FAR en multi-segments }
  Emit($59); Emit($5F); Emit($07); Emit($1F);                 { pop cx,di,es,ds }
  Emit2($89,$C8); Emit($F8); LoopStart:=Jump;                 { ax=cx; clc }
  PatchJump(ErrorClosed,CodeSize); PatchJump(ErrorMode,CodeSize); Emit($1F);
  Emit($26); Emit2($8B,$1D); Emit2($B4,$40); Emit2($CD,$21);
- PatchJump(LoopStart,CodeSize); Emit2($73,3); S:=Jump;
- Emit2($39,$C8); Emit2($74,3); Done:=Jump;
+ PatchJump(LoopStart,CodeSize); S:=JumpIf($73);
+ Emit2($39,$C8); Done:=JumpIf($74);
  Emit($26); Emit2($C7,$45); Emit(106); EmitWord(0);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); Emit2($31,$C0); P:=Jump;
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); Emit2($31,
+   $C0); P:=Jump;
  PatchJump(Done,CodeSize); LoadImmediate(101);
  PatchJump(P,CodeSize); PatchJump(S,CodeSize);
  Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($C3);
 
  RuntimeStandard[50]:=CodeSize; { RuntimeChar, buffer du Text actif }
- Emit($1E); EmitLoadDS; Emit2($83,$3E); DataAddress(InputError); Emit(0); Emit($1F); Emit2($74,1); Emit($C3);
+ Emit($1E); EmitLoadDS; Emit2($83,$3E); DataAddress(InputError); Emit(0);
+   Emit($1F); Emit2($74,1); Emit($C3);
  Emit($55); Emit2($89,$E5); Emit($50); Emit($06); Emit($57); Emit($1E);
  Emit($53); Emit($51); Emit($52); Emit($56);
  EmitLoadDS; Emit2($C4,$3E); DataAddress(OutputFilePointer);
- Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); Emit2($75,3); P:=Jump;
- CallTo(RuntimeStandard[54]);
- Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); ErrorClosed:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($74,3); ErrorMode:=Jump;
+ Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); P:=JumpIf($75);
+ CallTo(RtlTarget(RuntimeStandard[54]));
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(0); ErrorClosed:=JumpIf($75);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(2); ErrorMode:=JumpIf($74);
  Emit($26); Emit2($8B,$5D); Emit(106); Emit($26); Emit2($3B,$5D); Emit(100);
- Emit2($73,3); Q:=Jump; CallTo(RuntimeStandard[52]); Emit2($09,$C0); Emit2($74,3); R:=Jump;
+ Q:=JumpIf($73); CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0);
+   R:=JumpIf($74);
  PatchJump(Q,CodeSize); Emit($26); Emit2($8B,$75); Emit(106);
  Emit($26); Emit2($8B,$5D); Emit(96); Emit($26); Emit2($8B,$55); Emit(98);
  Emit($06); Emit($57); Emit2($8E,$C2); Emit2($89,$DF); Emit2($01,$F7);
  Emit2($8B,$46); Emit($FE); Emit($26); Emit2($88,$05); Emit($5F); Emit($07);
  Emit($26); Emit2($FF,$45); Emit(106);
  Emit($26); Emit2($8B,$5D); Emit(106); Emit($26); Emit2($3B,$5D); Emit(100);
- Emit2($73,3); Q:=Jump; CallTo(RuntimeStandard[52]); S:=Jump;
+ Q:=JumpIf($73); CallTo(RtlTarget(RuntimeStandard[52])); S:=Jump;
  PatchJump(Q,CodeSize); Emit2($31,$C0); Q:=Jump;
  PatchJump(ErrorClosed,CodeSize); LoadImmediate(103); ErrorClosed:=Jump;
  PatchJump(ErrorMode,CodeSize); LoadImmediate(105);
- PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize); PatchJump(ErrorClosed,CodeSize);
- Emit2($09,$C0); Emit2($75,3); Q:=Jump; Emit($A3); DataAddress(InputError);
+ PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize);
+   PatchJump(ErrorClosed,CodeSize);
+ Emit2($09,$C0); Q:=JumpIf($75); Emit($A3); DataAddress(InputError);
  PatchJump(Q,CodeSize); Done:=Jump;
- PatchJump(P,CodeSize); Emit2($8B,$46); Emit($FE); CallTo(RuntimeRawChar);
- PatchJump(Done,CodeSize); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($5F); Emit($07); Emit($58); Emit($5D); Emit($C3);
+ PatchJump(P,CodeSize); Emit2($8B,$46); Emit($FE);
+   CallTo(RtlTarget(RuntimeRawChar));
+ PatchJump(Done,CodeSize); Emit($5E); Emit($5A); Emit($59); Emit($5B);
+   Emit($1F); Emit($5F); Emit($07); Emit($58); Emit($5D); Emit($C3);
 
  RuntimeStandard[48]:=CodeSize; { prochain octet du Text actif, 26=EOF }
  Emit($06); Emit($57); Emit($1E); Emit($53); Emit($51); Emit($52); Emit($56);
  EmitLoadDS; Emit2($C4,$3E); DataAddress(InputFilePointer);
- Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); Emit2($75,3); P:=Jump;
- CallTo(RuntimeStandard[54]);
+ Emit2($8C,$C2); Emit2($89,$FB); Emit2($09,$D3); P:=JumpIf($75);
+ CallTo(RtlTarget(RuntimeStandard[54]));
  Emit($26); Emit2($8B,$5D); Emit(102); Emit($26); Emit2($3B,$5D); Emit(104);
- Emit2($73,3); Q:=Jump;
+ Q:=JumpIf($73);
  Emit($26); Emit2($8B,$4D); Emit(100); Emit($26); Emit2($8B,$55); Emit(96);
  Emit($26); Emit2($8B,$45); Emit(98); Emit2($8E,$D8); Emit($26); Emit2($8B,$1D);
- Emit2($B4,$3F); Emit2($CD,$21); Emit2($73,3); R:=Jump;
- Emit2($09,$C0); Emit2($75,3); S:=Jump;
- Emit($26); Emit2($89,$45); Emit(104); Emit($26); Emit2($C7,$45); Emit(102); EmitWord(0);
- PatchJump(Q,CodeSize); Emit($26); Emit2($8B,$75); Emit(96); Emit($26); Emit2($03,$75); Emit(102);
+ Emit2($B4,$3F); Emit2($CD,$21); R:=JumpIf($73);
+ Emit2($09,$C0); S:=JumpIf($75);
+ Emit($26); Emit2($89,$45); Emit(104); Emit($26); Emit2($C7,$45); Emit(102);
+   EmitWord(0);
+ PatchJump(Q,CodeSize); Emit($26); Emit2($8B,$75); Emit(96); Emit($26);
+   Emit2($03,$75); Emit(102);
  Emit($26); Emit2($8B,$45); Emit(98); Emit2($8E,$D8); Emit($AC); Emit2($30,$E4);
  Emit($26); Emit2($FF,$45); Emit(102); Done:=Jump;
- PatchJump(P,CodeSize); Emit2($8B,$1E); DataAddress(InputHandle); Emit($B9); EmitWord(1);
- Emit($BA); DataAddress(InputByte); Emit2($B4,$3F); Emit2($CD,$21); Emit2($73,3); P:=Jump;
- Emit2($09,$C0); Emit2($75,3); Q:=Jump;
+ PatchJump(P,CodeSize); Emit2($8B,$1E); DataAddress(InputHandle); Emit($B9);
+   EmitWord(1);
+ Emit($BA); DataAddress(InputByte); Emit2($B4,$3F); Emit2($CD,$21);
+   P:=JumpIf($73);
+ Emit2($09,$C0); Q:=JumpIf($75);
  Emit($A0); DataAddress(InputByte); Emit2($30,$E4); LoopStart:=Jump;
- PatchJump(R,CodeSize); PatchJump(P,CodeSize); EmitLoadDS; Emit($A3); DataAddress(InputError);
+ PatchJump(R,CodeSize); PatchJump(P,CodeSize); EmitLoadDS; Emit($A3);
+   DataAddress(InputError);
  PatchJump(S,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(26);
  PatchJump(Done,CodeSize); PatchJump(LoopStart,CodeSize);
- Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($5F); Emit($07); Emit($C3);
+ Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($1F); Emit($5F); Emit($07);
+   Emit($C3);
  RuntimeStandard[56]:=CodeSize; { finaliser le Text Output local }
  Emit($50); Emit($06); Emit($57); Emit($1E); EmitLoadDS; Emit($1E); Emit($07);
- Emit($BF); DataAddress(StandardOutputAddress); CallTo(RuntimeStandard[52]);
+ Emit($BF); DataAddress(StandardOutputAddress);
+   CallTo(RtlTarget(RuntimeStandard[52]));
  Emit($1F); Emit($5F); Emit($07); Emit($58); Emit($C3);
- RuntimeStandard[55]:=CodeSize; CallTo(RuntimeStandard[56]); Emit2($B4,$4C); Emit2($CD,$21);
+ RuntimeStandard[55]:=CodeSize; CallTo(RtlTarget(RuntimeStandard[56]));
+   Emit2($B4,$4C); Emit2($CD,$21);
 End;
 
 Procedure EmitFileRuntime;
@@ -10045,34 +14767,45 @@ Begin Emit($06); Emit($1F); Emit2($89,$FA); Emit2($83,$C2); Emit(16) End;
 Procedure OpenResult(Mode: Word);
 Begin
  Emit2($89,$05); Emit2($C7,$45); Emit(4); EmitWord(Mode);
- Emit2($C7,$45); Emit(6); EmitWord($FFFF); CallTo(RuntimeStandard[53]); Emit2($31,$C0); FinishIO;
+ Emit2($C7,$45); Emit(6); EmitWord($FFFF);
+   CallTo(RtlTarget(RuntimeStandard[53])); Emit2($31,$C0); FinishIO;
 End;
 Begin
  { Layout local File/Text: handle, record size, mode, lookahead, text flag,
    reserved, signature, reserved, ASCIIZ name[80]. Pas d'ABI FileRec Borland. }
- RuntimeStandard[34]:=CodeSize; { Assign: DS:SI nom, ES:DI descripteur, BX recordsize, AX textflag }
+ RuntimeStandard[34]:=CodeSize; { Assign: DS:SI nom, ES:DI descripteur,
+   BX recordsize, AX textflag }
  Emit($26); Emit2($C7,$05); EmitWord($FFFF);
- Emit($26); Emit2($89,$5D); Emit(2); Emit($26); Emit2($C7,$45); Emit(4); EmitWord(0);
- Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit($26); Emit2($89,$45); Emit(8);
+ Emit($26); Emit2($89,$5D); Emit(2); Emit($26); Emit2($C7,$45); Emit(4);
+   EmitWord(0);
+ Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit($26); Emit2($89,$45);
+   Emit(8);
  Emit($26); Emit2($C7,$45); Emit(12); EmitWord($5046);
- Emit2($09,$C0); Emit2($75,3); P:=Jump;
+ Emit2($09,$C0); P:=JumpIf($75);
  Emit2($89,$F8); Emit($05); EmitWord(128);
- Emit($26); Emit2($89,$45); Emit(96); Emit2($8C,$C0); Emit($26); Emit2($89,$45); Emit(98);
- Emit($26); Emit2($C7,$45); Emit(100); EmitWord(128); CallTo(RuntimeStandard[53]);
+ Emit($26); Emit2($89,$45); Emit(96); Emit2($8C,$C0); Emit($26); Emit2($89,$45);
+   Emit(98);
+ Emit($26); Emit2($C7,$45); Emit(100); EmitWord(128);
+   CallTo(RtlTarget(RuntimeStandard[53]));
  PatchJump(P,CodeSize);
- Emit2($31,$C9); Emit2($8A,$0C); Emit($46); Emit2($83,$F9); Emit(79); Emit2($76,3);
+ Emit2($31,$C9); Emit2($8A,$0C); Emit($46); Emit2($83,$F9); Emit(79); Emit2($76,
+   3);
  Emit($B9); EmitWord(79); Emit2($83,$C7); Emit(16); Emit2($F3,$A4);
  Emit($26); Emit2($C6,$05); Emit(0); Emit($C3);
 
 
  RuntimeStandard[35]:=CodeSize;
  FinishCount:=0; ErrorCount:=0;
- Emit($55); Emit2($89,$E5); Emit($1E); Emit($06); Emit($57); Emit($53); Emit($50);
- { Fichier non assigne: 102 pour Reset/Rewrite/Append/Erase, 103 sinon (comme TP) }
+ Emit($55); Emit2($89,$E5); Emit($1E); Emit($06); Emit($57); Emit($53);
+   Emit($50);
+ { Fichier non assigne: 102 pour Reset/Rewrite/Append/Erase,
+   103 sinon (comme TP) }
  Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,19);
- Emit($3D); EmitWord(3); FailIf($76,102); Emit($3D); EmitWord(5); FailIf($74,102);
+ Emit($3D); EmitWord(3); FailIf($76,102); Emit($3D); EmitWord(5); FailIf($74,
+   102);
  Inc(ErrorCount); ErrorAddresses[ErrorCount]:=Jump; ErrorCodes[ErrorCount]:=103;
- For I:=1 To 7 Do Begin Emit($3D); EmitWord(I); Emit2($75,3); Dispatch[I]:=Jump End;
+ For I:=1 To 7 Do Begin Emit($3D); EmitWord(I); Emit2($75,3);
+   Dispatch[I]:=Jump End;
  LoadImmediate(1); FinishIO;
 
  PatchJump(Dispatch[1],CodeSize); { Reset }
@@ -10083,7 +14816,8 @@ Begin
  Emit2($80,$7D); Emit(16); Emit(0); Emit2($75,5); Emit2($31,$C0); P:=Jump;
  Emit2($B4,$3D); Emit2($CD,$21); FailIf($72,0); PatchJump(P,CodeSize);
  Emit2($89,$05); Emit2($8B,$4E); Emit($F4); Emit($41); Emit2($89,$4D); Emit(4);
- Emit2($C7,$45); Emit(6); EmitWord($FFFF); CallTo(RuntimeStandard[53]); Emit2($31,$C0); FinishIO;
+ Emit2($C7,$45); Emit(6); EmitWord($FFFF);
+   CallTo(RtlTarget(RuntimeStandard[53])); Emit2($31,$C0); FinishIO;
 
  PatchJump(Dispatch[2],CodeSize); { Rewrite }
  Emit2($09,$DB); Emit2($74,4); Emit($26); Emit2($89,$5D); Emit(2); FileName;
@@ -10092,26 +14826,30 @@ Begin
  PatchJump(P,CodeSize); OpenResult(2);
 
  PatchJump(Dispatch[3],CodeSize); { Append }
- FileName; Emit2($80,$7D); Emit(16); Emit(0); Emit2($75,6); LoadImmediate(1); P:=Jump;
+ FileName; Emit2($80,$7D); Emit(16); Emit(0); Emit2($75,6); LoadImmediate(1);
+   P:=Jump;
  LoadImmediate($3D01); Emit2($CD,$21); FailIf($72,0); Emit2($89,$05);
- Emit2($89,$C3); Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202); Emit2($CD,$21);
- Emit2($73,3); Q:=Jump; Emit2($8B,$05); PatchJump(P,CodeSize); OpenResult(2);
- PatchJump(Q,CodeSize); Emit($50); Emit2($B4,$3E); Emit2($CD,$21); Emit($58); FinishIO;
+ Emit2($89,$C3); Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202);
+   Emit2($CD,$21);
+ Q:=JumpIf($73); Emit2($8B,$05); PatchJump(P,CodeSize); OpenResult(2);
+ PatchJump(Q,CodeSize); Emit($50); Emit2($B4,$3E); Emit2($CD,$21); Emit($58);
+   FinishIO;
 
  PatchJump(Dispatch[4],CodeSize); { Close }
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
- CallTo(RuntimeStandard[52]); Emit2($09,$C0); FailIf($75,0);
- Emit($26); Emit2($8B,$1D); Emit2($83,$FB); Emit(3); Emit2($73,3); P:=Jump;
+ CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); FailIf($75,0);
+ Emit($26); Emit2($8B,$1D); Emit2($83,$FB); Emit(3); P:=JumpIf($73);
  Emit2($B4,$3E); Emit2($CD,$21); FailIf($72,0); PatchJump(P,CodeSize);
  Emit($26); Emit2($C7,$45); Emit(4); EmitWord(0); Emit2($31,$C0); FinishIO;
 
  PatchJump(Dispatch[5],CodeSize); { Erase }
- FileName; Emit2($B4,$41); Emit2($CD,$21); FailIf($72,0); Emit2($31,$C0); FinishIO;
+ FileName; Emit2($B4,$41); Emit2($CD,$21); FailIf($72,0); Emit2($31,$C0);
+   FinishIO;
 
  PatchJump(Dispatch[6],CodeSize); { Flush }
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(2); FailIf($75,105);
- CallTo(RuntimeStandard[52]); Emit2($09,$C0); FailIf($75,0);
+ CallTo(RtlTarget(RuntimeStandard[52])); Emit2($09,$C0); FailIf($75,0);
  Emit2($B4,$0D); Emit2($CD,$21); Emit2($31,$C0); FinishIO;
 
  PatchJump(Dispatch[7],CodeSize); { Truncate }
@@ -10128,19 +14866,24 @@ Begin
  Emit2($8B,$4E); Emit($FC); Emit2($8E,$C1); Emit2($8B,$7E); Emit($FA);
  Emit2($89,$EC); Emit($5D); Emit($C3);
 
- RuntimeStandard[36]:=CodeSize; { BlockRead/Write: DS:DX buffer, ES:DI file, CX count, AX=0/1 }
+ RuntimeStandard[36]:=CodeSize; { BlockRead/Write: DS:DX buffer, ES:DI file,
+   CX count, AX=0/1 }
  FinishCount:=0; ErrorCount:=0;
  Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(12);
- Emit2($89,$46); Emit($FE); Emit2($89,$4E); Emit($FC); Emit2($89,$56); Emit($FA);
+ Emit2($89,$46); Emit($FE); Emit2($89,$4E); Emit($FC); Emit2($89,$56);
+   Emit($FA);
  Emit2($89,$7E); Emit($F6); Emit2($8C,$46); Emit($F4);
  Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit2($09,$C0); Emit2($75,13);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(2); FailIf($74,104); P:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(1); FailIf($74,105); PatchJump(P,CodeSize);
- Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106); Emit2($89,$5E); Emit($F8);
- Emit2($09,$C9); Emit2($75,3); Q:=Jump;
- Emit2($89,$C8); Emit2($F7,$E3); { Count*RecSize, poids faible seulement comme TP }
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(1); FailIf($74,105); PatchJump(P,
+   CodeSize);
+ Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106); Emit2($89,
+   $5E); Emit($F8);
+ Emit2($09,$C9); Q:=JumpIf($75);
+ Emit2($89,$C8); Emit2($F7,$E3); { Count*RecSize,
+   poids faible seulement comme TP }
  Emit2($89,$C1); Emit2($8B,$56); Emit($FA); Emit($26); Emit2($8B,$1D);
  Emit2($83,$7E); Emit($FE); Emit(0); Emit2($75,5); Emit2($B4,$3F); P:=Jump;
  Emit2($B4,$40); PatchJump(P,CodeSize); Emit2($CD,$21); FailIf($72,0);
@@ -10149,7 +14892,8 @@ Begin
  PatchJump(Q,CodeSize); Emit2($31,$C0); Emit2($31,$D2); FinishIO;
  For I:=1 To ErrorCount Do Begin
   PatchJump(ErrorAddresses[I],CodeSize);
-  If ErrorCodes[I]=$FFFF Then Begin LoadImmediate(100); Emit2($03,$46); Emit($FE) End
+  If ErrorCodes[I]=$FFFF Then Begin LoadImmediate(100); Emit2($03,$46);
+    Emit($FE) End
   Else If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]);
   Emit2($89,$C2); Emit2($31,$C0); FinishIO;
  End;
@@ -10162,36 +14906,47 @@ Begin
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57);
  Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
- Emit($26); Emit2($8B,$5D); Emit(2); Emit2($31,$C9); CallTo(RuntimeStandard[14]);
+ Emit($26); Emit2($8B,$5D); Emit(2); Emit2($31,$C9);
+   CallTo(RtlTarget(RuntimeStandard[14]));
  Emit2($89,$D1); Emit2($89,$C2); Emit($26); Emit2($8B,$1D);
  LoadImmediate($4200); Emit2($CD,$21); FailIf($72,0);
  Emit($26); Emit2($C7,$45); Emit(6); EmitWord($FFFF); Emit2($31,$C0); FinishIO;
  For I:=1 To ErrorCount Do Begin
-  PatchJump(ErrorAddresses[I],CodeSize); If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]); FinishIO;
+  PatchJump(ErrorAddresses[I],CodeSize);
+    If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]); FinishIO;
  End;
  For I:=1 To FinishCount Do PatchJump(Finish[I],CodeSize);
- Emit($A3); DataAddress(InputError); Emit($5F); Emit($07); Emit2($89,$EC); Emit($5D); Emit($C3);
+ Emit($A3); DataAddress(InputError); Emit($5F); Emit($07); Emit2($89,$EC);
+   Emit($5D); Emit($C3);
 
- RuntimeStandard[38]:=CodeSize; { FilePos/Size, resultat DX:AX, erreur CX; AX bit0: 0=position 1=taille, bit1: en octets }
+ RuntimeStandard[38]:=CodeSize; { FilePos/Size, resultat DX:AX, erreur CX;
+   AX bit0: 0=position 1=taille, bit1: en octets }
  FinishCount:=0; ErrorCount:=0;
  Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(24);
- Emit2($89,$46); Emit($FE); Emit2($89,$7E); Emit($E8); Emit2($8C,$46); Emit($EA);
+ Emit2($89,$46); Emit($FE); Emit2($89,$7E); Emit($E8); Emit2($8C,$46);
+   Emit($EA);
  Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); FailIf($75,103);
  Emit($26); Emit2($83,$7D); Emit(4); Emit(0); FailIf($74,103);
  Emit($26); Emit2($8B,$5D); Emit(2); Emit2($09,$DB); FailIf($74,106);
  Emit2($89,$5E); Emit($FC); Emit($26); Emit2($8B,$1D);
- Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4201); Emit2($CD,$21); FailIf($72,0);
- Emit2($F6,$46); Emit($FE); Emit(1); Emit2($75,3); P:=Jump;
+ Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4201); Emit2($CD,$21);
+   FailIf($72,0);
+ Emit2($F6,$46); Emit($FE); Emit(1); P:=JumpIf($75);
  Emit2($89,$46); Emit($F4); Emit2($89,$56); Emit($F2);
- Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202); Emit2($CD,$21); FailIf($72,0);
+ Emit2($31,$C9); Emit2($31,$D2); LoadImmediate($4202); Emit2($CD,$21);
+   FailIf($72,0);
  Emit2($89,$46); Emit($F0); Emit2($89,$56); Emit($EE);
- Emit2($8B,$4E); Emit($F2); Emit2($8B,$56); Emit($F4); LoadImmediate($4200); Emit2($CD,$21); FailIf($72,0);
+ Emit2($8B,$4E); Emit($F2); Emit2($8B,$56); Emit($F4); LoadImmediate($4200);
+   Emit2($CD,$21); FailIf($72,0);
  Emit2($8B,$46); Emit($F0); Emit2($8B,$56); Emit($EE);
- PatchJump(P,CodeSize); Emit2($F6,$46); Emit($FE); Emit(2); Emit2($75,8); { en octets: pas de division }
- Emit2($8B,$5E); Emit($FC); Emit2($31,$C9); CallTo(RuntimeStandard[15]);
+ PatchJump(P,CodeSize); Emit2($F6,$46); Emit($FE); Emit(2); Emit2($75,8);
+   { en octets: pas de division }
+ Emit2($8B,$5E); Emit($FC); Emit2($31,$C9);
+   CallTo(RtlTarget(RuntimeStandard[15]));
  Emit2($31,$C9); FinishIO;
  For I:=1 To ErrorCount Do Begin
-  PatchJump(ErrorAddresses[I],CodeSize); If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]);
+  PatchJump(ErrorAddresses[I],CodeSize);
+    If ErrorCodes[I]<>0 Then LoadImmediate(ErrorCodes[I]);
   Emit2($89,$C1); Emit2($31,$C0); Emit2($31,$D2); FinishIO;
  End;
  For I:=1 To FinishCount Do PatchJump(Finish[I],CodeSize);
@@ -10201,17 +14956,20 @@ Begin
  RuntimeStandard[40]:=CodeSize; { selection scoped du handle de sortie }
  Emit2($87,$06); DataAddress(OutputHandle); Emit($C3);
 
- RuntimeStandard[42]:=CodeSize; { Rename ES:DI ferme, nouveau shortstring DS:SI }
+ RuntimeStandard[42]:=CodeSize; { Rename ES:DI ferme,
+   nouveau shortstring DS:SI }
  NameBuffer:=AllocData(80);
  Emit($55); Emit2($89,$E5); Emit($06); Emit($57); Emit($1E); Emit($56);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); P:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($74,3); Q:=Jump;
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); P:=JumpIf($74);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Q:=JumpIf($74);
  EmitLoadES; Emit($BF); DataAddress(NameBuffer);
- Emit2($31,$C9); Emit($AC); Emit2($88,$C1); Emit2($83,$F9); Emit(79); Emit2($76,3); R:=Jump;
+ Emit2($31,$C9); Emit($AC); Emit2($88,$C1); Emit2($83,$F9); Emit(79);
+   R:=JumpIf($76);
  Emit2($F3,$A4); Emit2($31,$C0); Emit($AA);
  Emit2($8B,$56); Emit($FC); Emit2($83,$C2); Emit(16);
  Emit2($8B,$46); Emit($FE); Emit2($8E,$D8);
- Emit($BF); DataAddress(NameBuffer); Emit2($B4,$56); Emit2($CD,$21); Emit2($73,3); S:=Jump;
+ Emit($BF); DataAddress(NameBuffer); Emit2($B4,$56); Emit2($CD,$21);
+   S:=JumpIf($73);
  EmitLoadDS; Emit2($8B,$46); Emit($FE); Emit2($8E,$C0);
  Emit2($8B,$7E); Emit($FC); Emit2($83,$C7); Emit(16);
  Emit($BE); DataAddress(NameBuffer); Emit($B9); EmitWord(80); Emit2($F3,$A4);
@@ -10219,69 +14977,86 @@ Begin
  PatchJump(P,CodeSize); LoadImmediate(102); P:=Jump;
  PatchJump(Q,CodeSize); LoadImmediate(102); Q:=Jump;
  PatchJump(R,CodeSize); LoadImmediate(3);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(S,CodeSize); PatchJump(Done,CodeSize);
- EmitLoadDS; CallTo(RuntimeStandard[24]);
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(S,CodeSize);
+   PatchJump(Done,CodeSize);
+ EmitLoadDS; CallTo(RtlTarget(RuntimeStandard[24]));
  Emit($5E); Emit($1F); Emit($5F); Emit($07); Emit($5D); Emit($C3);
 
  RuntimeStandard[43]:=CodeSize; { DOS directory operation AH, DS:DX ASCIIZ }
- Emit2($CD,$21); Emit2($73,3); P:=Jump; Emit($C3);
- PatchJump(P,CodeSize); CallTo(RuntimeStandard[24]); Emit($C3);
+ Emit2($CD,$21); P:=JumpIf($73); Emit($C3);
+ PatchJump(P,CodeSize); CallTo(RtlTarget(RuntimeStandard[24])); Emit($C3);
 
  RuntimeStandard[44]:=CodeSize; { GetDir AX drive -> shortstring DX:AX }
  Emit($06); Emit($57); Emit($56); Emit($53); Emit($51);
  Emit2($C6,$06); DataAddress(StringScratch2); Emit(0);
- Emit($3D); EmitWord(26); Emit2($76,3); P:=Jump;
+ Emit($3D); EmitWord(26); P:=JumpIf($76);
  Emit2($89,$C3); Emit2($09,$C0); Emit2($75,7);
  Emit2($B4,$19); Emit2($CD,$21); Emit2($30,$E4); Emit($40);
  Emit2($04,64); Emit($A2); DataAddress(StringScratch2+1);
  Emit2($C6,$06); DataAddress(StringScratch2+2); Emit(Ord(':'));
  Emit2($C6,$06); DataAddress(StringScratch2+3); Emit(Ord('\'));
- Emit2($89,$DA); Emit($BE); DataAddress(NameBuffer); Emit2($B4,$47); Emit2($CD,$21);
- Emit2($73,3); Q:=Jump;
- EmitLoadES; Emit($BF); DataAddress(StringScratch2+4); Emit($BE); DataAddress(NameBuffer);
+ Emit2($89,$DA); Emit($BE); DataAddress(NameBuffer); Emit2($B4,$47); Emit2($CD,
+   $21);
+ Q:=JumpIf($73);
+ EmitLoadES; Emit($BF); DataAddress(StringScratch2+4); Emit($BE);
+   DataAddress(NameBuffer);
  Emit($B9); EmitWord(3);
- R:=CodeSize; Emit($AC); Emit2($08,$C0); Emit2($75,3); S:=Jump;
+ R:=CodeSize; Emit($AC); Emit2($08,$C0); S:=JumpIf($75);
  Emit($AA); Emit($41); JumpTo(R);
  PatchJump(S,CodeSize); Emit2($88,$0E); DataAddress(StringScratch2); Done:=Jump;
- PatchJump(P,CodeSize); LoadImmediate(15); PatchJump(Q,CodeSize); CallTo(RuntimeStandard[24]);
- PatchJump(Done,CodeSize); Emit($59); Emit($5B); Emit($5E); Emit($5F); Emit($07);
+ PatchJump(P,CodeSize); LoadImmediate(15); PatchJump(Q,CodeSize);
+   CallTo(RtlTarget(RuntimeStandard[24]));
+ PatchJump(Done,CodeSize); Emit($59); Emit($5B); Emit($5E); Emit($5F);
+   Emit($07);
  Emit($B8); DataAddress(StringScratch2); Emit2($8C,$DA); Emit($C3);
 
- RuntimeStandard[45]:=CodeSize; { Eof(File): compare la position et la taille en octets (comme TP:
+ RuntimeStandard[45]:=CodeSize;
+   { Eof(File): compare la position et la taille en octets (comme TP:
    un dernier record incomplet n'est pas la fin du fichier) }
- LoadImmediate(2); CallTo(RuntimeStandard[38]); Emit2($09,$C9); Emit2($74,3); P:=Jump;
- Emit($52); Emit($50); LoadImmediate(3); CallTo(RuntimeStandard[38]);
- Emit2($89,$D6); Emit($5B); Emit($5A); Emit2($09,$C9); Emit2($74,3); Q:=Jump;
- Emit2($39,$F2); Emit2($73,3); R:=Jump;
- Emit2($74,3); S:=Jump;
- Emit2($39,$C3); Emit2($73,3); Done:=Jump;
+ LoadImmediate(2); CallTo(RtlTarget(RuntimeStandard[38])); Emit2($09,$C9);
+   P:=JumpIf($74);
+ Emit($52); Emit($50); LoadImmediate(3); CallTo(RtlTarget(RuntimeStandard[38]));
+ Emit2($89,$D6); Emit($5B); Emit($5A); Emit2($09,$C9); Q:=JumpIf($74);
+ Emit2($39,$F2); R:=JumpIf($73);
+ S:=JumpIf($74);
+ Emit2($39,$C3); Done:=JumpIf($73);
  PatchJump(S,CodeSize); LoadImmediate(1); Emit($C3);
  PatchJump(R,CodeSize); PatchJump(Done,CodeSize); LoadImmediate(0); Emit($C3);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); Emit2($89,$C8);
- CallTo(RuntimeStandard[24]); LoadImmediate(1); Emit($C3);
+ CallTo(RtlTarget(RuntimeStandard[24])); LoadImmediate(1); Emit($C3);
 
- RuntimeStandard[41]:=CodeSize; { input DX:AX, nil=stdin; rend l'ancien descripteur }
- Emit($55); Emit2($89,$E5); Emit($06); Emit($57); Emit($56); Emit($53); Emit($50); Emit($52);
- Emit2($8B,$36); DataAddress(InputFilePointer); Emit2($8B,$1E); DataAddress(InputFilePointer+2);
- Emit($56); Emit($53); Emit2($89,$D8); Emit2($09,$F0); Emit2($75,3); P:=Jump;
+ RuntimeStandard[41]:=CodeSize; { input DX:AX, nil=stdin;
+   rend l'ancien descripteur }
+ Emit($55); Emit2($89,$E5); Emit($06); Emit($57); Emit($56); Emit($53);
+   Emit($50); Emit($52);
+ Emit2($8B,$36); DataAddress(InputFilePointer); Emit2($8B,$1E);
+   DataAddress(InputFilePointer+2);
+ Emit($56); Emit($53); Emit2($89,$D8); Emit2($09,$F0); P:=JumpIf($75);
  Emit2($8E,$C3); Emit2($89,$F7); Emit($A1); DataAddress(InputAhead);
  Emit($26); Emit2($89,$45); Emit(6); Q:=Jump;
- PatchJump(P,CodeSize); Emit($A1); DataAddress(InputAhead); Emit($A3); DataAddress(InputConsoleAhead);
+ PatchJump(P,CodeSize); Emit($A1); DataAddress(InputAhead); Emit($A3);
+   DataAddress(InputConsoleAhead);
  PatchJump(Q,CodeSize); Emit2($8B,$46); Emit($F6); Emit2($8B,$56); Emit($F4);
- Emit($A3); DataAddress(InputFilePointer); Emit2($89,$16); DataAddress(InputFilePointer+2);
- Emit2($09,$D0); Emit2($75,3); P:=Jump;
+ Emit($A3); DataAddress(InputFilePointer); Emit2($89,$16);
+   DataAddress(InputFilePointer+2);
+ Emit2($09,$D0); P:=JumpIf($75);
  Emit2($8B,$46); Emit($F6); Emit2($89,$C7); Emit2($8E,$C2);
- Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Emit2($74,3); Q:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(0); Emit2($75,3); R:=Jump;
- Emit($26); Emit2($83,$7D); Emit(4); Emit(2); Emit2($75,3); S:=Jump;
+ Emit($26); Emit2($81,$7D); Emit(12); EmitWord($5046); Q:=JumpIf($74);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(0); R:=JumpIf($75);
+ Emit($26); Emit2($83,$7D); Emit(4); Emit(2); S:=JumpIf($75);
  Emit($26); Emit2($8B,$05); Emit($A3); DataAddress(InputHandle);
- Emit($26); Emit2($8B,$45); Emit(6); Emit($A3); DataAddress(InputAhead); Done:=Jump;
- PatchJump(P,CodeSize); Emit($A1); DataAddress(InputConsoleAhead); Emit($A3); DataAddress(InputAhead);
+ Emit($26); Emit2($8B,$45); Emit(6); Emit($A3); DataAddress(InputAhead);
+   Done:=Jump;
+ PatchJump(P,CodeSize); Emit($A1); DataAddress(InputConsoleAhead); Emit($A3);
+   DataAddress(InputAhead);
  Emit2($C7,$06); DataAddress(InputHandle); EmitWord(0); P:=Jump;
- PatchJump(Q,CodeSize); LoadImmediate(104); Q:=Jump; { non assigne: 104 comme TP }
+ PatchJump(Q,CodeSize); LoadImmediate(104); Q:=Jump;
+   { non assigne: 104 comme TP }
  PatchJump(R,CodeSize); LoadImmediate(103); R:=Jump;
- PatchJump(S,CodeSize); LoadImmediate(104); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
- CallTo(RuntimeStandard[24]); Emit2($C7,$06); DataAddress(InputAhead); EmitWord(26);
+ PatchJump(S,CodeSize); LoadImmediate(104); PatchJump(Q,CodeSize); PatchJump(R,
+   CodeSize);
+ CallTo(RtlTarget(RuntimeStandard[24])); Emit2($C7,$06);
+   DataAddress(InputAhead); EmitWord(26);
  PatchJump(P,CodeSize); PatchJump(Done,CodeSize);
  Emit2($8B,$46); Emit($F2); Emit2($8B,$56); Emit($F0);
  Emit2($8B,$5E); Emit($F8); Emit2($8B,$76); Emit($FA);
@@ -10299,95 +15074,136 @@ Procedure SetHandle(Value: Word);
 Begin Emit2($C7,$06); DataAddress(OverlayHandle); EmitWord(Value) End;
 Begin
  OverlayTable:=AllocData((MaxUnits+1)*16); OverlayFileName:=AllocData(256);
- OverlayResult:=AllocData(2); OverlayHandle:=AllocData(2); Data[OverlayHandle]:=255; Data[OverlayHandle+1]:=255;
- OverlayScratch:=AllocData(12); OverlayBufferSize:=AllocData(2); OverlayBankCount:=AllocData(2);
+ OverlayResult:=AllocData(2); OverlayHandle:=AllocData(2);
+   Data[OverlayHandle]:=255; Data[OverlayHandle+1]:=255;
+ OverlayScratch:=AllocData(12); OverlayBufferSize:=AllocData(2);
+   OverlayBankCount:=AllocData(2);
 
  RuntimeStandard[63]:=CodeSize; { invalider les regions chargees }
- Emit($51); Emit($56); Emit($BE); DataAddress(OverlayTable); Emit($B9); EmitWord(MaxUnits+1);
+ Emit($51); Emit($56); Emit($BE); DataAddress(OverlayTable); Emit($B9);
+   EmitWord(MaxUnits+1);
  LoopStart:=CodeSize; Emit2($C7,$04); EmitWord(0); Emit2($83,$C6); Emit(16);
- Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit($5E); Emit($59); Emit($C3);
+ Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit($5E); Emit($59);
+   Emit($C3);
 
  RuntimeStandard[64]:=CodeSize; { ouvrir/valider le fichier OVR, AX=0 succes }
- BadCount:=0; Emit($53); Emit($51); Emit($52); CallTo(RuntimeStandard[63]);
- Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
+ BadCount:=0; Emit($53); Emit($51); Emit($52);
+   CallTo(RtlTarget(RuntimeStandard[63]));
+ Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF);
+   P:=JumpIf($75);
  Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF);
- Emit($BA); DataAddress(OverlayFileName); LoadImmediate($3D00); Emit2($CD,$21); FailIf($72);
- Emit($A3); DataAddress(OverlayHandle); Emit2($89,$C3); Emit($B9); EmitWord(12); Emit($BA); DataAddress(OverlayScratch);
- Emit2($B4,$3F); Emit2($CD,$21); FailIf($72); Emit($3D); EmitWord(12); FailIf($75);
+ Emit($BA); DataAddress(OverlayFileName); LoadImmediate($3D00); Emit2($CD,$21);
+   FailIf($72);
+ Emit($A3); DataAddress(OverlayHandle); Emit2($89,$C3); Emit($B9); EmitWord(12);
+   Emit($BA); DataAddress(OverlayScratch);
+ Emit2($B4,$3F); Emit2($CD,$21); FailIf($72); Emit($3D); EmitWord(12);
+   FailIf($75);
  Emit2($81,$3E); DataAddress(OverlayScratch); EmitWord($5054); FailIf($75);
  Emit2($81,$3E); DataAddress(OverlayScratch+2); EmitWord($4F43); FailIf($75);
  Emit2($81,$3E); DataAddress(OverlayScratch+4); EmitWord($5256); FailIf($75);
  Emit2($81,$3E); DataAddress(OverlayScratch+6); EmitWord($2131); FailIf($75);
  Emit2($81,$3E); DataAddress(OverlayScratch+8); EmitWord(1); FailIf($75);
- Emit($A1); DataAddress(OverlayBankCount); Emit2($3B,$06); DataAddress(OverlayScratch+10); FailIf($75);
+ Emit($A1); DataAddress(OverlayBankCount); Emit2($3B,$06);
+   DataAddress(OverlayScratch+10); FailIf($75);
  SetResult(0); Emit2($31,$C0); Done:=Jump;
  For K:=1 To BadCount Do PatchJump(Bad[K],CodeSize);
- Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
- Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF); SetResult($FFFF); LoadImmediate(1);
+ Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF);
+   P:=JumpIf($75);
+ Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF);
+   SetResult($FFFF); LoadImmediate(1);
  PatchJump(Done,CodeSize); Emit($5A); Emit($59); Emit($5B); Emit($C3);
 
- RuntimeStandard[65]:=CodeSize; { lire exactement CX octets DS:DX et checksum [BP-14] }
+ RuntimeStandard[65]:=CodeSize;
+   { lire exactement CX octets DS:DX et checksum [BP-14] }
  Emit($50); Emit($53); Emit($56); Emit2($8B,$1E); DataAddress(OverlayHandle);
- Emit2($B4,$3F); Emit2($CD,$21); Emit2($73,3); P:=Jump;
- Emit2($39,$C8); Emit2($74,3); Q:=Jump;
+ Emit2($B4,$3F); Emit2($CD,$21); P:=JumpIf($73);
+ Emit2($39,$C8); Q:=JumpIf($74);
  Emit2($8B,$5E); Emit($F2); Emit2($89,$D6);
- LoopStart:=CodeSize; Emit2($D1,$C3); Emit2($8A,$04); Emit2($30,$E4); Emit2($01,$C3); Emit($46);
- Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit2($89,$5E); Emit($F2);
+ LoopStart:=CodeSize; Emit2($D1,$C3); Emit2($8A,$04); Emit2($30,$E4); Emit2($01,
+   $C3); Emit($46);
+ Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit2($89,$5E);
+   Emit($F2);
  Emit($5E); Emit($5B); Emit($58); Emit($C3);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); SetResult($FFFF); LoadImmediate(209); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); SetResult($FFFF);
+   LoadImmediate(209); CallTo(RtlTarget(RuntimeError));
 
- RuntimeStandard[57]:=CodeSize; { charger la region AX; preserve registres et flags }
+ RuntimeStandard[57]:=CodeSize; { charger la region AX;
+   preserve registres et flags }
  BadCount:=0; Emit($9C); Emit($55); Emit2($89,$E5); Emit2($83,$EC); Emit(14);
- Emit2($89,$46); Emit($FE); Emit($50); Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($1E); Emit($06);
- EmitLoadDS; Emit2($B1,4); Emit2($D3,$E0); Emit($05); DataAddress(OverlayTable); Emit2($89,$C6); Emit2($89,$76); Emit($FC);
- Emit2($83,$3C); Emit(1); Emit2($75,3); Done:=Jump;
+ Emit2($89,$46); Emit($FE); Emit($50); Emit($53); Emit($51); Emit($52);
+   Emit($56); Emit($57); Emit($1E); Emit($06);
+ EmitLoadDS; Emit2($B1,4); Emit2($D3,$E0); Emit($05); DataAddress(OverlayTable);
+   Emit2($89,$C6); Emit2($89,$76); Emit($FC);
+ Emit2($83,$3C); Emit(1); Done:=JumpIf($75);
  Emit2($83,$7C); Emit(6); Emit(1); FailIf($75);
- Emit2($83,$3E); DataAddress(OverlayHandle); Emit($FF); Emit2($74,3); P:=Jump;
- CallTo(RuntimeStandard[64]); Emit2($09,$C0); Emit2($74,3); Q:=Jump;
- S:=Jump; PatchJump(Q,CodeSize); LoadImmediate(208); CallTo(RuntimeError); PatchJump(S,CodeSize);
+ Emit2($83,$3E); DataAddress(OverlayHandle); Emit($FF); P:=JumpIf($74);
+ CallTo(RtlTarget(RuntimeStandard[64])); Emit2($09,$C0); Q:=JumpIf($74);
+ S:=Jump; PatchJump(Q,CodeSize); LoadImmediate(208);
+   CallTo(RtlTarget(RuntimeError)); PatchJump(S,CodeSize);
  PatchJump(P,CodeSize); Emit2($8B,$76); Emit($FC);
- Emit2($8B,$54); Emit(2); Emit2($8B,$4C); Emit(4); Emit2($8B,$1E); DataAddress(OverlayHandle);
+ Emit2($8B,$54); Emit(2); Emit2($8B,$4C); Emit(4); Emit2($8B,$1E);
+   DataAddress(OverlayHandle);
  LoadImmediate($4200); Emit2($CD,$21); FailIf($72);
- Emit2($C7,$46); Emit($F2); EmitWord(0); Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch);
- CallTo(RuntimeStandard[65]); Emit($A1); DataAddress(OverlayScratch); Emit2($8B,$76); Emit($FC);
+ Emit2($C7,$46); Emit($F2); EmitWord(0); Emit($B9); EmitWord(2); Emit($BA);
+   DataAddress(OverlayScratch);
+ CallTo(RtlTarget(RuntimeStandard[65])); Emit($A1); DataAddress(OverlayScratch);
+   Emit2($8B,$76); Emit($FC);
  Emit2($3B,$44); Emit(14); FailIf($75); Emit2($89,$46); Emit($FA);
- LoopStart:=CodeSize; Emit2($83,$7E); Emit($FA); Emit(0); Emit2($75,3); R:=Jump;
- Emit($B9); EmitWord(6); Emit($BA); DataAddress(OverlayScratch); CallTo(RuntimeStandard[65]);
+ LoopStart:=CodeSize; Emit2($83,$7E); Emit($FA); Emit(0); R:=JumpIf($75);
+ Emit($B9); EmitWord(6); Emit($BA); DataAddress(OverlayScratch);
+   CallTo(RtlTarget(RuntimeStandard[65]));
  Emit2($8B,$16); DataAddress(OverlayScratch); Emit2($89,$56); Emit($F6);
- Emit2($8B,$0E); DataAddress(OverlayScratch+2); Emit2($09,$C9); FailIf($74); Emit2($89,$4E); Emit($F4);
+ Emit2($8B,$0E); DataAddress(OverlayScratch+2); Emit2($09,$C9); FailIf($74);
+   Emit2($89,$4E); Emit($F4);
  Emit2($8B,$76); Emit($FC); Emit2($3B,$54); Emit(8); FailIf($72);
- Emit2($89,$D0); Emit2($01,$C8); FailIf($72); Emit2($3B,$44); Emit(10); FailIf($77);
+ Emit2($89,$D0); Emit2($01,$C8); FailIf($72); Emit2($3B,$44); Emit(10);
+   FailIf($77);
  Emit($A1); DataAddress(OverlayScratch+4); Emit2($89,$46); Emit($F8);
- CallTo(RuntimeStandard[65]);
- P:=CodeSize; Emit2($83,$7E); Emit($F8); Emit(0); Emit2($75,3); Q:=Jump;
- Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch); CallTo(RuntimeStandard[65]);
- Emit($A1); DataAddress(OverlayScratch); Emit2($89,$C3); Emit2($83,$C0); Emit(2); FailIf($72);
+ CallTo(RtlTarget(RuntimeStandard[65]));
+ P:=CodeSize; Emit2($83,$7E); Emit($F8); Emit(0); Q:=JumpIf($75);
+ Emit($B9); EmitWord(2); Emit($BA); DataAddress(OverlayScratch);
+   CallTo(RtlTarget(RuntimeStandard[65]));
+ Emit($A1); DataAddress(OverlayScratch); Emit2($89,$C3); Emit2($83,$C0);
+   Emit(2); FailIf($72);
  Emit2($3B,$46); Emit($F4); FailIf($77); Emit2($03,$5E); Emit($F6);
  Emit2($8C,$D8); Emit2($01,$07); Emit2($FF,$4E); Emit($F8); JumpTo(P);
  PatchJump(Q,CodeSize); Emit2($FF,$4E); Emit($FA); JumpTo(LoopStart);
  PatchJump(R,CodeSize); Emit2($8B,$76); Emit($FC); Emit2($8B,$46); Emit($F2);
- Emit2($3B,$44); Emit(12); FailIf($75); Emit2($C7,$04); EmitWord(1); SetResult(0);
- PatchJump(Done,CodeSize); Emit($07); Emit($1F); Emit($5F); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($58);
+ Emit2($3B,$44); Emit(12); FailIf($75); Emit2($C7,$04); EmitWord(1);
+   SetResult(0);
+ PatchJump(Done,CodeSize); Emit($07); Emit($1F); Emit($5F); Emit($5E);
+   Emit($5A); Emit($59); Emit($5B); Emit($58);
  Emit2($89,$EC); Emit($5D); Emit($9D); Emit($C3);
  For K:=1 To BadCount Do PatchJump(Bad[K],CodeSize);
- SetResult($FFFF); LoadImmediate(209); CallTo(RuntimeError);
+ SetResult($FFFF); LoadImmediate(209); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[58]:=CodeSize; { OvrInit(String), ABI Pascal far locale }
- Emit($55); Emit2($89,$E5); Emit($1E); Emit($06); Emit($56); Emit($57); Emit($51);
- Emit($16); Emit($1F); EmitLoadES; Emit2($8D,$76); Emit(8); Emit2($31,$C9); Emit($AC); Emit2($88,$C1);
- Emit($BF); DataAddress(OverlayFileName); Emit2($F3,$A4); Emit2($31,$C0); Emit($AA);
- EmitLoadDS; CallTo(RuntimeStandard[64]); Emit($59); Emit($5F); Emit($5E); Emit($07); Emit($1F); Emit($5D);
+ Emit($55); Emit2($89,$E5); Emit($1E); Emit($06); Emit($56); Emit($57);
+   Emit($51);
+ Emit($16); Emit($1F); EmitLoadES; Emit2($8D,$76); Emit(8); Emit2($31,$C9);
+   Emit($AC); Emit2($88,$C1);
+ Emit($BF); DataAddress(OverlayFileName); Emit2($F3,$A4); Emit2($31,$C0);
+   Emit($AA);
+ EmitLoadDS; CallTo(RtlTarget(RuntimeStandard[64])); Emit($59); Emit($5F);
+   Emit($5E); Emit($07); Emit($1F); Emit($5D);
  Emit($CA); EmitWord(258);
  RuntimeStandard[59]:=CodeSize; { OvrDone }
- Emit($53); Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB); EmitWord($FFFF); Emit2($75,3); P:=Jump;
- Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF); CallTo(RuntimeStandard[63]); SetResult(0);
+ Emit($53); Emit2($8B,$1E); DataAddress(OverlayHandle); Emit2($81,$FB);
+   EmitWord($FFFF); P:=JumpIf($75);
+ Emit2($B4,$3E); Emit2($CD,$21); PatchJump(P,CodeSize); SetHandle($FFFF);
+   CallTo(RtlTarget(RuntimeStandard[63])); SetResult(0);
  Emit($5B); Emit($CA); EmitWord(2);
- RuntimeStandard[60]:=CodeSize; CallTo(RuntimeStandard[63]); SetResult(0); Emit($CA); EmitWord(2);
- RuntimeStandard[61]:=CodeSize; Emit($A1); DataAddress(OverlayBufferSize); Emit2($31,$D2); Emit($CA); EmitWord(2);
- RuntimeStandard[62]:=CodeSize; { OvrSetBuf: regions fixes; autre taille -> ovrNoMemory }
- Emit($55); Emit2($89,$E5); Emit2($83,$7E); Emit(10); Emit(0); Emit2($74,3); P:=Jump;
- Emit2($8B,$46); Emit(8); Emit2($3B,$06); DataAddress(OverlayBufferSize); Emit2($74,3); Q:=Jump;
- SetResult(0); Done:=Jump; PatchJump(P,CodeSize); PatchJump(Q,CodeSize); SetResult($FFFE);
+ RuntimeStandard[60]:=CodeSize; CallTo(RtlTarget(RuntimeStandard[63]));
+   SetResult(0); Emit($CA); EmitWord(2);
+ RuntimeStandard[61]:=CodeSize; Emit($A1); DataAddress(OverlayBufferSize);
+   Emit2($31,$D2); Emit($CA); EmitWord(2);
+ RuntimeStandard[62]:=CodeSize; { OvrSetBuf: regions fixes;
+   autre taille -> ovrNoMemory }
+ Emit($55); Emit2($89,$E5); Emit2($83,$7E); Emit(10); Emit(0); P:=JumpIf($74);
+ Emit2($8B,$46); Emit(8); Emit2($3B,$06); DataAddress(OverlayBufferSize);
+   Q:=JumpIf($74);
+ SetResult(0); Done:=Jump; PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
+   SetResult($FFFE);
  PatchJump(Done,CodeSize); Emit($5D); Emit($CA); EmitWord(6);
 End;
 
@@ -10403,22 +15219,26 @@ Begin
 End;
 Begin
  FillChar(RuntimeStandard,SizeOf(RuntimeStandard),0);
- StringScratch:=AllocData(256); StringScratch2:=AllocData(256);
+ If AnalysisPass Or KernelSeen Then Begin StringScratch:=AllocData(256);
+   StringScratch2:=AllocData(256) End
+ Else Begin StringScratch:=AllocBss(256); StringScratch2:=AllocBss(256) End;
  InputAhead:=AllocData(2); Data[InputAhead]:=255; Data[InputAhead+1]:=255;
  InputByte:=AllocData(1); InputHandle:=AllocData(2);
- InputConsoleAhead:=AllocData(2); Data[InputConsoleAhead]:=255; Data[InputConsoleAhead+1]:=255;
+ InputConsoleAhead:=AllocData(2); Data[InputConsoleAhead]:=255;
+   Data[InputConsoleAhead+1]:=255;
  InputFilePointer:=AllocData(4);
  HeapHead:=AllocData(2); HeapLimit:=AllocData(2); HeapUsed:=AllocData(2);
  EmitTextRuntime;
- RuntimeStandard[31]:=CodeSize; { ParamCount: PSP command tail, espaces et tabs }
+ RuntimeStandard[31]:=CodeSize; { ParamCount: PSP command tail,
+   espaces et tabs }
  Emit($06); Emit($56); Emit($53); Emit($51); Emit($52);
  Emit2($B4,$51); Emit2($CD,$21); Emit2($8E,$C3); Emit($BE); EmitWord($81);
  Emit2($31,$C9); Emit($26); Emit2($8A,$0E); EmitWord($80); Emit2($31,$D2);
- LoopStart:=CodeSize; Emit2($09,$C9); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; Emit2($09,$C9); P:=JumpIf($75);
  Emit($26); Emit2($8A,$04); Emit($46); Emit($49);
  Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart); Emit($42);
- K:=CodeSize; Emit2($09,$C9); Emit2($75,3); Q:=Jump;
+ K:=CodeSize; Emit2($09,$C9); Q:=JumpIf($75);
  Emit($26); Emit2($8A,$04); Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart);
  Emit($46); Emit($49); JumpTo(K);
@@ -10430,168 +15250,209 @@ Begin
  Emit($06); Emit($55); Emit($57); Emit($56); Emit($53); Emit($51);
  Emit2($89,$C5); Emit2($C6,$06); DataAddress(StringScratch2); Emit(0);
  Emit2($B4,$51); Emit2($CD,$21); Emit2($8E,$C3);
- Emit2($09,$ED); Emit2($75,3); P:=Jump;
- Emit($BE); EmitWord($81); Emit2($31,$C9); Emit($26); Emit2($8A,$0E); EmitWord($80);
+ Emit2($09,$ED); P:=JumpIf($75);
+ Emit($BE); EmitWord($81); Emit2($31,$C9); Emit($26); Emit2($8A,$0E);
+   EmitWord($80);
  LoopStart:=CodeSize; Emit2($09,$C9); Emit2($75,3); ParamEnd;
  Emit($26); Emit2($8A,$04); Emit($46); Emit($49);
  Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart);
- Emit($4E); Emit($41); Emit($4D); Emit2($75,3); R:=Jump;
+ Emit($4E); Emit($41); Emit($4D); R:=JumpIf($75);
  K:=CodeSize; Emit2($09,$C9); Emit2($75,3); ParamEnd;
  Emit($26); Emit2($8A,$04); Emit2($3C,32); Emit2($75,3); JumpTo(LoopStart);
  Emit2($3C,9); Emit2($75,3); JumpTo(LoopStart);
  Emit($46); Emit($49); JumpTo(K);
  PatchJump(P,CodeSize);
  Emit2($B4,$30); Emit2($CD,$21); Emit2($3C,3); Emit2($73,3); ParamEnd;
- Emit($26); Emit2($8B,$1E); EmitWord($2C); Emit2($09,$DB); Emit2($75,3); ParamEnd;
+ Emit($26); Emit2($8B,$1E); EmitWord($2C); Emit2($09,$DB); Emit2($75,3);
+   ParamEnd;
  Emit2($8E,$C3); Emit2($31,$F6); Emit($B9); EmitWord($7FFF);
- K:=CodeSize; Emit($26); Emit2($8A,$04); Emit($46); Emit2($08,$C0); Emit2($74,3); Q:=Jump;
- Emit($26); Emit2($80,$3C); Emit(0); Emit2($75,3); S:=Jump;
+ K:=CodeSize; Emit($26); Emit2($8A,$04); Emit($46); Emit2($08,$C0);
+   Q:=JumpIf($74);
+ Emit($26); Emit2($80,$3C); Emit(0); S:=JumpIf($75);
  PatchJump(Q,CodeSize); Emit($E2); Emit(Byte(Longint(K)-CodeSize-1)); ParamEnd;
  PatchJump(S,CodeSize); Emit2($83,$C6); Emit(3); Emit($B9); EmitWord(255);
  Emit2($31,$D2); Q:=Jump;
  PatchJump(R,CodeSize); Emit($BA); EmitWord(1); PatchJump(Q,CodeSize);
  Emit($BF); DataAddress(StringScratch2+1); Emit2($31,$DB);
- K:=CodeSize; Emit2($09,$C9); Emit2($75,3); R:=Jump;
- Emit($26); Emit2($8A,$04); Emit2($08,$C0); Emit2($75,3); S:=Jump;
- Emit2($09,$D2); Emit2($74,3); Q:=Jump;
+ K:=CodeSize; Emit2($09,$C9); R:=JumpIf($75);
+ Emit($26); Emit2($8A,$04); Emit2($08,$C0); S:=JumpIf($75);
+ Emit2($09,$D2); Q:=JumpIf($74);
  P:=Jump; PatchJump(Q,CodeSize);
- Emit2($3C,32); Emit2($75,3); Q:=Jump;
- Emit2($3C,9); Emit2($75,3); LoopStart:=Jump;
+ Emit2($3C,32); Q:=JumpIf($75);
+ Emit2($3C,9); LoopStart:=JumpIf($75);
  PatchJump(P,CodeSize);
  Emit2($88,$05); Emit($47); Emit($46); Emit($43); Emit($49); JumpTo(K);
- PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize); PatchJump(LoopStart,CodeSize);
+ PatchJump(R,CodeSize); PatchJump(S,CodeSize); PatchJump(Q,CodeSize);
+   PatchJump(LoopStart,CodeSize);
  Emit2($88,$1E); DataAddress(StringScratch2);
  For K:=1 To ParamEndCount Do PatchJump(ParamEnds[K],CodeSize);
  Emit($59); Emit($5B); Emit($5E); Emit($5F); Emit($5D); Emit($07);
  Emit($B8); DataAddress(StringScratch2); Emit2($8C,$DA); Emit($C3);
- RuntimeStandard[6]:=CodeSize; { set element: ES:DI bitmap universel, AX ordinal }
+ RuntimeStandard[6]:=CodeSize; { set element: ES:DI bitmap universel,
+   AX ordinal }
  Emit($50); Emit($53); Emit($51); Emit($52); Emit($57);
- Emit($3D); EmitWord(255); Emit2($76,3); P:=Jump;
+ Emit($3D); EmitWord(255); P:=JumpIf($76);
  Emit2($89,$C3); Emit2($89,$C1); Emit2($80,$E1); Emit(7);
- Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB); Emit2($01,$DF);
+ Emit($BA); EmitWord(1); Emit2($D3,$E2); Emit2($B1,3); Emit2($D3,$EB);
+   Emit2($01,$DF);
  Emit($26); Emit2($08,$15);
  Emit($5F); Emit($5A); Emit($59); Emit($5B); Emit($58); Emit($C3);
- PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); LoadImmediate(201); CallTo(RtlTarget(RuntimeError));
  RuntimeStandard[7]:=CodeSize; { set range AX..BX }
- Emit($56); Emit2($39,$D8); Emit2($76,3); P:=Jump;
+ Emit($56); Emit2($39,$D8); P:=JumpIf($76);
  Emit2($89,$DE); Emit2($29,$C6); Emit($46); LoopStart:=CodeSize;
- CallTo(RuntimeStandard[6]); Emit($40); Emit($4E); Emit2($74,3); JumpTo(LoopStart);
+ CallTo(RtlTarget(RuntimeStandard[6])); Emit($40); Emit($4E); Emit2($74,3);
+   JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit($5E); Emit($C3);
- RuntimeStandard[1]:=CodeSize; { Copy: DS:SI, ES:DI, AX=index, CX=count, BX=capacite }
- Emit2($09,$C9); Emit2($7F,3); P:=Jump;
- Emit2($3D,1); Emit(0); Emit2($7D,3); Q:=Jump;
- Emit2($31,$D2); Emit2($8A,$14); Emit($48); Emit2($39,$D0); Emit2($72,3); R:=Jump;
+ RuntimeStandard[1]:=CodeSize; { Copy: DS:SI, ES:DI, AX=index, CX=count,
+   BX=capacite }
+ Emit2($09,$C9); P:=JumpIf($7F);
+ Emit2($3D,1); Emit(0); Q:=JumpIf($7D);
+ Emit2($31,$D2); Emit2($8A,$14); Emit($48); Emit2($39,$D0); R:=JumpIf($72);
  Emit2($29,$C2); Emit2($39,$D1); Emit2($76,2); Emit2($89,$D1);
  Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
- Emit($26); Emit2($88,$0D); Emit($47); Emit($46); Emit2($01,$C6); Emit2($F3,$A4); Emit($C3);
+ Emit($26); Emit2($88,$0D); Emit($47); Emit($46); Emit2($01,$C6); Emit2($F3,
+   $A4); Emit($C3);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
  Emit($26); Emit2($C6,$05); Emit(0); Emit($C3);
 
  RuntimeStandard[2]:=CodeSize; { Pos: DS:SI needle, ES:DI haystack }
- Emit($55); Emit2($31,$C9); Emit2($8A,$0C); Emit2($31,$DB); Emit($26); Emit2($8A,$1D);
- Emit2($09,$C9); Emit2($75,3); P:=Jump;
- Emit2($39,$D9); Emit2($76,3); Q:=Jump;
+ Emit($55); Emit2($31,$C9); Emit2($8A,$0C); Emit2($31,$DB); Emit($26);
+   Emit2($8A,$1D);
+ Emit2($09,$C9); P:=JumpIf($75);
+ Emit2($39,$D9); Q:=JumpIf($76);
  Emit2($29,$CB); Emit($43); Emit($46); Emit($47); Emit($BA); EmitWord(1);
  LoopStart:=CodeSize; Emit($51); Emit($56); Emit($57); Emit2($F3,$A6);
- Emit($5F); Emit($5E); Emit($59); Emit2($75,3); R:=Jump;
+ Emit($5F); Emit($5E); Emit($59); R:=JumpIf($75);
  Emit($47); Emit($42); Emit($4B); Emit2($74,3); JumpTo(LoopStart);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); Emit2($31,$C0); S:=Jump;
- PatchJump(R,CodeSize); Emit2($89,$D0); PatchJump(S,CodeSize); Emit($5D); Emit($C3);
+ PatchJump(R,CodeSize); Emit2($89,$D0); PatchJump(S,CodeSize); Emit($5D);
+   Emit($C3);
 
  RuntimeStandard[3]:=CodeSize; { Concat: append DS:SI to ES:DI, BX=capacity }
- Emit2($31,$C0); Emit($26); Emit2($8A,$05); Emit2($31,$C9); Emit2($8A,$0C); Emit($46);
+ Emit2($31,$C0); Emit($26); Emit2($8A,$05); Emit2($31,$C9); Emit2($8A,$0C);
+   Emit($46);
  Emit2($89,$DA); Emit2($29,$C2); Emit2($39,$D1); Emit2($76,2); Emit2($89,$D1);
- Emit($26); Emit2($00,$0D); Emit($47); Emit2($01,$C7); Emit2($F3,$A4); Emit($C3);
+ Emit($26); Emit2($00,$0D); Emit($47); Emit2($01,$C7); Emit2($F3,$A4);
+   Emit($C3);
 
  RuntimeStandard[4]:=CodeSize; { Delete: ES:DI, AX=index, CX=count }
- Emit2($09,$C9); Emit2($7F,3); P:=Jump;
- Emit($3D); EmitWord(1); Emit2($7D,3); Q:=Jump;
- Emit2($31,$DB); Emit($26); Emit2($8A,$1D); Emit($48); Emit2($39,$D8); Emit2($72,3); R:=Jump;
+ Emit2($09,$C9); P:=JumpIf($7F);
+ Emit($3D); EmitWord(1); Q:=JumpIf($7D);
+ Emit2($31,$DB); Emit($26); Emit2($8A,$1D); Emit($48); Emit2($39,$D8);
+   R:=JumpIf($72);
  Emit2($29,$C3); Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
  Emit($26); Emit2($28,$0D); Emit2($29,$CB); Emit($57);
- Emit2($89,$FE); Emit($46); Emit2($01,$C6); Emit2($89,$F2); Emit2($01,$CE); Emit2($89,$D7);
- Emit($1E); Emit($06); Emit($1F); Emit2($89,$D9); Emit2($F3,$A4); Emit($1F); Emit($5F);
+ Emit2($89,$FE); Emit($46); Emit2($01,$C6); Emit2($89,$F2); Emit2($01,$CE);
+   Emit2($89,$D7);
+ Emit($1E); Emit($06); Emit($1F); Emit2($89,$D9); Emit2($F3,$A4); Emit($1F);
+   Emit($5F);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); Emit($C3);
 
- RuntimeStandard[5]:=CodeSize; { Insert, copie intermediaire: alias source/destination autorise }
- Emit($55); Emit2($89,$E5); Emit($1E); Emit($56); Emit($06); Emit($57); Emit($50); Emit($53);
+ RuntimeStandard[5]:=CodeSize; { Insert,
+   copie intermediaire: alias source/destination autorise }
+ Emit($55); Emit2($89,$E5); Emit($1E); Emit($56); Emit($06); Emit($57);
+   Emit($50); Emit($53);
  Emit($3D); EmitWord(1); Emit2($7D,3); LoadImmediate(1);
  Emit2($31,$D2); Emit($26); Emit2($8A,$15); Emit($42);
  Emit2($39,$D0); Emit2($76,2); Emit2($89,$D0); Emit2($89,$46); Emit($F6);
  Emit2($89,$C1); Emit($49); LoadImmediate(1);
  Emit2($8B,$76); Emit($F8); Emit($06); Emit($1F); EmitLoadES;
- Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[1]);
+ Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4);
+   CallTo(RtlTarget(RuntimeStandard[1]));
  Emit2($8B,$46); Emit($FE); Emit2($8E,$D8); Emit2($8B,$76); Emit($FC);
- Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[3]);
+ Emit($BF); DataAddress(StringScratch); Emit2($8B,$5E); Emit($F4);
+   CallTo(RtlTarget(RuntimeStandard[3]));
  Emit2($8B,$46); Emit($FA); Emit2($8E,$D8); Emit2($8B,$76); Emit($F8);
  Emit($BF); DataAddress(StringScratch2); Emit2($8B,$46); Emit($F6);
- Emit($B9); EmitWord(255); Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[1]);
- EmitLoadDS; Emit($BE); DataAddress(StringScratch2); Emit($BF); DataAddress(StringScratch);
- Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[3]);
+ Emit($B9); EmitWord(255); Emit2($8B,$5E); Emit($F4);
+   CallTo(RtlTarget(RuntimeStandard[1]));
+ EmitLoadDS; Emit($BE); DataAddress(StringScratch2); Emit($BF);
+   DataAddress(StringScratch);
+ Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[3]));
  Emit2($8B,$46); Emit($FA); Emit2($8E,$C0); Emit2($8B,$7E); Emit($F8);
- Emit($BE); DataAddress(StringScratch); LoadImmediate(1); Emit($B9); EmitWord(255);
- Emit2($8B,$5E); Emit($F4); CallTo(RuntimeStandard[1]);
- Emit2($8B,$46); Emit($FE); Emit2($8E,$D8); Emit2($89,$EC); Emit($5D); Emit($C3);
+ Emit($BE); DataAddress(StringScratch); LoadImmediate(1); Emit($B9);
+   EmitWord(255);
+ Emit2($8B,$5E); Emit($F4); CallTo(RtlTarget(RuntimeStandard[1]));
+ Emit2($8B,$46); Emit($FE); Emit2($8E,$D8); Emit2($89,$EC); Emit($5D);
+   Emit($C3);
 
  RuntimeStandard[12]:=CodeSize; { Move: DS:SI to ES:DI, CX bytes }
- Emit2($09,$C9); Emit2($7F,3); P:=Jump;
- Emit2($8C,$D8); Emit2($8C,$C2); Emit2($39,$D0); Emit2($74,3); Q:=Jump;
- Emit2($39,$F7); Emit2($77,3); R:=Jump;
- Emit2($89,$F0); Emit2($01,$C8); Emit2($39,$C7); Emit2($72,3); S:=Jump;
- Emit2($01,$CE); Emit($4E); Emit2($01,$CF); Emit($4F); Emit($FD); Emit2($F3,$A4); Emit($FC); Emit($C3);
- PatchJump(Q,CodeSize); PatchJump(R,CodeSize); PatchJump(S,CodeSize); Emit($FC); Emit2($F3,$A4);
+ Emit2($09,$C9); P:=JumpIf($7F);
+ Emit2($8C,$D8); Emit2($8C,$C2); Emit2($39,$D0); Q:=JumpIf($74);
+ Emit2($39,$F7); R:=JumpIf($77);
+ Emit2($89,$F0); Emit2($01,$C8); Emit2($39,$C7); S:=JumpIf($72);
+ Emit2($01,$CE); Emit($4E); Emit2($01,$CF); Emit($4F); Emit($FD); Emit2($F3,
+   $A4); Emit($FC); Emit($C3);
+ PatchJump(Q,CodeSize); PatchJump(R,CodeSize); PatchJump(S,CodeSize); Emit($FC);
+   Emit2($F3,$A4);
  PatchJump(P,CodeSize); Emit($FC); Emit($C3);
 
  RuntimeStandard[13]:=CodeSize; { comparaison lexicographique de shortstrings }
  Emit2($31,$C0); Emit2($8A,$04); Emit2($31,$DB); Emit($26); Emit2($8A,$1D);
  Emit2($89,$C1); Emit2($39,$D9); Emit2($76,2); Emit2($89,$D9);
- Emit($46); Emit($47); Emit2($09,$C9); Emit2($75,3); P:=Jump;
- Emit2($F3,$A6); Emit2($74,3); Q:=Jump;
+ Emit($46); Emit($47); Emit2($09,$C9); P:=JumpIf($75);
+ Emit2($F3,$A6); Q:=JumpIf($74);
  PatchJump(P,CodeSize); Emit2($39,$D8);
- PatchJump(Q,CodeSize); Emit2($75,3); R:=Jump;
- Emit2($72,3); S:=Jump; LoadImmediate($FFFF); Emit($C3);
+ PatchJump(Q,CodeSize); R:=JumpIf($75);
+ S:=JumpIf($72); LoadImmediate($FFFF); Emit($C3);
  PatchJump(S,CodeSize); LoadImmediate(1); Emit($C3);
  PatchJump(R,CodeSize); Emit2($31,$C0); Emit($C3);
 
  RuntimeStandard[14]:=CodeSize; { multiplication DX:AX * CX:BX, modulo 2^32 }
- Emit($56); Emit($57); Emit2($89,$C6); Emit2($89,$D7); Emit2($F7,$E3); Emit($52); Emit($50);
+ Emit($56); Emit($57); Emit2($89,$C6); Emit2($89,$D7); Emit2($F7,$E3);
+   Emit($52); Emit($50);
  Emit2($89,$F8); Emit2($F7,$E3); Emit2($89,$C7); Emit2($89,$F0); Emit2($F7,$E1);
- Emit2($01,$C7); Emit($58); Emit($5A); Emit2($01,$FA); Emit($5F); Emit($5E); Emit($C3);
+ Emit2($01,$C7); Emit($58); Emit($5A); Emit2($01,$FA); Emit($5F); Emit($5E);
+   Emit($C3);
 
- RuntimeStandard[15]:=CodeSize; { division signee 32 bits; quotient DX:AX, reste CX:BX }
- Emit($55); Emit2($89,$DE); Emit2($09,$CE); Emit2($75,3); P:=Jump;
+ RuntimeStandard[15]:=CodeSize; { division signee 32 bits; quotient DX:AX,
+   reste CX:BX }
+ Emit($55); Emit2($89,$DE); Emit2($09,$CE); P:=JumpIf($75);
  Emit2($31,$F6); Emit2($09,$D2); Emit2($79,10);
- Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA); Emit($BE); EmitWord(3);
+ Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA); Emit($BE);
+   EmitWord(3);
  Emit2($09,$C9); Emit2($79,10);
- Emit2($F7,$DB); Emit2($83,$D1); Emit(0); Emit2($F7,$D9); Emit2($83,$F6); Emit(1);
+ Emit2($F7,$DB); Emit2($83,$D1); Emit(0); Emit2($F7,$D9); Emit2($83,$F6);
+   Emit(1);
  Emit($56); Emit2($31,$F6); Emit2($31,$FF); Emit($BD); EmitWord(32);
  LoopStart:=CodeSize;
  Emit2($D1,$E0); Emit2($D1,$D2); Emit2($D1,$D6); Emit2($D1,$D7);
- Emit2($39,$CF); Emit2($76,3); Q:=Jump;
- Emit2($73,3); R:=Jump;
- Emit2($39,$DE); Emit2($73,3); S:=Jump;
+ Emit2($39,$CF); Q:=JumpIf($76);
+ R:=JumpIf($73);
+ Emit2($39,$DE); S:=JumpIf($73);
  PatchJump(Q,CodeSize); Emit2($29,$DE); Emit2($19,$CF); Emit2($83,$C8); Emit(1);
- PatchJump(R,CodeSize); PatchJump(S,CodeSize); Emit($4D); Emit2($74,3); JumpTo(LoopStart);
+ PatchJump(R,CodeSize); PatchJump(S,CodeSize); Emit($4D); Emit2($74,3);
+   JumpTo(LoopStart);
  Emit2($89,$F3); Emit2($89,$F9); Emit($5D);
- Emit2($F7,$C5); EmitWord(1); Emit2($74,7); Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA);
- Emit2($F7,$C5); EmitWord(2); Emit2($74,7); Emit2($F7,$DB); Emit2($83,$D1); Emit(0); Emit2($F7,$D9);
+ Emit2($F7,$C5); EmitWord(1); Emit2($74,7); Emit2($F7,$D8); Emit2($83,$D2);
+   Emit(0); Emit2($F7,$DA);
+ Emit2($F7,$C5); EmitWord(2); Emit2($74,7); Emit2($F7,$DB); Emit2($83,$D1);
+   Emit(0); Emit2($F7,$D9);
  Emit($5D); Emit($C3);
- PatchJump(P,CodeSize); LoadImmediate(200); CallTo(RuntimeError);
+ PatchJump(P,CodeSize); LoadImmediate(200); CallTo(RtlTarget(RuntimeError));
 
- RuntimeStandard[16]:=CodeSize; { decimal signed DX:AX -> shortstring dans StringScratch2 }
+ RuntimeStandard[16]:=CodeSize;
+   { decimal signed DX:AX -> shortstring dans StringScratch2 }
  Emit($55); Emit($57); Emit($56); Emit2($31,$ED); Emit2($09,$D2); Emit2($79,10);
- Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA); Emit($BD); EmitWord($8000);
+ Emit2($F7,$D8); Emit2($83,$D2); Emit(0); Emit2($F7,$DA); Emit($BD);
+   EmitWord($8000);
  Emit($BF); DataAddress(StringScratch2+12); Emit($BB); EmitWord(10);
- LoopStart:=CodeSize; Emit2($89,$C1); Emit2($89,$D0); Emit2($31,$D2); Emit2($F7,$F3);
+ LoopStart:=CodeSize; Emit2($89,$C1); Emit2($89,$D0); Emit2($31,$D2); Emit2($F7,
+   $F3);
  Emit2($89,$C6); Emit2($89,$C8); Emit2($F7,$F3); Emit2($80,$C2); Emit(Ord('0'));
- Emit($4F); Emit2($88,$15); Emit2($89,$F2); Emit($45); Emit2($89,$D1); Emit2($09,$C1);
+ Emit($4F); Emit2($88,$15); Emit2($89,$F2); Emit($45); Emit2($89,$D1);
+   Emit2($09,$C1);
  Emit2($74,3); JumpTo(LoopStart);
  Emit2($F7,$C5); EmitWord($8000); Emit2($74,9);
- Emit($4F); Emit2($C6,$05); Emit(Ord('-')); Emit($45); Emit2($81,$E5); EmitWord($7FFF);
+ Emit($4F); Emit2($C6,$05); Emit(Ord('-')); Emit($45); Emit2($81,$E5);
+   EmitWord($7FFF);
  Emit2($89,$FE); Emit2($89,$E9); Emit($BF); DataAddress(StringScratch2);
- Emit2($88,$0D); Emit($47); Emit($06); Emit($1E); Emit($07); Emit2($F3,$A4); Emit($07);
- Emit($5E); Emit($5F); Emit($5D); Emit($B8); DataAddress(StringScratch2); Emit2($8C,$DA); Emit($C3);
+ Emit2($88,$0D); Emit($47); Emit($06); Emit($1E); Emit($07); Emit2($F3,$A4);
+   Emit($07);
+ Emit($5E); Emit($5F); Emit($5D); Emit($B8); DataAddress(StringScratch2);
+   Emit2($8C,$DA); Emit($C3);
 
  RuntimeStandard[17]:=CodeSize; { Val: DS:SI -> DX:AX, CX=position erreur }
  ErrorCount:=0;
@@ -10605,14 +15466,14 @@ Begin
  Emit2($C7,$46); Emit($FE); EmitWord(1);
  Emit2($3C,Ord('-')); Emit2($74,4); Emit2($3C,Ord('+')); Emit2($75,12);
  Emit($46); Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8);
- Emit2($75,3); P:=Jump; Inc(ErrorCount); Errors[ErrorCount]:=P;
+ P:=JumpIf($75); Inc(ErrorCount); Errors[ErrorCount]:=P;
  Emit2($80,$3C); Emit(Ord('$')); Emit2($75,17);
  Emit2($C7,$46); Emit($FC); EmitWord(16); Emit($46);
  Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8); BadIf($74);
  Emit2($31,$C0); Emit2($31,$D2);
  LoopStart:=CodeSize; Emit2($31,$DB); Emit2($8A,$1C);
  Emit2($83,$FB); Emit(Ord('0')); BadIf($72);
- Emit2($83,$FB); Emit(Ord('9')); Emit2($77,3); P:=Jump;
+ Emit2($83,$FB); Emit(Ord('9')); P:=JumpIf($77);
  Emit2($83,$7E); Emit($FC); Emit(16); BadIf($75);
  Emit2($80,$E3); Emit($DF); Emit2($83,$FB); Emit(Ord('A')); BadIf($72);
  Emit2($83,$FB); Emit(Ord('F')); BadIf($77);
@@ -10620,13 +15481,15 @@ Begin
  PatchJump(P,CodeSize); Emit2($83,$EB); Emit(48); PatchJump(Q,CodeSize);
  Emit2($89,$DF); Emit($56); Emit($57); Emit2($89,$C6); Emit2($89,$D7);
  Emit2($8B,$5E); Emit($FC); Emit2($F7,$E3); Emit2($89,$D1); Emit($50);
- Emit2($89,$F8); Emit2($F7,$E3); Emit2($09,$D2); Emit2($74,3); P:=Jump;
- Emit2($01,$C8); Emit2($73,3); Q:=Jump;
- Emit2($89,$C2); Emit($58); Emit($5F); Emit($5E); Emit2($01,$F8); Emit2($83,$D2); Emit(0); BadIf($72);
- Emit($46); Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8); Emit2($74,3); JumpTo(LoopStart);
- Emit2($83,$7E); Emit($FC); Emit(16); Emit2($75,3); R:=Jump;
- Emit2($81,$FA); EmitWord($8000); Emit2($73,3); S:=Jump;
- Emit2($74,3); K:=Jump;
+ Emit2($89,$F8); Emit2($F7,$E3); Emit2($09,$D2); P:=JumpIf($74);
+ Emit2($01,$C8); Q:=JumpIf($73);
+ Emit2($89,$C2); Emit($58); Emit($5F); Emit($5E); Emit2($01,$F8); Emit2($83,
+   $D2); Emit(0); BadIf($72);
+ Emit($46); Emit2($FF,$46); Emit($FA); Emit2($FF,$4E); Emit($F8); Emit2($74,3);
+   JumpTo(LoopStart);
+ Emit2($83,$7E); Emit($FC); Emit(16); R:=JumpIf($75);
+ Emit2($81,$FA); EmitWord($8000); S:=JumpIf($73);
+ K:=JumpIf($74);
  Emit2($09,$C0); BadIf($75); Emit2($83,$7E); Emit($FE); Emit(0); BadIf($74);
  PatchJump(S,CodeSize); PatchJump(R,CodeSize);
  Emit2($83,$7E); Emit($FE); Emit(0); Emit2($74,7);
@@ -10640,22 +15503,27 @@ Begin
 
  RuntimeStandard[18]:=CodeSize; { peek stdin, ^Z represente EOF }
  Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($06);
- Emit($A1); DataAddress(InputAhead); Emit($3D); EmitWord($FFFF); Emit2($74,3); P:=Jump;
- CallTo(RuntimeStandard[48]);
+ Emit($A1); DataAddress(InputAhead); Emit($3D); EmitWord($FFFF); P:=JumpIf($74);
+ CallTo(RtlTarget(RuntimeStandard[48]));
  Emit($A3); DataAddress(InputAhead);
- PatchJump(P,CodeSize); Emit($07); Emit($5F); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($C3);
+ PatchJump(P,CodeSize); Emit($07); Emit($5F); Emit($5E); Emit($5A); Emit($59);
+   Emit($5B); Emit($C3);
  RuntimeStandard[19]:=CodeSize; { consume stdin }
- CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($74,6);
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26); Emit2($74,6);
  Emit2($C7,$06); DataAddress(InputAhead); EmitWord($FFFF); Emit($C3);
 
- RuntimeStandard[20]:=CodeSize; { token entier, sans consommer le separateur final }
+ RuntimeStandard[20]:=CodeSize; { token entier,
+   sans consommer le separateur final }
  Emit($56); Emit($53); Emit($BE); DataAddress(StringScratch+1); Emit2($31,$DB);
- LoopStart:=CodeSize; CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
- Emit($3D); EmitWord(32); Emit2($76,3); Q:=Jump;
- CallTo(RuntimeStandard[19]); JumpTo(LoopStart);
+ LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D);
+   EmitWord(26); P:=JumpIf($75);
+ Emit($3D); EmitWord(32); Q:=JumpIf($76);
+ CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(LoopStart);
  PatchJump(Q,CodeSize); Q:=CodeSize;
- CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(32); Emit2($77,3); R:=Jump;
- CallTo(RuntimeStandard[19]); Emit2($81,$FB); EmitWord(255); Emit2($72,3); S:=Jump;
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(32);
+   R:=JumpIf($77);
+ CallTo(RtlTarget(RuntimeStandard[19])); Emit2($81,$FB); EmitWord(255);
+   S:=JumpIf($72);
  Emit2($88,$04); Emit($46); Emit($43); PatchJump(S,CodeSize); JumpTo(Q);
  PatchJump(P,CodeSize); PatchJump(R,CodeSize);
  Emit2($88,$1E); DataAddress(StringScratch); Emit($5B); Emit($5E);
@@ -10663,40 +15531,47 @@ Begin
 
  RuntimeStandard[21]:=CodeSize; { Read string: ne depasse pas la capacite BX }
  Emit($56); Emit($57); Emit($BE); DataAddress(StringScratch+1); Emit2($31,$FF);
- LoopStart:=CodeSize; Emit2($39,$DF); Emit2($72,3); P:=Jump;
- CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($75,3); Q:=Jump;
- Emit($3D); EmitWord(13); Emit2($75,3); R:=Jump;
- Emit($3D); EmitWord(10); Emit2($75,3); S:=Jump;
- CallTo(RuntimeStandard[19]); Emit2($88,$04); Emit($46); Emit($47); JumpTo(LoopStart);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize); PatchJump(S,CodeSize);
+ LoopStart:=CodeSize; Emit2($39,$DF); P:=JumpIf($72);
+ CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D); EmitWord(26);
+   Q:=JumpIf($75);
+ Emit($3D); EmitWord(13); R:=JumpIf($75);
+ Emit($3D); EmitWord(10); S:=JumpIf($75);
+ CallTo(RtlTarget(RuntimeStandard[19])); Emit2($88,$04); Emit($46); Emit($47);
+   JumpTo(LoopStart);
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
+   PatchJump(S,CodeSize);
  Emit2($89,$F8); Emit($A2); DataAddress(StringScratch); Emit($5F); Emit($5E);
  Emit($B8); DataAddress(StringScratch); Emit2($8C,$DA); Emit($C3);
 
  RuntimeStandard[22]:=CodeSize; { ReadLn consomme CR/LF ou LF }
- LoopStart:=CodeSize; CallTo(RuntimeStandard[18]); Emit($3D); EmitWord(26); Emit2($75,3); P:=Jump;
- Emit($3D); EmitWord(10); Emit2($75,3); Q:=Jump;
- Emit($3D); EmitWord(13); Emit2($75,3); R:=Jump;
- CallTo(RuntimeStandard[19]); JumpTo(LoopStart);
- PatchJump(R,CodeSize); CallTo(RuntimeStandard[19]); CallTo(RuntimeStandard[18]);
- Emit($3D); EmitWord(10); Emit2($74,3); S:=Jump;
- PatchJump(Q,CodeSize); CallTo(RuntimeStandard[19]);
+ LoopStart:=CodeSize; CallTo(RtlTarget(RuntimeStandard[18])); Emit($3D);
+   EmitWord(26); P:=JumpIf($75);
+ Emit($3D); EmitWord(10); Q:=JumpIf($75);
+ Emit($3D); EmitWord(13); R:=JumpIf($75);
+ CallTo(RtlTarget(RuntimeStandard[19])); JumpTo(LoopStart);
+ PatchJump(R,CodeSize); CallTo(RtlTarget(RuntimeStandard[19]));
+   CallTo(RtlTarget(RuntimeStandard[18]));
+ Emit($3D); EmitWord(10); S:=JumpIf($74);
+ PatchJump(Q,CodeSize); CallTo(RtlTarget(RuntimeStandard[19]));
  PatchJump(P,CodeSize); PatchJump(S,CodeSize); Emit($C3);
 
  RuntimeStandard[23]:=CodeSize; { IOResult, lecture et remise a zero }
- Emit($A1); DataAddress(InputError); Emit2($C7,$06); DataAddress(InputError); EmitWord(0); Emit($C3);
+ Emit($A1); DataAddress(InputError); Emit2($C7,$06); DataAddress(InputError);
+   EmitWord(0); Emit($C3);
  RuntimeStandard[24]:=CodeSize; { memoriser une erreur I/O }
  Emit2($83,$3E); DataAddress(InputError); Emit(0); Emit2($75,3);
  Emit($A3); DataAddress(InputError); Emit($C3);
  RuntimeStandard[25]:=CodeSize; { controle $I+ }
- Emit($A1); DataAddress(InputError); Emit2($09,$C0); Emit2($74,3); JumpTo(RuntimeError); Emit($C3);
+ Emit($A1); DataAddress(InputError); Emit2($09,$C0); Emit2($74,3);
+   JumpTo(RtlTarget(RuntimeError)); Emit($C3);
 
  RuntimeStandard[26]:=CodeSize; { GetMem: DOS blocs, header prive 16 octets }
  Emit($55); Emit2($89,$E5); Emit($06); Emit($50);
  Emit2($89,$C3); Emit2($B1,4); Emit2($D3,$EB); Emit($25); EmitWord(15);
  Emit2($74,1); Emit($43); Emit($43); Emit($53);
  Emit($A1); DataAddress(HeapLimit); Emit2($2B,$06); DataAddress(HeapUsed);
- Emit2($39,$C3); Emit2($76,3); P:=Jump;
- Emit2($B4,$48); Emit2($CD,$21); Emit2($73,3); Q:=Jump;
+ Emit2($39,$C3); P:=JumpIf($76);
+ Emit2($B4,$48); Emit2($CD,$21); Q:=JumpIf($73);
  Emit2($8E,$C0); Emit2($31,$FF); Emit($8B); Emit($16); DataAddress(HeapHead);
  Emit($26); Emit2($89,$15); Emit($26); Emit2($C7,$45); Emit(2); EmitWord(0);
  Emit2($8B,$5E); Emit($FC); Emit($26); Emit2($89,$5D); Emit(4);
@@ -10706,64 +15581,78 @@ Begin
  Emit2($09,$D2); Emit2($74,6); Emit2($8E,$C2);
  Emit($26); Emit2($A3,2); Emit(0);
  Emit($A3); DataAddress(HeapHead); Emit2($89,$C2); Emit($42); Emit2($31,$C0);
- Emit2($8B,$4E); Emit($FE); Emit2($8E,$C1); Emit2($89,$EC); Emit($5D); Emit($C3);
- PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(203); CallTo(RuntimeError);
+ Emit2($8B,$4E); Emit($FE); Emit2($8E,$C1); Emit2($89,$EC); Emit($5D);
+   Emit($C3);
+ PatchJump(P,CodeSize); PatchJump(Q,CodeSize); LoadImmediate(203);
+   CallTo(RtlTarget(RuntimeError));
 
- RuntimeStandard[27]:=CodeSize; { Dispose/FreeMem, verifie le header et retire de la liste }
- ErrorCount:=0; Emit($06); Emit2($09,$C0); BadIf($75); Emit2($09,$D2); BadIf($74);
- Emit($4A); Emit2($8E,$C2); Emit($26); Emit2($81,$3E); EmitWord(6); EmitWord($5450); BadIf($75);
+ RuntimeStandard[27]:=CodeSize; { Dispose/FreeMem,
+   verifie le header et retire de la liste }
+ ErrorCount:=0; Emit($06); Emit2($09,$C0); BadIf($75); Emit2($09,$D2);
+   BadIf($74);
+ Emit($4A); Emit2($8E,$C2); Emit($26); Emit2($81,$3E); EmitWord(6);
+   EmitWord($5450); BadIf($75);
  Emit2($09,$F6); Emit2($74,10);
  Emit($26); Emit2($3B,$1E); EmitWord(4); BadIf($75);
  Emit($26); Emit2($8B,$3E); EmitWord(8); Emit2($29,$3E); DataAddress(HeapUsed);
  Emit($26); Emit2($8B,$1E); EmitWord(0); Emit($26); Emit2($8B,$0E); EmitWord(2);
  Emit($26); Emit2($C7,$06); EmitWord(6); EmitWord(0);
- Emit2($09,$DB); Emit2($74,7); Emit2($8E,$C3); Emit($26); Emit2($89,$0E); EmitWord(2);
- Emit2($09,$C9); Emit2($74,7); Emit2($8E,$C1); Emit($26); Emit2($89,$1E); EmitWord(0);
- Emit2($3B,$16); DataAddress(HeapHead); Emit2($75,4); Emit2($89,$1E); DataAddress(HeapHead);
- Emit2($8E,$C2); Emit2($B4,$49); Emit2($CD,$21); BadIf($72); Emit($07); Emit($C3);
+ Emit2($09,$DB); Emit2($74,7); Emit2($8E,$C3); Emit($26); Emit2($89,$0E);
+   EmitWord(2);
+ Emit2($09,$C9); Emit2($74,7); Emit2($8E,$C1); Emit($26); Emit2($89,$1E);
+   EmitWord(0);
+ Emit2($3B,$16); DataAddress(HeapHead); Emit2($75,4); Emit2($89,$1E);
+   DataAddress(HeapHead);
+ Emit2($8E,$C2); Emit2($B4,$49); Emit2($CD,$21); BadIf($72); Emit($07);
+   Emit($C3);
  For K:=1 To ErrorCount Do PatchJump(Errors[K],CodeSize);
- LoadImmediate(204); CallTo(RuntimeError);
+ LoadImmediate(204); CallTo(RtlTarget(RuntimeError));
 
  RuntimeStandard[29]:=CodeSize; { Mark, token prive de la liste d'allocations }
  Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($31,$C0); Emit($C3);
  RuntimeStandard[30]:=CodeSize; { Release jusqu'au token Mark }
  Emit($55); Emit2($89,$D5); LoopStart:=CodeSize;
- Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($39,$EA); Emit2($75,3); P:=Jump;
- Emit2($09,$D2); Emit2($75,3); Q:=Jump;
- Emit($42); Emit2($31,$C0); Emit2($31,$F6); CallTo(RuntimeStandard[27]); JumpTo(LoopStart);
+ Emit($8B); Emit($16); DataAddress(HeapHead); Emit2($39,$EA); P:=JumpIf($75);
+ Emit2($09,$D2); Q:=JumpIf($75);
+ Emit($42); Emit2($31,$C0); Emit2($31,$F6);
+   CallTo(RtlTarget(RuntimeStandard[27])); JumpTo(LoopStart);
  PatchJump(P,CodeSize); Emit($5D); Emit($C3);
- PatchJump(Q,CodeSize); LoadImmediate(204); CallTo(RuntimeError);
+ PatchJump(Q,CodeSize); LoadImmediate(204); CallTo(RtlTarget(RuntimeError));
 
- RuntimeStandard[33]:=CodeSize; { MaxAvail: plus grand bloc DOS, limite quota et Word }
+ RuntimeStandard[33]:=CodeSize; { MaxAvail: plus grand bloc DOS,
+   limite quota et Word }
  Emit($06); Emit($BB); EmitWord($FFFF); Emit2($B4,$48); Emit2($CD,$21);
  Emit($A1); DataAddress(HeapLimit); Emit2($2B,$06); DataAddress(HeapUsed);
  Emit2($39,$C3); Emit2($76,2); Emit2($89,$C3);
- Emit2($09,$DB); Emit2($75,3); P:=Jump; Emit($4B);
- Emit2($81,$FB); EmitWord(4096); Emit2($72,3); R:=Jump;
+ Emit2($09,$DB); P:=JumpIf($75); Emit($4B);
+ Emit2($81,$FB); EmitWord(4096); R:=JumpIf($72);
  Emit2($89,$D8); Emit2($31,$D2); Emit2($B1,4); Emit2($D3,$E0); Q:=Jump;
  PatchJump(R,CodeSize); LoadImmediate($FFFF); Emit2($31,$D2); R:=Jump;
  PatchJump(P,CodeSize); Emit2($31,$C0); Emit2($31,$D2);
  PatchJump(Q,CodeSize); PatchJump(R,CodeSize); Emit($07); Emit($C3);
- RuntimeStandard[46]:=CodeSize; { MemAvail: somme des blocs DOS, sans conserver les sondes }
+ RuntimeStandard[46]:=CodeSize; { MemAvail: somme des blocs DOS,
+   sans conserver les sondes }
  Emit($06); Emit($55); Emit($57); Emit($56); Emit($53); Emit($51);
  Emit2($31,$F6); Emit2($31,$FF);
  Emit2($8B,$0E); DataAddress(HeapLimit); Emit2($2B,$0E); DataAddress(HeapUsed);
- LoopStart:=CodeSize; Emit2($09,$C9); Emit2($75,3); P:=Jump;
+ LoopStart:=CodeSize; Emit2($09,$C9); P:=JumpIf($75);
  Emit($BB); EmitWord($FFFF); Emit2($B4,$48); Emit2($CD,$21);
- Emit2($09,$DB); Emit2($75,3); Q:=Jump;
+ Emit2($09,$DB); Q:=JumpIf($75);
  Emit2($39,$CB); Emit2($76,2); Emit2($89,$CB);
- Emit2($B4,$48); Emit2($CD,$21); Emit2($73,3); R:=Jump;
+ Emit2($B4,$48); Emit2($CD,$21); R:=JumpIf($73);
  Emit2($8E,$C0); Emit($26); Emit2($89,$36); EmitWord(0); Emit2($89,$C6);
  Emit2($01,$DF); Emit($4F); Emit2($29,$D9); JumpTo(LoopStart);
  PatchJump(P,CodeSize); PatchJump(Q,CodeSize); PatchJump(R,CodeSize);
- LoopStart:=CodeSize; Emit2($09,$F6); Emit2($75,3); P:=Jump;
- Emit2($8E,$C6); Emit($26); Emit2($8B,$36); EmitWord(0); Emit2($B4,$49); Emit2($CD,$21); JumpTo(LoopStart);
- PatchJump(P,CodeSize); Emit2($89,$F8); Emit2($89,$FA); Emit2($B1,12); Emit2($D3,$EA);
+ LoopStart:=CodeSize; Emit2($09,$F6); P:=JumpIf($75);
+ Emit2($8E,$C6); Emit($26); Emit2($8B,$36); EmitWord(0); Emit2($B4,$49);
+   Emit2($CD,$21); JumpTo(LoopStart);
+ PatchJump(P,CodeSize); Emit2($89,$F8); Emit2($89,$FA); Emit2($B1,12);
+   Emit2($D3,$EA);
  Emit2($B1,4); Emit2($D3,$E0);
  Emit($59); Emit($5B); Emit($5E); Emit($5F); Emit($5D); Emit($07); Emit($C3);
 
  RuntimeStandard[47]:=CodeSize; { RunError(N): message et terminaison }
- JumpTo(RuntimeError);
+ JumpTo(RtlTarget(RuntimeError));
  EmitFileRuntime;
  EmitOverlayRuntime;
 End;
@@ -10779,22 +15668,44 @@ Begin
  RuntimeErrorText:=AllocData(Length(Msg));
  For K:=1 To Length(Msg) Do Data[RuntimeErrorText+K-1]:=Ord(Msg[K]);
  PatchJump(RuntimeErrorPatch,CodeSize);
- Emit($5B); EmitLoadDS; Emit($50); Emit($53);             { pop bx; ds=donnees; push ax; push bx }
- CallTo(RuntimeStandard[56]);                               { vider Output }
- Emit($5B); Emit($58); Emit($50);                           { pop bx; pop ax; push ax }
+ Emit($5B); EmitLoadDS; Emit($50); Emit($53);             { pop bx; ds=donnees;
+   push ax; push bx }
+ CallTo(RtlTarget(RuntimeStandard[56]));
+   { vider Output }
+ Emit($5B); Emit($58); Emit($50);                           { pop bx; pop ax;
+   push ax }
  Emit($BF); DataAddress(RuntimeErrorText+21); Emit($B9); EmitWord(3);
  L1:=CodeSize;
- Emit2($31,$D2); Emit($BE); EmitWord(10); Emit2($F7,$F6);  { xor dx,dx; mov si,10; div si }
- Emit2($80,$C2); Emit(Ord('0')); Emit2($88,$15); Emit($4F); { add dl,'0'; mov [di],dl; dec di }
+ Emit2($31,$D2); Emit($BE); EmitWord(10); Emit2($F7,$F6);  { xor dx,dx;
+   mov si,10; div si }
+ Emit2($80,$C2); Emit(Ord('0')); Emit2($88,$15); Emit($4F); { add dl,'0';
+   mov [di],dl; dec di }
  Emit($E2); Emit(Byte(Longint(L1)-CodeSize-1));
  Emit($BF); DataAddress(RuntimeErrorText+33); Emit($B9); EmitWord(4);
  L2:=CodeSize;
- Emit2($88,$D8); Emit2($24,$0F); Emit2($04,Ord('0'));       { mov al,bl; and al,15; add al,'0' }
- Emit2($3C,Ord('9')); Emit2($76,2); Emit2($04,7);           { cmp al,'9'; jbe +2; add al,7 }
- Emit2($88,$05); Emit($4F);                                 { mov [di],al; dec di }
+ Emit2($88,$D8); Emit2($24,$0F); Emit2($04,Ord('0'));       { mov al,bl;
+   and al,15; add al,'0' }
+ Emit2($3C,Ord('9')); Emit2($76,2); Emit2($04,7);           { cmp al,'9';
+   jbe +2; add al,7 }
+ Emit2($88,$05); Emit($4F);                                 { mov [di],al;
+   dec di }
  For K:=1 To 4 Do Emit2($D1,$EB);                           { shr bx,1 }
  Emit($E2); Emit(Byte(Longint(L2)-CodeSize-1));
- { Comme TP, le numero est affiche sur trois chiffres ("Runtime error 002 at ...") }
+ If MultiSeg Then Begin
+  { multi-segments : segment du code en cours,
+    relatif au debut du programme (CS - PSP - 16) }
+  Emit2($8C,$CB); Emit2($2B,$1E); DataAddress(PrefixSeg); Emit2($83,$EB);
+    Emit($10);   { mov bx,cs; sub bx,[PrefixSeg]; sub bx,16 }
+  Emit($BF); DataAddress(RuntimeErrorText+28); Emit($B9); EmitWord(4);
+  L2:=CodeSize;
+  Emit2($88,$D8); Emit2($24,$0F); Emit2($04,Ord('0'));
+  Emit2($3C,Ord('9')); Emit2($76,2); Emit2($04,7);
+  Emit2($88,$05); Emit($4F);
+  For K:=1 To 4 Do Emit2($D1,$EB);
+  Emit($E2); Emit(Byte(Longint(L2)-CodeSize-1));
+ End;
+ { Comme TP,
+   le numero est affiche sur trois chiffres ("Runtime error 002 at ...") }
  Emit2($B4,$40); Emit($BB); EmitWord(1); Emit($B9); EmitWord(Length(Msg));
  Emit($BA); DataAddress(RuntimeErrorText); Emit2($CD,$21);
  Emit($58); Emit2($B4,$4C); Emit2($CD,$21);                 { pop ax; exit(al) }
@@ -10811,91 +15722,131 @@ Begin
  TrueText:=StoreString('TRUE'); FalseText:=StoreString('FALSE');
  RuntimeChar:=CodeSize;
  BufferedCharPatch:=Jump; RuntimeRawChar:=CodeSize;
- Emit($1E); EmitLoadDS; Emit2($83,$3E); DataAddress(InputError); Emit(0); Emit($1F); Emit2($74,1); Emit($C3);
- Emit($1E); EmitLoadDS; Emit2($83,$3E); DataAddress(OutputHandle); Emit(1); Emit($1F); Emit2($75,7);
+ Emit($1E); EmitLoadDS; Emit2($83,$3E); DataAddress(InputError); Emit(0);
+   Emit($1F); Emit2($74,1); Emit($C3);
+ Emit($1E); EmitLoadDS; Emit2($83,$3E); DataAddress(OutputHandle); Emit(1);
+   Emit($1F); Emit2($75,7);
  Emit2($89,$C2); Emit2($B4,$02); Emit2($CD,$21); Emit($C3);
  Emit($53); Emit($51); Emit($52); Emit($1E); EmitLoadDS;
  Emit($A2); DataAddress(OutputByte); Emit2($8B,$1E); DataAddress(OutputHandle);
- Emit($B9); EmitWord(1); Emit($BA); DataAddress(OutputByte); Emit2($B4,$40); Emit2($CD,$21);
- Emit2($73,3); P:=Jump; Emit($1F); Emit($5A); Emit($59); Emit($5B); Emit($C3);
+ Emit($B9); EmitWord(1); Emit($BA); DataAddress(OutputByte); Emit2($B4,$40);
+   Emit2($CD,$21);
+ P:=JumpIf($73); Emit($1F); Emit($5A); Emit($59); Emit($5B); Emit($C3);
  PatchJump(P,CodeSize); Emit($A3); DataAddress(InputError);
  Emit($1F); Emit($5A); Emit($59); Emit($5B); Emit($C3);
  RuntimeString:=CodeSize;
  Emit2($89,$C6); Emit2($31,$C9); Emit2($8A,$0C); Emit($46);
  Emit2($09,$C9); Emit2($75,$03); P:=Jump;
  LoopStart:=CodeSize;
- Emit($AC); CallTo(RuntimeChar); Emit($E2);
+ Emit($AC); CallTo(RtlTarget(RuntimeChar)); Emit($E2);
  Emit(Byte(Longint(LoopStart)-CodeSize-1));
  PatchJump(P,CodeSize); Emit($C3);
  RuntimeInteger:=CodeSize;
  Emit2($09,$C0); Emit2($79,$0A); Emit($50);
- LoadImmediate(Ord('-')); CallTo(RuntimeChar); Emit($58); Emit2($F7,$D8);
+ LoadImmediate(Ord('-')); CallTo(RtlTarget(RuntimeChar)); Emit($58); Emit2($F7,
+   $D8);
  RuntimeUnsigned:=CodeSize;
  Emit($BF); DataAddress(NumberBuffer+6); Emit($BB); EmitWord(10);
  Emit2($31,$C9); LoopStart:=CodeSize;
  Emit2($31,$D2); Emit2($F7,$F3); Emit2($80,$C2); Emit(Ord('0'));
  Emit($4F); Emit2($88,$15); Emit($41); Emit2($09,$C0); Emit2($75,0);
  Image[CodeSize-1]:=Byte(Longint(LoopStart)-CodeSize);
- Emit2($89,$FE); LoopStart:=CodeSize; Emit($AC); CallTo(RuntimeChar);
+ Emit2($89,$FE); LoopStart:=CodeSize; Emit($AC); CallTo(RtlTarget(RuntimeChar));
  Emit($E2); Emit(Byte(Longint(LoopStart)-CodeSize-1)); Emit($C3);
  RuntimeBoolean:=CodeSize;
  Emit2($09,$C0); Emit2($74,$06);
  Emit($B8); DataAddress(TrueText); Q:=Jump;
  Emit($B8); DataAddress(FalseText); PatchJump(Q,CodeSize);
- JumpTo(RuntimeString);
+ JumpTo(RtlTarget(RuntimeString));
  RuntimeCopy:=CodeSize;      { DS:SI source, ES:DI dest, CX capacite }
  Emit($06); Emit($1E); Emit($07); { ES=DS, restaurer l'ES de l'appelant }
  Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02);
- Emit2($89,$C8); Emit($AA); Emit2($89,$C1); Emit2($F3,$A4); Emit($07); Emit($C3);
+ Emit2($89,$C8); Emit($AA); Emit2($89,$C1); Emit2($F3,$A4); Emit($07);
+   Emit($C3);
  RuntimeHalt:=CodeSize; BufferedHaltPatch:=Jump;
  RuntimeError:=CodeSize; RuntimeErrorPatch:=Jump;
  LoadDSAddr:=CodeSize; EmitLoadDS; Emit($C3); { DS := donnees }
  LoadESAddr:=CodeSize; EmitLoadES; Emit($C3); { ES := donnees }
  { StackCheck: "call StackCheck; dw N": erreur 202 si SP < N }
  StackCheckAddr:=CodeSize;
- Emit($5B); Emit($2E); Emit2($8B,$07); Emit2($83,$C3); Emit(2); Emit($53); { pop bx; mov ax,cs:[bx]; add bx,2; push bx }
- Emit2($39,$C4); Emit2($73,3); P:=Jump; Emit($C3);                      { cmp sp,ax; jae ok; jmp err; ok: ret }
- PatchJump(P,CodeSize); LoadImmediate(202); JumpTo(RuntimeError);
+ Emit($5B); Emit($2E); Emit2($8B,$07); Emit2($83,$C3); Emit(2); Emit($53);
+   { pop bx; mov ax,cs:[bx]; add bx,2; push bx }
+ Emit2($39,$C4); P:=JumpIf($73); Emit($C3);                      { cmp sp,ax;
+   jae ok; jmp err; ok: ret }
+ PatchJump(P,CodeSize); LoadImmediate(202); JumpTo(RtlTarget(RuntimeError));
  For P:=1 To 17 Do Emit($90);
  EmitStandardRuntime;
  { EmitStandardRuntime remet la table a zero: inscrire ces entrees apres. }
- RuntimeStandard[70]:=LoadDSAddr; RuntimeStandard[71]:=LoadESAddr; RuntimeStandard[72]:=StackCheckAddr;
+ RuntimeStandard[70]:=LoadDSAddr; RuntimeStandard[71]:=LoadESAddr;
+   RuntimeStandard[72]:=StackCheckAddr;
  { WriteBegin [73]: laisse 3 mots de contexte sur la pile de l'appelant }
  RuntimeStandard[73]:=CodeSize; Emit($5B);
- Emit($B8); DataAddress(StandardOutputAddress); Emit2($8C,$DA); CallTo(RuntimeStandard[49]); Emit($52); Emit($50);
- Emit($A1); DataAddress(StandardOutputAddress); CallTo(RuntimeStandard[40]); Emit($50);
+ Emit($B8); DataAddress(StandardOutputAddress); Emit2($8C,$DA);
+   CallTo(RtlTarget(RuntimeStandard[49])); Emit($52); Emit($50);
+ Emit($A1); DataAddress(StandardOutputAddress);
+   CallTo(RtlTarget(RuntimeStandard[40])); Emit($50);
  Emit($53); Emit($C3);
  { WriteEnd [74] / WriteLnEnd [75]: CR LF puis restauration du contexte }
  RuntimeStandard[75]:=CodeSize; Emit($5B);
- LoadImmediate(13); CallTo(RuntimeChar); LoadImmediate(10); CallTo(RuntimeChar); Emit($53);
+ LoadImmediate(13); CallTo(RtlTarget(RuntimeChar)); LoadImmediate(10);
+   CallTo(RtlTarget(RuntimeChar)); Emit($53);
  RuntimeStandard[74]:=CodeSize; Emit($5B);
- Emit($58); CallTo(RuntimeStandard[40]); Emit($58); Emit($5A); CallTo(RuntimeStandard[49]);
+ Emit($58); CallTo(RtlTarget(RuntimeStandard[40])); Emit($58); Emit($5A);
+   CallTo(RtlTarget(RuntimeStandard[49]));
  Emit($53); Emit($C3);
  { ReadBegin [76], ReadEnd [77], ReadLnEnd [78] }
  RuntimeStandard[76]:=CodeSize; Emit($5B);
- Emit($B8); DataAddress(StandardInputAddress); Emit2($8C,$DA); CallTo(RuntimeStandard[41]); Emit($52); Emit($50);
+ Emit($B8); DataAddress(StandardInputAddress); Emit2($8C,$DA);
+   CallTo(RtlTarget(RuntimeStandard[41])); Emit($52); Emit($50);
  Emit($53); Emit($C3);
- RuntimeStandard[78]:=CodeSize; Emit($5B); CallTo(RuntimeStandard[22]); Emit($53);
+ RuntimeStandard[78]:=CodeSize; Emit($5B);
+   CallTo(RtlTarget(RuntimeStandard[22])); Emit($53);
  RuntimeStandard[77]:=CodeSize; Emit($5B);
- Emit($58); Emit($5A); CallTo(RuntimeStandard[41]); Emit($53); Emit($C3);
- { StringArg [79] / BlockArg [80]: copie DX:AX dans N octets reserves sur la pile;
+ Emit($58); Emit($5A); CallTo(RtlTarget(RuntimeStandard[41])); Emit($53);
+   Emit($C3);
+ { StringArg [79] / BlockArg [80]: copie DX:AX dans N octets reserves sur la
+   pile;
    mots apres l'appel: N puis capacite (chaine) ou taille (bloc). }
- RuntimeStandard[79]:=CodeSize; Emit($5B); Emit2($89,$C6);            { pop bx; mov si,ax }
- Emit($2E); Emit2($8B,$07); Emit2($29,$C4); Emit2($89,$E7);          { mov ax,cs:[bx]; sub sp,ax; mov di,sp }
- Emit($2E); Emit2($8B,$4F); Emit(2); Emit2($83,$C3); Emit(4); Emit($53); { mov cx,cs:[bx+2]; add bx,4; push bx }
- Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);         { push ds; push es; es=ss; ds=dx }
- Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8); Emit($AA); Emit2($89,$C1);
+ RuntimeStandard[79]:=CodeSize; Emit($5B); Emit2($89,$C6);            { pop bx;
+   mov si,ax }
+ Emit($2E); Emit2($8B,$07); Emit2($29,$C4); Emit2($89,$E7);
+   { mov ax,cs:[bx]; sub sp,ax; mov di,sp }
+ Emit($2E); Emit2($8B,$4F); Emit(2); Emit2($83,$C3); Emit(4); Emit($53);
+   { mov cx,cs:[bx+2]; add bx,4; push bx }
+ Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);         { push ds;
+   push es; es=ss; ds=dx }
+ Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8);
+   Emit($AA); Emit2($89,$C1);
  Emit2($F3,$A4); Emit($07); Emit($1F); Emit($C3);
- { StringAssign [81]: ES:DI := chaine DX:AX tronquee a la capacite (mot apres l'appel) }
- RuntimeStandard[81]:=CodeSize; Emit($5B); Emit($2E); Emit2($8B,$0F); Emit2($83,$C3); Emit(2); Emit($53);
+ { StringAssign [81]: ES:DI := chaine DX:AX tronquee a la capacite (mot apres
+   l'appel) }
+ RuntimeStandard[81]:=CodeSize; Emit($5B); Emit($2E); Emit2($8B,$0F); Emit2($83,
+   $C3); Emit(2); Emit($53);
  Emit($1E); Emit2($8E,$DA); Emit2($89,$C6);
- Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8); Emit($AA); Emit2($89,$C1);
+ Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8);
+   Emit($AA); Emit2($89,$C1);
  Emit2($F3,$A4); Emit($1F); Emit($C3);
  RuntimeStandard[80]:=CodeSize; Emit($5B); Emit2($89,$C6);
  Emit($2E); Emit2($8B,$07); Emit2($29,$C4); Emit2($89,$E7);
  Emit($2E); Emit2($8B,$4F); Emit(2); Emit2($83,$C3); Emit(4); Emit($53);
  Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);
  Emit2($F3,$A4); Emit($07); Emit($1F); Emit($C3);
+ { StringArg255 [82] : copie sur la pile d'une chaine de capacite 255 (DX:AX),
+   sans mots en ligne }
+ RuntimeStandard[82]:=CodeSize; Emit($5B); Emit2($89,$C6);
+ Emit2($81,$EC); EmitWord(256); Emit2($89,$E7); Emit($B9); EmitWord(255);
+   Emit($53);
+ Emit($1E); Emit($06); Emit($16); Emit($07); Emit2($8E,$DA);
+ Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8);
+   Emit($AA); Emit2($89,$C1);
+ Emit2($F3,$A4); Emit($07); Emit($1F); Emit($C3);
+ { StringAssign255 [83] : ES:DI := chaine DX:AX tronquee a 255 }
+ RuntimeStandard[83]:=CodeSize; Emit($B9); EmitWord(255); Emit($1E); Emit2($8E,
+   $DA); Emit2($89,$C6);
+ Emit2($31,$C0); Emit($AC); Emit2($39,$C8); Emit2($76,$02); Emit2($89,$C8);
+   Emit($AA); Emit2($89,$C1);
+ Emit2($F3,$A4); Emit($1F); Emit($C3);
+ RuntimeBodyEnd:=CodeSize;
  PatchJump(BufferedCharPatch,RuntimeStandard[50]);
  PatchJump(BufferedHaltPatch,RuntimeStandard[55]);
  EmitRuntimeError;
@@ -10903,22 +15854,37 @@ End;
 
 Procedure CompileProgram;
 Var
- I: Word;
+ I: Word; MTotMain: Longint;
 Begin
- CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0; FixupCount:=0;
+ KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047;
+   LitCount:=0;
+ If MultiSeg Then FillChar(Data,SizeOf(Data),0);
+   { la disposition des donnees change entre les passes mono-segment et
+     multi-segments }
+ SegFreeAll; SegCount:=1; CurSeg:=0; CodeRefCount:=0; InDeadBody:=False;
+   SegDepth:=0; SegTooBig:=False; CrtHookSet:=False;
+ FillChar(SegFar,SizeOf(SegFar),0); FillChar(SymSeg,SizeOf(SymSeg),0);
+ FillChar(StaticTemps,SizeOf(StaticTemps),0); StaticTempsUnit:=254;
+   LastTempAddr:=0; LastTempLocal:=False;
+ CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0;
+   FixupCount:=0;
  DebugCount:=0; DebugCaptured:=[]; RealReady:=False; EmulatorReady:=False;
  RealCodeBase:=0; RealCodeEnd:=0; RealDataBase:=0; RealDataEnd:=0;
- EmulatorCodeBase:=0; EmulatorCodeEnd:=0; EmulatorDataBase:=0; EmulatorDataEnd:=0;
+ EmulatorCodeBase:=0; EmulatorCodeEnd:=0; EmulatorDataBase:=0;
+   EmulatorDataEnd:=0;
  FillChar(UnitFeatures,SizeOf(UnitFeatures),0);
  OverlaySelected:=[];
- InitTypes; ScopeCount:=0; CurrentScope:=0; FillChar(Dictionary,SizeOf(Dictionary),0);
+ InitTypes; ScopeCount:=0; CurrentScope:=0; FillChar(Dictionary,
+   SizeOf(Dictionary),0);
  FillChar(Scopes,SizeOf(Scopes),0);
- RelativeCount:=0; UnitOutput:=False;
+ RelativeCount:=0; UnitOutput:=False; PendCount:=0;
  NativeNeeded:=False; NativeRefCount:=0; RelocationCount:=0; NativeInitCount:=0;
  HeapNeeded:=False;
  ObjectCount:=0; ObjectCallCount:=0; ObjectSegmentCount:=0;
- ObjectGroupCount:=0; ObjectPublicCount:=0; ObjectExternalCount:=0; ObjectFixupCount:=0;
- DataFixupCount:=0; ExprLiteral:=False; LoopDepth:=0; LoopJumpCount:=0; LabelJumpCount:=0;
+ ObjectGroupCount:=0; ObjectPublicCount:=0; ObjectExternalCount:=0;
+   ObjectFixupCount:=0;
+ DataFixupCount:=0; ExprLiteral:=False; LoopDepth:=0; StackLoops:=0;
+   LoopJumpCount:=0; LabelJumpCount:=0;
  UnitCount:=0; InitCount:=0; CurrentUnit:=0; Imports:=[]; ImportCount:=0;
  InInterface:=False;
   InstallStandardTypes;
@@ -10926,14 +15892,21 @@ Begin
  Emit($B8); AddSegmentRelocation(CodeSize,3); EmitWord(0); Emit2($8E,$D8);
  Emit2($8C,$06); DataAddress(PrefixSeg); Emit2($8E,$C0); Emit($FC);
  { Mise a zero de la fin du segment de donnees non stockee dans l'EXE
-   (mov di,N; mov cx,M; xor ax,ax; rep stosb), valeurs fixees par WriteExecutable. }
- BssPatch:=CodeSize; Emit($BF); EmitWord(0); Emit($B9); EmitWord(0); Emit2($31,$C0); Emit2($F3,$AA);
+   (mov di,N; mov cx,M; xor ax,ax; rep stosb),
+     valeurs fixees par WriteExecutable. }
+ BssPatch:=CodeSize; Emit($BF); EmitWord(0); Emit($B9); EmitWord(0); Emit2($31,
+   $C0); Emit2($F3,$AA);
  FPUStartup:=CodeSize; Emit($90); Emit($90); Emit($90);
- EntryFixup:=Jump;
+ If MultiSeg Then Begin EntryFixup:=CodeSize; Emit($EA); EmitWord(0);
+   EmitWord(0) End   { JMP FAR vers le corps principal,
+     complete a l'edition de liens }
+ Else EntryFixup:=Jump;
  DataSegVar:=CodeSize; AddSegmentRelocation(CodeSize,3); EmitWord(0);
- EmitRuntime;
+ Inc(RuntimeDepth); EmitRuntime; Dec(RuntimeDepth); RuntimeEnd:=CodeSize;
+ RtlFix:=FixupCount; RtlReloc:=RelocationCount;
  { InOutRes partage l'emplacement de l'erreur d'E/S du runtime. }
- For I:=1 To SymbolCount Do If (Symbols[I].Owner=255) And (Symbols[I].Name='INOUTRES') Then Symbols[I].Addr:=InputError;
+ For I:=1 To SymbolCount Do If (Symbols[I].Owner=255) And
+   (Symbols[I].Name='INOUTRES') Then Symbols[I].Addr:=InputError;
  NextToken;
  If Token=tkUnit Then Begin
   NextToken;
@@ -10956,16 +15929,28 @@ Begin
  ImportLibrarySystem;
  UsesClause;
  DeclarationPart;
-  For I:=1 To SymbolCount Do If (Symbols[I].Owner=0) And (Symbols[I].Scope=0) And
-    (Symbols[I].Kind=skProc) And Not Symbols[I].HasBody Then Fail(59,Symbols[I].Name);
- MainEntry:=CodeSize;
- PatchJump(EntryFixup,CodeSize);
- For I:=1 To InitCount Do CallTo(Units[InitOrder[I]].InitAddress);
+  For I:=1 To SymbolCount Do If (Symbols[I].Owner=0) And (Symbols[I].Scope=0)
+    And
+    (Symbols[I].Kind=skProc) And Not Symbols[I].HasBody Then Fail(59,
+      Symbols[I].Name);
+ If MultiSeg Then Begin
+  { corps principal : dans le segment courant s'il y tient,
+    sinon dans un nouveau segment }
+  SegRoom(MainSizeEst+MainSizeEst Div 16+32+16*InitCount);
+  MainSeg:=CurSeg; MainOff:=CodeSize;
+ End;
+ MainEntry:=CodeSize; MTotMain:=TotalEmitted;
+ If Not MultiSeg Then PatchJump(EntryFixup,CodeSize);
+ For I:=1 To InitCount Do EmitInitCall(InitOrder[I]);
  Need(tkBegin); StatementList(tkEnd); Need(tkEnd);
  If Token<>tkDot Then Need(tkDot);
  { Comme TP, tout ce qui suit "END." est ignore. }
- LoadImmediate(0); CallTo(RuntimeHalt); CheckLabels(0);
+ LoadImmediate(0); CallTo(RtlTarget(RuntimeHalt)); CheckLabels(0);
+ If MultiSeg Then MainSizeEst:=CodeSize-MainOff
+ Else If TotalEmitted-MTotMain>65000 Then MainSizeEst:=65000 Else
+   MainSizeEst:=TotalEmitted-MTotMain;
  ReportSource;
+ If MultiSeg Then SegSave;
 End;
 
 Procedure LoadSource;
@@ -10981,7 +15966,7 @@ Begin
  If E<>0 Then Fail(15,'Fichier introuvable: '+SourceName);
  SourceSize:=FileSize(F);
  If SourceSize>MaxSource Then Begin
-  Close(F); Fail(48,'source > 256 Ko')
+  Close(F); Fail(48,'source > 1 Mo')
  End;
  E:=ReadWhole(F); {$I-} Close(F); If IOResult<>0 Then E:=1; {$I+}
  If E<>0 Then Fail(15,'Lecture du source impossible');
@@ -11001,7 +15986,8 @@ Begin
  For I:=1 To RelocationCount Do
   If Longint(Relocations[I].Segm)*16+Relocations[I].Offs=P Then
    Fail(72,'Relocalisation MZ dupliquee');
- If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
+ If RelocationCount=MaxNativeRefs Then
+   Unsupported('trop de relocalisations MZ');
  Inc(RelocationCount); Relocations[RelocationCount].Segm:=P Div 16;
  Relocations[RelocationCount].Offs:=P Mod 16;
 End;
@@ -11017,7 +16003,8 @@ Begin
      (ObjectFiles[J].Bytes^[Q]=ObjectFiles[I].Bytes^[Q]) Do Inc(Q);
    If Q=ObjectFiles[I].Length Then Duplicate:=True;
   End;
-  If Not Duplicate Then ReadObject(ObjectFiles[I].Path,ObjectFiles[I].Bytes,ObjectFiles[I].Length);
+  If Not Duplicate Then ReadObject(ObjectFiles[I].Path,ObjectFiles[I].Bytes,
+    ObjectFiles[I].Length);
  End;
 End;
 
@@ -11047,14 +16034,16 @@ Begin
 End;
 Function PublicAddress(K: Word): Longint;
 Begin
- PublicAddress:=ObjectSegments[ObjectPublics[K].Segment].Base+ObjectPublics[K].Offset;
+ PublicAddress:=ObjectSegments[ObjectPublics[K].Segment].Base+
+   ObjectPublics[K].Offset;
 End;
 Function PublicFrame(K: Word): Longint;
 Var G,S: Word;
 Begin
  G:=ObjectPublics[K].GroupIndex; S:=ObjectPublics[K].Segment;
  If G<>0 Then PublicFrame:=ObjectGroups[G].Base
- Else PublicFrame:=ObjectSegments[ObjectSegments[S].Root].Base And Not Longint(15);
+ Else PublicFrame:=ObjectSegments[ObjectSegments[S].Root].Base And Not
+   Longint(15);
 End;
 Function TargetAddress(Method: Byte; Index: Word): Longint;
 Begin
@@ -11068,7 +16057,8 @@ End;
 Function TargetFrame(Method: Byte; Index: Word): Longint;
 Begin
  Case Method Of
-  0:TargetFrame:=ObjectSegments[ObjectSegments[Index].Root].Base And Not Longint(15);
+  0:TargetFrame:=ObjectSegments[ObjectSegments[Index].Root].Base And Not
+    Longint(15);
   1:TargetFrame:=ObjectGroups[Index].Base;
   2:TargetFrame:=PublicFrame(ExternalPublics[Index]);
  Else Fail(72,'Methode frame OBJ invalide'); TargetFrame:=0;
@@ -11083,7 +16073,8 @@ Begin
  If SegmentGroups[S]=0 Then LinkedSize:=Align16(LinkedSize);
  ObjectSegments[S].Base:=LinkedSize;
  Inc(LinkedSize,ObjectSegments[S].Length);
- If LinkedSize>MaxLinkedImage Then Fail(49,'Image MZ multi-segments trop grande');
+ If LinkedSize>MaxLinkedImage Then Fail(49,
+   'Image MZ multi-segments trop grande');
  Placed[S]:=True;
 End;
 Begin
@@ -11109,8 +16100,10 @@ Begin
     If ObjectSegments[I].Length>ObjectSegments[R].Length Then
      ObjectSegments[R].Length:=ObjectSegments[I].Length;
    End Else Begin
-    ObjectSegments[I].Contribution:=Aligned(ObjectSegments[R].Length,ObjectSegments[I].Alignment);
-    ObjectSegments[R].Length:=ObjectSegments[I].Contribution+ObjectSegments[I].Length;
+    ObjectSegments[I].Contribution:=Aligned(ObjectSegments[R].Length,
+      ObjectSegments[I].Alignment);
+    ObjectSegments[R].Length:=ObjectSegments[I].Contribution+
+      ObjectSegments[I].Length;
    End;
    If ObjectSegments[I].Alignment>ObjectSegments[R].Alignment Then
     ObjectSegments[R].Alignment:=ObjectSegments[I].Alignment;
@@ -11126,24 +16119,31 @@ Begin
   End;
  For G:=1 To ObjectGroupCount Do Begin
   LinkedSize:=Align16(LinkedSize); ObjectGroups[G].Base:=LinkedSize;
-  For J:=1 To ObjectGroups[G].Count Do PlaceSegment(ObjectSegments[ObjectGroups[G].Members[J]].Root);
+  For J:=1 To ObjectGroups[G].Count Do
+    PlaceSegment(ObjectSegments[ObjectGroups[G].Members[J]].Root);
   If LinkedSize-ObjectGroups[G].Base>65536 Then Fail(49,'Groupe OBJ > 64 Ko');
  End;
- For I:=1 To ObjectSegmentCount Do If ObjectSegments[I].Root=I Then PlaceSegment(I);
+ For I:=1 To ObjectSegmentCount Do If ObjectSegments[I].Root=I Then
+   PlaceSegment(I);
  For I:=1 To ObjectSegmentCount Do Begin
   R:=ObjectSegments[I].Root;
-  If R<>I Then ObjectSegments[I].Base:=ObjectSegments[R].Base+ObjectSegments[I].Contribution;
+  If R<>I Then
+    ObjectSegments[I].Base:=ObjectSegments[R].Base+
+      ObjectSegments[I].Contribution;
   { La longueur de la racine inclut des contributions suivantes, mais son
     tampon ne contient que sa propre contribution. La copie suivante des
     autres contributions remplit ces zones initialement nulles. }
-  Move(ObjectSegments[I].Bytes^,LinkedImage^[ObjectSegments[I].Base],ObjectSegments[I].Length);
+  Move(ObjectSegments[I].Bytes^,LinkedImage^[ObjectSegments[I].Base],
+    ObjectSegments[I].Length);
  End;
  For I:=1 To ObjectPublicCount Do Begin
   G:=ObjectPublics[I].GroupIndex;
-  If (G<>0) And (SegmentGroups[ObjectSegments[ObjectPublics[I].Segment].Root]<>G) Then
+  If (G<>0) And
+    (SegmentGroups[ObjectSegments[ObjectPublics[I].Segment].Root]<>G) Then
    Fail(72,'PUBDEF hors GRPDEF');
  End;
- For I:=1 To ObjectExternalCount Do ExternalPublics[I]:=FindPublic(ObjectExternals[I]);
+ For I:=1 To ObjectExternalCount Do
+   ExternalPublics[I]:=FindPublic(ObjectExternals[I]);
  For I:=1 To ObjectCallCount Do Begin
   Pub:=FindPublic(ObjectCalls[I].Name); P:=ObjectCalls[I].Position;
   Frame:=PublicFrame(Pub); T:=PublicAddress(Pub)-Frame;
@@ -11169,10 +16169,12 @@ Begin
    If Width=1 Then Begin If Addend>=128 Then Dec(Addend,256) End
    Else If Addend>=32768 Then Dec(Addend,65536);
    Value:=T-P-Width+Addend;
-   If (Width=1) And ((Value<-128) Or (Value>127)) Then Fail(48,'FIXUPP relatif byte hors portee');
+   If (Width=1) And ((Value<-128) Or (Value>127)) Then Fail(48,
+     'FIXUPP relatif byte hors portee');
   End Else Value:=T-Frame+Addend;
   If F.Location<>2 Then Begin
-   If Not F.Relative And ((Value<0) Or (Value>65535)) Then Fail(49,'Offset FIXUPP hors frame');
+   If Not F.Relative And ((Value<0) Or (Value>65535)) Then Fail(49,
+     'Offset FIXUPP hors frame');
    If Width=1 Then LinkedImage^[P]:=Byte(Value) Else LinkedWord(P,Word(Value));
   End;
   If F.Location In [2,3] Then Begin
@@ -11188,7 +16190,8 @@ Begin
 End;
 
 Procedure PrepareOverlays;
-Var I,J,OldRefs,Target,ThunkCount,MinAddr,MaxAddr,Chunks,Total,Row: Word; U: Byte;
+Var I,J,OldRefs,Target,ThunkCount,MinAddr,MaxAddr,Chunks,Total,Row: Word;
+  U: Byte;
  Thunks: Array[1..MaxSymbols] Of Record Target,Address: Word End;
  D: DirStr; N: NameStr; E: ExtStr; Name: TShortString; Inside: Boolean;
 Procedure SetDataWord(P,V: Word);
@@ -11196,10 +16199,13 @@ Begin Data[P]:=V And 255; Data[P+1]:=V Shr 8 End;
 Function ThunkFor(Address: Word; Owner: Byte): Word;
 Var K,Position: Word;
 Begin
- For K:=1 To ThunkCount Do If Thunks[K].Target=Address Then Begin ThunkFor:=Thunks[K].Address; Exit End;
+ For K:=1 To ThunkCount Do If Thunks[K].Target=Address Then Begin
+   ThunkFor:=Thunks[K].Address; Exit End;
  If ThunkCount=MaxSymbols Then Fail(123,'Trop de ponts overlay');
- Position:=CodeSize; Emit($50); LoadImmediate(Owner); CallTo(RuntimeStandard[57]); Emit($58); JumpTo(Address);
- Inc(ThunkCount); Thunks[ThunkCount].Target:=Address; Thunks[ThunkCount].Address:=Position; ThunkFor:=Position;
+ Position:=CodeSize; Emit($50); LoadImmediate(Owner);
+   CallTo(RtlTarget(RuntimeStandard[57])); Emit($58); JumpTo(Address);
+ Inc(ThunkCount); Thunks[ThunkCount].Target:=Address;
+   Thunks[ThunkCount].Address:=Position; ThunkFor:=Position;
 End;
 Begin
  If OverlaySelected=[] Then Exit;
@@ -11217,7 +16223,8 @@ Begin
   End;
   If MaxAddr=0 Then MinAddr:=0;
   Row:=OverlayTable+Word(U)*16;
-  SetDataWord(Row+6,1); SetDataWord(Row+8,MinAddr); SetDataWord(Row+10,MaxAddr); SetDataWord(Row+14,Chunks);
+  SetDataWord(Row+6,1); SetDataWord(Row+8,MinAddr); SetDataWord(Row+10,MaxAddr);
+    SetDataWord(Row+14,Chunks);
  End;
  SetDataWord(OverlayBufferSize,Total); SetDataWord(OverlayBankCount,J);
  ThunkCount:=0; OldRefs:=RelativeCount;
@@ -11225,23 +16232,27 @@ Begin
   Target:=RelativeFixups[I].Target;
   If Target<CodeSize Then Begin
    U:=CodeOwners[Target];
-   If (U In OverlaySelected) And (CodeOwners[RelativeFixups[I].Position]<>U) Then
+   If (U In OverlaySelected) And (CodeOwners[RelativeFixups[I].Position]<>U)
+     Then
     PatchJump(RelativeFixups[I].Position,ThunkFor(Target,U));
   End;
  End;
 End;
 
 Procedure WriteOverlayFile(ExePath: TShortString);
-Var B: PBinaryBuffer; F: File; Path: TShortString; Position,Start,At,Last,RelocAt,ChunkStart: Longint;
+Var B: PBinaryBuffer; F: File; Path: TShortString; Position,Start,At,Last,
+  RelocAt,ChunkStart: Longint;
  I,J,Row,Chunks,RelocCount,Checksum,Written: Word; U: Byte; Error: Integer;
 Procedure PutByte(Value: Byte);
-Begin If Position>=SizeOf(TBinaryBuffer) Then Fail(49,'Fichier OVR trop grand'); B^[Position]:=Value; Inc(Position) End;
+Begin If Position>=SizeOf(TBinaryBuffer) Then Fail(49,'Fichier OVR trop grand');
+  B^[Position]:=Value; Inc(Position) End;
 Procedure PutWord(Value: Word);
 Begin PutByte(Value And 255); PutByte(Value Shr 8) End;
 Procedure SetRuntimeWord(P,Value: Word);
 Begin
  Data[P]:=Value And 255; Data[P+1]:=Value Shr 8;
- LinkedImage^[LinkedDataBase+P]:=Value And 255; LinkedImage^[LinkedDataBase+P+1]:=Value Shr 8;
+ LinkedImage^[LinkedDataBase+P]:=Value And 255;
+   LinkedImage^[LinkedDataBase+P+1]:=Value Shr 8;
 End;
 Begin
  If OverlaySelected=[] Then Exit;
@@ -11259,18 +16270,21 @@ Begin
    For I:=1 To RelocationCount Do Begin
     RelocAt:=Longint(Relocations[I].Segm)*16+Relocations[I].Offs;
     If (RelocAt>=At) And (RelocAt<Last) Then Begin
-     If RelocAt+2>Last Then Fail(72,'Relocalisation overlay hors region'); Inc(RelocCount);
+     If RelocAt+2>Last Then Fail(72,'Relocalisation overlay hors region');
+       Inc(RelocCount);
     End;
    End;
    ChunkStart:=At; PutWord(At); PutWord(Last-At); PutWord(RelocCount);
    While At<Last Do Begin PutByte(LinkedImage^[At]); Inc(At) End;
    For I:=1 To RelocationCount Do Begin
     RelocAt:=Longint(Relocations[I].Segm)*16+Relocations[I].Offs;
-    If (RelocAt>=ChunkStart) And (RelocAt<Last) Then PutWord(RelocAt-ChunkStart);
+    If (RelocAt>=ChunkStart) And (RelocAt<Last) Then
+      PutWord(RelocAt-ChunkStart);
    End;
   End;
   Checksum:=0;
-  For At:=Start To Position-1 Do Checksum:=((Checksum Shl 1) Or (Checksum Shr 15))+B^[At];
+  For At:=Start To Position-1 Do Checksum:=((Checksum Shl 1) Or (Checksum Shr
+    15))+B^[At];
   SetRuntimeWord(Row+12,Checksum);
  End;
  Assign(F,Path); {$I-} Rewrite(F,1); Error:=IOResult;
@@ -11278,22 +16292,27 @@ Begin
   At:=0;
   While At<Position Do Begin
    J:=32768; If Position-At<J Then J:=Position-At;
-   BlockWrite(F,B^[At],J,Written); If (IOResult<>0) Or (Written<>J) Then Begin Error:=1; Break End;
+   BlockWrite(F,B^[At],J,Written);
+     If (IOResult<>0) Or (Written<>J) Then Begin Error:=1; Break End;
    Inc(At,J);
   End;
   Close(F); If IOResult<>0 Then Error:=1;
  End;
  {$I+} Dispose(B); If Error<>0 Then Fail(16,'Ecriture OVR impossible');
- For At:=0 To CodeSize-1 Do If CodeOwners[At] In OverlaySelected Then LinkedImage^[At]:=0;
+ For At:=0 To CodeSize-1 Do If CodeOwners[At] In OverlaySelected Then
+   LinkedImage^[At]:=0;
 End;
 
 Function Hex4(Value: Word): String;
 Const Digits: String[16]='0123456789ABCDEF';
 Var S: String[4]; K: Byte;
-Begin S:='0000'; For K:=4 Downto 1 Do Begin S[K]:=Digits[(Value And 15)+1]; Value:=Value Shr 4 End; Hex4:=S End;
+Begin S:='0000'; For K:=4 Downto 1 Do Begin S[K]:=Digits[(Value And 15)+1];
+  Value:=Value Shr 4 End; Hex4:=S End;
 
-Procedure WriteDebugArtifacts(ExePath: TShortString; ResidentSize: Longint; StackSegment,NativeSegment: Word);
-Var MapFile: Text; F: File; B: PBinaryBuffer; P,I,Count,Addr,Bytes: Word; E: Integer;
+Procedure WriteDebugArtifacts(ExePath: TShortString; ResidentSize: Longint;
+  StackSegment,NativeSegment: Word);
+Var MapFile: Text; F: File; B: PBinaryBuffer; P,I,Count,Addr,Bytes: Word;
+  E: Integer;
  U: Byte; MapPath: TShortString;
 Procedure PutByte(V: Byte);
 Begin If P=MaxImage Then Fail(123,'Debug >60000 octets'); B^[P]:=V; Inc(P) End;
@@ -11308,9 +16327,13 @@ Begin
   I:=0;
   For Count:=1 To DebugCount Do If (DebugEntries[Count].Kind=0) And
      (DebugEntries[Count].Address<=LookupAddress) Then
-    If (I=0) Or (DebugEntries[Count].Address>=DebugEntries[I].Address) Then I:=Count;
-  If (I=0) Or (LookupAddress>=CodeSize) Then WriteLn('TPC: aucune ligne source pour /F ',Hex4(LookupAddress Div 16),':',Hex4(LookupAddress Mod 16))
-  Else With DebugEntries[I] Do WriteLn('TPC: /F -> ',FileName,'(',Line,',',Column,')');
+    If (I=0) Or (DebugEntries[Count].Address>=DebugEntries[I].Address) Then
+      I:=Count;
+  If (I=0) Or (LookupAddress>=CodeSize) Then
+    WriteLn('TPC: aucune ligne source pour /F ',Hex4(LookupAddress Div 16),':',
+      Hex4(LookupAddress Mod 16))
+  Else With DebugEntries[I] Do WriteLn('TPC: /F -> ',FileName,'(',Line,',',
+    Column,')');
  End;
  MapPath:=Copy(ExePath,1,Length(ExePath)-4)+'.MAP';
  If MapMode<>0 Then Begin
@@ -11320,25 +16343,34 @@ Begin
   WriteLn(MapFile,'TPC local map 7; addresses relative to MZ load segment');
   WriteLn(MapFile,'Start       Length       Name                 Class');
   WriteLn(MapFile,'0000:0000  ',CodeSize:10,'  TPC_CODE             CODE');
-  WriteLn(MapFile,Hex4(Align16(CodeSize) Div 16),':0000  ',DataSize+BssSize:10,'  TPC_DATA             DATA');
-  If NativeNeeded Then WriteLn(MapFile,Hex4(NativeSegment),':0000  ',NativeDataSize:10,'  BORLAND_DATA         DATA');
+  WriteLn(MapFile,Hex4(Align16(CodeSize) Div 16),':0000  ',DataSize+BssSize:10,
+    '  TPC_DATA             DATA');
+  If NativeNeeded Then WriteLn(MapFile,Hex4(NativeSegment),':0000  ',
+    NativeDataSize:10,'  BORLAND_DATA         DATA');
   For I:=1 To ObjectSegmentCount Do If ObjectSegments[I].Root=I Then
-   WriteLn(MapFile,Hex4(ObjectSegments[I].Base Div 16),':',Hex4(ObjectSegments[I].Base Mod 16),'  ',ObjectSegments[I].Length:10,'  ',ObjectSegments[I].Name,'  ',ObjectSegments[I].ClassName);
-  WriteLn(MapFile,Hex4(StackSegment),':0000  ',StackSize:10,'  TPC_STACK            STACK');
+   WriteLn(MapFile,Hex4(ObjectSegments[I].Base Div 16),':',
+     Hex4(ObjectSegments[I].Base Mod 16),'  ',ObjectSegments[I].Length:10,'  ',
+       ObjectSegments[I].Name,'  ',ObjectSegments[I].ClassName);
+  WriteLn(MapFile,Hex4(StackSegment),':0000  ',StackSize:10,
+    '  TPC_STACK            STACK');
   If MapMode>=2 Then Begin
    WriteLn(MapFile); WriteLn(MapFile,'Address    Publics');
    For I:=1 To DebugCount Do If DebugEntries[I].Kind In [1,2] Then Begin
     Addr:=DebugEntries[I].Address;
-    If DebugEntries[I].Kind=2 Then WriteLn(MapFile,Hex4(Align16(CodeSize) Div 16),':',Hex4(FinalDataAddress(Addr)),'  ',DebugEntries[I].Name)
+    If DebugEntries[I].Kind=2 Then WriteLn(MapFile,
+      Hex4(Align16(CodeSize) Div 16),':',Hex4(FinalDataAddress(Addr)),'  ',
+        DebugEntries[I].Name)
     Else WriteLn(MapFile,'0000:',Hex4(Addr),'  ',DebugEntries[I].Name);
    End;
   End;
   If MapMode=3 Then Begin
    WriteLn(MapFile); WriteLn(MapFile,'Address    Line:Column  Source');
-   For I:=1 To DebugCount Do If DebugEntries[I].Kind=0 Then With DebugEntries[I] Do
+   For I:=1 To DebugCount Do If DebugEntries[I].Kind=0 Then With DebugEntries[I]
+     Do
     WriteLn(MapFile,'0000:',Hex4(Address),'  ',Line,':',Column,'  ',FileName);
    WriteLn(MapFile); WriteLn(MapFile,'Frame offset  Size  Locals');
-   For I:=1 To DebugCount Do If DebugEntries[I].Kind=3 Then With DebugEntries[I] Do
+   For I:=1 To DebugCount Do If DebugEntries[I].Kind=3 Then With DebugEntries[I]
+     Do
     WriteLn(MapFile,SmallInt(Address):12,'  ',Size:4,'  ',Name);
   End;
   E:=IOResult; Close(MapFile); If IOResult<>0 Then E:=1; {$I+}
@@ -11347,18 +16379,76 @@ Begin
  If Not DebugInExe Then Exit;
  New(B); P:=0;
  PutString('TPCDBG7'); { huit octets: 7 suivi de TPCDBG7 }
- PutWord(7); PutWord(DebugCount); PutWord(Word(ResidentSize)); PutWord(Word(ResidentSize Shr 16));
+ PutWord(7); PutWord(DebugCount); PutWord(Word(ResidentSize));
+   PutWord(Word(ResidentSize Shr 16));
  For I:=1 To DebugCount Do With DebugEntries[I] Do Begin
   PutByte(Kind); PutByte(U); Addr:=Address;
-  PutWord(Addr); PutWord(Line); PutWord(Column); PutWord(Size); PutString(FileName); PutString(Name);
+  PutWord(Addr); PutWord(Line); PutWord(Column); PutWord(Size);
+    PutString(FileName); PutString(Name);
  End;
  Bytes:=P; E:=0;
  If DebugInExe Then Begin
   Assign(F,ExePath); {$I-} Reset(F,1); E:=IOResult;
-  If E=0 Then Begin Seek(F,FileSize(F)); BlockWrite(F,B^,Bytes,Count); If IOResult<>0 Then E:=1; If Count<>Bytes Then E:=1; Close(F); If IOResult<>0 Then E:=1 End;
+  If E=0 Then Begin Seek(F,FileSize(F)); BlockWrite(F,B^,Bytes,Count);
+    If IOResult<>0 Then E:=1; If Count<>Bytes Then E:=1; Close(F);
+      If IOResult<>0 Then E:=1 End;
   {$I+} If E<>0 Then Fail(16,'Debug EXE impossible');
  End;
  Dispose(B);
+End;
+
+Procedure MultiSegLoad;
+{ Mode multi-segments : place les segments de code a des frontieres de
+  paragraphe consecutives,
+  applique les fixups de donnees des segments 1..,
+    resout les references de code entre segments,
+  reunit les relocalisations MZ (rebasees sur chaque segment) et recharge le
+    segment 0 dans
+  Image/Fixups pour que la suite de WriteExecutable s'applique a lui comme
+    avant. }
+Var K,J,Sg,W: Word; Total: Longint; P: PImageBuf;
+Procedure AddReloc(Segm,Offs: Word; Kind: Byte);
+Begin
+ If RelocationCount=MaxNativeRefs Then
+   Unsupported('trop de relocalisations MZ');
+ Inc(RelocationCount); Relocations[RelocationCount].Segm:=Segm;
+   Relocations[RelocationCount].Offs:=Offs;
+ RelocationKinds[RelocationCount]:=Kind;
+End;
+Begin
+ If NativeNeeded Or (ObjectCount>0) Or (OverlaySelected<>[]) Or (MapMode<>0) Or
+   DebugInExe Then
+  Unsupported('unites TPU natives, OBJ, overlays, map ou debogage dans ' +
+    'l''EXE avec un code de plus de 64 Ko (mode multi-segments)');
+ If SegSavedCount<>SegCount Then Fail(72,'Segments de code incoherents');
+ Total:=0;
+ For K:=0 To SegCount-1 Do Begin SegParas[K]:=Total Div 16; Inc(Total,
+   Align16(SegSaved[K].Size)) End;
+ MultiCodeBytes:=Total;
+ RelocationCount:=0;
+ { saut FAR du demarrage vers le corps principal }
+ P:=SegSaved[0].Img;
+ P^[EntryFixup+1]:=MainOff And 255; P^[EntryFixup+2]:=MainOff Shr 8;
+ AddReloc(SegParas[0],EntryFixup+3,8+MainSeg);
+ For K:=0 To SegCount-1 Do With SegSaved[K] Do Begin
+  For J:=1 To RelN Do AddReloc(SegParas[K]+Rel^[J].Segm,Rel^[J].Offs,Kinds^[J]);
+  For J:=1 To RefN Do Begin
+   Sg:=Refs^[J].Sym;
+   If Not Symbols[Sg].HasBody Then Fail(59,Symbols[Sg].Name);
+   If Refs^[J].Kind=0 Then Begin
+    W:=Word(Longint(Symbols[Sg].Addr)+Refs^[J].Add);
+    Img^[Refs^[J].Pos]:=W And 255; Img^[Refs^[J].Pos+1]:=W Shr 8;
+   End Else AddReloc(SegParas[K],Refs^[J].Pos,8+SymSeg[Sg]);
+  End;
+  If K>0 Then For J:=1 To FixN Do Begin
+   W:=FinalDataAddress(Fix^[J].DataOffset);
+   Img^[Fix^[J].Position]:=W And 255; Img^[Fix^[J].Position+1]:=W Shr 8;
+  End;
+ End;
+ { le segment 0 redevient le segment courant }
+ CodeSize:=SegSaved[0].Size; Move(SegSaved[0].Img^,Image,CodeSize);
+ FixupCount:=SegSaved[0].FixN; Move(SegSaved[0].Fix^,Fixups,
+   Longint(FixupCount)*SizeOf(TAddressFixup));
 End;
 
 Procedure WriteExecutable;
@@ -11366,7 +16456,7 @@ Var
  H: Array[0..15] Of Word;
  F: File;
  Size, FullSize, AllocParas, HeaderBytes, Location, Written, Chunk: Longint;
- I, Base, StackSeg, Pad, N, DataParas, StoredData, TotalData: Word;
+ I, Base, StackSeg, Pad, N, DataParas, StoredData, TotalData, KernelParas: Word;
  E: Integer;
  Path: TShortString;
  NativeSegment: Word;
@@ -11374,24 +16464,34 @@ Var
  D: DirStr;
  Name: NameStr;
  Ext: ExtStr;
+ CodeBytes: Longint;
 Begin
+ If MultiSeg Then Begin MultiSegLoad;
+   CodeBytes:=MultiCodeBytes End Else CodeBytes:=CodeSize;
  Base:=CodeSize;
  For I:=0 To UnitCount Do If UnitFeatures[I] And 1<>0 Then Begin
   Image[FPUStartup]:=$9B; Image[FPUStartup+1]:=$DB; Image[FPUStartup+2]:=$E3;
  End;
- If HeapNeeded And NativeNeeded Then Unsupported('heap DOS local avec runtime Borland actif');
+ If HeapNeeded And NativeNeeded Then
+   Unsupported('heap DOS local avec runtime Borland actif');
  Data[HeapLimit]:=MaxHeap And 255; Data[HeapLimit+1]:=MaxHeap Shr 8;
  If CodeSize>65520 Then Fail(48,'Segment de code > 65520 octets');
- If Longint(DataSize)+BssSize>65520 Then Fail(49,'Segment de donnees > 65520 octets');
+ If Longint(DataSize)+BssSize>65520 Then Fail(49,
+   'Segment de donnees > 65520 octets');
  TotalData:=DataSize+BssSize;
  { Pointeurs constants vers des variables globales: adresse finale. }
  For I:=1 To DataFixupCount Do Begin
-  N:=Data[DataFixups[I]]+Word(Data[DataFixups[I]+1])*256; N:=FinalDataAddress(N);
+  N:=Data[DataFixups[I]]+Word(Data[DataFixups[I]+1])*256;
+    N:=FinalDataAddress(N);
   Data[DataFixups[I]]:=N And 255; Data[DataFixups[I]+1]:=N Shr 8;
  End;
  { Le code est en CS:0000 et les donnees dans leur propre segment, place au
    paragraphe suivant la fin du code (comme TP: CS puis DS puis pile). }
- LinkedDataBase:=Align16(CodeSize); DataParas:=LinkedDataBase Div 16;
+ { Le segment du noyau (s'il existe) suit le code : CS, noyau, DS }
+ KernelParas:=Align16(CodeBytes) Div 16;
+ LinkedDataBase:=Align16(CodeBytes);
+ If HaveKernel Then LinkedDataBase:=LinkedDataBase+Align16(KSize);
+ DataParas:=LinkedDataBase Div 16;
  { Comme TP, seules les donnees initialisees sont stockees dans l'EXE: la
    fin nulle du segment de donnees est reservee par e_minalloc et remise a
    zero par le code de demarrage. }
@@ -11407,14 +16507,28 @@ Begin
  FullSize:=LinkedDataBase+TotalData;
  Size:=LinkedDataBase+StoredData;
  New(LinkedImage); FillChar(LinkedImage^,SizeOf(TLinkedImage),0);
- For I:=1 To FixupCount Do    PatchWord(Fixups[I].Position,FinalDataAddress(Fixups[I].DataOffset));
+ For I:=1 To FixupCount Do    PatchWord(Fixups[I].Position,
+   FinalDataAddress(Fixups[I].DataOffset));
+ If MultiSeg And CrtHookSet Then Begin
+  { crochet de sortie Crt : pointeur FAR dans le segment de donnees }
+  If RelocationCount=MaxNativeRefs Then
+    Unsupported('trop de relocalisations MZ');
+  Inc(RelocationCount); Relocations[RelocationCount].Segm:=DataParas;
+  Relocations[RelocationCount].Offs:=CrtHook+2;
+    RelocationKinds[RelocationCount]:=8+CrtHookSeg;
+ End;
  For I:=1 To DataFixupCount Do Begin
   { Constante typee PChar: le segment est relocalise par la table MZ. }
-  If RelocationCount=MaxNativeRefs Then Unsupported('trop de relocalisations MZ');
+  If RelocationCount=MaxNativeRefs Then
+    Unsupported('trop de relocalisations MZ');
   Inc(RelocationCount); Relocations[RelocationCount].Segm:=DataParas;
-  Relocations[RelocationCount].Offs:=DataFixups[I]+2; RelocationKinds[RelocationCount]:=2;
+  Relocations[RelocationCount].Offs:=DataFixups[I]+2;
+    RelocationKinds[RelocationCount]:=2;
  End;
  Move(Image,LinkedImage^,CodeSize);
+ If MultiSeg Then For I:=1 To SegCount-1 Do Move(SegSaved[I].Img^,
+   LinkedImage^[Longint(SegParas[I])*16],SegSaved[I].Size);
+ If HaveKernel Then Move(KImage^,LinkedImage^[Longint(KernelParas)*16],KSize);
  If StoredData<>0 Then Move(Data,LinkedImage^[LinkedDataBase],StoredData);
  NativeSegment:=0;
  If NativeNeeded Then Begin
@@ -11430,6 +16544,9 @@ Begin
   Case RelocationKinds[I] Of
    1:LinkedWord(Location,NativeSegment);
    2,3:LinkedWord(Location,DataParas);
+   4:LinkedWord(Location,KernelParas);
+   8..8+MaxSegs-1:LinkedWord(Location,SegParas[RelocationKinds[I]-8]);
+     { segment de code numero n (multi-segments) }
   Else LinkedWord(Location,0);
   End;
  End;
@@ -11441,15 +16558,18 @@ Begin
  AllocParas:=(Longint(StackSize)+Pad+15) Div 16;
  FillChar(H,SizeOf(H),0);
  HeaderBytes:=Align16(32+Longint(RelocationCount)*4);
- H[0]:=$5A4D; H[1]:=(Size+HeaderBytes) Mod 512; H[2]:=(Size+HeaderBytes+511) Div 512;
+ H[0]:=$5A4D; H[1]:=(Size+HeaderBytes) Mod 512;
+   H[2]:=(Size+HeaderBytes+511) Div 512;
  H[3]:=RelocationCount; H[4]:=HeaderBytes Div 16; H[5]:=AllocParas+MinHeap;
  If AllocParas+MaxHeap>65535 Then H[6]:=$FFFF
                              Else H[6]:=AllocParas+MaxHeap;
- If HeapNeeded Then H[6]:=H[5]; { laisser DOS reserver les blocs demandes par GetMem }
+ If HeapNeeded Then H[6]:=H[5];
+   { laisser DOS reserver les blocs demandes par GetMem }
  H[7]:=StackSeg;
  H[8]:=StackSize; H[12]:=32;
  FSplit(SourceName,D,Name,Ext);
- If OutputDir='' Then Path:=D+Name+'.EXE' Else Path:=JoinPath(OutputDir,Name+'.EXE');
+ If OutputDir='' Then Path:=D+Name+'.EXE' Else Path:=JoinPath(OutputDir,
+   Name+'.EXE');
  If Upper(Path)=Upper(SourceName) Then CLIError('Sortie identique au source');
  WriteOverlayFile(Path);
  Assign(F,Path); {$I-} Rewrite(F,1); E:=IOResult; {$I+}
@@ -11485,10 +16605,12 @@ Var
  H: TUnitHeader;
 Begin
  ReadTPUHeader(InspectName,H);
- WriteLn('TPU',H.Signature[3],': en-tete=',SizeOf(H),' octets; fin dictionnaire=',H.EndTrace);
+ WriteLn('TPU',H.Signature[3],': en-tete=',SizeOf(H),
+   ' octets; fin dictionnaire=',H.EndTrace);
  WriteLn('Code=',H.CodeSize,' constantes=',H.ConstSize,' donnees=',H.DataSize);
  WriteLn('Fixups code=',H.CodeFixupSize,' constantes=',H.DataFixupSize);
- If (H.Flags=$8000) And (H.Reserved[0]=$5054) And (H.Reserved[1]=$3143) Then    WriteLn(
+ If (H.Flags=$8000) And (H.Reserved[0]=$5054) And (H.Reserved[1]=$3143) Then
+   WriteLn(
  'Profil TPC1: ABI locale near/CS=DS, non compatible Borland.')
  Else WriteLn('TPUQ Borland: appels far et donnees ordinales; ABI partielle.');
 End;
@@ -11503,10 +16625,13 @@ Begin
  For I:=1 To LibraryCount Do Begin
   H:=LibraryUnits[I].Header;
   Write(LibraryUnits[I].Name,' offset=',LibraryUnits[I].Offset,
-  ' taille=',LibraryUnits[I].Size,' code=',H.CodeSize,' constantes=',H.ConstSize);
-  If (H.Flags=$8000) And (H.Reserved[0]=$5054) And (H.Reserved[1]=$3143) Then      Write(
+  ' taille=',LibraryUnits[I].Size,' code=',H.CodeSize,' constantes=',
+    H.ConstSize);
+  If (H.Flags=$8000) And (H.Reserved[0]=$5054) And (H.Reserved[1]=$3143) Then
+    Write(
   ' profil=TPC1')
-  Else If (H.CodeSize<>0) Or (H.ConstSize<>0) Or (H.DataSize<>0) Then      Write(
+  Else If (H.CodeSize<>0) Or (H.ConstSize<>0) Or (H.DataSize<>0) Then
+    Write(
   ' Borland: ABI ordinale/far')
   Else Write(' TPUQ sans code');
   WriteLn;
@@ -11520,22 +16645,37 @@ End;
 Procedure Help;Begin
  { Ecran d'aide de TPC.EXE 7.0 traduit en francais, meme disposition. }
  WriteLn('Syntaxe: TPC [options] fichier [options]');
- WriteLn('  -B = Compiler toutes les unites        -L = Tampon de liaison sur disque');
- WriteLn('  -D<syms> = Definir des conditionnels   -M = Compiler les unites modifiees');
- WriteLn('  -E<chemin> = Repertoires EXE/TPU       -O<chemin> = Repertoires des objets');
- WriteLn('  -F<seg>:<ofs> = Trouver l''erreur       -Q = Compilation silencieuse');
- WriteLn('  -GD = Fichier map detaille             -T<chemin> = Repertoire TPL/CFG');
- WriteLn('  -GP = Fichier map avec publics         -U<chemin> = Repertoires des unites');
- WriteLn('  -GS = Fichier map avec segments        -V = Infos de debogage dans l''EXE');
- WriteLn('  -I<chemin> = Repertoires d''inclusion   -$<dir> = Directive du compilateur');
- WriteLn('Commutateurs du compilateur: -$<lettre><etat> (defauts indiques ci-dessous)');
- WriteLn('  A+ Alignement sur mot    I+ Controle erreurs E/S  R- Controle des bornes');
- WriteLn('  B- Eval. bool. complete  L+ Symboles debug locaux S+ Controle de pile');
- WriteLn('  D+ Infos de debogage     N- Instructions 80x87    T- Pointeurs types');
- WriteLn('  E+ Emulation 80x87       O- Overlays autorises    V+ Var-strings strictes');
- WriteLn('  F- Appels FAR forces     P- Parametres OpenString X+ Syntaxe etendue');
+ WriteLn('  -B = Compiler toutes les unites        -L = Tampon de liaison ' +
+   'sur disque');
+ WriteLn('  -D<syms> = Definir des conditionnels   -M = Compiler les unites ' +
+   'modifiees');
+ WriteLn('  -E<chemin> = Repertoires EXE/TPU       -O<chemin> = Repertoires ' +
+   'des objets');
+ WriteLn('  -F<seg>:<ofs> = Trouver l''erreur       -Q = Compilation ' +
+   'silencieuse');
+ WriteLn('  -GD = Fichier map detaille             -T<chemin> = Repertoire ' +
+   'TPL/CFG');
+ WriteLn('  -GP = Fichier map avec publics         -U<chemin> = Repertoires ' +
+   'des unites');
+ WriteLn('  -GS = Fichier map avec segments        -V = Infos de debogage ' +
+   'dans l''EXE');
+ WriteLn('  -I<chemin> = Repertoires d''inclusion   -$<dir> = Directive du ' +
+   'compilateur');
+ WriteLn('Commutateurs du compilateur: -$<lettre><etat> (defauts indiques ' +
+   'ci-dessous)');
+ WriteLn('  A+ Alignement sur mot    I+ Controle erreurs E/S  R- Controle ' +
+   'des bornes');
+ WriteLn('  B- Eval. bool. complete  L+ Symboles debug locaux S+ Controle de ' +
+   'pile');
+ WriteLn('  D+ Infos de debogage     N- Instructions 80x87    T- Pointeurs ' +
+   'types');
+ WriteLn('  E+ Emulation 80x87       O- Overlays autorises    V+ Var-strings ' +
+   'strictes');
+ WriteLn('  F- Appels FAR forces     P- Parametres OpenString X+ Syntaxe ' +
+   'etendue');
  WriteLn('  G- Instructions 80286    Q- Controle debordement');
- WriteLn('Tailles memoire: -$M<pile>,<tasmin>,<tasmax>  (defaut: 16384,0,655360)');
+ WriteLn('Tailles memoire: -$M<pile>,<tasmin>,<tasmax>  (defaut: ' +
+   '16384,0,655360)');
 End;
 
 Procedure ProcessArgument(S: TShortString);
@@ -11553,7 +16693,8 @@ Begin
    Case C Of
    '$':
    Begin
-    If (Length(Arg)>0) And (UpCase(Arg[1])='M') Then            MemoryDirective(Copy(Arg,
+    If (Length(Arg)>0) And (UpCase(Arg[1])='M') Then
+      MemoryDirective(Copy(Arg,
     2,255))
     Else SetSwitch(Upper(Arg));
    End;
@@ -11595,24 +16736,34 @@ Begin
    Begin
     If Arg<>'' Then CLIError('Option /M incorrecte'); MakeMode:=True
    End;
-   'I':Begin If Arg='' Then CLIError('Repertoire /I manquant'); IncludeDirs:=Arg End;
+   'I':Begin If Arg='' Then CLIError('Repertoire /I manquant');
+     IncludeDirs:=Arg End;
    'G':Begin
     Arg:=Upper(Arg); If Arg='S' Then MapMode:=1 Else If Arg='P' Then MapMode:=2
     Else If Arg='D' Then Begin MapMode:=3; SetSwitch('D+'); SetSwitch('L+') End
     Else CLIError('Option /G attendue: /GS /GP /GD');
    End;
    'V':Begin
-    If Not ((Arg='') Or (Arg='+') Or (Arg='-')) Then CLIError('Option /V incorrecte');
-    DebugInExe:=Arg<>'-'; If DebugInExe Then Begin SetSwitch('D+'); SetSwitch('L+') End;
+    If Not ((Arg='') Or (Arg='+') Or (Arg='-')) Then
+      CLIError('Option /V incorrecte');
+    DebugInExe:=Arg<>'-'; If DebugInExe Then Begin SetSwitch('D+');
+      SetSwitch('L+') End;
    End;
    'F':Begin
-    P:=Pos(':',Arg); If P=0 Then CLIError('/F exige segment:offset hexadecimal');
-    Val('$'+Copy(Arg,1,P-1),LookupAddress,ErrorCode); If (ErrorCode<>0) Or (LookupAddress<0) Or (LookupAddress>65535) Then CLIError('Segment /F invalide');
+    P:=Pos(':',Arg);
+      If P=0 Then CLIError('/F exige segment:offset hexadecimal');
+    Val('$'+Copy(Arg,1,P-1),LookupAddress,ErrorCode);
+      If (ErrorCode<>0) Or (LookupAddress<0) Or (LookupAddress>65535) Then
+        CLIError('Segment /F invalide');
     LookupAddress:=LookupAddress*16;
-    Val('$'+Copy(Arg,P+1,255),AddressPart,ErrorCode); If (ErrorCode<>0) Or (AddressPart<0) Or (AddressPart>65535) Then CLIError('Offset /F invalide');
-    LookupAddress:=LookupAddress+AddressPart; LookupRequested:=True; SetSwitch('D+');
+    Val('$'+Copy(Arg,P+1,255),AddressPart,ErrorCode);
+      If (ErrorCode<>0) Or (AddressPart<0) Or (AddressPart>65535) Then
+        CLIError('Offset /F invalide');
+    LookupAddress:=LookupAddress+AddressPart; LookupRequested:=True;
+      SetSwitch('D+');
    End;
-   'O':Begin If Arg='' Then CLIError('Repertoire /O manquant'); ObjectDirs:=Arg End;
+   'O':Begin If Arg='' Then CLIError('Repertoire /O manquant');
+     ObjectDirs:=Arg End;
    'L':Begin
     { Tampon de liaison sur disque: l'image est deja construite en memoire
       hote, l'option est acceptee sans effet comme sur un PC bien dote. }
@@ -11622,19 +16773,22 @@ Begin
   End;
  End Else
  Begin
-  If InputName<>'' Then CLIError('Un seul fichier source attendu'); InputName:=S;
+  If InputName<>'' Then CLIError('Un seul fichier source attendu');
+    InputName:=S;
  End;
 End;
 
 Procedure ParseArguments;
-Var I,J,Sep,Err: Integer; Config: Text; S,WordText,Path,Search,Part: TShortString;
+Var I,J,Sep,Err: Integer; Config: Text; S,WordText,Path,Search,
+  Part: TShortString;
  D: DirStr; N: NameStr; E: ExtStr; Quoted: Boolean;
 Begin
  If ParamCount=0 Then Begin Help; Halt(0) End;
  Search:='.;';
  For I:=1 To ParamCount Do Begin
   S:=ParamStr(I);
-  If (Length(S)>2) And (S[1] In ['/','-']) And (UpCase(S[2])='T') Then Search:=Search+Copy(S,3,255)+';';
+  If (Length(S)>2) And (S[1] In ['/',
+    '-']) And (UpCase(S[2])='T') Then Search:=Search+Copy(S,3,255)+';';
  End;
  FSplit(ParamStr(0),D,N,E); Search:=Search+D; Path:='';
  Repeat
@@ -11661,7 +16815,8 @@ Begin
      End;
      If Quoted Then CLIError('Guillemet TPC.CFG non termine');
      If WordText<>'' Then Begin
-      If Not (WordText[1] In ['/','-']) Then CLIError('TPC.CFG contient un nom de source');
+      If Not (WordText[1] In ['/',
+        '-']) Then CLIError('TPC.CFG contient un nom de source');
       ProcessArgument(WordText);
      End;
     End;
@@ -11692,6 +16847,8 @@ Var
  D: DirStr;
  N: NameStr;
  E: ExtStr;
+ PassNo,PassI: Word;
+ Stable: Boolean;
 
 Function ClockHundredths: Longint;
 Var H,M,S,C: Word;
@@ -11701,13 +16858,56 @@ Begin
 End;
 
 Procedure Summary(CodeBytes,DataBytes: Longint);
-{ Ligne de resume de TPC 7.0: "n lines, s seconds, c bytes code, d bytes data." }
+{ Ligne de resume de TPC 7.0: "n lines, s seconds, c bytes code,
+  d bytes data." }
 Var Elapsed: Longint;
 Begin
  Elapsed:=ClockHundredths-StartTime;
  If Elapsed<0 Then Inc(Elapsed,Longint(24)*60*60*100);
- WriteLn(TotalLines,' lignes, ',Elapsed Div 100,'.',(Elapsed Mod 100) Div 10,' secondes, ',
+ WriteLn(TotalLines,' lignes, ',Elapsed Div 100,'.',(Elapsed Mod 100) Div 10,
+   ' secondes, ',
   CodeBytes,' octets de code, ',DataBytes,' octets de donnees.');
+End;
+
+Procedure SmartLink;
+{ DeadProc := routines non atteignables depuis les racines (code principal et
+  initialisations d'unites = CurProc 0, routines de l'interface d'une unite
+  compilee seule). }
+Var Live: Array[1..MaxSymbols] Of Boolean; K,Changed: Word; More: Boolean;
+Begin
+ FillChar(Live,SizeOf(Live),0);
+ For K:=1 To SymbolCount Do If RootProc[K] And UnitOutput Then Live[K]:=True;
+ Repeat
+  More:=False;
+  For K:=1 To EdgeCount Do
+   If ((EdgeFrom[K]=0) Or Live[EdgeFrom[K]]) And Not Live[EdgeTo[K]] Then Begin
+     Live[EdgeTo[K]]:=True; More:=True End;
+ Until Not More;
+ Changed:=0;
+ For K:=1 To SymbolCount Do
+  If (Symbols[K].Kind=skProc) And Symbols[K].HasBody And Not Symbols[K].Native
+    And Not Symbols[K].InlineBody And
+     Not Live[K] And (Symbols[K].Owner<>255) Then Begin
+   DeadProc[K]:=True; Inc(Changed);
+   If GetEnv('TPC_SHOWDEAD')<>'' Then WriteLn(StdErr,'DEAD ',Symbols[K].Name);
+  End;
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SMARTLINK routines retirees: ',
+   Changed);
+End;
+
+Procedure WriteKernelBin;
+{ Unite noyau compilee seule : image brute <UNITE>.BIN (offset 0 =
+  BEGIN_KERNEL). }
+Var F: File; D: DirStr; N: NameStr; E: ExtStr; Path: TShortString; Len: Word;
+  K: Word;
+Begin
+ FSplit(SourceName,D,N,E);
+ If OutputDir='' Then Path:=D+N+'.BIN' Else Path:=JoinPath(OutputDir,N+'.BIN');
+ Len:=KSize;
+ Assign(F,Path); {$I-} Rewrite(F,1); {$I+}
+ If IOResult<>0 Then Fail(16,'Creation impossible: '+Path);
+ {$I-} BlockWrite(F,KImage^,Len); Close(F); {$I+}
+ If IOResult<>0 Then Fail(16,'Ecriture impossible: '+Path);
 End;
 
 BEGIN
@@ -11715,7 +16915,8 @@ BEGIN
  CheckLayout;
  StartTime:=ClockHundredths; TotalLines:=0;
  StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
- OptionBits:=$171D; { defauts TPC 7.0: A+ D+ E+ I+ L+ S+ V+ X+; B F G N O P Q R T desactives }
+ OptionBits:=$171D; { defauts TPC 7.0: A+ D+ E+ I+ L+ S+ V+ X+;
+   B F G N O P Q R T desactives }
  TokenLine:=1; TokenColumn:=1;
  Define('VER70'); Define('MSDOS'); Define('CPU86');
  Banner;
@@ -11733,9 +16934,159 @@ BEGIN
  FindAndReadLibrary;
  Move(Defines,InitialDefines,SizeOf(Defines)); InitialDefineCount:=DefineCount;
  InitialOptions:=OptionBits;
- LoadSource; CompileProgram; LoadObjects; WriteUnits;
+ NoLimit:=GetEnv('TPC_NOLIMIT')<>'';
+ DbgNoJ:=GetEnv('TPC_NOJ')<>''; DbgNoIf:=GetEnv('TPC_NOIF')<>'';
+   DbgNoBack:=GetEnv('TPC_NOBACK')<>''; KeepES:=GetEnv('TPC_KEEPES')<>'';
+ FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),
+   0); FillChar(ForceLong,SizeOf(ForceLong),0);
+ FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),
+   0); FillChar(FrameForce,SizeOf(FrameForce),0); ProcOrd:=0;
+ AnalysisPass:=True; Overflowed:=False; EdgeCount:=0; CurProc:=0;
+   TotalEmitted:=0; JumpOrd:=0; JumpOverflow:=False;
+ ReportCount:=0; RuntimeDepth:=0;
+ FillChar(DeadProc,SizeOf(DeadProc),0); FillChar(RootProc,SizeOf(RootProc),0);
+ { passe 1 : analyse (sauts longs, graphe d'appels) }
+ LoadSource; CompileProgram;
+ AnalysisPass:=False;
+ PassNo:=1;
+ { Mode multi-segments : possible seulement pour un programme (pas une unite ni
+   un noyau) dont le code deborde.
+   TPC_SEGSIZE=n force le mode (segments d'environ n octets) pour essayer le
+     mecanisme sur de petits programmes. }
+ SegCap:=MaxImage-16; SegReserve:=0; MultiSeg:=False; InDeadBody:=False;
+   MainSizeEst:=0;
+ FillChar(RoutSize,SizeOf(RoutSize),0);
+ AllowMulti:=Overflowed And Not UnitOutput And Not HaveKernel And Not NoLimit
+   And (GetEnv('TPC_NOMULTI')='');
+ If (GetEnv('TPC_SEGSIZE')<>'') And Not UnitOutput And Not HaveKernel Then Begin
+  Val(GetEnv('TPC_SEGSIZE'),SegCap,PassI);
+  If (PassI<>0) Or (SegCap<2000) Or (SegCap>MaxImage-16) Then
+    CLIError('TPC_SEGSIZE invalide (2000..65504)');
+  AllowMulti:=True; MultiSeg:=True;
+ End;
+ If Overflowed Or (GetEnv('TPC_NOSMART')='') Then Begin
+  { Edition de liens intelligente (comme TP 7 : les routines inutilisees ne sont
+    pas liees), obligatoire
+    si le segment de code est trop grand : edition de liens intelligente. Les
+      routines
+    inaccessibles depuis le programme (ou, pour une unite, depuis son
+    interface) sont retirees a la recompilation. Les distances mesurees
+    sur un code qui deborde ne sont pas fiables. }
+  SmartLink;
+  FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(FrameNext,SizeOf(FrameNext),
+    0);
+  Overflowed:=False;
+ End;
+ { passes suivantes : sauts courts (jcc/jmp rel8) la ou la passe precedente a
+   montre qu'ils tiennent ;
+   le code ne fait que raccourcir donc les distances aussi : convergence en
+     quelques passes }
+ Repeat
+  Inc(PassNo);
+  Move(ShortNext,ShortPred,SizeOf(ShortPred)); FillChar(ShortNext,
+    SizeOf(ShortNext),0);
+  Move(FrameNext,FramePred,SizeOf(FramePred)); FillChar(FrameNext,
+    SizeOf(FrameNext),0); ProcOrd:=0;
+  Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
+  OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+  TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0;
+    TotalEmitted:=0;
+  JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+  Overflowed:=False; SegTooBig:=False;
+  LoadSource; CompileProgram;
+  If MultiSeg And (NativeNeeded Or (ObjectCount>0) Or (OverlaySelected<>[]) Or
+    (MapMode<>0) Or DebugInExe) Then
+   Fail(48,
+     'Segment de code trop grand (le mode multi-segments ne gere pas les ' +
+       'unites TPU Borland, les OBJ, les overlays, les map ni les infos de ' +
+         'debogage)');
+  If AllowMulti And Not MultiSeg And Overflowed Then Begin
+   { le code deborde de 64 Ko malgre l'edition de liens intelligente : mode
+     multi-segments, les passes
+     reprennent a zero (les mesures de la passe tronquee ne sont pas fiables) }
+   MultiSeg:=True; PassNo:=1; Overflowed:=False;
+   FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(FrameNext,
+     SizeOf(FrameNext),0);
+   FillChar(ForceLong,SizeOf(ForceLong),0); FillChar(FrameForce,
+     SizeOf(FrameForce),0);
+   Stable:=False;
+  End Else Begin
+   Stable:=True;
+   For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then
+     Stable:=False;
+   For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then
+     Stable:=False;
+   If JumpOverflow Then Stable:=False;
+   If GetEnv('TPC_PASSES')<>'' Then Begin
+    Write(StdErr,'  passe ',PassNo,' segments=',SegCount,' stable=',Stable,
+      ' jmpovf=',JumpOverflow,' tropgrand=',SegTooBig,' tailles:');
+    For PassI:=0 To SegCount-1 Do Write(StdErr,' ',SegSaved[PassI].Size);
+    WriteLn(StdErr);
+    Write(StdErr,'   diff ordinaux:');
+    For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then
+      Write(StdErr,' ',PassI,'=',ShortNext[PassI]);
+    For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then
+      Write(StdErr,' F',PassI,'=',FrameNext[PassI]);
+    WriteLn(StdErr);
+   End;
+   If SegTooBig Then Begin
+    { une routine plus grande que prevu : plus de marge a la repartition en
+      segments }
+    If SegReserve>30000 Then Fail(48,'Segment de code trop grand');
+    Inc(SegReserve,SegReserve Div 2+256); Stable:=False;
+   End;
+  End;
+ Until (Stable And Not JumpOverflow And Not SegTooBig) Or
+   (PassNo>=10+4*Ord(MultiSeg));
+ If JumpOverflow Then Begin
+  { filet de securite : derniere passe sans saut court }
+  FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),
+    0);
+  FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),
+    0); ProcOrd:=0;
+  Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
+  OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+  TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0;
+    TotalEmitted:=0;
+  JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+  Overflowed:=False; SegTooBig:=False;
+  LoadSource; CompileProgram;
+  { multi-segments : le code sans saut court est plus grand que prevu,
+    plus de marge a la repartition }
+  While SegTooBig And (SegReserve<=30000) Do Begin
+   Inc(SegReserve,SegReserve Div 2+256); SegTooBig:=False;
+   FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,
+     SizeOf(ShortNext),0);
+   FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,
+     SizeOf(FrameNext),0); ProcOrd:=0;
+   Move(InitialDefines,Defines,SizeOf(Defines));
+     DefineCount:=InitialDefineCount;
+   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0;
+     TotalEmitted:=0;
+   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
+   LoadSource; CompileProgram;
+  End;
+  If Overflowed And Not MultiSeg Then Fail(48,'Segment de code trop grand');
+ End;
+ If SegTooBig Then Fail(48,'Segment de code trop grand');
+ If GetEnv('TPC_PASSES')<>'' Then WriteLn(StdErr,'PASSES ',PassNo,' overflow=',
+   JumpOverflow,' segments=',SegCount);
+ For PassI:=1 To ReportCount Do WriteLn(ReportLines[PassI]);
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);
+ LoadObjects;
+ If HaveKernel And UnitOutput Then WriteKernelBin Else If Not MultiSeg Then
+   WriteUnits;
  If Not UnitOutput Then Begin
   LinkNative; PrepareOverlays; WriteExecutable
  End;
- Summary(CodeSize,DataSize+BssSize);
+ If MultiSeg Then Begin
+  Summary(MultiCodeBytes,DataSize+BssSize);
+  If GetEnv('TPC_SIZES')<>'' Then Begin
+   For PassI:=0 To SegCount-1 Do WriteLn(StdErr,'SEGMENT ',PassI,' ',
+     SegSaved[PassI].Size,' octets, paragraphe ',SegParas[PassI]);
+   WriteLn(StdErr,'CORPS PRINCIPAL segment ',MainSeg,' offset ',MainOff,
+     ' ; RuntimeEnd=',RuntimeEnd);
+  End;
+ End Else Summary(CodeSize,DataSize+BssSize);
 END.
