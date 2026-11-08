@@ -265,7 +265,7 @@ Type
   ByReference, ResultVariable, FarRoutine, ForwardDeclared: Boolean;
   LegacyCall: Boolean;
   AssemblerBody: Boolean;
-  InterruptRoutine, NoFrame: Boolean; { directive interrupt; assembler sans cadre de pile }
+  InterruptRoutine, NoFrame, SkipSub: Boolean; { directive interrupt; assembler sans cadre de pile; frame sans variable locale }
   InlineBody: Boolean;       { Procedure X; Inline(...) }
   DebugVisible: Boolean;
   DebugLine, DebugColumn: Word;
@@ -1923,6 +1923,7 @@ Var
    la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
  JumpOrd: Word;
  DbgNoJ, DbgNoIf, DbgNoBack, KeepES: Boolean;
+ ProcOrd: Word; FramePred, FrameNext, FrameForce: Array[1..8000] Of Boolean;
  ReportLines: Array[1..64] Of String[120];
  ReportCount: Word;
  ShortPred, ShortNext, ForceLong: Array[1..32000] Of Boolean;
@@ -3602,7 +3603,10 @@ Begin
   If Not Symbols[I].NoFrame Then Begin Emit2($89,$EC); Emit($5D) End;
   Emit($CF); Exit;
  End;
- If Not Symbols[I].NoFrame Then Begin Emit2($89,$EC); Emit($5D) End;
+ If Not Symbols[I].NoFrame Then Begin
+  If Not (Symbols[I].SkipSub And (LoopDepth=0)) Then Emit2($89,$EC);
+  Emit($5D)
+ End;
  If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
  { parametres (+ lien statique pour une routine imbriquee) }
  If Symbols[I].Scope<>0 Then EmitWord(Symbols[I].ParamBytes+2) Else EmitWord(Symbols[I].ParamBytes);
@@ -7804,10 +7808,10 @@ Var
  I,Parent,FramePatch,StackCheckPatch,Skip,J,K,T,V,ParamOffset,Size,Link: Word;
  SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,IsExternal,IsConst,DeadHere: Boolean;
  MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur: Word; MTot: Longint;
- Sig: TSymbol; Name: TShortString;
+ Sig: TSymbol; Name: TShortString; MyOrd: Word;
  Names: Array[1..MaxNativeParams] Of String[63]; N: Byte;
 Begin
- IsFunction:=Token=tkFunction; FillChar(Sig,SizeOf(Sig),0);
+ IsFunction:=Token=tkFunction; MyOrd:=0; FillChar(Sig,SizeOf(Sig),0);
  Sig.Kind:=skProc; Sig.Typ:=ttVoid;
  NextToken;
  If Token<>tkIdent Then Fail(2,'Nom de procedure attendu');
@@ -7992,7 +7996,10 @@ Begin
   If OptionBits And 4<>0 Then Begin
    CallTo(RtlTarget(RuntimeStandard[72])); StackCheckPatch:=CodeSize; EmitWord(0);
   End;
-  Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0);
+  { frame sans variable locale (prediction de la passe precedente) : ni "sub sp" ni "mov sp,bp" }
+  Inc(ProcOrd); MyOrd:=ProcOrd; If MyOrd>8000 Then MyOrd:=0;
+  Symbols[I].SkipSub:=(MyOrd<>0) And FramePred[MyOrd] And Not FrameForce[MyOrd] And Not Symbols[I].AssemblerBody;
+  If Not Symbols[I].SkipSub Then Begin Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0) End;
   { saut des declarations (routines imbriquees) seulement s'il y en a }
   Scopes[CurrentScope].SkipJump:=0;
   DeclarationPart;
@@ -8005,6 +8012,11 @@ Begin
  Statement; ProcedureExit; CheckLabels(CurrentScope);
  { La taille de la frame inclut les temporaires alloues par les WITH. }
  If FramePatch<>0 Then PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
+ If (MyOrd<>0) And Not Symbols[I].NoFrame And Not Symbols[I].AssemblerBody And (Scopes[CurrentScope].LocalSize=0) Then FrameNext[MyOrd]:=True;
+ If Symbols[I].SkipSub And (Scopes[CurrentScope].LocalSize<>0) Then Begin
+  { la prediction etait fausse : refaire une passe avec la frame complete }
+  If MyOrd<>0 Then FrameForce[MyOrd]:=True; JumpOverflow:=True;
+ End;
  If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,Scopes[CurrentScope].LocalSize+256);
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',CodeSize-Symbols[I].Addr);
  CurProc:=SavedCur;
@@ -12499,6 +12511,7 @@ BEGIN
  NoLimit:=GetEnv('TPC_NOLIMIT')<>'';
  DbgNoJ:=GetEnv('TPC_NOJ')<>''; DbgNoIf:=GetEnv('TPC_NOIF')<>''; DbgNoBack:=GetEnv('TPC_NOBACK')<>''; KeepES:=GetEnv('TPC_KEEPES')<>'';
  FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(ForceLong,SizeOf(ForceLong),0);
+ FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),0); FillChar(FrameForce,SizeOf(FrameForce),0); ProcOrd:=0;
  AnalysisPass:=True; Overflowed:=False; EdgeCount:=0; CurProc:=0; TotalEmitted:=0; JumpOrd:=0; JumpOverflow:=False;
  ReportCount:=0; RuntimeDepth:=0;
  FillChar(DeadProc,SizeOf(DeadProc),0); FillChar(RootProc,SizeOf(RootProc),0);
@@ -12512,7 +12525,7 @@ BEGIN
     interface) sont retirees a la recompilation. Les distances mesurees
     sur un code qui deborde ne sont pas fiables. }
   SmartLink;
-  FillChar(ShortNext,SizeOf(ShortNext),0);
+  FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(FrameNext,SizeOf(FrameNext),0);
   Overflowed:=False;
  End;
  { passes suivantes : sauts courts (jcc/jmp rel8) la ou la passe precedente a montre qu'ils tiennent ;
@@ -12520,6 +12533,7 @@ BEGIN
  Repeat
   Inc(PassNo);
   Move(ShortNext,ShortPred,SizeOf(ShortPred)); FillChar(ShortNext,SizeOf(ShortNext),0);
+  Move(FrameNext,FramePred,SizeOf(FramePred)); FillChar(FrameNext,SizeOf(FrameNext),0); ProcOrd:=0;
   Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
@@ -12527,11 +12541,13 @@ BEGIN
   LoadSource; CompileProgram;
   Stable:=True;
   For PassI:=1 To 32000 Do If ShortNext[PassI]<>ShortPred[PassI] Then Stable:=False;
+  For PassI:=1 To 8000 Do If FrameNext[PassI]<>FramePred[PassI] Then Stable:=False;
   If JumpOverflow Then Stable:=False;
  Until (Stable And Not JumpOverflow) Or (PassNo>=10);
  If JumpOverflow Then Begin
   { filet de securite : derniere passe sans saut court }
   FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0);
+  FillChar(FramePred,SizeOf(FramePred),0); FillChar(FrameNext,SizeOf(FrameNext),0); ProcOrd:=0;
   Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
   OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
   TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
