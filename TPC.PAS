@@ -2816,6 +2816,12 @@ End;
 
 Procedure Emit(B: Byte);Begin
  Inc(TotalEmitted);
+ { Multi-segments : toute emission invalide la fin de la derniere sequence de comparaison. Sinon une valeur perimee
+   (sequence deja consommee par JumpZero) peut coincider plus tard avec CodeSize, par exemple quand un appel FAR
+   de 9 octets remplace une sequence de meme longueur, et faire retirer 7 octets d'un code sans rapport.
+   (Defaut latent aussi en mode normal ; il n'y est pas corrige pour garder des EXE identiques.) }
+ If MultiSeg Then CondTail:=0;
+
  { multi-segments : un corps annule ou un segment plein ne perd que des octets (positions figees) }
  If (MultiSeg Or InDeadBody) And (CodeSize>=MaxImage-16) Then Begin
   If Not InDeadBody Then SegTooBig:=True;
