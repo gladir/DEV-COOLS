@@ -808,6 +808,10 @@ Voici la liste des différents fichiers (les commandes) proposés dans DEV-COOLS
 			<td>Cette commande permet de lancer le compilateur Modula-3 pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
 		</tr>
 		<tr>
+			<td><b>MSP430.PAS</b></td>
+			<td>Cette commande permet de lancer l'emulateur de microcontroleur MSP430.</td>
+		</tr>
+		<tr>
 			<td><b>NES.PAS</b></td>
 			<td>Cette commande permet de lancer un émulateur NES.</td>
 		</tr>
