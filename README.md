@@ -17,9 +17,11 @@ Enfin, DEV-COOLS cherche à couvrir une grande partie du cycle de développement
 
 <h3>Outils graphiques</h3>
 
-Il possède également plusieurs environnements de développement intégrés, aussi appelés IDE, comme DEVENV :
+Il possède également plusieurs environnements de développement intégrés, aussi appelés IDE, comme INSURRECTION (DEVENV.PAS) :
 
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
+
+<img width="643" height="481" alt="image" src="https://github.com/user-attachments/assets/cc59745f-6863-446a-a953-6d5a96c00f14" />
 
 <ul>	
 	<li>Celui-ci prend en charge un éditeur de texte évolué permettant de créer, d’ouvrir, de modifier et d’enregistrer du code source dans de nombreux langages de programmation, notamment ABAP/4, Ada, Assembleur pour les processeurs 8086, 80386 et 68000, C, C#, Java, Lua, Modula-3, Pascal, Oberon, Perl, PHP, PL/1, Power FX, Python, Ruby, Rust, SAS, Snobol, Visual Basic 6, Visual Basic .NET, X++ et plusieurs autres langages.</li>
