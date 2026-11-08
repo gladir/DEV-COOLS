@@ -23,6 +23,8 @@ Il possède également plusieurs environnements de développement intégrés, au
 
 <img width="639" height="479" alt="image" src="https://github.com/user-attachments/assets/bc6193a5-1ae5-471b-a9d5-54619b45407b" />
 
+<img width="643" height="486" alt="image" src="https://github.com/user-attachments/assets/10e61475-af1b-4fab-8ff7-967a134608b3" />
+
 <ul>	
 	<li>Celui-ci prend en charge un éditeur de texte évolué permettant de créer, d’ouvrir, de modifier et d’enregistrer du code source dans de nombreux langages de programmation, notamment ABAP/4, Ada, Assembleur pour les processeurs 8086, 80386 et 68000, C, C#, Java, Lua, Modula-3, Pascal, Oberon, Perl, PHP, PL/1, Power FX, Python, Ruby, Rust, SAS, Snobol, Visual Basic 6, Visual Basic .NET, X++ et plusieurs autres langages.</li>
 	<li>Il prend également en charge un éditeur hexadécimal permettant d’afficher et de modifier directement le contenu binaire d’un fichier. Cet éditeur peut être utilisé pour examiner les octets, les adresses mémoire, les structures internes et les valeurs numériques contenues dans différents formats de fichiers.</li>
