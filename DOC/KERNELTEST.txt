@@ -37,6 +37,12 @@ Syntaxe
   /KTDRIVE:A|C       A (defaut) : image montee comme disquette 00h ;
                      C : meme image montee comme disque dur 80h (geometrie CHS
                      2 tetes x 18 secteurs, sans MBR).
+  /KTBOOT            amorcage REEL : construit l'image FAT16 de 256 Mo (MBR + VBR,
+                     IO.SYS et MSDOS.SYS requis a la racine du dossier, comme
+                     Start-KernelDos), la monte comme disque dur 80h et execute le
+                     secteur 0 en 0000:7C00 au lieu de charger IO.SYS directement.
+                     Permet de verifier le chargeur d'IO.SYS et le decalage de
+                     partition (63 secteurs caches).
   /KTIMAGE:fich      emplacement de l'image generee (defaut /tmp/kerneltest.img
                      sous Linux, %TEMP%\KERNELTEST.IMG sous Windows).
 

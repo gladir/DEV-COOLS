@@ -13079,7 +13079,9 @@ Procedure ShowHelp;Begin
  ConRawWriteLn('                              /KTINT[:21,13] (journal des INT), /KTTRACE:n,');
  ConRawWriteLn('                              /KTBREAK:seg:ofs, /KTLOAD:seg, /KTSTACK:seg:ofs,');
  ConRawWriteLn('                              /KTDRIVE:A|C (disquette A: ou disque dur 80h),');
- ConRawWriteLn('                              /KTIMAGE:fich.img (voir DOC/KERNELTEST.txt).');
+ ConRawWriteLn('                              /KTIMAGE:fich.img, /KTBOOT (amorcage reel MBR/VBR');
+ ConRawWriteLn('                              d''une image FAT16 comme Start-KernelDos;');
+ ConRawWriteLn('                              IO.SYS et MSDOS.SYS requis; voir DOC/KERNELTEST.txt).');
  ConRawWriteLn('  /NC                         Ouvrir le '+
    'Terminal en Norton Commander');
  ConRawWriteLn('                              d'+#138+'s le d'+#130+'marrage');
@@ -13286,6 +13288,7 @@ Var
  KtPend: Array[0..KT_MAXPEND - 1] Of TKtPend;
  KtPendN: Integer;
  KtLogActive: Boolean;
+ KtBoot: Boolean;    { /KTBOOT : amorcage reel MBR/VBR d une image FAT16 (comme Start-KernelDos) }
  KtHard: Boolean;    { /KTDRIVE:C : image montee comme disque dur 80h au lieu de A: }
 
 Procedure RunKernelTest; Forward;
@@ -13371,6 +13374,8 @@ Begin
   If UpCaseStr(Val1) = 'C' Then KtHard := True
   Else If UpCaseStr(Val1) = 'A' Then KtHard := False
   Else FatalError('/KTDRIVE:A ou /KTDRIVE:C attendu');
+ End Else If Key = 'KTBOOT' Then Begin
+  KtBoot := True; KtHard := True;
  End Else If Key = 'KTIMAGE' Then Begin
   If Val1 = '' Then FatalError('/KTIMAGE:fichier.img attendu');
   KtImagePath := Val1;
@@ -215276,9 +215281,10 @@ Procedure Kdos_ScanRecursive(HostPath: TString; ParentIdx: Integer);
 Var SR: SearchRec; ThisIdx: Integer; SubPath: TString;
 Begin
  If KdosScanError <> '' Then Exit;
- If (Length(HostPath) = 0) Or (HostPath[Length(HostPath)] <> '\') Then HostPath
-   := HostPath + '\';
- FindFirst(HostPath + '*.*', AnyFile, SR);
+ If (Length(HostPath) = 0) Or ((HostPath[Length(HostPath)] <> '\') And
+   (HostPath[Length(HostPath)] <> DirectorySeparator)) Then HostPath
+   := HostPath + DirectorySeparator;
+ FindFirst(HostPath + '*', AnyFile, SR);
  While DosError = 0 Do Begin
   If (SR.Name <> '.') And (SR.Name <> '..') Then Begin
    If KdosEntryCnt >= KDOS_MAX_ENTRIES Then Begin
@@ -215297,7 +215303,7 @@ Begin
     KdosEntries[ThisIdx].HostFull := HostPath + SR.Name;
     KdosEntries[ThisIdx].Attr := $10; { Directory }
     Inc(KdosEntryCnt);
-    SubPath := HostPath + SR.Name + '\';
+    SubPath := HostPath + SR.Name + DirectorySeparator;
     Kdos_ScanRecursive(SubPath, ThisIdx);
    End Else Begin
     KdosEntries[ThisIdx].HostFull := HostPath + SR.Name;
@@ -215403,7 +215409,9 @@ Var
 Begin
  Emu_BuildKernelDosImage := False;
  ErrMsg := '';
- If FolderPath[Length(FolderPath)] <> '\' Then FolderPath := FolderPath + '\';
+ If (FolderPath[Length(FolderPath)] <> '\') And
+   (FolderPath[Length(FolderPath)] <> DirectorySeparator) Then
+   FolderPath := FolderPath + DirectorySeparator;
 
  { --- Parcours recursif complet de FolderPath --- }
  KdosEntryCnt := 0;
@@ -227788,7 +227796,11 @@ Begin
   ImgPath := GetEnv('TEMP') + '\KERNELTEST.IMG';
   {$ENDIF}
  End;
- If Not Kt_BuildFat12(KtDir, ImgPath, Err) Then Begin
+ If KtBoot Then Begin
+  If Not Emu_BuildKernelDosImage(KtDir, ImgPath, 'IO.SYS', 'MSDOS.SYS', Err) Then Begin
+   KtOut('KERNELTEST: echec de construction de l''image FAT16 : ' + Err); Halt(1);
+  End;
+ End Else If Not Kt_BuildFat12(KtDir, ImgPath, Err) Then Begin
   KtOut('KERNELTEST: echec de construction de l''image : ' + Err); Halt(1);
  End;
  IoIdx := -1;
@@ -227822,7 +227834,7 @@ Begin
  If Not Emu_MountDiskSlot(SlotIdx, ImgPath) Then Begin
   KtOut('KERNELTEST: montage de ' + ImgPath + ' impossible'); Halt(1);
  End;
- If KtHard Then Begin
+ If KtHard And (Not KtBoot) Then Begin
   { disque dur de 1,44 Mo SANS table de partitions : geometrie CHS = celle du }
   { BPB (80 cyl. x 2 tetes x 18 sect.), sinon l emulateur suppose 255x63 et   }
   { un noyau qui convertit LBA->CHS avec son BPB lirait le mauvais secteur. }
@@ -227855,7 +227867,8 @@ Begin
  EmuDpmi.Active := False;
  Emu_DefaultVectorsInit(EmuPanel);
  { --- chargement d IO.SYS a KtLoadSeg:0000 (convention des VBR MS-DOS : 0070) --- }
- Emu_WriteBlock(EmuPanel.CPU, KtLoadSeg, 0, IoBuf^, Word(IoSize));
+ If Not KtBoot Then
+  Emu_WriteBlock(EmuPanel.CPU, KtLoadSeg, 0, IoBuf^, Word(IoSize));
  Dispose(IoBuf);
  EmuPanel.CPU.Segs.CS := KtLoadSeg;
  EmuPanel.CPU.IP := 0;
@@ -227881,6 +227894,15 @@ Begin
  KtTotalDone := 0; KtStopReason := KTR_COUNT; KtTraceCnt := 0; KtPendN := 0;
  KtKeyHead := 0; KtKeyTail := 0; KtRunTo := False;
  KtLogActive := KtIntOn;
+ If KtBoot Then Begin
+  If Not Emu_LoadBootSector(EmuPanel.CPU, SlotIdx) Then Begin
+   KtOut('KERNELTEST: lecture du secteur 0 impossible'); Halt(1);
+  End;
+  EmuPanel.CPU.Regs.AX := 0; EmuPanel.CPU.Regs.BX := 0;
+  EmuPanel.CPU.Regs.CX := 0; EmuPanel.CPU.Regs.SI := 0;
+  EmuPanel.CPU.Regs.DI := 0; EmuPanel.CPU.Regs.BP := 0;
+  EmuPanel.CPU.Flags.Base := $0202;
+ End;
  KtOut('KERNELTEST: IO.SYS ' + IntToStr(IoSize) + ' octets charge a ' +
   HexWord(KtLoadSeg) + ':0000, image ' + ImgPath + ' sur DL=' + HexByte(EmuPanel.CPU.Regs.DL) + ', SS:SP=' +
   HexWord(EmuPanel.CPU.Segs.SS) + ':' + HexWord(EmuPanel.CPU.Regs.SP) +
