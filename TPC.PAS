@@ -2888,6 +2888,13 @@ Begin
  End;
 End;
 
+Procedure ZeroAH;
+{ xor ah,ah sauf si le code se termine deja par xor ah,ah }
+Begin
+ If (CodeSize>=2) And (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) And (LastJumpTarget<>CodeSize) Then Exit;
+ Emit2($30,$E4);
+End;
+
 Function RightLocalWord(PushPos: Word; Var D: Longint): Boolean;
 { Le membre droit d'une operation binaire se resume a "mov ax,[bp+d]" (mot de la frame) emis
   juste apres le "push ax" (PushPos-1) : retire le push et le mov, rend d. }
@@ -3606,7 +3613,7 @@ End;
 
 
 Procedure ProcedureExit;
-Var I,A: Word;
+Var I,A: Word; Done: Boolean;
 Begin
  I:=Scopes[CurrentScope].ProcSymbol;
  If (Symbols[I].ResultSymbol<>0) And Not Symbols[I].AssemblerBody Then Begin
@@ -3630,10 +3637,22 @@ Begin
   End Else Begin
   { AX/AL contient le resultat ordinal apres restauration de la frame. }
   A:=Symbols[Symbols[I].ResultSymbol].Addr;
-  { resultat tout juste stocke dans la variable : AX le contient deja }
-  If Not ((Symbols[I].Width=2) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=3) And
-     (LastJumpTarget<>CodeSize) And (Image[CodeSize-3]=$89) And (Image[CodeSize-2]=$46) And
-     (Image[CodeSize-1]=Byte(A))) Then Begin Emit($8B); EmitBP(0,SmallInt(A)) End;
+  { resultat tout juste stocke dans la variable : AX le contient deja, et la frame va disparaitre :
+    le stockage est inutile }
+  Done:=False;
+  If (LastJumpTarget<>CodeSize) And (Not Symbols[I].NoFrame) Then Begin
+   If (Symbols[I].Width=2) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=3) And
+      (Image[CodeSize-3]=$89) And (Image[CodeSize-2]=$46) And (Image[CodeSize-1]=Byte(A)) Then Begin
+    Dec(CodeSize,3); Done:=True;
+   End Else If (Symbols[I].Width=2) And (CodeSize>=4) And (Image[CodeSize-4]=$89) And (Image[CodeSize-3]=$86) And
+      (SmallInt(Image[CodeSize-2]+Word(Image[CodeSize-1])*256)=SmallInt(A)) Then Begin
+    Dec(CodeSize,4); Done:=True;
+   End Else If (Symbols[I].Width=1) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=3) And
+      (Image[CodeSize-3]=$88) And (Image[CodeSize-2]=$46) And (Image[CodeSize-1]=Byte(A)) Then Begin
+    Dec(CodeSize,3); Done:=True;
+   End;
+  End;
+  If Not Done Then Begin Emit($8B); EmitBP(0,SmallInt(A)) End;
   If Symbols[I].Width=4 Then Begin
    Emit2($8B,$96); EmitWord(A+2);
   End;
@@ -4964,7 +4983,7 @@ Begin
     End Else Begin
     If T<>Symbols[I].ParamTypes[J] Then Fail(26,'Type du parametre valeur');
     If Symbols[I].ParamWidths[J]=1 Then Begin
-     If Symbols[I].ParamSigned[J] Then Emit($98) Else Emit2($30,$E4);
+     If Symbols[I].ParamSigned[J] Then Emit($98) Else ZeroAH;
     End;
     Emit($50); { TP6 empile les scalaires courts dans un mot }
     End;
@@ -5043,7 +5062,7 @@ Begin
     If (OptionBits And 2<>0) And (Types[T].Typ In [ttInteger,ttChar,ttBoolean,ttEnum]) Then
      RangeBounds(Types[T].LowBound,Types[T].HighBound,ExprType);
     If Types[T].Width=1 Then Begin
-     If Types[T].Signed Then Emit($98) Else Emit2($30,$E4);
+     If Types[T].Signed Then Emit($98) Else ZeroAH;
     End;
     If (Types[T].Width=4) And (Types[ExprType].Width<>4) Then Begin
      If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
@@ -5059,7 +5078,19 @@ Begin
      If Types[T].Typ=ttString Then Begin CallTo(RtlTarget(RuntimeStandard[79])); EmitWord(N); EmitWord(Types[T].Capacity) End
      Else Begin CallTo(RtlTarget(RuntimeStandard[80])); EmitWord(N); EmitWord(TypeExtras[T].Size) End;
     End Else Begin
-     If Types[T].Width=4 Then Emit($52); Emit($50);
+     { variable de la frame : push [bp+d] directement }
+     If (LastJumpTarget<>CodeSize) And (Types[T].Width=2) And (CodeSize>=3) And (Image[CodeSize-3]=$8B) And (Image[CodeSize-2]=$46) Then Begin
+      Image[CodeSize-3]:=$FF; Image[CodeSize-2]:=$76;
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=2) And (CodeSize>=4) And (Image[CodeSize-4]=$8B) And (Image[CodeSize-3]=$86) Then Begin
+      Image[CodeSize-4]:=$FF; Image[CodeSize-3]:=$B6;
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=4) And (CodeSize>=6) And (Image[CodeSize-6]=$8B) And (Image[CodeSize-5]=$46) And
+        (Image[CodeSize-3]=$8B) And (Image[CodeSize-2]=$56) And (Image[CodeSize-1]=Byte(Image[CodeSize-4]+2)) Then Begin
+      { mov ax,[bp+d]; mov dx,[bp+d+2]  ->  push [bp+d+2]; push [bp+d] }
+      V:=Image[CodeSize-4]; CodeSize:=CodeSize-6;
+      Emit2($FF,$76); Emit(Byte(V+2)); Emit2($FF,$76); Emit(Byte(V));
+     End Else Begin
+      If Types[T].Width=4 Then Emit($52); Emit($50);
+     End;
     End;
    End;
   End;
@@ -7186,7 +7217,7 @@ Begin
   If OptionBits And 2<>0 Then RangeBounds(Types[SymbolType(I)].LowBound,Types[SymbolType(I)].HighBound,ExprType);
   { Comme TP, la borne est tronquee a la taille de la variable de controle
     (For B:=1 To -1 avec B: Byte boucle jusqu'a 255 puis s'arrete). }
-  If Symbols[I].Width=1 Then Emit2($30,$E4);
+  If Symbols[I].Width=1 Then ZeroAH;
   Emit($50); Need(tkDo);
   Start:=CodeSize; LoadSymbol(I); Emit2($89,$E3); Emit($36); Emit2($3B,$07);
   If Types[SymbolType(I)].Signed Then Begin
