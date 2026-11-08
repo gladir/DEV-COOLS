@@ -3699,6 +3699,10 @@ Begin
  If Symbols[I].InterruptRoutine Then Begin
   { procedure interrupt : le corps assembleur gere les registres, IRET }
   If Not Symbols[I].NoFrame Then Begin Emit2($89,$EC); Emit($5D) End;
+  If Not Symbols[I].NoFrame And Not Symbols[I].AssemblerBody Then Begin
+   Emit2($83,$C4); Emit(4);
+   Emit($5D); Emit($07); Emit($1F); Emit($5F); Emit($5E); Emit($5A); Emit($59); Emit($5B); Emit($58);
+  End;
   Emit($CF); Exit;
  End;
  If Not Symbols[I].NoFrame Then Begin
@@ -8242,6 +8246,14 @@ Begin
    (Symbols[I].ParamCount=0) And (Token=tkAsm);
  StackCheckPatch:=0; FramePatch:=0; Skip:=0;
  If Not Symbols[I].NoFrame Then Begin
+  { procedure interrupt a corps Pascal (comme Turbo Pascal) : sauvegarde de AX BX CX DX SI DI DS ES BP, DS = segment
+    de donnees, puis deux mots factices tenant lieu d'adresse de retour (les parametres Flags,CS,IP,AX..BP
+    se lisent alors comme ceux d'une routine FAR) }
+  If Symbols[I].InterruptRoutine And Not Symbols[I].AssemblerBody Then Begin
+   Emit($50); Emit($53); Emit($51); Emit($52); Emit($56); Emit($57); Emit($1E); Emit($06); Emit($55);
+   Emit($B8); AddSegmentRelocation(CodeSize,3); EmitWord(0); Emit2($8E,$D8);
+   Emit2($83,$EC); Emit(4);
+  End;
   Emit($55); Emit2($89,$E5);
   If OptionBits And 4<>0 Then Begin
    CallTo(RtlTarget(RuntimeStandard[72])); StackCheckPatch:=CodeSize; EmitWord(0);
