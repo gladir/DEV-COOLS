@@ -3613,7 +3613,7 @@ End;
 
 
 Procedure ProcedureExit;
-Var I,A: Word; Done: Boolean;
+Var I,A,V: Word; Done,ZeroKnown: Boolean;
 Begin
  I:=Scopes[CurrentScope].ProcSymbol;
  If (Symbols[I].ResultSymbol<>0) And Not Symbols[I].AssemblerBody Then Begin
@@ -3639,7 +3639,7 @@ Begin
   A:=Symbols[Symbols[I].ResultSymbol].Addr;
   { resultat tout juste stocke dans la variable : AX le contient deja, et la frame va disparaitre :
     le stockage est inutile }
-  Done:=False;
+  Done:=False; ZeroKnown:=False;
   If (LastJumpTarget<>CodeSize) And (Not Symbols[I].NoFrame) Then Begin
    If (Symbols[I].Width=2) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=3) And
       (Image[CodeSize-3]=$89) And (Image[CodeSize-2]=$46) And (Image[CodeSize-1]=Byte(A)) Then Begin
@@ -3650,13 +3650,21 @@ Begin
    End Else If (Symbols[I].Width=1) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=3) And
       (Image[CodeSize-3]=$88) And (Image[CodeSize-2]=$46) And (Image[CodeSize-1]=Byte(A)) Then Begin
     Dec(CodeSize,3); Done:=True;
+   End Else If (Symbols[I].Width=2) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=5) And
+      (Image[CodeSize-5]=$C7) And (Image[CodeSize-4]=$46) And (Image[CodeSize-3]=Byte(A)) Then Begin
+    { Fn:=const : mov [bp+d],imm devient mov ax,imm }
+    V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256; Dec(CodeSize,5); Emit($B8); EmitWord(V); Done:=True;
+   End Else If (Symbols[I].Width=1) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=4) And
+      (Image[CodeSize-4]=$C6) And (Image[CodeSize-3]=$46) And (Image[CodeSize-2]=Byte(A)) Then Begin
+    V:=Image[CodeSize-1]; If Symbols[I].SignedByte And (V>=128) Then V:=V Or $FF00;
+    Dec(CodeSize,4); Emit($B8); EmitWord(V); Done:=True; ZeroKnown:=True;
    End;
   End;
   If Not Done Then Begin Emit($8B); EmitBP(0,SmallInt(A)) End;
   If Symbols[I].Width=4 Then Begin
    Emit2($8B,$96); EmitWord(A+2);
   End;
-  If Symbols[I].Width=1 Then Begin
+  If (Symbols[I].Width=1) And Not ZeroKnown Then Begin
    If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
   End;
  End;
@@ -5973,7 +5981,7 @@ Begin
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
-  If Symbols[I].Local And Not Symbols[I].ResultVariable And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (FixupCount=FixMark) And
+  If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (FixupCount=FixMark) And
      (RelativeCount=RelMark) And (PendCount=PendMark) And
      ConstToLocal(RhsPos,SmallInt(Symbols[I].Addr),Types[Dest].Width) Then Exit;
   StoreScalar(I); Exit;
@@ -7248,8 +7256,15 @@ Begin
   LoadSymbol(I);
   If ForFrame Then Begin Emit($3B); EmitBP(0,SmallInt(ForDisp)); Q:=JumpIf($75) End
   Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,$07); Q:=JumpIf($75) End;
-  If Direction=tkTo Then Emit($40) Else Emit($48);
-  SaveSymbol(I); JumpTo(Start); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
+  If SimpleScalar(I) And Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (Symbols[I].Width In [1,2]) Then Begin
+   { inc/dec [bp+d] directement }
+   If Symbols[I].Width=1 Then Emit($FE) Else Emit($FF);
+   If Direction=tkTo Then EmitBP(0,SmallInt(Symbols[I].Addr)) Else EmitBP(1,SmallInt(Symbols[I].Addr));
+  End Else Begin
+   If Direction=tkTo Then Emit($40) Else Emit($48);
+   SaveSymbol(I);
+  End;
+  JumpTo(Start); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
   { Break sort avant la liberation de la borne empilee, comme P et Q. }
   LoopLeave(CodeSize,ContinueAt);
   If Not ForFrame Then Begin Emit2($83,$C4); Emit(2); Dec(StackLoops) End;
