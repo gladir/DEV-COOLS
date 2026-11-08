@@ -3377,7 +3377,7 @@ Begin
  CurrentUnit:=255; I:=NewSymbol('INPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10); Symbols[I].Addr:=StandardInputAddress;
  I:=NewSymbol('OUTPUT'); Symbols[I].Kind:=skVar; ApplyType(I,10); Symbols[I].Addr:=StandardOutputAddress;
  CurrentUnit:=0; RandomSeed:=AllocData(4);
- StringRing:=AllocData(2048); StringRingPos:=AllocData(2);
+ StringRing:=AllocBss(2048); StringRingPos:=AllocBss(2);
  CurrentUnit:=255; I:=NewSymbol('RANDSEED'); Symbols[I].Kind:=skVar; ApplyType(I,9); Symbols[I].Addr:=RandomSeed;
  I:=NewSymbol('MAXINT'); Symbols[I].Kind:=skConst; ApplyType(I,1); Symbols[I].Value:=32767;
  { TP 7.0: segments standard et constante Pi de l'unite System }
@@ -11374,7 +11374,7 @@ Begin
 End;
 Begin
  FillChar(RuntimeStandard,SizeOf(RuntimeStandard),0);
- StringScratch:=AllocData(256); StringScratch2:=AllocData(256);
+ StringScratch:=AllocBss(256); StringScratch2:=AllocBss(256);
  InputAhead:=AllocData(2); Data[InputAhead]:=255; Data[InputAhead+1]:=255;
  InputByte:=AllocData(1); InputHandle:=AllocData(2);
  InputConsoleAhead:=AllocData(2); Data[InputConsoleAhead]:=255; Data[InputConsoleAhead+1]:=255;
