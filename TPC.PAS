@@ -1922,7 +1922,7 @@ Var
  { Sauts courts : les passes successives memorisent pour chaque saut (ordinal) s'il tient en 8 bits ;
    la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
  JumpOrd: Word;
- DbgNoJ, DbgNoIf, DbgNoBack: Boolean;
+ DbgNoJ, DbgNoIf, DbgNoBack, KeepES: Boolean;
  ReportLines: Array[1..64] Of String[120];
  ReportCount: Word;
  ShortPred, ShortNext, ForceLong: Array[1..32000] Of Boolean;
@@ -4797,7 +4797,7 @@ Function UserCall(I: Word): Byte;
 Var J,V,T,N,A: Word; Kind: Byte; Name: TShortString;
 Begin
  StackRoom(Symbols[I].ParamBytes+268);
- Emit($06); { preserve ES: indirect var accesses use LES }
+ If KeepES Then Emit($06); { preserve ES: indirect var accesses use LES }
  If Symbols[I].ParamCount<>0 Then Begin
   Need(tkLP);
   For J:=1 To Symbols[I].ParamCount Do Begin
@@ -4876,7 +4876,7 @@ Begin
  End Else If Token=tkLP Then Begin NextToken; Need(tkRP) End;
  If Symbols[I].InlineBody Then For J:=1 To Length(Symbols[I].StrValue) Do Emit(Ord(Symbols[I].StrValue[J]))
  Else EmitLocalCall(I);
- Emit($07);
+ If KeepES Then Emit($07);
  UserCall:=Symbols[I].Typ;
  ExprType:=SymbolType(I); ExprKnown:=False;
  ExprUnsigned:=(Symbols[I].Typ=ttInteger) And (ExprType<>0) And Not Types[ExprType].Signed;
@@ -12434,7 +12434,7 @@ BEGIN
  Move(Defines,InitialDefines,SizeOf(Defines)); InitialDefineCount:=DefineCount;
  InitialOptions:=OptionBits;
  NoLimit:=GetEnv('TPC_NOLIMIT')<>'';
- DbgNoJ:=GetEnv('TPC_NOJ')<>''; DbgNoIf:=GetEnv('TPC_NOIF')<>''; DbgNoBack:=GetEnv('TPC_NOBACK')<>'';
+ DbgNoJ:=GetEnv('TPC_NOJ')<>''; DbgNoIf:=GetEnv('TPC_NOIF')<>''; DbgNoBack:=GetEnv('TPC_NOBACK')<>''; KeepES:=GetEnv('TPC_KEEPES')<>'';
  FillChar(ShortPred,SizeOf(ShortPred),0); FillChar(ShortNext,SizeOf(ShortNext),0); FillChar(ForceLong,SizeOf(ForceLong),0);
  AnalysisPass:=True; Overflowed:=False; EdgeCount:=0; CurProc:=0; TotalEmitted:=0; JumpOrd:=0; JumpOverflow:=False;
  ReportCount:=0; RuntimeDepth:=0;
