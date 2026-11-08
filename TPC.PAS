@@ -4750,15 +4750,13 @@ End;
 
 Procedure Emit(B: Byte);Begin
  Inc(TotalEmitted);
- { Multi-segments : toute emission invalide la fin de la derniere sequence de
-   comparaison. Sinon une valeur perimee
-   (sequence deja consommee par JumpZero) peut coincider plus tard avec
-     CodeSize, par exemple quand un appel FAR
-   de 9 octets remplace une sequence de meme longueur,
-     et faire retirer 7 octets d'un code sans rapport.
-   (Defaut latent aussi en mode normal ;
-     il n'y est pas corrige pour garder des EXE identiques.) }
- If MultiSeg Then CondTail:=0;
+ { Toute emission invalide la fin de la derniere sequence de comparaison.
+   Sinon une valeur perimee (sequence deja consommee par JumpZero, ou code
+   recule par CodeSize:=...) peut coincider plus tard avec CodeSize et faire
+   retirer 7 octets d'un code sans rapport. Exemple : "If IOResult<>0 Then;"
+   (corps vide) suivi de "If B Then ... Else ..." : la condition de B finissait
+   a la meme adresse et son test disparaissait. }
+ CondTail:=0;
 
  { multi-segments : un corps annule ou un segment plein ne perd que des octets
    (positions figees) }
@@ -4980,9 +4978,14 @@ End;
 Function JumpZero: Word;
 Var Len: Word; D: Longint; V: Word; Inverted: Boolean;
 Begin
- If (CondTail=CodeSize) And (CodeSize>=7) Then Begin
+ If (CondTail=CodeSize) And (CodeSize>=7) And (Image[CodeSize-4]>=$70) And
+   (Image[CodeSize-4]<=$7F) And (Image[CodeSize-3]=2) And
+   (Image[CodeSize-2]=$31) And (Image[CodeSize-1]=$C0) Then Begin
   { La comparaison vient de produire "mov ax,1; jcc +2; xor ax,ax":
-    sauter directement sur la condition inverse. }
+    sauter directement sur la condition inverse. CondTail est verifie par
+    les octets : apres un recul de CodeSize (If a corps vide), il pouvait
+    coincider par hasard avec la fin d'une autre condition. }
+  CondTail:=0;
   CodeSize:=CodeSize-7;
   { comparaison d'une variable de la frame avec une constante : cmp [bp+d],imm }
   If (CodeSize>=3) And (Image[CodeSize-3]=$3D) And (LastJumpTarget<CodeSize-3)
