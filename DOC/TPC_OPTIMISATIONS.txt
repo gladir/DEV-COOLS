@@ -1,0 +1,74 @@
+OPTIMISATIONS DE TAILLE DE TPC.PAS (clone de Turbo Pascal 7, 8086 mode reel)
+===========================================================================
+
+But : produire du code aussi compact que le Turbo Pascal 7 d'origine (IO.SYS du noyau
+MSDOS-0 : 65 285 octets -> 54 116 octets avec ces optimisations, TP7 : ~58 Ko).
+TPC est un compilateur a une passe a modele "accumulateur" (AX, DX:AX) ; les
+optimisations sont des judas (peephole) sur le code deja emis, completes par
+une compilation en plusieurs passes (le code est rejoue jusqu'a stabilite).
+
+Compilation en plusieurs passes
+-------------------------------
+* Passe 1 (analyse) : sauts longs, graphe d'appels. Passes suivantes : memes choix
+  que la passe precedente (tableaux ShortPred/FramePred indexes par un numero
+  d'ordre de saut ou de routine), jusqu'a stabilite (au plus 10 passes) ;
+  une prediction fausse force l'option "long" au tour suivant ; filet de
+  securite : derniere passe sans optimisation par prediction.
+* Variables d'environnement de mise au point : TPC_NOJ, TPC_NOIF, TPC_NOBACK
+  (pas de sauts courts "jmp", "jcc", arriere), TPC_KEEPES (sauvegarde ES autour
+  des appels), TPC_NOSMART (pas d'edition de liens intelligente),
+  TPC_PASSES (nombre de passes), TPC_SHOWDEAD (routines retirees),
+  TPC_SIZES (taille de chaque routine).
+
+Sauts
+-----
+* jmp/jcc rel8 quand la cible est a moins de 120 octets (conditionnels : le motif
+  "jcc inverse +3 ; jmp cible" (5 octets) devient "jcc cible" (2 octets)).
+* Saut arriere court immediat ; la sequence "jcc +n" ecrite a la main n'est jamais
+  suivie d'un saut raccourci (AfterSkip) ; le runtime ecrit a la main reste long.
+* Inversion directe : comparaison suivie de "mov ax,1 / jcc / xor ax,ax" ->
+  saut conditionnel direct ; "not b" -> saut inverse (pas de "xor ax,1").
+
+Acces aux variables
+-------------------
+* Variables scalaires de la frame : "mov ax,[bp+d]" / "mov [bp+d],ax" au lieu de
+  "lea di,[bp+d] ; push ss ; pop es ; es: mov ax,[di]" (idem pour les
+  champs : le deplacement d'un champ est replie dans d).
+* Tableaux locaux indexes : "mov di,ax ; lea di,[bp+di+d]" (acces direct
+  [bp+di+d] pour les lectures).
+* "add di,imm" replie dans l'acces final : "es: mov ax,[di+imm]".
+* Constantes : "mov word [bp+d],imm", "mov byte [bp+d],imm", "es: mov byte
+  [di+d],imm" ; resultat constant d'une fonction : "mov ax,imm".
+* Operandes memoire : "add/sub/or/xor/and/cmp ax,[bp+d]", "imul word [bp+d]",
+  "cmp al,[bp+d]" (char/bool/enum) a la place de "push ax ; mov ax,[bp+d] ; mov bx,ax ; pop ax ; op ax,bx".
+* Tests de booleens/comparaisons avec constantes : "cmp byte/word [bp+d],imm" dans
+  les conditions de if/while/repeat.
+* Parametres valeur : "push [bp+d]" (mot, longint, octet).
+* Variable de boucle FOR : "inc/dec [bp+d]" ; borne dans la frame ("cmp ax,[bp+d]")
+  au lieu de la pile ("mov bx,sp ; cmp ax,[ss:bx]" + "add sp,2" en sortie).
+
+Arithmetique
+------------
+* Division/modulo par une constante non nulle : pas de test de zero ni de debordement ;
+  puissances de 2 non signees : shr / and ; multiplication par 2^k : shl ; sinon "mov bx,imm".
+* Les operations utilisent "mov bx,imm" a la place de push/mov/pop.
+
+Fonctions et frames
+-------------------
+* Le stockage du resultat juste avant l'epilogue est supprime (la frame disparait) ;
+  une fonction qui s'acheve par une constante : "mov ax,imm".
+* Frame sans variable locale : ni "sub sp,0" ni "mov sp,bp" (prediction multi-passes
+  si aucune boucle FOR sur la pile n'est active).
+* ES n'est plus sauvegarde autour des appels utilisateur (ES est volatile).
+* Plus de "xor ah,ah" double apres un chargement d'octet.
+
+Donnees
+-------
+* Chaines litterales identiques partagees (dans la meme unite).
+* StringArg255 / StringAssign255 : appel sans mots en ligne pour string[255].
+
+Edition de liens
+----------------
+* Edition de liens intelligente par defaut (comme TP7) : les routines jamais
+  appelees (graphe d'appels, racines : programme, initialisations d'unites,
+  crochet CRT) ne sont pas liees. Obligatoire quand le segment de code deborde.
