@@ -13281,7 +13281,7 @@ Type
   RetCS, RetIP, SS, SP: Word;
  End;
 Var
- KtDir, KtScriptFile, KtImagePath: String;
+ KtDir, KtScriptFile, KtImagePath, KtBootImg: String;
  KtSteps: LongInt;
  KtTraceN: Integer;
  KtIntOn: Boolean;
@@ -13388,6 +13388,10 @@ Begin
   If UpCaseStr(Val1) = 'C' Then KtHard := True
   Else If UpCaseStr(Val1) = 'A' Then KtHard := False
   Else FatalError('/KTDRIVE:A ou /KTDRIVE:C attendu');
+ End Else If Key = 'KTBOOTIMG' Then Begin
+  { amorcage reel d une image existante (disquette 1,44 Mo ou disque dur) }
+  If Val1 = '' Then FatalError('/KTBOOTIMG:fichier.img attendu');
+  KtBoot := True; KtBootImg := Val1;
  End Else If Key = 'KTBOOT' Then Begin
   KtBoot := True; KtHard := True;
  End Else If Key = 'KTIMAGE' Then Begin
@@ -227835,6 +227839,18 @@ Begin
   ImgPath := GetEnv('TEMP') + '\KERNELTEST.IMG';
   {$ENDIF}
  End;
+ IoBuf := Nil; IoSize := 0;
+ If KtBootImg <> '' Then Begin
+  { image fournie : disquette (<= 2,88 Mo) sur 00h, sinon disque dur 80h }
+  ImgPath := KtBootImg;
+  Assign(F, ImgPath);
+  {$I-} Reset(F, 1); {$I+}
+  If IOResult <> 0 Then Begin
+   KtOut('KERNELTEST: image introuvable : ' + ImgPath); Halt(1);
+  End;
+  KtHard := FileSize(F) > 2949120;
+  Close(F);
+ End Else
  If KtBoot Then Begin
   If Not Emu_BuildKernelDosImage(KtDir, ImgPath, 'IO.SYS', 'MSDOS.SYS',
     Err) Then Begin
@@ -227845,6 +227861,7 @@ Begin
   KtOut('KERNELTEST: echec de construction de l''image : ' + Err); Halt(1);
  End;
  IoIdx := -1;
+ If KtBootImg = '' Then Begin
  For I := 0 To KdosEntryCnt - 1 Do
   If (KdosEntries[I].ParentIdx = -1) And (Not KdosEntries[I].IsDir) And
      (UpCaseStr(KdosEntries[I].FName) = 'IO.SYS') Then IoIdx := I;
@@ -227867,6 +227884,7 @@ Begin
  Got := 0;
  BlockRead(F, IoBuf^, IoSize, Got);
  Close(F);
+ End;
  { --- machine emulee --- }
  FillChar(EmuPanel, SizeOf(EmuPanel), 0);
  InitEmulatorPanel(EmuPanel);
@@ -227912,7 +227930,7 @@ Begin
    --- }
  If Not KtBoot Then
   Emu_WriteBlock(EmuPanel.CPU, KtLoadSeg, 0, IoBuf^, Word(IoSize));
- Dispose(IoBuf);
+ If IoBuf <> Nil Then Dispose(IoBuf);
  EmuPanel.CPU.Segs.CS := KtLoadSeg;
  EmuPanel.CPU.IP := 0;
  EmuPanel.CPU.Segs.DS := 0;

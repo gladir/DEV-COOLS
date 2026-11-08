@@ -43,6 +43,12 @@ Syntaxe
                      secteur 0 en 0000:7C00 au lieu de charger IO.SYS directement.
                      Permet de verifier le chargeur d'IO.SYS et le decalage de
                      partition (63 secteurs caches).
+  /KTBOOTIMG:fich    amorcage REEL d'une image existante (par ex. MSDOS-0\IMAGE\
+                     DOS144A.IMG) : image <= 2 949 120 octets montee comme
+                     disquette 00h, sinon comme disque dur 80h ; le secteur 0
+                     (VBR ou MBR) est execute en 0000:7C00. Le dossier du
+                     parametre /KERNELTEST est alors ignore (IO.SYS vient de
+                     l'image). L'image est modifiee par les ecritures du DOS.
   /KTIMAGE:fich      emplacement de l'image generee (defaut /tmp/kerneltest.img
                      sous Linux, %TEMP%\KERNELTEST.IMG sous Windows).
 
