@@ -449,7 +449,7 @@ Var
  RealReady,EmulatorReady: Boolean;
  RealCodeBase,RealCodeEnd,RealDataBase,RealDataEnd: Word;
  EmulatorCodeBase,EmulatorCodeEnd,EmulatorDataBase,EmulatorDataEnd: Word;
-const RealSource: array[1..279] of string[255] = (
+const RealSource: array[1..326] of string[255] = (
  '{$R-,S-,B-,N-,O-,D-,L-,Q-}',
  'type RBytes=array[0..5] of Byte;',
  '     Mant=array[0..2] of Word;',
@@ -728,7 +728,54 @@ const RealSource: array[1..279] of string[255] = (
  ' while power>0 do begin Multiply(x,ten,x); Dec(power) end;',
  ' while power<0 do begin Divide(x,ten,x); Inc(power) end;',
  ' x.neg:=negative; if x.e>126 then begin code:=1; Exit end; Pack(x,a)',
- 'end;');
+ 'end;',
+ 'type SBytes=array[0..3] of Byte;',
+ '     DBytes=array[0..7] of Byte;',
+ 'procedure RSingle(var s:SBytes; var r:RBytes);',
+ 'var e:Integer;',
+ 'begin FillChar(r,6,0); e:=((Integer(s[3]) and 127) shl 1) or (Integer(s[2]) shr 7);',
+ ' if e<>0 then begin',
+ '  e:=e+2; if e>255 then e:=255;',
+ '  r[0]:=Byte(e); r[3]:=s[0]; r[4]:=s[1]; r[5]:=s[2] and 127;',
+ '  if (s[3] and 128)<>0 then r[5]:=r[5] or 128 end end;',
+ 'procedure RToSingle(var r:RBytes; var s:SBytes);',
+ 'var e:Integer; f:Longint;',
+ 'begin FillChar(s,4,0);',
+ ' if r[0]<>0 then begin',
+ '  e:=Integer(r[0])-2;',
+ '  f:=(Longint(r[5] and 127) shl 16) or (Longint(r[4]) shl 8) or r[3];',
+ '  if r[2]>=128 then begin Inc(f); if f>=8388608 then begin f:=0; Inc(e) end end;',
+ '  if e>=1 then begin',
+ '   if e>254 then begin e:=254; f:=8388607 end;',
+ '   s[0]:=Byte(f and 255); s[1]:=Byte((f shr 8) and 255);',
+ '   s[2]:=Byte(((f shr 16) and 127) or ((e and 1) shl 7));',
+ '   s[3]:=Byte(e shr 1) or (r[5] and 128) end end end;',
+ 'procedure RDouble(var d:DBytes; var r:RBytes);',
+ 'var e:Integer; top,low:Longint;',
+ 'begin FillChar(r,6,0); e:=((Integer(d[7]) and 127) shl 4) or (Integer(d[6]) shr 4);',
+ ' if e<>0 then begin',
+ '  e:=e-894; if e<1 then Exit; if e>255 then e:=255;',
+ '  top:=(Longint(d[6] and 15) shl 16) or (Longint(d[5]) shl 8) or d[4];',
+ '  low:=(Longint(d[3]) shl 24) or (Longint(d[2]) shl 16) or (Longint(d[1]) shl 8) or d[0];',
+ '  r[0]:=Byte(e);',
+ '  r[5]:=Byte((top shr 13) and 127);',
+ '  r[4]:=Byte((top shr 5) and 255);',
+ '  r[3]:=Byte(((top and 31) shl 3) or ((low shr 29) and 7));',
+ '  r[2]:=Byte((low shr 21) and 255);',
+ '  r[1]:=Byte((low shr 13) and 255);',
+ '  if (d[7] and 128)<>0 then r[5]:=r[5] or 128 end end;',
+ 'procedure RToDouble(var r:RBytes; var d:DBytes);',
+ 'var e:Integer;',
+ 'begin FillChar(d,8,0);',
+ ' if r[0]<>0 then begin',
+ '  e:=Integer(r[0])+894;',
+ '  d[7]:=Byte(e shr 4) or (r[5] and 128);',
+ '  d[6]:=Byte((e and 15) shl 4) or Byte((r[5] and 127) shr 3);',
+ '  d[5]:=Byte((r[5] and 7) shl 5) or Byte(r[4] shr 3);',
+ '  d[4]:=Byte((r[4] and 7) shl 5) or Byte(r[3] shr 3);',
+ '  d[3]:=Byte((r[3] and 7) shl 5) or Byte(r[2] shr 3);',
+ '  d[2]:=Byte((r[2] and 7) shl 5) or Byte(r[1] shr 3);',
+ '  d[1]:=Byte(r[1] and 7) shl 5 end end;');
 const EmulatorSource: array[1..174] of string[255] = (
  '{$R-,S-,B-,N-,O-,D-,L-}',
  'procedure REmu(op,width,index:Integer; var mem); forward;',
@@ -3340,6 +3387,8 @@ Begin
  TypeCount:=NewType(ttBoolean,4,0,False,0,1,5); { LongBool }
  TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[15].ElementType:=2; { PByte = ^Byte }
  TypeCount:=NewType(ttPointer,4,0,False,0,0,0); TypeExtras[16].ElementType:=3; { PWord = ^Word }
+ TypeCount:=NewType(ttReal,4,0,True,0,0,0); { Single : stockage IEEE, converti en Real a la lecture / ecriture }
+ TypeCount:=NewType(ttReal,8,0,True,0,0,0); { Double }
 End;
 
 Function BuiltinType(S: TShortString): Word;
@@ -3379,11 +3428,11 @@ End;
 Function StoreReal(V: Double): Word; Forward;
 
 Procedure InstallStandardTypes;
-Const Names: Array[1..16] Of String[8]=('INTEGER','BYTE','WORD','SHORTINT','BOOLEAN','CHAR','STRING','POINTER','LONGINT','TEXT','REAL','PCHAR','WORDBOOL','LONGBOOL','PBYTE','PWORD');
+Const Names: Array[1..18] Of String[8]=('INTEGER','BYTE','WORD','SHORTINT','BOOLEAN','CHAR','STRING','POINTER','LONGINT','TEXT','REAL','PCHAR','WORDBOOL','LONGBOOL','PBYTE','PWORD','SINGLE','DOUBLE');
 Var T,I: Word;
 Begin
  CurrentUnit:=255;
- For T:=1 To 16 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType; ApplyType(I,T) End;
+ For T:=1 To 18 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType; ApplyType(I,T) End;
  CurrentUnit:=0; FileModeAddress:=AllocData(1); Data[FileModeAddress]:=2;
  CurrentUnit:=255; I:=NewSymbol('FILEMODE'); Symbols[I].Kind:=skVar; ApplyType(I,2); Symbols[I].Addr:=FileModeAddress;
  CurrentUnit:=0; StandardInputAddress:=AllocData(256); StandardOutputAddress:=AllocData(256);
@@ -4289,9 +4338,17 @@ Begin
 End;
 
 Procedure LoadDesignator(T: Word);
-Var D: Longint;
+Var D: Longint; A: Word;
 Begin
  If T=0 Then Fail(42,'Variable sans type utilisee comme valeur');
+ If (Types[T].Typ=ttReal) And (Types[T].Width<>6) Then Begin
+  { Single / Double : conversion vers un Real temporaire (pointeur DX:AX) }
+  EnsureRealRuntime; A:=AllocData(6);
+  Emit($06); Emit($57); Emit($06); Emit($57);
+  Emit($1E); Emit($BB); DataAddress(A); Emit($53);
+  If Types[T].Width=4 Then RealCall('RSINGLE') Else RealCall('RDOUBLE');
+  Emit($5F); Emit($07); RealPointer(A); ExprType:=11;
+ End Else
  If Types[T].Typ In [ttString,ttArray,ttRecord,ttSet,ttFile,ttText,ttReal] Then Begin
   EmitAddrAXDX;
  End Else If DirectLocalOK(T,True) Then Begin
@@ -6162,6 +6219,11 @@ Begin
   TrimSet(Dest,SourceBuffer);
   Emit($5F); Emit($07); Emit($BE); DataAddress(SourceBuffer+Types[Dest].LowBound Div 8);
   Emit($B9); EmitWord(TypeExtras[Dest].Size); Emit2($F3,$A4);
+ End Else If (Types[Dest].Typ=ttReal) And (Types[Dest].Width<>6) Then Begin
+  { Single / Double := Real : conversion vers le format IEEE }
+  ToReal(SourceType); EnsureRealRuntime;
+  Emit($52); Emit($50); Emit($06); Emit($57);
+  If Types[Dest].Width=4 Then RealCall('RTOSINGLE') Else RealCall('RTODOUBLE');
  End Else If Types[Dest].Typ=ttReal Then Begin
   ToReal(SourceType); Emit($1E); Emit2($8E,$DA); Emit2($89,$C6); Emit($B9); EmitWord(6); Emit2($F3,$A4); Emit($1F);
  End Else If (Types[Dest].Typ=ttArray) And (TypeExtras[Dest].ElementType=6) And (T In [ttString,ttChar]) Then Begin
@@ -7773,7 +7835,7 @@ Begin
  If Token=tkPacked Then NextToken;
  If Token In [tkProcedure,tkFunction] Then
   Unsupported('type procedural');
- If (Token=tkIdent) And ((TokenText='SINGLE') Or (TokenText='DOUBLE') Or (TokenText='EXTENDED') Or (TokenText='COMP')) Then
+ If (Token=tkIdent) And ((TokenText='EXTENDED') Or (TokenText='COMP')) And (FindLexicalSymbol(TokenText)=0) Then
   Unsupported('type: '+TokenText);
  If Token=tkFile Then Begin
   NextToken; Element:=0;
@@ -8227,6 +8289,7 @@ Begin
    Until False;
    If (ByVar Or IsConst) And (Token In [tkSemi,tkRP]) Then Begin T:=0; ByVar:=True End
    Else Begin Need(tkColon); T:=ReadType End;
+   If (T<>0) And (Types[T].Typ=ttReal) And (Types[T].Width<>6) And Not ByVar Then Unsupported('parametre Single/Double par valeur');
    If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttArray,ttRecord,ttString,ttSet,ttReal]) And
       Not (ByVar And ((T=0) Or (Types[T].Typ In [ttFile,ttText]))) Then
     Unsupported('type de parametre utilisateur');
