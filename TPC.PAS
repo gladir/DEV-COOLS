@@ -5089,6 +5089,12 @@ Begin
       { mov ax,[bp+d]; mov dx,[bp+d+2]  ->  push [bp+d+2]; push [bp+d] }
       V:=Image[CodeSize-4]; CodeSize:=CodeSize-6;
       Emit2($FF,$76); Emit(Byte(V+2)); Emit2($FF,$76); Emit(Byte(V));
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=1) And Not Symbols[I].AssemblerBody And (CodeSize>=5) And
+        (Image[CodeSize-5]=$8A) And (Image[CodeSize-4]=$46) And (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) Then Begin
+      Image[CodeSize-5]:=$FF; Image[CodeSize-4]:=$76; Dec(CodeSize,2);   { push [bp+d] : l'octet de poids fort est ignore }
+     End Else If (LastJumpTarget<>CodeSize) And (Types[T].Width=1) And Not Symbols[I].AssemblerBody And (CodeSize>=4) And
+        (Image[CodeSize-4]=$8A) And (Image[CodeSize-3]=$46) And (Image[CodeSize-1]=$98) Then Begin
+      Image[CodeSize-4]:=$FF; Image[CodeSize-3]:=$76; Dec(CodeSize,1);
      End Else Begin
       If Types[T].Width=4 Then Emit($52); Emit($50);
      End;
