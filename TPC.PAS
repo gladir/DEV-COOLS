@@ -4963,8 +4963,8 @@ Procedure OverflowCheck(Unsigned: Boolean);
 Var Bad,Done: Word;
 Begin
  If OptionBits And $8000=0 Then Exit;
- If Unsigned Then Emit2($73,3) Else Emit2($71,3);
- Bad:=Jump; Done:=Jump;
+ If Unsigned Then Bad:=JumpIf($73) Else Bad:=JumpIf($71);
+ Done:=Jump;
  PatchJump(Bad,CodeSize); LoadImmediate(215); CallTo(RtlTarget(RuntimeError)); PatchJump(Done,CodeSize);
 End;
 
