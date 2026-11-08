@@ -13001,7 +13001,7 @@ Procedure ShowVersion;Begin
  { qui ne font rien quand la sortie standard est redirigee vers un         }
  { fichier plutot qu'un vrai terminal). }
  ConRawWriteLn('DEVENV - Cette commande permet de lancer'+
-   ' le clone de Visual Studio.');
+   ' Insurrection.');
  ConRawWriteLn('Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')');
  ConRawWriteLn('Compilateurs int'+#130+'gr'+#130+'s : MASM');
 End;
@@ -16555,7 +16555,7 @@ Begin
   722: HandleRunRePascalTool; { Outils > RePascal }
   900: Begin { Aide > A propos de DEVENV }
         ShowMessageBox('A propos de DEVENV',
-         'DEVENV - Clone de Visual Studio en mode graphique' + #10 +
+         'Insurrection - IDE en mode graphique' + #10 +
          'Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')' + #10 +
          #10 +
          'Auteur  : Sylvain Maltais' + #10 +
@@ -271904,13 +271904,15 @@ Begin
  ScreenW := GetScreenWidth;
  CenterX := ScreenW Div 2;
  { Titre }
- Title := 'DEVENV - IDE Visual Studio';
- DrawText(CenterX - (Length(Title) * 8 Div 2),
-  START_PAGE_TITLE_Y, Title, 15);
+ Title := 'INSURRECTION';
+ SetTextStyle(DefaultFont, HorizDir, 5);
+ DrawText(CenterX - (TextWidth(Title) Div 2), START_PAGE_TITLE_Y - 24,
+  Title, 15);
+ SetTextStyle(DefaultFont, HorizDir, 1);
  { Sous-titre }
  Title := 'DEV-COOLS v' + IDE_VERSION;
  DrawText(CenterX - (Length(Title) * 8 Div 2),
-  START_PAGE_TITLE_Y + 20, Title, 8);
+  START_PAGE_TITLE_Y + 24, Title, 8);
  { Bouton Nouveau projet (0) }
  If SP.FocusedBtn = 0 Then
   DrawFilledRect(CenterX - START_PAGE_BTN_WIDTH - 10,
@@ -274904,7 +274906,7 @@ Begin
   Bar(TaskX1, Top + 3, TaskX2, Bottom - 3);
   Win95Draw3DBorder(TaskX1, Top + 3, TaskX2, Bottom - 3, False);
   SetColor(W95_BLACK);
-  OutTextXY(TaskX1 + 5, Top + 9, 'DEVENV - Visual Studio');
+  OutTextXY(TaskX1 + 5, Top + 9, 'Insurrection');
  End;
 
  { Taches dynamiques : une par Bloc-notes ouvert et par invite MS-DOS      }
@@ -275185,7 +275187,7 @@ End;
 Procedure Win95ShowAbout;
 Begin
  ShowMessageBox('A propos de DEVENV',
-  'DEVENV - Clone de Visual Studio en mode graphique' + #10 +
+  'Insurrection - IDE en mode graphique' + #10 +
   'Version ' + DEVENV_VERSION + ' (' + DEVENV_DATE + ')' + #10 +
   #10 +
   'Auteur  : Sylvain Maltais' + #10 +
