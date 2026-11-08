@@ -2057,7 +2057,7 @@ Var
  DataFixupCount: Word;
  { Break/Continue (TP 7.0): chaque boucle FOR/WHILE/REPEAT ouvre un niveau;
    les sauts emis a ce niveau sont resolus a la sortie de la boucle. }
- LoopDepth: Byte;
+ LoopDepth: Byte; StackLoops: Word;
  LoopJumpCount: Word;
  { GOTO vers une etiquette pas encore definie }
  LabelJumps: Array[1..512] Of Record Sym, Position: Word End;
@@ -3670,7 +3670,7 @@ Begin
   Emit($CF); Exit;
  End;
  If Not Symbols[I].NoFrame Then Begin
-  If Not (Symbols[I].SkipSub And (LoopDepth=0)) Then Emit2($89,$EC);
+  If Not (Symbols[I].SkipSub And (StackLoops=0)) Then Emit2($89,$EC);
   Emit($5D)
  End;
  If Symbols[I].FarRoutine Then Emit($CA) Else Emit($C2);
@@ -6944,7 +6944,7 @@ Begin
  Direction:=Token;
  If Not (Direction In [tkTo,tkDownto]) Then Fail(58,'');
  NextToken; Ignored:=Expression; RequireInteger(Ignored); Extend;
- Emit($52); Emit($50); Need(tkDo);
+ Emit($52); Emit($50); Need(tkDo); Inc(StackLoops);
  Start:=CodeSize; Load32(I); Emit2($89,$E3);                 { mov bx,sp }
  Emit($36); Emit2($3B,$57); Emit(2);                          { cmp dx,ss:[bx+2] }
  { Le motif "Jcc +3; JMP cible" saute vers la cible quand cc est faux. }
@@ -6966,7 +6966,7 @@ Begin
  Store32(I); JumpTo(Start);
  PatchJump(P2,CodeSize); PatchJump(P3,CodeSize); PatchJump(Q1,CodeSize);
  LoopLeave(CodeSize,ContinueAt);
- Emit2($83,$C4); Emit(4);
+ Emit2($83,$C4); Emit(4); Dec(StackLoops);
 End;
 
 Procedure CaseStatement;
@@ -7151,7 +7151,7 @@ End;
 
 Procedure StatementBody;
 Var
- I, Start, P, Q, ContinueAt: Word;
+ I, Start, P, Q, ContinueAt: Word; ForDisp: Longint; ForFrame: Boolean;
  Direction, Ignored: Byte;
  Name, VarName: TShortString;
 Begin
@@ -7226,22 +7226,33 @@ Begin
   { Comme TP, la borne est tronquee a la taille de la variable de controle
     (For B:=1 To -1 avec B: Byte boucle jusqu'a 255 puis s'arrete). }
   If Symbols[I].Width=1 Then ZeroAH;
-  Emit($50); Need(tkDo);
-  Start:=CodeSize; LoadSymbol(I); Emit2($89,$E3); Emit($36); Emit2($3B,$07);
+  { borne : dans la frame (un mot de plus) si on est dans une routine, sinon sur la pile }
+  ForFrame:=RealScope(CurrentScope)<>0;
+  If ForFrame Then Begin
+   Inc(Scopes[RealScope(CurrentScope)].LocalSize,2);
+   ForDisp:=-Longint(Scopes[RealScope(CurrentScope)].LocalSize);
+   If Scopes[RealScope(CurrentScope)].LocalSize>65500 Then Fail(49,'Variables locales trop grandes');
+   Emit($89); EmitBP(0,SmallInt(ForDisp));
+  End Else Begin Emit($50); Inc(StackLoops) End;
+  Need(tkDo);
+  Start:=CodeSize; LoadSymbol(I);
+  If ForFrame Then Begin Emit($3B); EmitBP(0,SmallInt(ForDisp)) End Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,$07) End;
   If Types[SymbolType(I)].Signed Then Begin
-   If Direction=tkTo Then Emit2($7E,$03) Else Emit2($7D,$03);
+   If Direction=tkTo Then P:=JumpIf($7E) Else P:=JumpIf($7D);
   End Else Begin
-   If Direction=tkTo Then Emit2($76,$03) Else Emit2($73,$03);
+   If Direction=tkTo Then P:=JumpIf($76) Else P:=JumpIf($73);
   End;
-  P:=Jump; LoopEnter; Statement;
+  LoopEnter; Statement;
       { Tester l'egalite AVANT inc/dec evite le debordement a +/-32768. }
   ContinueAt:=CodeSize;
-  LoadSymbol(I); Emit2($89,$E3); Emit($36); Emit2($3B,$07); Emit2($75,$03); Q:=Jump;
+  LoadSymbol(I);
+  If ForFrame Then Begin Emit($3B); EmitBP(0,SmallInt(ForDisp)); Q:=JumpIf($75) End
+  Else Begin Emit2($89,$E3); Emit($36); Emit2($3B,$07); Q:=JumpIf($75) End;
   If Direction=tkTo Then Emit($40) Else Emit($48);
   SaveSymbol(I); JumpTo(Start); PatchJump(P,CodeSize); PatchJump(Q,CodeSize);
   { Break sort avant la liberation de la borne empilee, comme P et Q. }
   LoopLeave(CodeSize,ContinueAt);
-  Emit2($83,$C4); Emit(2);
+  If Not ForFrame Then Begin Emit2($83,$C4); Emit(2); Dec(StackLoops) End;
  End;
  tkIdent:
  Begin
@@ -11852,7 +11863,7 @@ Begin
  HeapNeeded:=False;
  ObjectCount:=0; ObjectCallCount:=0; ObjectSegmentCount:=0;
  ObjectGroupCount:=0; ObjectPublicCount:=0; ObjectExternalCount:=0; ObjectFixupCount:=0;
- DataFixupCount:=0; ExprLiteral:=False; LoopDepth:=0; LoopJumpCount:=0; LabelJumpCount:=0;
+ DataFixupCount:=0; ExprLiteral:=False; LoopDepth:=0; StackLoops:=0; LoopJumpCount:=0; LabelJumpCount:=0;
  UnitCount:=0; InitCount:=0; CurrentUnit:=0; Imports:=[]; ImportCount:=0;
  InInterface:=False;
   InstallStandardTypes;
