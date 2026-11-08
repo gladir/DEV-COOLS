@@ -2920,14 +2920,61 @@ Function JumpZeroKeep: Word;Begin
  Emit2($09,$C0); Emit2($75,$03); JumpZeroKeep:=Jump;
 End;
 
-Function JumpZero: Word;Begin
+Procedure EmitBP(Reg: Byte; D: Integer); Forward;
+
+Function TailLoadByte(Var Len: Word; Var D: Longint): Boolean;
+{ Le code se termine par "mov al,[bp+d]; xor ah,ah" (octet non signe de la frame). }
+Begin
+ TailLoadByte:=False;
+ If (CodeSize>=5) And (Image[CodeSize-5]=$8A) And (Image[CodeSize-4]=$46) And (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) Then Begin
+  Len:=5; D:=ShortInt(Image[CodeSize-3]); TailLoadByte:=True;
+ End Else If (CodeSize>=6) And (Image[CodeSize-6]=$8A) And (Image[CodeSize-5]=$86) And (Image[CodeSize-2]=$30) And (Image[CodeSize-1]=$E4) Then Begin
+  Len:=6; D:=SmallInt(Image[CodeSize-4]+Word(Image[CodeSize-3])*256); TailLoadByte:=True;
+ End;
+End;
+
+Function TailLoadWord(Var Len: Word; Var D: Longint): Boolean;
+{ Le code se termine par "mov ax,[bp+d]". }
+Begin
+ TailLoadWord:=False;
+ If (CodeSize>=3) And (Image[CodeSize-3]=$8B) And (Image[CodeSize-2]=$46) Then Begin
+  Len:=3; D:=ShortInt(Image[CodeSize-1]); TailLoadWord:=True;
+ End Else If (CodeSize>=4) And (Image[CodeSize-4]=$8B) And (Image[CodeSize-3]=$86) Then Begin
+  Len:=4; D:=SmallInt(Image[CodeSize-2]+Word(Image[CodeSize-1])*256); TailLoadWord:=True;
+ End;
+End;
+
+Function JumpZero: Word;
+Var Len: Word; D: Longint; V: Word; Inverted: Boolean;
+Begin
  If (CondTail=CodeSize) And (CodeSize>=7) Then Begin
   { La comparaison vient de produire "mov ax,1; jcc +2; xor ax,ax":
     sauter directement sur la condition inverse. }
-  CodeSize:=CodeSize-7; Emit2(CondJcc,3); JumpZero:=Jump; Exit;
+  CodeSize:=CodeSize-7;
+  { comparaison d'une variable de la frame avec une constante : cmp [bp+d],imm }
+  If (CodeSize>=3) And (Image[CodeSize-3]=$3D) And (LastJumpTarget<CodeSize-3) Then Begin
+   V:=Image[CodeSize-2]+Word(Image[CodeSize-1])*256;
+   Dec(CodeSize,3);
+   If (V<=255) And (CondJcc>=$72) And (CondJcc<=$77) And TailLoadByte(Len,D) Then Begin
+    Dec(CodeSize,Len); Emit($80); EmitBP(7,SmallInt(D)); Emit(V);
+   End Else If TailLoadWord(Len,D) And (LastJumpTarget<CodeSize) Then Begin
+    Dec(CodeSize,Len);
+    If (V<=127) Or (V>=$FF80) Then Begin Emit($83); EmitBP(7,SmallInt(D)); Emit(V And 255) End
+    Else Begin Emit($81); EmitBP(7,SmallInt(D)); EmitWord(V) End;
+   End Else Begin Emit($3D); EmitWord(V) End;
+  End;
+  Emit2(CondJcc,3); JumpZero:=Jump; Exit;
  End;
- Emit2($09,$C0);             { or ax,ax }
- Emit2($75,$03);             { jnz +3: 8086 n'a pas Jcc near }
+ Inverted:=False;
+ { "not b" : saut sur la condition inverse au lieu de "xor ax,1" }
+ If (CodeSize>=3) And (Image[CodeSize-3]=$35) And (Image[CodeSize-2]=1) And (Image[CodeSize-1]=0) And
+    (LastJumpTarget<CodeSize) Then Begin Dec(CodeSize,3); Inverted:=True End;
+ If (LastJumpTarget<CodeSize) And TailLoadByte(Len,D) Then Begin
+  Dec(CodeSize,Len); Emit($80); EmitBP(7,SmallInt(D)); Emit(0);   { cmp byte [bp+d],0 }
+ End Else If (LastJumpTarget<CodeSize) And TailLoadWord(Len,D) Then Begin
+  Dec(CodeSize,Len); Emit($83); EmitBP(7,SmallInt(D)); Emit(0);   { cmp word [bp+d],0 }
+ End Else Emit2($09,$C0);    { or ax,ax }
+ If Inverted Then Emit2($74,$03) Else Emit2($75,$03); { jnz +3: 8086 n'a pas Jcc near }
  JumpZero:=Jump;
 End;
 
@@ -3556,7 +3603,7 @@ Begin
  If Symbols[I].LegacyCall Then Begin Emit2($83,$C4); Emit(2) End;
 End;
 
-Procedure EmitBP(Reg: Byte; D: Integer); Forward;
+
 
 Procedure ProcedureExit;
 Var I,A: Word;
@@ -5818,7 +5865,7 @@ Begin
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
-  If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (FixupCount=FixMark) And
+  If Symbols[I].Local And Not Symbols[I].ResultVariable And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (FixupCount=FixMark) And
      (RelativeCount=RelMark) And (PendCount=PendMark) And
      ConstToLocal(RhsPos,SmallInt(Symbols[I].Addr),Types[Dest].Width) Then Exit;
   StoreScalar(I); Exit;
