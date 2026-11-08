@@ -1923,6 +1923,7 @@ Var
    la passe suivante emet alors un saut court (jcc/jmp rel8) au lieu de jcc+jmp rel16. }
  JumpOrd: Word;
  DbgNoJ, DbgNoIf, DbgNoBack, KeepES, TailIndexed, DirIndexed: Boolean;
+ LitAddr, LitEnd: Array[1..1500] Of Word; LitUnit: Array[1..1500] Of Byte; LitCount: Word;
  ProcOrd: Word; FramePred, FrameNext, FrameForce: Array[1..8000] Of Boolean;
  ReportLines: Array[1..64] Of String[120];
  ReportCount: Word;
@@ -3134,6 +3135,29 @@ Begin
  StoreString:=A;
 End;
 
+Procedure TrimLiterals(Size: Word);
+{ oublie les chaines litterales dont l'emplacement est libere par un retour arriere des donnees }
+Begin
+ While (LitCount>0) And (LitEnd[LitCount]>Size) Do Dec(LitCount);
+End;
+
+Function LiteralString(S: TShortString): Word;
+{ Chaine litterale (lecture seule) : une chaine identique deja stockee est reutilisee. }
+Var K,A,I: Word; Same: Boolean;
+Begin
+ For K:=LitCount DownTo 1 Do Begin
+  A:=LitAddr[K];
+  If (LitUnit[K]=CurrentUnit) And (LitEnd[K]-A=Length(S)+1) And (Not KernelMode Or (A>=KDataFlushed)) And (Data[A]=Ord(S[0])) Then Begin
+   Same:=True;
+   For I:=1 To Length(S) Do If Data[A+I]<>Ord(S[I]) Then Begin Same:=False; Break End;
+   If Same Then Begin LiteralString:=A; Exit End;
+  End;
+ End;
+ A:=StoreString(S);
+ If LitCount<1500 Then Begin Inc(LitCount); LitAddr[LitCount]:=A; LitEnd[LitCount]:=A+Length(S)+1; LitUnit[LitCount]:=CurrentUnit End;
+ LiteralString:=A;
+End;
+
 Function FindAtScope(S: TShortString; Owner: Byte; Scope: Word): Word;
 Var I: Word;
 Begin
@@ -4320,7 +4344,7 @@ Begin
    End
     Else
    Begin
-    T:=ttString; ExprType:=7; Emit($B8); DataAddress(StoreString(TokenText)); Emit2($8C,$DA)
+    T:=ttString; ExprType:=7; Emit($B8); DataAddress(LiteralString(TokenText)); Emit2($8C,$DA)
    End;
   End Else
   Begin
@@ -4726,9 +4750,9 @@ Begin
    If ExprLiteral And (Token=tkConstant) And TokenIsString And
       (Length(ExprLiteralText)+Length(TokenText)<=255) Then Begin
     CodeSize:=LiteralMarkCode; FixupCount:=LiteralMarkFixup; RelativeCount:=LiteralMarkRelative;
-    NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc; DataSize:=LiteralMarkData;
+    NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc; DataSize:=LiteralMarkData; TrimLiterals(DataSize);
     ExprLiteralText:=ExprLiteralText+TokenText; NextToken;
-    T:=ttString; ExprType:=7; Emit($B8); DataAddress(StoreString(ExprLiteralText)); Emit2($8C,$DA);
+    T:=ttString; ExprType:=7; Emit($B8); DataAddress(LiteralString(ExprLiteralText)); Emit2($8C,$DA);
     ExprKnown:=False; ExprUnsigned:=False; Continue;
    End;
    If T=ttChar Then StringFromChar;
@@ -5025,7 +5049,7 @@ Begin
     { Tableau ouvert: adresse du tableau puis High, reordonnes sur la pile. }
     If (Token=tkConstant) And TokenIsString And (TypeExtras[T].ElementType=6) Then Begin
      { constante chaine pour un "array of Char" ouvert (TP 7) }
-     A:=StoreString(TokenText); N:=Length(TokenText); NextToken;
+     A:=LiteralString(TokenText); N:=Length(TokenText); NextToken;
      Emit($1E); Emit($B8); DataAddress(A+1); Emit($50); LoadImmediate(N-1);
      Emit($5F); Emit($5B); Emit($50); Emit($53); Emit($57);
     End Else Begin
@@ -5156,7 +5180,7 @@ Procedure LiteralToPChar;
 Var Z: Word; K: Integer;
 Begin
  CodeSize:=LiteralMarkCode; FixupCount:=LiteralMarkFixup; RelativeCount:=LiteralMarkRelative;
- NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc; DataSize:=LiteralMarkData;
+ NativeRefCount:=LiteralMarkNative; RelocationCount:=LiteralMarkReloc; DataSize:=LiteralMarkData; TrimLiterals(DataSize);
  Z:=AllocData(Length(ExprLiteralText)+1);
  For K:=1 To Length(ExprLiteralText) Do Data[Z+K-1]:=Ord(ExprLiteralText[K]);
  Data[Z+Length(ExprLiteralText)]:=0;
@@ -6141,7 +6165,7 @@ Begin
     End;
     ttChar:StringFromChar;
     ttBoolean:Begin
-     A:=StoreString('TRUE'); B:=StoreString('FALSE'); P:=JumpZero;
+     A:=LiteralString('TRUE'); B:=LiteralString('FALSE'); P:=JumpZero;
      Emit($B8); DataAddress(A); Q:=Jump; PatchJump(P,CodeSize);
      Emit($B8); DataAddress(B); PatchJump(Q,CodeSize); Emit2($8C,$DA);
     End;
@@ -8239,7 +8263,7 @@ Begin
   CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat; RelocationCount:=MReloc;
   ObjectCallCount:=MObj; PendCount:=MPend; DebugCount:=MDbg; LabelJumpCount:=MLab; DataFixupCount:=MDataFix;
   If DataSize>MData Then FillChar(Data[MData],DataSize-MData,0);
-  DataSize:=MData;
+  DataSize:=MData; TrimLiterals(DataSize);
   Symbols[I].Addr:=MCode; TotalEmitted:=MTot;
   { copies de runtime emises dans le corps annule }
   While (CloneCount>0) And KernelMode And (CloneDst[CloneCount]>=MCode) Do Dec(CloneCount);
@@ -8391,7 +8415,7 @@ Begin
  { les donnees du noyau sont maintenant dans son segment }
  FillChar(Data[KDataStart-0],DataSize-KDataStart,0);
  StringRing:=SRing; StringRingPos:=SRingPos; StringRingMask:=2047;
- DataSize:=SRing; { memes allocations que celles reservees avant l'unite }
+ DataSize:=SRing; TrimLiterals(DataSize); { memes allocations que celles reservees avant l'unite }
 End;
 
 Procedure CompileSourceUnit(U: Byte; Path: TShortString);
@@ -11863,7 +11887,7 @@ Procedure CompileProgram;
 Var
  I: Word;
 Begin
- KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047;
+ KernelMode:=False; HaveKernel:=False; CloneCount:=0; StringRingMask:=2047; LitCount:=0;
  FillChar(StaticTemps,SizeOf(StaticTemps),0); StaticTempsUnit:=254; LastTempAddr:=0; LastTempLocal:=False;
  CodeSize:=0; DataSize:=0; BssTop:=65536; BssCount:=0; SymbolCount:=0; FixupCount:=0;
  DebugCount:=0; DebugCaptured:=[]; RealReady:=False; EmulatorReady:=False;
