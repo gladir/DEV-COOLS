@@ -294,7 +294,7 @@ Type
   Count, Used: Byte;
  End;
  TScopeInfo = Record
-  Parent, ProcSymbol, LocalSize: Word;
+  Parent, ProcSymbol, LocalSize, SkipJump: Word;
   LinkOffset: Word;
   Owner: Byte;
   Pseudo: Boolean;           { portee d'un WITH: pas de frame propre }
@@ -1916,6 +1916,16 @@ Var
  PendAbs: Array[1..8192] Of Boolean;
  PendAdd: Array[1..8192] Of Longint;
  PendCount: Word;
+ { Edition de liens intelligente (comme TP) : graphe d'appels des routines, passe
+   d'analyse tolerant le debordement du segment de code, puis recompilation
+   sans les routines jamais referencees. }
+ AnalysisPass, Overflowed, NoLimit: Boolean;
+ CurProc: Word;
+ EdgeFrom, EdgeTo: Array[1..32768] Of Word;
+ EdgeCount: Word;
+ DeadProc, RootProc: Array[1..MaxSymbols] Of Boolean;
+ TotalEmitted: Longint;
+ LastJumpTarget: Word;
  RelativeCount: Word;
  CodeOwners, DataOwners: Array[0..MaxImage-1] Of Byte;
  Defines: Array[1..MaxDefines] Of String[63];
@@ -2723,7 +2733,11 @@ NextToken;
 End;
 
 Procedure Emit(B: Byte);Begin
- If CodeSize=MaxImage Then Fail(48,'Segment de code trop grand');
+ Inc(TotalEmitted);
+ If CodeSize>=MaxImage-1 Then Begin
+  If AnalysisPass Or NoLimit Then Begin Overflowed:=True; CodeSize:=0 End
+  Else Fail(48,'Segment de code trop grand');
+ End;
  CodeOwners[CodeSize]:=CurrentUnit;
  If CurrentUnit In [253,254] Then CodeOwners[CodeSize]:=0;
  Image[CodeSize]:=B; Inc(CodeSize);
@@ -2749,6 +2763,7 @@ Procedure PatchJump(P, Target: Word);
 Var
  I: Word;
 Begin
+ LastJumpTarget:=Target;
  PatchWord(P,Word(Longint(Target)-P-2));
  For I:=1 To RelativeCount Do If RelativeFixups[I].Position=P Then Begin
   RelativeFixups[I].Target:=Target; Exit;
@@ -3268,6 +3283,12 @@ Procedure AddSegmentRelocation(P: Word; Kind: Byte);Begin
  Relocations[RelocationCount].Segm:=0; RelocationKinds[RelocationCount]:=Kind;
 End;
 
+Procedure NoteRef(Sym: Word);
+Begin
+ If (Sym=0) Or (EdgeCount=32768) Then Exit;
+ Inc(EdgeCount); EdgeFrom[EdgeCount]:=CurProc; EdgeTo[EdgeCount]:=Sym;
+End;
+
 Procedure AddPending(P,Sym: Word; Absolute: Boolean; Add: Longint);
 Begin
  If PendCount=8192 Then Unsupported('trop de references en avant vers des routines');
@@ -3300,6 +3321,7 @@ End;
 Procedure EmitProcAddress(I: Word; WithSegment: Boolean);
 Var Bias: Longint;
 Begin
+ NoteRef(I);
  Bias:=UnitBias(Symbols[I].Owner);
  Emit($B8);
  If Symbols[I].Unresolved Then Begin AddPending(CodeSize,I,True,-Bias); EmitWord(0) End
@@ -3313,6 +3335,7 @@ End;
 
 Procedure EmitLocalCall(I: Word);
 Begin
+ NoteRef(I);
  { ABI Turbo Pascal 7 : une routine globale n'a pas de lien statique }
  If Symbols[I].Scope<>0 Then Begin ScopeAddress(Symbols[I].Scope); Emit($53) End;
  If Symbols[I].FarRoutine Then Emit($0E);
@@ -3321,6 +3344,8 @@ Begin
  End Else CallTo(Symbols[I].Addr);
  If Symbols[I].LegacyCall Then Begin Emit2($83,$C4); Emit(2) End;
 End;
+
+Procedure EmitBP(Reg: Byte; D: Integer); Forward;
 
 Procedure ProcedureExit;
 Var I,A: Word;
@@ -3346,9 +3371,13 @@ Begin
    Emit($B8); DataAddress(A); Emit2($8C,$DA);
   End Else Begin
   { AX/AL contient le resultat ordinal apres restauration de la frame. }
-  Emit2($8B,$86); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr);
+  A:=Symbols[Symbols[I].ResultSymbol].Addr;
+  { resultat tout juste stocke dans la variable : AX le contient deja }
+  If Not ((Symbols[I].Width=2) And (SmallInt(A)>=-128) And (SmallInt(A)<=127) And (CodeSize>=3) And
+     (LastJumpTarget<>CodeSize) And (Image[CodeSize-3]=$89) And (Image[CodeSize-2]=$46) And
+     (Image[CodeSize-1]=Byte(A))) Then Begin Emit($8B); EmitBP(0,SmallInt(A)) End;
   If Symbols[I].Width=4 Then Begin
-   Emit2($8B,$96); EmitWord(Symbols[Symbols[I].ResultSymbol].Addr+2);
+   Emit2($8B,$96); EmitWord(A+2);
   End;
   If Symbols[I].Width=1 Then Begin
    If Symbols[I].SignedByte Then Emit($98) Else Emit2($30,$E4);
@@ -3395,8 +3424,6 @@ Begin
  K:=1; If Symbols[I].NativeConst Then K:=2;
  NativeReference(Symbols[I].Owner,K,Symbols[I].NativeMap,Symbols[I].Addr);
 End;
-
-Procedure EmitBP(Reg: Byte; D: Integer); Forward;
 
 Procedure ReferencePointer(I: Word);
 Begin
@@ -3731,7 +3758,7 @@ End;
 
 Function DesignatorTail(T: Word): Word;
 { Suite d'un designateur (^ . [ ]) a partir de ES:DI et du type T. }
-Var F,IndexType,Element: Word; Name: TShortString;
+Var F,IndexType,Element,StartIdx,FixMark,RelMark,PendMark: Word; Name: TShortString;
 Begin
  While Token In [tkLB,tkDot,tkCaret] Do Begin
   If Token=tkCaret Then Begin
@@ -3757,12 +3784,29 @@ Begin
     Else If Types[T].Typ=ttArray Then Begin
      IndexType:=TypeExtras[T].IndexType; Element:=TypeExtras[T].ElementType;
     End Else Fail(26,'Tableau ou chaine attendu');
-    Emit($06); Emit($57); RequireOrdinal(Expression);
+    Emit($06); Emit($57); StartIdx:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
+    RequireOrdinal(Expression);
     If Not CompatibleTypes(IndexType,ExprType) Then Fail(26,'Type de l''index');
     If ExprKnown And (Types[T].Typ=ttArray) And
        ((ExprValue<Types[IndexType].LowBound) Or (ExprValue>Types[IndexType].HighBound)) Then
      Fail(76,'Index constant hors limites');
-    Emit($5F); Emit($07);
+    If (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And
+       (OptionBits And 2=0) And ExprKnown And (CodeSize-StartIdx=3) And (Image[StartIdx]=$B8) And
+       (Types[ExprType].Width<=2) And ((Token<>tkComma) Or True) Then Begin
+     { index constant : deplacement replie dans DI, sans PUSH/POP ni multiplication }
+     CodeSize:=StartIdx-2;
+     If Types[T].Typ=ttArray Then AddDI(Word((ExprValue-Types[IndexType].LowBound)*TypeExtras[Element].Size))
+     Else AddDI(Word(ExprValue*TypeExtras[Element].Size));
+     T:=Element;
+     If Token<>tkComma Then Break; NextToken; Continue;
+    End;
+    If (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And (CodeSize-StartIdx=3) And
+       ((Image[StartIdx]=$B8) Or ((Image[StartIdx]=$8B) And (Image[StartIdx+1]=$46))) Then Begin
+     { index simple : ES:DI n'est pas modifie par le calcul de l'index }
+     For StartIdx:=StartIdx To CodeSize-1 Do Image[StartIdx-2]:=Image[StartIdx];
+     Dec(CodeSize,2);
+    End Else
+    Begin Emit($5F); Emit($07) End;
     If OptionBits And 2<>0 Then Begin
      If Types[T].Typ=ttString Then RangeBounds(0,Types[T].Capacity,ExprType)
      Else RangeBounds(Types[IndexType].LowBound,Types[IndexType].HighBound,ExprType);
@@ -4935,7 +4979,7 @@ Begin
   RequireInteger(Expression); Emit($5A); Need(tkRP); StandardFunction:=8;
  End Else If (Name='ADDR') Or (Name='OFS') Or (Name='SEG') Then Begin
   Need(tkLP);
-  If Token=tkIdent Then A:=FindLexicalSymbol(TokenText) Else A:=0;
+  If Token=tkIdent Then A:=FindSymbol(TokenText) Else A:=0;
   If (A<>0) And (Symbols[A].Kind=skProc) Then Begin
    { Ofs/Seg/Addr d'une procedure : adresse de son point d'entree }
    NextToken; Need(tkRP);
@@ -5797,7 +5841,7 @@ Begin
    Else If Symbols[Id].Kind=skProc Then Begin
     { [Proc + BX] : adresse dans le segment de code }
     If (O.CodeSym<>0) Or (Sign<0) Then Fail(5,'Adresse assembleur invalide');
-    O.CodeSym:=Id;
+    O.CodeSym:=Id; NoteRef(Id);
     If Token=tkDot Then Begin NextToken; TypeChain End;
    End
    Else Begin
@@ -5864,7 +5908,7 @@ Begin
    If Symbols[Id].Kind=skConst Then Begin O.Kind:=3; O.Displacement:=Sign*Symbols[Id].Value End
    Else If (Symbols[Id].Kind=skProc) And (Token=tkDot) Then Begin
     { Proc.Type.Champ : champ d'un enregistrement place dans le code de la procedure }
-    O.Kind:=2; O.CodeSym:=Id; O.Name:=S; T:=0;
+    O.Kind:=2; O.CodeSym:=Id; O.Name:=S; T:=0; NoteRef(Id);
     NextToken; If Token<>tkIdent Then Fail(2,'Type assembleur attendu');
     F:=FindSymbol(TokenText);
     If (F<>0) And (Symbols[F].Kind=skType) Then Begin
@@ -5883,7 +5927,7 @@ Begin
      End;
     End Else Fail(3,'Type ou champ assembleur inconnu: '+TokenText);
    End
-   Else If Symbols[Id].Kind=skProc Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S End
+   Else If Symbols[Id].Kind=skProc Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S; NoteRef(Id) End
    Else If Symbols[Id].Kind=skLabel Then Begin O.Kind:=5; O.Sym:=Id; O.Name:=S End
    Else If Symbols[Id].Kind=skVar Then Begin
     O.Kind:=2;
@@ -7439,7 +7483,8 @@ Procedure DeclarationPart; Forward;
 Procedure ProcedureDeclaration;
 Var
  I,Parent,FramePatch,StackCheckPatch,Skip,J,K,T,V,ParamOffset,Size,Link: Word;
- SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,IsExternal,IsConst: Boolean;
+ SavedProcedure,IsFunction,Existing,FullHeading,ByVar,IsForward,HasDistance,IsExternal,IsConst,DeadHere: Boolean;
+ MCode,MFix,MRel,MNat,MReloc,MObj,MPend,MDbg,MLab,MData,MDataFix,SavedCur: Word; MTot: Longint;
  Sig: TSymbol; Name: TShortString;
  Names: Array[1..MaxNativeParams] Of String[63]; N: Byte;
 Begin
@@ -7555,9 +7600,12 @@ Begin
   Symbols[I].Addr:=0; Symbols[I].Unresolved:=True;
  End;
  If Sig.AssemblerBody Then Symbols[I].AssemblerBody:=True;
+ If InInterface Then RootProc[I]:=True;
  If Sig.InterruptRoutine Then Begin Symbols[I].InterruptRoutine:=True; Symbols[I].FarRoutine:=True End;
  If Sig.InlineBody Then Begin Symbols[I].HasBody:=True; Symbols[I].InlineBody:=True; Symbols[I].StrValue:=Sig.StrValue; Exit End;
  If InInterface Or IsForward Then Begin Symbols[I].ForwardDeclared:=True; Exit End;
+ { routine imbriquee : le parent saute par-dessus son corps (une seule fois) }
+ If (CurrentScope<>0) And (Scopes[CurrentScope].SkipJump=0) Then Scopes[CurrentScope].SkipJump:=Jump;
  Symbols[I].Addr:=CodeSize; Symbols[I].Unresolved:=False; ResolvePending(I);
  Symbols[I].HasBody:=True;
  If IsExternal Then Begin
@@ -7582,6 +7630,11 @@ Begin
   EmitWord(Symbols[I].ParamBytes);
   Exit;
  End;
+ { edition de liens intelligente : corps compile puis annule si jamais reference }
+ DeadHere:=(Not AnalysisPass) And DeadProc[I];
+ SavedCur:=CurProc; CurProc:=I; MTot:=TotalEmitted;
+ MCode:=CodeSize; MFix:=FixupCount; MRel:=RelativeCount; MNat:=NativeRefCount; MReloc:=RelocationCount;
+ MObj:=ObjectCallCount; MPend:=PendCount; MDbg:=DebugCount; MLab:=LabelJumpCount; MData:=DataSize; MDataFix:=DataFixupCount;
  Parent:=CurrentScope; SavedProcedure:=InProcedure;
  If ScopeCount=MaxScopes Then Unsupported('plus de 128 portees');
  Inc(ScopeCount); CurrentScope:=ScopeCount;
@@ -7622,9 +7675,9 @@ Begin
   End;
   Emit2($81,$EC); FramePatch:=CodeSize; EmitWord(0);
   { saut des declarations (routines imbriquees) seulement s'il y en a }
-  If Token In [tkConst,tkType,tkVar,tkProcedure,tkFunction,tkLabel] Then Begin
-   Skip:=Jump; DeclarationPart; PatchJump(Skip,CodeSize);
-  End;
+  Scopes[CurrentScope].SkipJump:=0;
+  DeclarationPart;
+  If Scopes[CurrentScope].SkipJump<>0 Then PatchJump(Scopes[CurrentScope].SkipJump,CodeSize);
  End;
  For J:=1 To SymbolCount Do If (Symbols[J].Owner=CurrentUnit) And
    (Symbols[J].Scope=CurrentScope) And (Symbols[J].Kind=skProc) And
@@ -7635,6 +7688,14 @@ Begin
  If FramePatch<>0 Then PatchWord(FramePatch,Scopes[CurrentScope].LocalSize);
  If StackCheckPatch<>0 Then PatchWord(StackCheckPatch,Scopes[CurrentScope].LocalSize+256);
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SIZE ',Name,' ',CodeSize-Symbols[I].Addr);
+ CurProc:=SavedCur;
+ If DeadHere Then Begin
+  CodeSize:=MCode; FixupCount:=MFix; RelativeCount:=MRel; NativeRefCount:=MNat; RelocationCount:=MReloc;
+  ObjectCallCount:=MObj; PendCount:=MPend; DebugCount:=MDbg; LabelJumpCount:=MLab; DataFixupCount:=MDataFix;
+  If DataSize>MData Then FillChar(Data[MData],DataSize-MData,0);
+  DataSize:=MData;
+  Symbols[I].Addr:=MCode; TotalEmitted:=MTot;
+ End;
  CurrentScope:=Parent; InProcedure:=SavedProcedure; Need(tkSemi);
 End;
 
@@ -11964,6 +12025,26 @@ Begin
   CodeBytes,' octets de code, ',DataBytes,' octets de donnees.');
 End;
 
+Procedure SmartLink;
+{ DeadProc := routines non atteignables depuis les racines (code principal et
+  initialisations d'unites = CurProc 0, routines de l'interface d'une unite
+  compilee seule). }
+Var Live: Array[1..MaxSymbols] Of Boolean; K,Changed: Word; More: Boolean;
+Begin
+ FillChar(Live,SizeOf(Live),0);
+ For K:=1 To SymbolCount Do If RootProc[K] And UnitOutput Then Live[K]:=True;
+ Repeat
+  More:=False;
+  For K:=1 To EdgeCount Do
+   If ((EdgeFrom[K]=0) Or Live[EdgeFrom[K]]) And Not Live[EdgeTo[K]] Then Begin Live[EdgeTo[K]]:=True; More:=True End;
+ Until Not More;
+ Changed:=0;
+ For K:=1 To SymbolCount Do
+  If (Symbols[K].Kind=skProc) And Symbols[K].HasBody And Not Symbols[K].Native And Not Symbols[K].InlineBody And
+     Not Live[K] And (Symbols[K].Owner<>255) Then Begin DeadProc[K]:=True; Inc(Changed) End;
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'SMARTLINK routines retirees: ',Changed);
+End;
+
 BEGIN
   { Structures fixes du format TPU, verifier avant toute lecture binaire. }
  CheckLayout;
@@ -11987,7 +12068,23 @@ BEGIN
  FindAndReadLibrary;
  Move(Defines,InitialDefines,SizeOf(Defines)); InitialDefineCount:=DefineCount;
  InitialOptions:=OptionBits;
- LoadSource; CompileProgram; LoadObjects; WriteUnits;
+ NoLimit:=GetEnv('TPC_NOLIMIT')<>'';
+ AnalysisPass:=True; Overflowed:=False; EdgeCount:=0; CurProc:=0; TotalEmitted:=0;
+ FillChar(DeadProc,SizeOf(DeadProc),0); FillChar(RootProc,SizeOf(RootProc),0);
+ LoadSource; CompileProgram;
+ AnalysisPass:=False;
+ If Overflowed Then Begin
+  { Segment de code trop grand : edition de liens intelligente. Les routines
+    inaccessibles depuis le programme (ou, pour une unite, depuis son
+    interface) sont retirees a la recompilation. }
+  SmartLink;
+  Move(InitialDefines,Defines,SizeOf(Defines)); DefineCount:=InitialDefineCount;
+  OptionBits:=InitialOptions; StackSize:=16384; MinHeap:=0; MaxHeap:=$FFFF;
+  TokenLine:=1; TokenColumn:=1; TotalLines:=0; CurProc:=0; EdgeCount:=0; TotalEmitted:=0;
+  LoadSource; CompileProgram;
+ End;
+ If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);
+ LoadObjects; WriteUnits;
  If Not UnitOutput Then Begin
   LinkNative; PrepareOverlays; WriteExecutable
  End;
