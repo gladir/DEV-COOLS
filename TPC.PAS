@@ -5747,14 +5747,30 @@ Begin
 End;
 
 Procedure AssignToDesignator(Dest: Word); Forward;
+
+Function ConstToLocal(RhsPos: Word; Disp: Longint; W: Byte): Boolean;
+{ Si le second membre est "mov ax,imm" (deja emis a RhsPos) : le remplace par "mov [bp+d],imm". }
+Var V: Word;
+Begin
+ ConstToLocal:=False;
+ If (W<>1) And (W<>2) Then Exit;
+ If (CodeSize-RhsPos<>3) Or (Image[RhsPos]<>$B8) Then Exit;
+ V:=Image[RhsPos+1]+Word(Image[RhsPos+2])*256; CodeSize:=RhsPos;
+ If W=1 Then Begin Emit($C6); EmitBP(0,SmallInt(Disp)); Emit(V And 255) End
+ Else Begin Emit($C7); EmitBP(0,SmallInt(Disp)); EmitWord(V) End;
+ ConstToLocal:=True;
+End;
+
 Procedure Assignment(I: Word);
 Var
- T: Byte; Dest,SourceType,SourceBuffer: Word;
+ T: Byte; Dest,SourceType,SourceBuffer,RhsPos,FixMark,RelMark,PendMark: Word;
 Begin
  If Symbols[I].Kind<>skVar Then Fail(43,'Variable attendue');
  If SimpleScalar(I) And (Token=tkAssign) Then Begin
   { Variable scalaire simple: expression puis MOV direct. }
-  Dest:=SymbolType(I); NextToken; T:=Expression;
+  Dest:=SymbolType(I); NextToken;
+  RhsPos:=CodeSize; FixMark:=FixupCount; RelMark:=RelativeCount; PendMark:=PendCount;
+  T:=Expression;
   If IsCharPointer(Dest) And ExtendedSyntax Then Begin
    If ExprLiteral Then Begin LiteralToPChar; T:=ttPointer End
    Else If (T=ttArray) And IsCharArray(ExprType) Then Begin T:=ttPointer; ExprType:=12 End;
@@ -5768,6 +5784,9 @@ Begin
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
+  If Symbols[I].Local And (RealScope(Symbols[I].Scope)=RealScope(CurrentScope)) And (FixupCount=FixMark) And
+     (RelativeCount=RelMark) And (PendCount=PendMark) And
+     ConstToLocal(RhsPos,SmallInt(Symbols[I].Addr),Types[Dest].Width) Then Exit;
   StoreScalar(I); Exit;
  End;
  Dest:=Designator(I); AssignToDesignator(Dest);
@@ -5848,7 +5867,9 @@ Begin
   If (Types[Dest].Width=4) And (Types[SourceType].Width<>4) Then Begin
    If ExprUnsigned Then Emit2($31,$D2) Else Emit($99);
   End;
-  If Direct Then Begin
+  If Direct And (FixupCount=FixMark) And (RelativeCount=RelMark) And (PendCount=PendMark) And
+     ConstToLocal(StartRhs,DispD,Types[Dest].Width) Then
+  Else If Direct Then Begin
    If Types[Dest].Width=1 Then EmitBPDisp($88,0,DispD) Else EmitBPDisp($89,0,DispD);
    If Types[Dest].Width=4 Then EmitBPDisp($89,2,DispD+2);
   End Else StoreDesignator(Dest);
