@@ -4376,7 +4376,7 @@ End;
 Function Term: Byte;
 Var
  T, R, Op: Byte; RightKnown,MixedWide: Boolean; RightValue: Longint;
- Skip,ShiftLoop,CV,PushPos: Word; ConstOp,MemOp: Boolean; MD: Longint;
+ Skip,ShiftLoop,CV,PushPos,K: Word; ConstOp,MemOp,ConstBx: Boolean; MD: Longint;
  ShortCircuit,WideLeft,WideRight,WideResult: Boolean;
  LeftType: Word; LeftUnsigned: Boolean;
  LeftKnown: Boolean; LeftValue: Longint; Check: Real;
@@ -4434,9 +4434,13 @@ Begin
    End;
   End Else Begin
   ConstOp:=(Op=tkAnd) And TailConst(CV);
-  MemOp:=False;
-  If Not ConstOp And (Op In [tkAnd,tkTimes]) Then MemOp:=(T=ttInteger) And (R=ttInteger) And (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
-  If Not ConstOp And Not MemOp Then Begin Emit2($89,$C3); Emit($58) End;
+  MemOp:=False; ConstBx:=False;
+  { diviseur / multiplicateur constant : "mov bx,imm" a la place de push/mov/pop }
+  If Not ConstOp And (Op In [tkTimes,tkDiv,tkMod]) And RightKnown And (RightValue>=-32768) And (RightValue<=65535) And
+     ((Op=tkTimes) Or (RightValue<>0)) And Not ((Op<>tkTimes) And (RightValue=-1)) And
+     ((Op=tkTimes) Or LeftUnsigned Or (RightValue<=32767)) Then ConstBx:=TailConst(CV);
+  If Not ConstOp And Not ConstBx And (Op In [tkAnd,tkTimes]) Then MemOp:=(T=ttInteger) And (R=ttInteger) And (Types[ExprType].Width=2) And RightLocalWord(PushPos,MD);
+  If Not ConstOp And Not MemOp And Not ConstBx Then Begin Emit2($89,$C3); Emit($58) End;
   If Op=tkAnd Then Begin
    If (T<>R) Or Not (T In [ttInteger,ttBoolean]) Then Fail(26,'Types incompatibles');
    If ConstOp Then Begin Emit($25); EmitWord(CV) End Else If MemOp Then Begin Emit($23); EmitBP(0,SmallInt(MD)) End Else Emit2($21,$D8);
@@ -4445,10 +4449,36 @@ Begin
    RequireInteger(T); RequireInteger(R);
    Case Op Of
    tkTimes:Begin
+    If ConstBx Then Begin
+     K:=0; While (K<15) And (Word(1) Shl K<CV) Do Inc(K);
+     If (OptionBits And $8000=0) And (CV=0) Then Emit2($31,$C0)
+     Else If (OptionBits And $8000=0) And (CV=1) Then
+     Else If (OptionBits And $8000=0) And (CV<>0) And (Word(1) Shl K=CV) And (K<=2) Then Begin
+      Emit2($D1,$E0); If K=2 Then Emit2($D1,$E0);
+     End Else If (OptionBits And $8000=0) And (CV<>0) And (Word(1) Shl K=CV) Then Begin
+      Emit2($B1,K); Emit2($D3,$E0);
+     End Else Begin Emit($BB); EmitWord(CV); Emit2($F7,$EB) End;
+    End Else
     If MemOp Then Begin Emit($F7); EmitBP(5,SmallInt(MD)) End Else Emit2($F7,$EB);
     OverflowCheck(LeftUnsigned And ExprUnsigned);
    End;
    tkDiv,tkMod:
+   If ConstBx Then Begin
+    { constante non nulle (et differente de -1) : ni controle de zero ni de debordement }
+    K:=0; While (K<15) And (Word(1) Shl K<CV) Do Inc(K);
+    If LeftUnsigned And (RightValue>0) And (Word(1) Shl K=CV) And (CV>1) And (Op=tkMod) Then Begin
+     Emit($25); EmitWord(CV-1)
+    End Else If LeftUnsigned And (RightValue>0) And (Word(1) Shl K=CV) And (CV>1) And (K<=2) Then Begin
+     Emit2($D1,$E8); If K=2 Then Emit2($D1,$E8)
+    End Else If LeftUnsigned And (RightValue>0) And (Word(1) Shl K=CV) And (CV>1) Then Begin
+     Emit2($B1,K); Emit2($D3,$E8)
+    End Else Begin
+     Emit($BB); EmitWord(CV);
+     If LeftUnsigned And (RightValue>0) Then Begin Emit2($31,$D2); Emit2($F7,$F3) End
+     Else Begin Emit($99); Emit2($F7,$FB) End;
+     If Op=tkMod Then Emit2($89,$D0);
+    End;
+   End Else
    Begin
     Emit2($09,$DB); Emit2($75,6); LoadImmediate(200); CallTo(RtlTarget(RuntimeError));
     If LeftUnsigned And (ExprUnsigned Or (RightKnown And (RightValue>0))) Then Begin Emit2($31,$D2); Emit2($F7,$F3) End
@@ -12519,8 +12549,9 @@ BEGIN
  LoadSource; CompileProgram;
  AnalysisPass:=False;
  PassNo:=1;
- If Overflowed Then Begin
-  { Segment de code trop grand : edition de liens intelligente. Les routines
+ If Overflowed Or (HaveKernel And (GetEnv('TPC_NOSMART')='')) Or (GetEnv('TPC_SMART')<>'') Then Begin
+  { Edition de liens intelligente (comme TP 7 : les routines inutilisees ne sont pas liees), obligatoire
+    si le segment de code est trop grand : edition de liens intelligente. Les routines
     inaccessibles depuis le programme (ou, pour une unite, depuis son
     interface) sont retirees a la recompilation. Les distances mesurees
     sur un code qui deborde ne sont pas fiables. }
@@ -12554,6 +12585,7 @@ BEGIN
   JumpOrd:=0; JumpOverflow:=False; ReportCount:=0; RuntimeDepth:=0;
   LoadSource; CompileProgram;
  End;
+ If GetEnv('TPC_PASSES')<>'' Then WriteLn(StdErr,'PASSES ',PassNo,' overflow=',JumpOverflow);
  For PassI:=1 To ReportCount Do WriteLn(ReportLines[PassI]);
  If GetEnv('TPC_SIZES')<>'' Then WriteLn(StdErr,'OCTETS EMIS ',TotalEmitted);
  LoadObjects;
