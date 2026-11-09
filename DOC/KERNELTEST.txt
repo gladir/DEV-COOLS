@@ -57,6 +57,8 @@ Syntaxe
   /KTVSCR            injecte les frappes par la file de touches de l'ecran
                      virtuel (AL=ASCII, comme l'onglet emulateur de l'IDE)
                      au lieu du tampon clavier BIOS 0040:001E.
+  /KTHD:fich         monte en plus une image de disque dur (C:, DL=80h) : permet
+                     de tester une installation (disquette A: + disque C:).
   /KTFILL:n          remplit la memoire conventionnelle (hors vecteurs et
                      BDA) avec l'octet n (0..255) avant l'amorcage : detecte
                      les programmes qui dependent de memoire non initialisee.
@@ -106,8 +108,12 @@ Une commande par ligne ; lignes vides ou commencant par # ou ; ignorees.
   peek seg:ofs [len] dump hexa+ASCII de la memoire (max 512 octets)
   disasm seg:ofs [n] desassemble n instructions
   trace [n]          dernieres instructions (necessite /KTTRACE)
+  mount X: fichier   change l'image de l'unite X (A..D) en cours d'execution
+                     (changement de disquette : mount A: INSTALL2.IMG)
   say texte          affiche une ligne de repere
   quit               arrete le script
+Dans type/keys, \fHH envoie une touche etendue (AL=0) de code de balayage HH
+en hexa : \f3B = F1, \f3D = F3, \f3F = F5, \f48 = haut, \f50 = bas.
 Les frappes sont envoyees dans le tampon clavier BIOS une par une, des qu'il est
 vide. Apres un arret (faute CPU, HLT definitif) les commandes run sont ignorees
 mais screen/regs/peek restent utilisables. En fin d'execution sont toujours

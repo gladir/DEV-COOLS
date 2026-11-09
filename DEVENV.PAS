@@ -13283,6 +13283,7 @@ Type
 Var
  KtDir, KtScriptFile, KtImagePath, KtBootImg: String;
  KtVScr: Boolean;
+ KtHdImg: String;
  KtFill: Integer;
  KtFillOn: Boolean;
  KtSteps: LongInt;
@@ -13395,6 +13396,10 @@ Begin
   { amorcage reel d une image existante (disquette 1,44 Mo ou disque dur) }
   If Val1 = '' Then FatalError('/KTBOOTIMG:fichier.img attendu');
   KtBoot := True; KtBootImg := Val1;
+ End Else If Key = 'KTHD' Then Begin
+  { disque dur supplementaire (C:, DL=80h) monte en plus de la disquette }
+  If Val1 = '' Then FatalError('/KTHD:fichier.img attendu');
+  KtHdImg := Val1;
  End Else If Key = 'KTFILL' Then Begin
   Val(Val1, KtFill, Err);
   If (Err <> 0) Or (KtFill < 0) Or (KtFill > 255) Then
@@ -227695,6 +227700,14 @@ Begin
   If (KtKeyHead <> KtKeyTail) And
      (Emu_ReadWord(P.CPU, $40, $1A) = Emu_ReadWord(P.CPU, $40, $1C)) And
      ((Not KtVScr) Or (Not EmuVScr_HasKey(P))) Then Begin
+   If KtKeys[KtKeyTail] = #255 Then Begin
+    { touche etendue : marqueur #255 suivi du code de balayage }
+    KtKeyTail := (KtKeyTail + 1) Mod KT_MAXKEYS;
+    If KtVScr Then
+     EmuVScr_PushKey(P, Word(Ord(KtKeys[KtKeyTail])) Shl 8)
+    Else
+     Kt_PushKey(P, Ord(KtKeys[KtKeyTail]), 0);
+   End Else
    If KtVScr Then
     { meme chemin que l onglet emulateur de l IDE : file de touches de }
     { l ecran virtuel, AL=code ASCII sans code de balayage }
@@ -227789,6 +227802,13 @@ Begin
      If Err = 0 Then Put(Chr(Byte(L)));
      Inc(I, 2);
     End;
+    'f': Begin
+     { touche etendue (AL=0) de code de balayage HH : \f3B = F1, \f3D = F3,
+       \f48 = haut, \f50 = bas }
+     Val('$' + Copy(S, I + 1, 2), L, Err);
+     If Err = 0 Then Begin Put(#255); Put(Chr(Byte(L))); End;
+     Inc(I, 2);
+    End;
    Else Put(S[I]);
    End;
   End Else Put(S[I]);
@@ -227860,6 +227880,19 @@ Begin
  Else If Cmd = 'KEYS' Then Kt_QueueKeys(Line, False)
  Else If Cmd = 'SCREEN' Then Kt_DumpScreen(P)
  Else If Cmd = 'REGS' Then Kt_DumpRegs(P)
+ Else If Cmd = 'MOUNT' Then Begin
+  { mount A: fichier.img : change l image d une unite (disquette, etc.) }
+  A1 := UpCaseStr(Kt_Word1(Line));
+  While (Line <> '') And (Line[1] = ' ') Do Delete(Line, 1, 1);
+  I := -1;
+  If (Length(A1) >= 1) And (A1[1] >= 'A') And (A1[1] <= 'D') Then
+   I := Ord(A1[1]) - Ord('A');
+  If (I < 0) Or (Line = '') Then
+   KtOut('script: mount A:|B:|C:|D: fichier attendu')
+  Else If Emu_MountDiskSlot(Byte(I), Line) Then
+   KtOut('* mount ' + A1 + ' ' + Line)
+  Else KtOut('script: montage impossible : ' + Line);
+ End
  Else If Cmd = 'SAY' Then KtOut('* ' + Line)
  Else If Cmd = 'TRACE' Then Begin
   A1 := Kt_Word1(Line);
@@ -228043,6 +228076,11 @@ Begin
   EmuFloppyCyls[SlotIdx] := 80; EmuFloppyHeads[SlotIdx] := 2;
   EmuFloppySpt[SlotIdx] := 18;
  End;
+ If (KtHdImg <> '') And (Not KtHard) Then
+  If Not Emu_MountDiskSlot(2, KtHdImg) Then Begin
+   KtOut('KERNELTEST: montage du disque dur ' + KtHdImg + ' impossible');
+   Halt(1);
+  End;
  Emu_InitComputer(EmuPanel.CPU);
  If Not EmuPanel.CPU.MemReady Then Begin
   KtOut('KERNELTEST: memoire emulee indisponible'); Halt(1);
