@@ -30,6 +30,8 @@ Il possède également plusieurs environnements de développement intégrés, au
 	</tr>
 	<tr>
 		<td><img width="320" height="240" alt="image" src="https://github.com/user-attachments/assets/1445b990-b374-4f77-a46c-2690b8fc4cf1" /></td>
+		<td><img width="320" height="240" alt="image" src="https://github.com/user-attachments/assets/561653b4-ac1d-46b7-9874-77918051972c" /></td>
+
 	</tr>
 </table>
 
