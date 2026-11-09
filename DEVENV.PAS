@@ -257894,7 +257894,16 @@ Begin
     Else If K = 0 Then Begin
      If KeyPressed Then Begin
       K := Ord(ReadKey);
-      If K = 0 Then EmuDbg_RequestBreak(EDC_8086);
+      If K = 0 Then EmuDbg_RequestBreak(EDC_8086)
+      Else If (K >= $3B) And ((K <= $44) Or ((K >= $47) And (K <= $53)) Or
+         (K = $85) Or (K = $86)) And (K <> $4A) And (K <> $4C) And
+         (K <> $4E) Then
+       { fleches, Debut/Fin, PgPrec/PgSuiv, Inser/Suppr et F1..F12 : transmis }
+       { au clavier emule (AL=0, AH=code de balayage) - sinon INSTALL et    }
+       { tout programme DOS ne voient jamais ces touches (consommees ici      }
+       { avant d arriver a HandleEmulatorPanelEvent). Les autres frappes   }
+       { etendues (Alt+lettre...) restent ignorees, voir ci-dessous. }
+       EmuVScr_PushKey(P, Word(K) Shl 8);
       { BOGUE REEL CORRIGE PUIS RESTREINT (2026-10-18/19) : la frappe       }
       { etendue (2e octet non nul = code de balayage - fleches/F-touches,   }
       { mais aussi n importe quel Alt+lettre, donc frolee par megarde en    }
