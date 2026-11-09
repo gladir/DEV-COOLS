@@ -226154,6 +226154,79 @@ Begin
  End;
 End;
 
+{ INT 19h (rechargement du systeme) : redemarrage a chaud de la machine    }
+{ emulee comme le fait un BIOS - memoire conventionnelle effacee, BDA/IVT et }
+{ peripheriques reinitialises, puis chargement du secteur de boot de la      }
+{ premiere unite amorcable : A: (disquette montee dont le secteur 0 porte    }
+{ la signature 55AAh) sinon C: (disque dur). Utilise par INSTALL a la fin de }
+{ l installation, ou par le secteur de boot "disquette non systeme" apres    }
+{ changement de disquette (IMGMOUNT -u A). Sans unite amorcable : fin du     }
+{ programme avec un message (INT 18h). }
+Procedure Emu_SoftReboot(Var P: TEmulatorPanel);
+Var
+ Idx: Byte;
+ Sec: Array[0..511] Of Byte;
+ Zero: Array[0..4095] Of Byte;
+ S, O: Word;
+ Found: Boolean;
+Begin
+ Found := False;
+ Idx := 0;
+ If EmuFloppyOpen[0] Then
+  If Emu_ImageReadSector(0, 0, Sec) Then
+   If (Sec[510] = $55) And (Sec[511] = $AA) Then Found := True;
+ If Not Found Then Begin
+  Idx := 2;
+  If EmuFloppyOpen[2] Then
+   If Emu_ImageReadSector(2, 0, Sec) Then
+    If (Sec[510] = $55) And (Sec[511] = $AA) Then Found := True;
+ End;
+ If Not Found Then Begin
+  EmuVScr_WriteStr(P, 'Aucun peripherique d''amorcage (INT 18h).');
+  P.CPU.Fault := sfEndProgram;
+  Exit;
+ End;
+ FillChar(Zero, SizeOf(Zero), 0);
+ For S := 0 To 9 Do
+  For O := 0 To 15 Do
+   Emu_WriteBlock(P.CPU, Word(S * $1000), Word(O * 4096), Zero, 4096);
+ EmuVScr_Clear(P);
+ EmuBootActive := True;
+ EmuFakeDosSuppressed := True;
+ Emu_InitBDA(P);
+ Emu_DpbInit(P);
+ Emu_CdsInit(P);
+ Emu_SftInit(P);
+ Emu_SdaInit(P);
+ Emu_IpxInit(P);
+ Emu_PktInit(P);
+ Emu_NetBiosInit(P);
+ Emu_XmsInit(P);
+ EmuXms.Active := False;
+ Emu_EmsInit(P);
+ Emu_VcpiInit(P);
+ Emu_MouseInit(P);
+ Emu_MscdexInit(P);
+ Emu_DpmiInit(P);
+ EmuDpmi.Active := False;
+ Emu_DefaultVectorsInit(P);
+ If Not Emu_LoadBootSector(P.CPU, Idx) Then Begin
+  EmuVScr_WriteStr(P, 'Erreur de lecture du secteur de boot.');
+  P.CPU.Fault := sfEndProgram;
+  Exit;
+ End;
+ P.CPU.Regs.AX := 0;
+ P.CPU.Regs.BX := 0;
+ P.CPU.Regs.CX := 0;
+ P.CPU.Regs.SI := 0;
+ P.CPU.Regs.DI := 0;
+ P.CPU.Regs.BP := 0;
+ Include(P.CPU.Flags.s, EFG_IF);
+ Exclude(P.CPU.Flags.s, EFG_TF);
+ P.CPU.Fault := sfNone;
+ P.CPU.Halted := False;
+End;
+
 Procedure Emu_DoInt(Var P: TEmulatorPanel; Num: Byte);
 Var LogF: Text;
  IvtSeg, IvtOfs: Word;
@@ -226409,6 +226482,8 @@ Begin
      2: P.CPU.Regs.AH := Emu_LPT_Read(LptPtr^, 1);
     End;
    End;
+  $19: If Emu_IntIsHooked(P, $19) Then Emu_FireHwInt(P, $19) Else
+    Emu_SoftReboot(P);
   $1A: If Emu_IntIsHooked(P, $1A) Then Emu_FireHwInt(P, $1A) Else
     Emu_DoInt1A(P);
   $20: If Geos_Active Then Geos_ThreadTerminate(P)
@@ -226853,13 +226928,13 @@ Const
  { ainsi PERDU silencieusement (pas de plantage, juste aucune sortie), le    }
  { CPU "atterrissant" sur de la memoire jamais ecrite qui ne fait rien       }
  { d'observable. }
- Always: Array[0..12] Of Byte =
-  ($08,$10,$11,$12,$13,$15,$16,$1A,$20,$21,$27,$29,$2F);
+ Always: Array[0..13] Of Byte =
+  ($08,$10,$11,$12,$13,$15,$16,$19,$1A,$20,$21,$27,$29,$2F);
  { Signature standard LIM EMS 3.2+ (voir commentaire plus bas, bogue EMS). }
  EmuEmsSignature: Array[0..7] Of Char = 'EMMXXXX0';
 Var I: Integer;
 Begin
- For I := 0 To 12 Do Emu_WriteDefaultVector(P, Always[I]);
+ For I := 0 To 13 Do Emu_WriteDefaultVector(P, Always[I]);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
  If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
  If EmuEms.Active     Then Begin

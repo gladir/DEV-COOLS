@@ -143,6 +143,16 @@ PtcCrt/PtcGraph initialisent X11 au demarrage meme pour ce mode console :
 lancer sous Xvfb (xvfb-run -a devenv /KERNELTEST,...). Sous Windows, aucune
 fenetre n'est necessaire.
 
+INT 19h (redemarrage)
+---------------------
+INT 19h redemarre la machine emulee a chaud : memoire conventionnelle effacee,
+BDA/IVT et peripheriques reinitialises, puis chargement du secteur de boot de
+la premiere unite amorcable - A: si le secteur 0 de la disquette montee porte
+la signature 55AAh, sinon C:. Dans l'IDE, apres INSTALL : retirer la disquette
+avec "IMGMOUNT -u A" (ou la remplacer par une image non amorcable), puis
+ENTREE dans INSTALL ; avec une disquette "non systeme" montee, le secteur de
+boot attend une touche puis refait INT 19h.
+
 Limites connues
 ---------------
 - IO.SYS limite a 65535 octets ; un seul disque (A: ou C:), pas de MBR/VBR.
