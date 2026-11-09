@@ -6325,6 +6325,8 @@ Type
   { integralement, code de dessin inchange. }
   PrevDrawValid    : Boolean;
   PrevDrawVRAM     : TEmuVRAMArr;
+  BdaCurX          : Byte;  { dernier curseur vu dans la BDA 0040:0050   }
+  BdaCurY          : Byte;
   PrevDrawCursorX  : Byte;
   PrevDrawCursorY  : Byte;
   PrevDrawCursorOn : Boolean;
@@ -227261,6 +227263,30 @@ End;
 
 { Tick d horloge 18.2 Hz : incremente compteur 0040:006C-006F et
   arme l IRQ 0 (timer). Appelee tous les EmuStepsPerTick instructions. }
+{ BOGUE REEL (2026-11-09, "le curseur est a la mauvaise position apres le }
+{ prompt C:\> - bonne seulement des qu on tape") : le noyau et COMMAND     }
+{ ecrivent a l ecran sans passer par INT 10h AH=02 (ecriture directe     }
+{ B800h) et ne tiennent a jour que la BDA 0040:0050 ; le curseur affiche  }
+{ (P.CursorX/Y) restait donc a l ancienne position jusqu au prochain      }
+{ echo de touche (ConPutChar relit la BDA). On adopte la BDA des qu elle  }
+{ change ; INT 10h AH=02 ecrit les deux, AH=0Eh ne touche que P : sans    }
+{ changement de la BDA, P reste la reference. }
+Procedure Emu_SyncCursorFromBda(Var P: TEmulatorPanel);
+Var
+ CX, CY: Byte;
+Begin
+ CX := Emu_ReadByte(P.CPU, $40, $50);
+ CY := Emu_ReadByte(P.CPU, $40, $51);
+ If (CX <> P.BdaCurX) Or (CY <> P.BdaCurY) Then Begin
+  P.BdaCurX := CX;
+  P.BdaCurY := CY;
+  If (CX < P.Cols) And (CY < P.Rows) Then Begin
+   P.CursorX := CX;
+   P.CursorY := CY;
+  End;
+ End;
+End;
+
 Procedure Emu_TimerTick(Var P: TEmulatorPanel);
 Var
  Counter: LongInt;
@@ -227280,6 +227306,7 @@ Begin
  End;
  Wtcp_Pump(P); { WATTCP (si actif) - sockets hote non bloquants, voir plus haut
    }
+ Emu_SyncCursorFromBda(P);
 End;
 
 { Verifier les IRQ en attente et tirer la plus prioritaire si IF=1. }
