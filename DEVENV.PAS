@@ -208450,6 +208450,19 @@ Begin
                   P.CPU.Regs.DL);
     Emu_WriteByte(P.CPU, $40, $51 + (P.CPU.Regs.BH And 7) * 2,
                   P.CPU.Regs.DH);
+    { BOGUE REEL (2026-11-10, noyau LINUX-0 KERNEL16 : un caractere sur     }
+    { 60 environ disparaissait de l ecran) : Emu_SyncCursorFromBda (tick    }
+    { 18,2 Hz) compare la BDA a BdaCurX/Y, qu AH=02 ne mettait pas a jour.  }
+    { ConPutChar du noyau fait AH=02 (BDA=c), AH=0Eh (curseur ecran=c+1,    }
+    { BDA inchangee), AH=03 puis recopie le curseur dans la BDA. Si le tick }
+    { tombait entre AH=0Eh et la recopie, la BDA (c) differait de BdaCurX   }
+    { (ancienne valeur) : le curseur ecran etait ramene a c et le caractere }
+    { suivant ecrasait le precedent. AH=02 ecrit donc BdaCurX/Y comme la    }
+    { BDA. }
+    If (P.CPU.Regs.BH And 7) = 0 Then Begin
+     P.BdaCurX := P.CPU.Regs.DL;
+     P.BdaCurY := P.CPU.Regs.DH;
+    End;
    End;
   $03:
    { Get cursor pos+type. CH:CL = scan lines, DH:DL = row:col. }
