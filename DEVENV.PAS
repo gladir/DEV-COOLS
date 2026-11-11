@@ -5687,6 +5687,12 @@ Type
   BufSeg, BufOfs   : Word;         { tampon fourni par l appli (Stage 0->1)}
   SavedCS, SavedIP : Word;         { point de reprise apres toute la cascade}
   UpcallSeg, UpcallOfs : Word;     { Stage 2 uniquement                  }
+  { registres, DS, ES et drapeaux du code interrompu (ou de l appelant de }
+  { send_pkt), rendus intacts a la reprise : un vrai pilote de paquets   }
+  { appelle le recepteur depuis son interruption et preserve tout l etat }
+  SavedRegs : TEmuRegs;
+  SavedDS, SavedES : Word;
+  SavedFlags : TEmuFlags;
  End;
 
  TEmuPktBacklogItem = Record
@@ -13246,6 +13252,7 @@ Procedure Emu_SdaInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_AssignInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_IpxInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_PktInit(Var P: TEmulatorPanel); Forward;
+Procedure Emu_PktSetVector(Var P: TEmulatorPanel); Forward;
 Procedure Emu_NetBiosInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_XmsInit(Var P: TEmulatorPanel); Forward;
 Procedure Emu_EmsInit(Var P: TEmulatorPanel); Forward;
@@ -95361,6 +95368,7 @@ Begin
  OptionsDlg.Data.DosLAN := True;
  Emu_PktInit(EmuPanel);
  Emu_WriteDefaultVector(EmuPanel, $60);
+ Emu_PktSetVector(EmuPanel);
  MacStr := '';
  For I := 0 To 5 Do Begin
   If I > 0 Then MacStr := MacStr + '-';
@@ -95429,6 +95437,7 @@ Begin
   Exit;
  End;
  Emu_WriteDefaultVector(EmuPanel, $60);
+ Emu_PktSetVector(EmuPanel);
  MacStr := '';
  For I := 0 To 5 Do Begin
   If I > 0 Then MacStr := MacStr + '-';
@@ -217128,6 +217137,29 @@ Begin
  Emu_PktMatchType := True;
 End;
 
+{ BOGUE REEL (2026-11-11) : la cascade d upcalls du recepteur (AX=0 puis   }
+{ AX=1, voir Emu_PktCont) reprenait a SavedCS:IP avec les registres        }
+{ laisses par le recepteur (AX=1, BX=poignee, CX=longueur, DS:SI=tampon,   }
+{ drapeaux quelconques) : l appelant de send_pkt voyait un CF aleatoire    }
+{ (erreur fantome), et une trame livree pendant le code d un programme     }
+{ (reponse du NAT) corrompait ses registres. L etat est maintenant sauve  }
+{ au debut de la cascade et rendu a la reprise. }
+Procedure Emu_PktSaveState(Var P: TEmulatorPanel);
+Begin
+ EmuPkt.Cont.SavedRegs := P.CPU.Regs;
+ EmuPkt.Cont.SavedDS := P.CPU.Segs.DS;
+ EmuPkt.Cont.SavedES := P.CPU.Segs.ES;
+ EmuPkt.Cont.SavedFlags := P.CPU.Flags;
+End;
+
+Procedure Emu_PktRestoreState(Var P: TEmulatorPanel);
+Begin
+ P.CPU.Regs := EmuPkt.Cont.SavedRegs;
+ P.CPU.Segs.DS := EmuPkt.Cont.SavedDS;
+ P.CPU.Segs.ES := EmuPkt.Cont.SavedES;
+ P.CPU.Flags := EmuPkt.Cont.SavedFlags;
+End;
+
 { Demarre (ou enchaine, si un upcall etait deja en attente) l upcall       }
 { as_send_pkt - voir la limite documentee plus haut. Ne touche SavedCS/IP  }
 { que si aucune cascade n etait en cours (Cont.Pending=False), pour ne pas }
@@ -217137,6 +217169,7 @@ Begin
  If Not EmuPkt.Cont.Pending Then Begin
   EmuPkt.Cont.SavedCS := P.CPU.Segs.CS;
   EmuPkt.Cont.SavedIP := P.CPU.IP;
+  Emu_PktSaveState(P);
  End;
  EmuPkt.AsSendPending := False;
  EmuPkt.Cont.Pending := True;
@@ -217182,6 +217215,7 @@ Begin
  Else Begin
   P.CPU.Segs.CS := EmuPkt.Cont.SavedCS;
   P.CPU.IP := EmuPkt.Cont.SavedIP;
+  Emu_PktRestoreState(P);
   EmuPkt.Cont.Pending := False;
  End;
 End;
@@ -217222,6 +217256,7 @@ Begin
   2: Begin { upcall as_send_pkt termine }
    P.CPU.Segs.CS := EmuPkt.Cont.SavedCS;
    P.CPU.IP := EmuPkt.Cont.SavedIP;
+   Emu_PktRestoreState(P);
    EmuPkt.Cont.Pending := False;
   End;
  End;
@@ -217254,6 +217289,7 @@ Begin
  EmuPkt.Cont.Data := Data;
  EmuPkt.Cont.SavedCS := P.CPU.Segs.CS;
  EmuPkt.Cont.SavedIP := P.CPU.IP;
+ Emu_PktSaveState(P);
  Emu_PushWord(P.CPU, EmuPkt.ContSeg);
  Emu_PushWord(P.CPU, EmuPkt.ContOfs);
  P.CPU.Regs.AX := 0;
@@ -218200,8 +218236,12 @@ Begin
  Emu_WriteWord(P.CPU, 0, Word(EmuPkt.Vector) * 4, EmuPkt.StubOfs);
  Emu_WriteWord(P.CPU, 0, Word(EmuPkt.Vector) * 4 + 2, EmuPkt.StubSeg);
 
- { Stub : JMP SHORT +0Ah ; NOP ; "PKT DRVR",0 (9 octets) ; IRET (jamais    }
- { execute, juste pour que la zone ait l air d un vrai gestionnaire). }
+ { Stub : JMP SHORT +0Ah ; NOP ; "PKT DRVR",0 (9 octets) ; INT 60h ;       }
+ { RETF 2. L INT 60h execute par l invite est intercepte directement      }
+ { (Emu_DoInt, case $60); un appel PUSHF/CALL FAR au vecteur (autre forme }
+ { prevue par la specification) passe par ce stub : son INT 60h, lance    }
+ { depuis le segment des trampolines, est servi par Emu_DoInt60 et RETF 2 }
+ { rend les drapeaux qu il a fixes (CF = erreur). }
  Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs,     $EB);
  Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 1, $0A);
  Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 2, $90);
@@ -218209,8 +218249,11 @@ Begin
  For I := 1 To Length(NameStr) Do
   Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 2 + I, Ord(NameStr[I]));
  Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 11, 0);
- Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 12, $CF); { IRET, inerte
-   }
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 12, $CD); { INT 60h }
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 13, EmuPkt.Vector);
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 14, $CA); { RETF 2 }
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 15, $02);
+ Emu_WriteByte(P.CPU, EmuPkt.StubSeg, EmuPkt.StubOfs + 16, $00);
 
  { Trampoline de continuation interne : INT FDh, jamais utilise par du     }
  { logiciel DOS reel - voir Emu_PktCont. }
@@ -218235,6 +218278,17 @@ Begin
  For I := 1 To Length(NameStr) Do
   Emu_WriteByte(P.CPU, EmuPkt.NameSeg, EmuPkt.NameOfs + I - 1, Ord(NameStr[I]));
  Emu_WriteByte(P.CPU, EmuPkt.NameSeg, EmuPkt.NameOfs + Length(NameStr), 0);
+End;
+
+{ Vecteur INT 60h du pilote de paquets emule : la signature "PKT DRVR"     }
+{ (EmuPkt.StubSeg:StubOfs), et non le trampoline par defaut que pose      }
+{ Emu_WriteDefaultVector - un programme (pile TCP/IP, systeme amorce comme }
+{ UNIX-0) decouvre le pilote en cherchant "PKT DRVR" a vecteur+3. }
+Procedure Emu_PktSetVector(Var P: TEmulatorPanel);
+Begin
+ If Not EmuPkt.Active Then Exit;
+ Emu_WriteWord(P.CPU, 0, Word(EmuPkt.Vector) * 4, EmuPkt.StubOfs);
+ Emu_WriteWord(P.CPU, 0, Word(EmuPkt.Vector) * 4 + 2, EmuPkt.StubSeg);
 End;
 
 { ========================================================================= }
@@ -226689,7 +226743,18 @@ Begin
    { interruption non geree (branche Else) : une vraie machine sans        }
    { pilote de paquets charge ne repond pas non plus sur ce vecteur. }
    If EmuPkt.Active Then Begin
-    If Emu_IntIsHooked(P, $60) Then Emu_FireHwInt(P, $60) Else Emu_DoInt60(P);
+    { BOGUE REEL (2026-11-11) : Emu_PktInit pointe le vecteur 60h sur sa   }
+    { propre signature "PKT DRVR" (EmuPkt.StubSeg:StubOfs), que            }
+    { Emu_IntIsHooked prenait pour un gestionnaire installe par le         }
+    { programme : l appel sautait dans ce bout de code (JMP sur un IRET)   }
+    { et n atteignait jamais Emu_DoInt60 - un systeme amorce (UNIX-0, pile }
+    { TCP/IP sans DOS) ne voyait donc aucun pilote. Le vecteur d origine   }
+    { du pilote emule est traite comme non detourne. }
+    If Emu_IntIsHooked(P, $60) And Not
+       ((Emu_ReadWord(P.CPU, 0, Word($60) * 4) = EmuPkt.StubOfs) And
+        (Emu_ReadWord(P.CPU, 0, Word($60) * 4 + 2) = EmuPkt.StubSeg)) Then
+     Emu_FireHwInt(P, $60)
+    Else Emu_DoInt60(P);
    End
    Else If P.CPU.Segs.CS <> EMU_DEFAULT_IVT_SEG Then Begin
     { BOGUE REEL (2026-10-14) : garde anti-reboucle, voir Emu_DoInt2F. }
@@ -226949,7 +227014,13 @@ Var I: Integer;
 Begin
  For I := 0 To 13 Do Emu_WriteDefaultVector(P, Always[I]);
  If EmuMouseActive    Then Emu_WriteDefaultVector(P, $33);
- If EmuPkt.Active     Then Emu_WriteDefaultVector(P, $60);
+ If EmuPkt.Active     Then Begin
+  Emu_WriteDefaultVector(P, $60);
+  { BOGUE REEL (2026-11-11) : le vecteur doit rester sur la signature      }
+  { "PKT DRVR" (decouverte des pilotes de paquets : chaine a vecteur+3),   }
+  { que le trampoline par defaut ecrasait - voir Emu_PktSetVector. }
+  Emu_PktSetVector(P);
+ End;
  If EmuEms.Active     Then Begin
   Emu_WriteDefaultVector(P, $67);
   { BOGUE REEL (2026-10-12, enquete TURBO.EXE/TP6 - voir                   }
@@ -267244,6 +267315,7 @@ Begin
  Str(Data.DosLANVendor, S);
  WriteCfgLine(F, 'DosLANVendor', S);
  WriteCfgLine(F, 'DosNetBios', BoolToStr(Data.DosNetBios));
+ WriteCfgLine(F, 'DosWatTcp', BoolToStr(Data.DosWatTcp));
  WriteCfgLine(F, 'DosLogInt21', BoolToStr(Data.DosLogInt21));
  WriteCfgLine(F, 'DosLogDiag', BoolToStr(Data.DosLogDiag));
  Close(F);
@@ -267503,6 +267575,10 @@ Begin
   End
   Else If Key = 'DosNetBios' Then
    Data.DosNetBios := StrToBool(Value)
+  Else If Key = 'DosWatTcp' Then
+   { option WATTCP (NAT reel) : conservee comme les autres options du     }
+   { reseau (2026-11-11), au lieu de revenir a Faux a chaque lancement. }
+   Data.DosWatTcp := StrToBool(Value)
   Else If Key = 'DosLogInt21' Then
    Data.DosLogInt21 := StrToBool(Value)
   Else If Key = 'DosLogDiag' Then
