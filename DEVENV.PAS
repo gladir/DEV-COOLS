@@ -198862,11 +198862,19 @@ End;
 { selecteurs "plats" et les reutilise tels quels, donc une correspondance    }
 { par valeur suffit en pratique et evite de refaire passer un contexte de    }
 { "quel registre" a travers les ~15 sites d appel d Emu_Addr/Emu_AddrL. }
+{ 2026-11-12 : vrai des qu un segment "unreal" a pu etre active (Emu_      }
+{ SetUnrealBase, restauration d instantane) - sinon Emu_UnrealBase sort    }
+{ tout de suite : la boucle sur les 8 emplacements, a CHAQUE acces memoire }
+{ en mode reel, prenait pres de 30 % du temps de l interface 16 couleurs   }
+{ d IO.SYS de Pasdows 95. }
+Var EmuUnrealAny: Boolean;
+
 Function Emu_UnrealBase(Var C: TEmuCPU; Seg: Word; Var Found: Boolean): LongInt;
 Var I: Integer;
 Begin
  Found := False;
  Emu_UnrealBase := 0;
+ If Not EmuUnrealAny Then Exit;
  For I := 0 To 7 Do
   If C.UnrealSegs[I].Active And (C.UnrealSegs[I].SegVal = Seg) Then Begin
    Found := True;
@@ -198891,6 +198899,7 @@ Begin
   For I := 0 To 7 Do
    If Not C.UnrealSegs[I].Active Then Begin Slot := I; Break; End;
  If Slot = -1 Then Slot := 0;
+ EmuUnrealAny := True;
  C.UnrealSegs[Slot].Active := True;
  C.UnrealSegs[Slot].SegVal := SegVal;
  C.UnrealSegs[Slot].Base := Base;
@@ -258555,6 +258564,39 @@ End;
 { les evenements destines au reste de l IDE quand cet onglet n est pas       }
 { celui que l utilisateur regarde (meme categorie de piege que le vol        }
 { clavier C64 documente plus haut dans ce fichier). }
+{ 2026-11-12 : cadence REELLE de l IRQ 0. Le tic etait leve toutes les     }
+{ EmuStepsPerTick (5000) instructions, quel que soit le temps ecoule - a     }
+{ plusieurs millions d instructions par seconde (voir les optimisations de  }
+{ DOS_RunOneChunk), l horloge emulee avancait des dizaines de fois trop     }
+{ vite : double-clic impossible dans l interface 16 couleurs d IO.SYS de     }
+{ Pasdows 95 (9 tics = 0,5 s devenaient quelques ms), delais trop courts.  }
+{ Le tic exige desormais AUSSI que la periode du canal 0 du PIT (rechargement}
+{ / 1,193182 MHz : 54,9 ms par defaut, 1 ms pour le noyau VMM32) se soit     }
+{ ecoulee en temps reel. Un hote LENT garde la cadence d avant (un tic toutes }
+{ les 5000 instructions au plus tard), sans rattrapage de plus de 250 ms. }
+Var
+ EmuWallNextTick: Double;
+ EmuWallInit: Boolean;
+
+Function Emu_WallTickDue: Boolean;
+Var Now, R: LongInt;
+Begin
+ Now := GetTimestamp;
+ R := EmuPIT[0].ReloadVal;
+ If R = 0 Then R := 65536;
+ { premier appel, ou passage de minuit (GetTimestamp revient a 0) }
+ If (Not EmuWallInit) Or (Now < EmuWallNextTick - 2000) Then Begin
+  EmuWallNextTick := Now;
+  EmuWallInit := True;
+ End;
+ If Now >= EmuWallNextTick Then Begin
+  EmuWallNextTick := EmuWallNextTick + (R * 1000.0) / 1193182.0;
+  If EmuWallNextTick < Now - 250 Then EmuWallNextTick := Now;
+  Emu_WallTickDue := True;
+ End Else
+  Emu_WallTickDue := False;
+End;
+
 Procedure DOS_RunOneChunk(Var P: TEmulatorPanel);
 Var
  ChunkI: LongInt;
@@ -259038,6 +259080,8 @@ Begin
   End;
   { --- IRQ mat?rielles --- }
   Dec(EmuStepsToTick);
+  If (EmuStepsToTick <= 0) And Not Emu_WallTickDue Then
+   EmuStepsToTick := 2048; { periode reelle pas encore ecoulee : reessayer }
   If EmuStepsToTick <= 0 Then Begin
     EmuStepsToTick := EmuStepsPerTick;
     Emu_TimerTick(P);
@@ -259610,6 +259654,7 @@ Begin
  EmuDpmi := Snap.Dpmi;
  EmuDpmiExtMem := Snap.DpmiExtMemPtr;
  DpmiCPU := Snap.DpmiCPUState;
+ EmuUnrealAny := True; { l instantane peut contenir des segments unreal }
  EmuMouseInst := Snap.MouseInst; EmuMousePS2Active := Snap.MousePS2Active;
  EmuMouseActive := Snap.MouseActive;
  EmuMouseVis := Snap.MouseVis; EmuMouseX := Snap.MouseX; EmuMouseY :=
@@ -278063,11 +278108,16 @@ Begin
   DrawCreateTableDialog;
  If IISFieldDlg.Base.Visible Then
   DrawIISFieldDialog;
- { 2026-11-12 : apres un effacement complet (ClearScreen ci-dessus, ex.   }
- { fermeture du menu contextuel de l emulateur), l image emulee doit etre }
- { redessinee meme si l invite n a rien change (emulation en pause tant   }
- { que le panneau n a pas le focus) - sinon le panneau restait vide.      }
- If EmuPanel.Base.Visible And WasFullRepaint Then
+ { 2026-11-12 : les panneaux redessines ci-dessus (Terminal, Sortie,     }
+ { effacement complet apres un menu...) peuvent se trouver SOUS l image   }
+ { emulee - celle-ci doit etre redessinee par-dessus meme si l invite n a }
+ { rien change (DrawEmulatorPanel sort sinon tout de suite) : le Terminal }
+ { restait affiche par-dessus Pasdows 95 apres chaque clic, et le panneau }
+ { restait vide apres le menu contextuel (emulation en pause). Seulement }
+ { quand l emulateur a le focus (ou apres un effacement complet) : un clic }
+ { dans le Terminal le lui retire, et le Terminal doit alors rester       }
+ { visible pendant qu on y tape. }
+ If EmuPanel.Base.Visible And (WasFullRepaint Or EmuHasFocus) Then
   EmuPanel.NeedRepaint := True;
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
