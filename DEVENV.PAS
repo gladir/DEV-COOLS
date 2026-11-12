@@ -2027,6 +2027,10 @@ Const
  { S3 Trio64, pour ne rien changer au format/comportement des autres       }
  { cartes deja en place. }
  S3_VRAM_SIZE         = 1048576;
+ { Tampon d image lineaire (LFB) VBE 2.0 de la S3 emulee (2026-11-12) :     }
+ { adresse physique annoncee par AX=4F01h (PhysBasePtr), positive en       }
+ { LongInt pour des comparaisons simples, hors de toute RAM emulee.        }
+ EMU_S3_LFB_BASE      = $70000000;
  { Table des modes VESA/VBE geres par la S3 Trio64 emulee (voir             }
  { Emu_DoInt10_VBE) - sous-ensemble volontairement modeste (3 modes 256      }
  { couleurs banques + 2 modes 16 bits/pixel "haute couleur", tous verifies   }
@@ -2896,6 +2900,9 @@ Const
  { autres stubs de ce fichier), puis en ne renvoyant QUE ES:BX pointant vers
    }
  { CET emplacement - jamais d ecriture a l adresse fournie par l appelant. }
+ EMU_VIDROM_FONT16 = $0000; { ROM video C000 : police 8x16 (4096 octets) }
+ EMU_VIDROM_FONT14 = $1000; { police 8x14 (3584 octets) }
+ EMU_VIDROM_FONT8  = $1E00; { police 8x8 (2048 octets) }
  EMU_SYSCONF_SEG = $F000;
  EMU_SYSCONF_OFS = $F660; { table de 10 octets (longueur+8), au-dela de       }
                            { EMU_LOL_NULDEV_OFS+18=$F652, donc sans collision }
@@ -2983,6 +2990,7 @@ Type
   DiskImg80       : TString;   { /DISK80:fichier.img -> disque dur C: }
   DiskImg81       : TString;   { /DISK81:fichier.img -> disque dur D: }
   CdromImg0       : TString;   { /CDROM0:fichier.iso -> 1er lecteur CD}
+  Com1File        : TString;   { /COM1:fichier -> octets emis sur COM1 }
   CdromImg1       : TString;   { /CDROM1:fichier.iso -> 2e lecteur CD }
   NCMode          : Boolean;   { /NC : ouvrir le Terminal en Norton Commander
     des le demarrage }
@@ -5353,6 +5361,20 @@ Type
   { Keyboard : ACK puis 2 octets d ID) - voir Emu_8042_ReadData. }
   ExtraQueue    : Array[0..1] Of Byte;
   ExtraQueueLen : Byte;
+  { Port auxiliaire (souris PS/2) - 2026-11-12, voir Emu_8042_AuxCmd :     }
+  { file des octets emis par la souris (reponses et paquets), mode flux,  }
+  { argument attendu (F3h/E8h), octet de sortie venant de la souris,      }
+  { derniere position invitee transmise (paquets relatifs). }
+  AuxQ       : Array[0..383] Of Byte;
+  AuxQHead, AuxQLen : Integer;
+  AuxStream  : Boolean;
+  AuxSynced  : Boolean;          { pointeur invite cale sur l hote }
+  KbdQ       : Array[0..127] Of Byte; { codes de balayage en attente }
+  KbdQHead, KbdQLen : Integer;
+  AuxArgFor  : Byte;
+  OutIsAux   : Boolean;
+  AuxLastX, AuxLastY : Integer;
+  AuxLastBtn : Byte;
  End;
 
  { --- UART 8250/16450 generique (COM2 02F8h-02FFh, COM4 02E8h-02EFh). Rien }
@@ -7539,14 +7561,16 @@ Type
   DosEmu80286     : Boolean;     { emulation 80286                }
   DosEmu80386     : Boolean;     { emulation 80386                }
   DosXMS          : Boolean;     { memoire XMS activee            }
-  DosXMSSize      : Integer;     { taille XMS en Ko               }
+  DosXMSSize      : LongInt;     { taille XMS en Ko (2026-11-12 :   }
+                                 { LongInt, Integer plafonnait a 32 }
+                                 { Mo - Pasdows 95 en veut plus)    }
   DosEMS          : Boolean;     { memoire EMS activee            }
   DosEMSSize      : Integer;     { taille EMS en Ko               }
   DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
   DosTopView      : Boolean;     { API IBM TopView (INT 15h AH=10h/11h/12h),
     voir DOC/TOPVIEW_PROGRAMMING.txt }
   DosDPMI         : Boolean;     { support DPMI active (INT 31h)  }
-  DosDPMISize     : Integer;     { taille memoire etendue DPMI en Ko }
+  DosDPMISize     : LongInt;     { taille memoire etendue DPMI en Ko }
   DosAnsiSys      : Boolean;     { pilote ANSI.SYS (sequences ESC[) }
   DosUMB          : Boolean;     { memoire haute (UMB, $D000 - voir }
                                   { EMU_UMB_SEG) activee, defaut True}
@@ -9149,6 +9173,11 @@ Var
  { atteindre cette valeur - l indexation de UnitTests8086[] au-dela de      }
  { 32767 tests aurait silencieusement corrompu ou plante). }
  UnitTest8086Count: LongInt;
+ EmuVbeMap: Array[0..255] Of Byte;     { VBE 8 bits : invite -> hote }
+ EmuVbeLastDac: Array[0..767] Of Byte; { DAC deja charge dans l hote }
+ EmuVbeMapHost256: Boolean;
+ EmuExact16: Boolean; { hote 256 couleurs : 16 couleurs exactes (240-255) }
+ EmuGfxDstW, EmuGfxDstH: Integer; { taille affichee de l ecran graphique emule }
  EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
                                  { s il a ete cree par Emu_LoadBootSector }
                                  { (vs Emu_LoadProgram) - voir le garde-  }
@@ -10222,6 +10251,7 @@ Var
  EmuStepsPerTick: LongInt;       { nb instructions entre deux ticks }
  EmuStepsToTick : LongInt;       { decompte avant prochain tick }
  EmuIrqPending  : Byte;          { bitmask IRQ en attente (bit n = IRQ n) }
+ EmuIrqPending2 : Byte;          { IRQ 8-15 en attente (bit n = IRQ 8+n) }
  Emu8042WriteHits: Integer;      { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuKeyPushHits: Integer;        { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagInt31Hits: Integer;         { DIAGNOSTIC TEMPORAIRE - a retirer }
@@ -10260,6 +10290,16 @@ Var
  EmuLPT2        : TEmuLPT;       { 0278h-027Fh }
  EmuCOM2        : TEmuUART;      { 02F8h-02FFh }
  EmuCOM4        : TEmuUART;      { 02E8h-02EFh }
+ { COM1 (03F8h-03FFh) et COM3 (03E8h-03EFh) - 2026-11-12, Pasdows 95 : ces }
+ { ports n etaient pas emules (lecture = 0, donc un LSR "jamais pret" : un }
+ { noyau qui journalise sur COM1 attendait a chaque caractere). Les octets }
+ { emis sur COM1 peuvent etre recopies dans un fichier (/COM1:fichier,     }
+ { comme le -serial file: de QEMU), voir Emu_Com1Capture. }
+ EmuCOM1        : TEmuUART;
+ EmuCOM3        : TEmuUART;
+ EmuCom1Path    : String;
+ EmuCom1F       : File;
+ EmuCom1Open    : Boolean;
  EmuNE2000      : TEmuNE2000;    { 0260h-027Fh, si Reseau LAN = NE2000 }
  { --- Interface de disque (voir DosDiskInterfaceName/Emu_DiskIfFamily) --- }
  EmuST506       : TEmuST506;              { 320h-323h }
@@ -13070,6 +13110,10 @@ Procedure ShowHelp;Begin
    'ns > Emulateur > DOS: Logiciel.');
  ConRawWriteLn('  /CDROM1:img                 Image ISO9660 (.iso) mont'+#130+
    'e comme 2e lecteur CD-ROM.');
+ ConRawWriteLn('  /COM1:fichier               Octets '+#130+'mis sur le port s'+
+   #130+'rie COM1 de');
+ ConRawWriteLn('                              l'''+#130+'mulateur DOS, recopi'+
+   #130+'s dans ce fichier.');
  ConRawWriteLn('  /TESTUNIT,8086:fichier.tst  Ex'+#130+
    'cute un fichier de tests unitaires');
  ConRawWriteLn('  /TESTUNIT,80286:fichier.tst CPU (8086,'+
@@ -13680,6 +13724,14 @@ Begin
    If Not FileExists(EmuFn) Then
     FatalError('Image disque introuvable: ' + EmuFn);
    Opts.DiskImg81 := EmuFn;
+  End
+  Else If (Length(Arg) >= 6) And
+          ((UpCaseStr(Copy(Arg, 1, 6)) = '/COM1:') Or
+           (UpCaseStr(Copy(Arg, 1, 6)) = '-COM1:')) Then Begin
+   Opts.Com1File := Copy(Arg, 7, Length(Arg) - 6);
+   If Opts.Com1File = '' Then
+    FatalError('Syntaxe /COM1 attendue : /COM1:fichier');
+   EmuCom1Path := Opts.Com1File;
   End
   Else If (Length(Arg) >= 7) And
           ((Copy(Arg, 1, 7) = '/CDROM:') Or (Copy(Arg, 1, 7) = '/cdrom:') Or
@@ -96396,6 +96448,7 @@ Var
  CdSlot: Integer;
  SigEnforceFlag: ShortInt;
  HasExplicitDrive: Boolean;
+ ForceCd: Integer; { BOOT x: ou x: est la lettre d un CD-ROM monte }
  ElToritoEntry: TEmuElToritoEntry;
 Begin
  { BOGUE REEL / demande explicite de l utilisateur (2026-09-02) : "BOOT" tape }
@@ -96411,10 +96464,8 @@ Begin
  HasExplicitDrive := (Length(P) >= 2) And (P[2] = ':');
  If HasExplicitDrive Then Begin
   DL := UpCase(P[1]);
-  If Not Term_DriveIdxFromLetter(DL, Idx) Then Begin
-   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
-   Exit;
-  End;
+  { lettre de CD-ROM possible (E:...) : verifiee apres les montages }
+  If Not Term_DriveIdxFromLetter(DL, Idx) Then Idx := 255;
  End;
  { BOGUE REEL / demande explicite de l utilisateur (2026-08-25) : BOOT ne     }
  { pouvait monter une image que si /DISK0../DISK81 avait deja ete passe EN   }
@@ -96477,14 +96528,31 @@ Begin
    End;
   End;
  End;
- If Not HasExplicitDrive Then Begin
+ { 2026-11-12 : "BOOT D:" (ou E:) designant un CD-ROM monte - sans disque }
+ { sur cette lettre - amorce le CD (El Torito). Avant, un disque dur monte }
+ { (/DISK80) rendait impossible l amorcage du CD : BOOT seul choisit C:,   }
+ { et BOOT D: repondait "le systeme ne peut pas trouver le lecteur". }
+ ForceCd := -1;
+ If HasExplicitDrive Then Begin
+  For SlotIdx := 0 To 1 Do
+   If (ForceCd < 0) And EmuCdrom[SlotIdx].Open And
+      (EmuCdrom[SlotIdx].DriveLetter = Ord(DL) - Ord('A')) Then
+    If Idx = 255 Then ForceCd := SlotIdx
+    Else If Not EmuFloppyOpen[Idx] Then ForceCd := SlotIdx;
+  If (ForceCd < 0) And (Idx = 255) Then Begin
+   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
+   Exit;
+  End;
+ End;
+ If (Not HasExplicitDrive) Or (ForceCd >= 0) Then Begin
   { Aucune lettre fournie : choisir le premier emplacement DISK0../DISK81   }
   { (A..D) reellement ouvert - couvre a la fois un montage fait ci-dessus   }
   { par /DISK0../DISK81 sur CET appel, et un disque deja monte au           }
   { lancement de DEVENV.exe ou par un BOOT precedent. }
   Idx := 255;
-  For SlotIdx := 0 To 3 Do
-   If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
+  If ForceCd < 0 Then
+   For SlotIdx := 0 To 3 Do
+    If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
   If Idx = 255 Then Begin
    { Aucun disque/disquette monte : tenter un amorcage El Torito reel si   }
    { un CD-ROM est monte (voir Emu_ElToritoFindEntry/Emu_LoadElToritoBoot/ }
@@ -96493,7 +96561,8 @@ Begin
    { 1-4, ex. MSDOS-0\IMAGE\DOSCD.ISO) : image extraite puis montee       }
    { sur A: ou C: (Emu_ElToritoExtractImage). }
    CdSlot := -1;
-   If EmuCdrom[0].Open Then CdSlot := 0
+   If ForceCd >= 0 Then CdSlot := ForceCd
+   Else If EmuCdrom[0].Open Then CdSlot := 0
    Else If EmuCdrom[1].Open Then CdSlot := 1;
    If CdSlot >= 0 Then Begin
     If Not Emu_ElToritoFindEntry(Byte(CdSlot), ElToritoEntry) Then Begin
@@ -195120,6 +195189,7 @@ Begin
  CM.Width := 220;
  AddContextItem(CM, 'Coller du texte', 1000);
  AddContextItem(CM, 'Envoi Ctrl+Alt+Suppr', 1001);
+ AddContextItem(CM, 'Envoi Echap', 1004);
  AddContextSeparator(CM);
  AddContextItem(CM, 'Executer le VBScript...', 1002);
  AddContextItem(CM, 'Executer le PascalScript...', 1003);
@@ -197610,6 +197680,8 @@ End;
 
 { --- Empiler une touche dans la file (ring buffer 64 octets) --- }
 
+Function EmuKey_AsciiToScan(C: Char): Byte; Forward;
+
 Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word);
 Var
  NextHead: Byte;
@@ -197630,6 +197702,14 @@ Begin
   End;
   {$I+} If IOResult <> 0 Then ;
  End;
+ { 2026-11-12 : un caractere tape (EV_KEY_CHAR) arrive sans code de       }
+ { balayage - un vrai BIOS range TOUJOURS les deux. Les programmes qui    }
+ { testent le code (AH=1Ch pour Entree, 01h pour Echap...) ne voyaient    }
+ { jamais la touche (menu F8 d IO.SYS de Pasdows 95 : Entree sans effet). }
+ { Complete ici, a la source : le tampon BIOS (DOS_RunOneChunk) et les    }
+ { lectures directes de INT 16h/21h en profitent tous. }
+ If (Hi(K) = 0) And (Lo(K) <> 0) Then
+  K := K Or (Word(EmuKey_AsciiToScan(Chr(Lo(K)))) Shl 8);
  NextHead := (P.KeyHead + 1) And $3F;
  If NextHead <> P.KeyTail Then Begin
   P.KeyBuf[P.KeyHead] := K;
@@ -197702,6 +197782,23 @@ Begin
   '7','&': EmuKey_AsciiToScan := $08;
   '8','*': EmuKey_AsciiToScan := $09;
   '9','(': EmuKey_AsciiToScan := $0A;
+  { 2026-11-12 : ponctuation (clavier americain) et Ctrl+lettre - voir    }
+  { DOS_RunOneChunk, qui s en sert pour completer le code de balayage    }
+  { d un caractere tape. }
+  '-','_': EmuKey_AsciiToScan := $0C;
+  '=','+': EmuKey_AsciiToScan := $0D;
+  '[','{': EmuKey_AsciiToScan := $1A;
+  ']','}': EmuKey_AsciiToScan := $1B;
+  ';',':': EmuKey_AsciiToScan := $27;
+  '''','"': EmuKey_AsciiToScan := $28;
+  '`','~': EmuKey_AsciiToScan := $29;
+  '\','|': EmuKey_AsciiToScan := $2B;
+  ',','<': EmuKey_AsciiToScan := $33;
+  '.','>': EmuKey_AsciiToScan := $34;
+  '/','?': EmuKey_AsciiToScan := $35;
+  #10: EmuKey_AsciiToScan := $1C;       { Ctrl+Entree }
+  #1..#7, #11, #12, #14..#26:            { Ctrl+lettre }
+   EmuKey_AsciiToScan := EmuKey_AsciiToScan(Chr(Ord(C) + Ord('a') - 1));
  Else
   EmuKey_AsciiToScan := 0;
  End;
@@ -197726,6 +197823,15 @@ Begin
   EmuColor := C And $F;
 End;
 
+{ Palette EGA/VGA 16 couleurs de l hote (PtcGraph), en 6 bits par canal. }
+Const
+ EMU_EGA_R: Array[0..15] Of Byte =
+  (0, 0, 0, 0, 42, 42, 42, 42, 21, 21, 21, 21, 63, 63, 63, 63);
+ EMU_EGA_G: Array[0..15] Of Byte =
+  (0, 0, 42, 42, 0, 0, 21, 42, 21, 21, 63, 63, 21, 21, 63, 63);
+ EMU_EGA_B: Array[0..15] Of Byte =
+  (0, 42, 0, 42, 0, 42, 0, 42, 21, 63, 21, 63, 21, 63, 21, 63);
+
 { --- Mapper RGB 6 bits (0..63) vers la palette BGI 16 couleurs.
       Approximation par seuil. C est utilise par le rendu graphique
       mode 13h / EGA / VGA en panneau emulateur.                     --- }
@@ -197733,7 +197839,33 @@ Function Emu_VidApprox16(R, G, B: Byte): Byte;
 Var Bright, Rb, Gb, Bb: Byte;
     MaxC: Byte;
     Result: Byte;
+    I, Best: Integer; D, BestD: LongInt;
 Begin
+ { BOGUE REEL CORRIGE (2026-11-12, Pasdows 95 : fenetres, boutons et barre }
+ { des taches GRIS ARGENT affiches BLANCS, texte blanc sur gris invisible) :}
+ { l ancien seuil (canal >= 42 => "brillant") envoyait le gris C0C0C0 ET   }
+ { le gris AAAAAA vers le blanc (15), et 808080 vers le gris clair (7) -   }
+ { le relief "Windows" (blanc/argent/gris/noir) devenait illisible. Les     }
+ { gris purs suivent maintenant la rampe noir/gris fonce/gris clair/blanc,  }
+ { les autres couleurs la plus proche des 16 couleurs EGA de l hote.        }
+ If (R = G) And (G = B) Then Begin
+  If R < 11 Then Emu_VidApprox16 := 0
+  Else If R < 37 Then Emu_VidApprox16 := 8
+  Else If R < 54 Then Emu_VidApprox16 := 7
+  Else Emu_VidApprox16 := 15;
+  Exit;
+ End;
+ Best := -1; BestD := 0;
+ For I := 0 To 15 Do Begin
+  D := Sqr(LongInt(R) - EMU_EGA_R[I]) + Sqr(LongInt(G) - EMU_EGA_G[I]) +
+       Sqr(LongInt(B) - EMU_EGA_B[I]);
+  If (Best < 0) Or (D < BestD) Then Begin Best := I; BestD := D; End;
+ End;
+ If (Best = 0) And ((R Or G Or B) > 0) Then Best := 8;
+ If Best >= 0 Then Begin
+  Emu_VidApprox16 := Best;
+  Exit;
+ End;
  MaxC := R; If G > MaxC Then MaxC := G; If B > MaxC Then MaxC := B;
  If MaxC >= 42 Then Bright := 8 Else Bright := 0;
  If R >= 22 Then Rb := 4 Else Rb := 0;
@@ -197752,6 +197884,13 @@ Function Emu_VidPixelToBGI(C: Byte): Byte;
 Var Idx: Word;
     R, G, Bv: Byte;
 Begin
+ { Hote 256 couleurs (2026-11-12) : les 16 couleurs d un mode planaire    }
+ { sont recopiees EXACTEMENT dans les entrees 240-255 de la palette hote  }
+ { (voir DrawEmulatorPanel) - plus d approximation sur 16 couleurs.       }
+ If EmuExact16 And EmuVideo.IsPlanar And (EmuVideo.Mode <> $13) Then Begin
+  Emu_VidPixelToBGI := 240 + (C And $0F);
+  Exit;
+ End;
  If EmuVideo.Mode = $13 Then
   Idx := C
  Else If EmuVideo.IsPlanar Then Begin
@@ -197785,7 +197924,9 @@ End;
 Function EmuPanelTitleFor(Const TargetCPU: String): String;
 Begin
  If (TargetCPU = '-CD') Or (TargetCPU = '-CP') Then
-  EmuPanelTitleFor := 'Emulateur 8086'
+  { 2026-11-12 : le processeur REELLEMENT emule (Options > Emulateur > DOS) }
+  { plutot qu un "8086" fige - un 80386 configure s affichait "8086".      }
+  EmuPanelTitleFor := 'Emulateur ' + DosCpuTypeName(OptionsDlg.Data.DosCpuType)
  Else If TargetCPU = '-CZ80' Then
   EmuPanelTitleFor := 'Emulateur Z80'
  Else If TargetCPU = '-CTRS80' Then
@@ -198109,6 +198250,81 @@ End;
 
 Var EmuBlackIdx: Integer;
 
+{ Correspondance couleurs VBE 8 bits invitees -> palette hote (2026-11-12) }
+{ Hote 256 couleurs : les entrees 0-15 (IDE) et 16 (noir du panneau) sont   }
+{ preservees ; les couleurs invitees 0-238 occupent les entrees 17-255 a    }
+{ l identique, 239-255 prennent la plus proche de toutes celles-ci (les     }
+{ palettes Windows y mettent des couleurs systeme deja presentes ailleurs). }
+{ Hote 16 couleurs : couleur EGA la plus proche (Emu_VidApprox16). La       }
+{ palette hote n est rechargee que si le DAC invite a change. }
+Procedure Emu_VbeBuildMap;
+Var I, J, Best: Integer; D, BestD: LongInt; Changed: Boolean;
+Begin
+ If GetMaxColor >= 255 Then Begin
+  Changed := Not EmuVbeMapHost256;
+  For I := 0 To 767 Do
+   If EmuVbeLastDac[I] <> EmuVideo.DAC[I] Then Changed := True;
+  If Not Changed Then Exit;
+  Move(EmuVideo.DAC, EmuVbeLastDac, SizeOf(EmuVbeLastDac));
+  EmuVbeMapHost256 := True;
+  For I := 0 To 238 Do Begin
+   EmuVbeMap[I] := 17 + I;
+   SetRGBPalette(17 + I, (LongInt(EmuVideo.DAC[I * 3]) * 255) Div 63,
+    (LongInt(EmuVideo.DAC[I * 3 + 1]) * 255) Div 63,
+    (LongInt(EmuVideo.DAC[I * 3 + 2]) * 255) Div 63);
+  End;
+  For I := 239 To 255 Do Begin
+   Best := 0; BestD := MaxLongInt;
+   For J := 0 To 238 Do Begin
+    D := Sqr(LongInt(EmuVideo.DAC[I * 3]) - EmuVideo.DAC[J * 3]) +
+         Sqr(LongInt(EmuVideo.DAC[I * 3 + 1]) - EmuVideo.DAC[J * 3 + 1]) +
+         Sqr(LongInt(EmuVideo.DAC[I * 3 + 2]) - EmuVideo.DAC[J * 3 + 2]);
+    If D < BestD Then Begin BestD := D; Best := 17 + J; End;
+   End;
+   EmuVbeMap[I] := Best;
+  End;
+ End Else Begin
+  EmuVbeMapHost256 := False;
+  For I := 0 To 255 Do
+   EmuVbeMap[I] := Emu_VidApprox16(EmuVideo.DAC[I * 3],
+    EmuVideo.DAC[I * 3 + 1], EmuVideo.DAC[I * 3 + 2]);
+ End;
+End;
+
+{ Couleur BGI hote du pixel (Sx, Sy) de l ecran graphique emule (VBE 8/16 }
+{ bits ou modes CGA/EGA/VGA) - extrait de DrawEmulatorPanel (2026-11-12). }
+Function Emu_GfxPixelBgi(Sx, Sy: Integer): Integer;
+Var BgiC, ColorByte: Byte; S3PixOfs: LongInt; S3PixWord, S3R5, S3G6, S3B5: Word;
+Begin
+ If EmuVideo.VBEActive Then Begin
+  BgiC := 0;
+  If EmuVideo.S3MemReady Then Begin
+   If EmuVideo.BitsPerPix = 8 Then Begin
+    S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx;
+    If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) Then
+     BgiC := EmuVbeMap[EmuVideo.S3Mem^[S3PixOfs]]; { voir Emu_VbeBuildMap }
+   End Else If EmuVideo.BitsPerPix = 16 Then Begin
+    S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx * 2;
+    If (S3PixOfs >= 0) And (S3PixOfs + 1 < S3_VRAM_SIZE) Then Begin
+     S3PixWord := Word(EmuVideo.S3Mem^[S3PixOfs]) Or
+      (Word(EmuVideo.S3Mem^[S3PixOfs + 1]) Shl 8);
+     { RGB565 -> approximation 16 couleurs (voir disclosure ci-dessus). }
+     S3R5 := (S3PixWord Shr 11) And $1F;
+     S3G6 := (S3PixWord Shr 5) And $3F;
+     S3B5 := S3PixWord And $1F;
+     BgiC := Emu_VidApprox16(Byte((S3R5 * 255) Div 31),
+      Byte((S3G6 * 255) Div 63), Byte((S3B5 * 255) Div 31));
+    End;
+   End;
+  End;
+ End Else Begin
+  ColorByte := Emu_VidGetPixel(Sx, Sy);
+  BgiC := Emu_VidPixelToBGI(ColorByte);
+ End;
+ If (BgiC = 0) And (Not EmuVideo.VBEActive) Then BgiC := EmuBlackIdx;
+ Emu_GfxPixelBgi := BgiC;
+End;
+
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
 Var
  GridX, GridY: Integer;
@@ -198131,6 +198347,7 @@ Var
  S3PixWord: Word;
  S3R5, S3G6, S3B5: Word;
  S3PalIdx: Integer;
+ Dx, Dy: Integer;
 Begin
  ScrH := GetScreenHeight;
  { Atari ST : ecran emule (onglet complet, bloc St_) }
@@ -198314,6 +198531,25 @@ Begin
   End;
   GridW := GfxW * Scale;
   GridH := GfxH * Scale;
+  { BOGUE REEL CORRIGE (2026-11-12, Pasdows 95 en 640x480 dans une fenetre  }
+  { DEVENV de 640x480 - le cas par defaut, PtcGraph "Detect") : quand meme  }
+  { l echelle 1 ne tient pas, l image depassait simplement l ecran (barre    }
+  { des taches de Pasdows invisible, clics impossibles en bas). Reduction   }
+  { (plus proche voisin) pour tenir dans la zone disponible, rapport        }
+  { largeur/hauteur conserve ; EmuGfxDstW/H memorisent la taille affichee   }
+  { pour la conversion des coordonnees de la souris. }
+  EmuGfxDstW := GridW; EmuGfxDstH := GridH;
+  If GridH > ScrH - MENUBAR_HEIGHT - TOOLBAR_HEIGHT - TAB_HEIGHT - 60 Then
+  Begin
+   GridH := ScrH - MENUBAR_HEIGHT - TOOLBAR_HEIGHT - TAB_HEIGHT - 60;
+   If GridH < 16 Then GridH := 16;
+   GridW := Integer((LongInt(GfxW) * GridH) Div GfxH);
+  End;
+  If GridW > GetScreenWidth - 4 Then Begin
+   GridW := GetScreenWidth - 4;
+   GridH := Integer((LongInt(GfxH) * GridW) Div GfxW);
+  End;
+  EmuGfxDstW := GridW; EmuGfxDstH := GridH;
   { Meme convention que le panneau texte ci-dessus : colle a gauche, sous }
   { la barre d onglets, comme un editeur de texte. }
   P.PanelX := 0;
@@ -198337,40 +198573,32 @@ Begin
   GetImage(0, 0, GetScreenWidth - 1, GetScreenHeight - 1, EmuPageBuf^);
   SetActivePage(EmuBackPage);
   PutImage(0, 0, EmuPageBuf^, NormalPut);
-  { Bordure et barre de titre }
+  { Bordure et barre de titre. 2026-11-12 : effacer aussi la zone d une    }
+  { image PRECEDENTE plus grande (mode texte 80 colonnes, ou ecran non     }
+  { reduit) - sinon son titre et ses bords restaient affiches a droite et  }
+  { en bas de la nouvelle image, plus petite. }
   DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
-   P.PanelX + GridW + 2, P.PanelY + GridH + 48,
-   CLR_BACKGROUND);
+   P.PanelX + MaxInt(GridW, P.LastGridW) + 2,
+   P.PanelY + MaxInt(GridH, P.LastGridH) + 48, CLR_BACKGROUND);
   DrawFilledRect(P.PanelX, P.PanelY,
    P.PanelX + GridW, P.PanelY + 22,
    CLR_TITLEBAR_ACTIVE);
   { Compter les pixels non-noirs pour diagnostic. En mode VESA/VBE (S3),   }
   { Emu_VidGetPixel se limite au 8 bits/pixel (voir disclosure la-bas) -   }
   { lire S3Mem directement ici couvre aussi le 16 bits/pixel. }
-  RunStart := 0;
-  If EmuVideo.VBEActive Then Begin
-   If EmuVideo.S3MemReady Then
-    For Sy := 0 To GfxH - 1 Do
-     For Sx := 0 To GfxW - 1 Do Begin
-      S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine +
-       Sx * (EmuVideo.BitsPerPix Div 8);
-      If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) And
-       (EmuVideo.S3Mem^[S3PixOfs] <> 0) Then Inc(RunStart);
-     End;
-  End Else
-   For Sy := 0 To GfxH - 1 Do
-    For Sx := 0 To GfxW - 1 Do
-     If Emu_VidGetPixel(Sx, Sy) <> 0 Then Inc(RunStart);
+  { 2026-11-12 : le compteur diagnostique "px<>0" (pixels non nuls de     }
+  { TOUT l ecran, recalcule a chaque image) est retire - en 640x480 il     }
+  { debordait l Integer 16 bits (-Mtp) et s affichait negatif dans le      }
+  { titre, tout en relisant 307200 pixels a chaque rafraichissement.      }
   If EmuVideo.VBEActive Then
    FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
             ' [VESA $' + HexWord(EmuVideo.VBEMode) + ' ' +
             IntToStr(GfxW) + 'x' + IntToStr(GfxH) + 'x' +
-            IntToStr(EmuVideo.BitsPerPix) + ' px<>0=' + IntToStr(RunStart) + ']'
+            IntToStr(EmuVideo.BitsPerPix) + ']'
   Else
    FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
             ' [mode $' + HexByte(EmuVideo.Mode) + ' ' +
-            IntToStr(GfxW) + 'x' + IntToStr(GfxH) +
-            ' px<>0=' + IntToStr(RunStart) + ']';
+            IntToStr(GfxW) + 'x' + IntToStr(GfxH) + ']';
   Title := TruncateTitleToWidth(FullTitle, GridW - 108);
   DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
   DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
@@ -198393,56 +198621,58 @@ Begin
   { pour le 16 bits/pixel (pas de palette indexee), approxime en 16        }
   { couleurs comme les autres modes faute de pilote hote "vraies couleurs" }
   { (voir disclosure pres de SelectScreenDriverMode/InitializeHTMLPalette).}
-  If EmuVideo.VBEActive And (EmuVideo.BitsPerPix = 8) And (GetMaxColor >= 255)
-    Then
-   For S3PalIdx := 0 To 255 Do
-    SetRGBPalette(S3PalIdx,
-     (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 0]) * 255) Div 63,
-     (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 1]) * 255) Div 63,
-     (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 2]) * 255) Div 63);
+  { BOGUE REEL CORRIGE (2026-11-12, bureau 256 couleurs de Pasdows 95) :   }
+  { les 256 couleurs invitees etaient chargees dans TOUTE la palette hote,  }
+  { y compris les 16 couleurs de l IDE (menus, barres, terminal devenus     }
+  { rouges/bleus/illisibles) ; sur un hote 16 couleurs (defaut), l indice   }
+  { invite etait utilise tel quel. Table de correspondance EmuVbeMap, voir  }
+  { Emu_VbeBuildMap. }
+  If EmuVideo.VBEActive And (EmuVideo.BitsPerPix = 8) Then Emu_VbeBuildMap;
   { Rendu pixel : RLE par ligne pour limiter le nombre de
     primitives de dessin. }
-  For Sy := 0 To GfxH - 1 Do Begin
+  EmuExact16 := (GetMaxColor >= 255) And EmuVideo.IsPlanar And
+                (Not EmuVideo.VBEActive) And (EmuVideo.Mode <> $13);
+  If EmuExact16 Then
+   For S3PalIdx := 0 To 15 Do Begin
+    If EmuVideo.ACReg[S3PalIdx] < 64 Then Sx := EmuVideo.ACReg[S3PalIdx]
+    Else Sx := S3PalIdx;
+    SetRGBPalette(240 + S3PalIdx,
+     (LongInt(EmuVideo.DAC[Sx * 3 + 0]) * 255) Div 63,
+     (LongInt(EmuVideo.DAC[Sx * 3 + 1]) * 255) Div 63,
+     (LongInt(EmuVideo.DAC[Sx * 3 + 2]) * 255) Div 63);
+   End;
+  { Rendu en coordonnees DESTINATION (2026-11-12) : chaque ligne/colonne   }
+  { affichee prend le pixel source correspondant - identique a l ancien    }
+  { rendu quand GridW = GfxW * Scale (agrandissement entier), et permet la }
+  { reduction ci-dessus quand l image ne tient pas. RLE par ligne. }
+  ScY := -1;
+  For Dy := 0 To GridH - 1 Do Begin
+   Sy := Integer((LongInt(Dy) * GfxH) Div GridH);
+   If (Dy > 0) And (Sy = ScY) Then Begin
+    { meme ligne source que la precedente : recopier la ligne affichee }
+    { (cas de l agrandissement), sans relire la memoire video emulee. }
+    Continue;
+   End;
+   ScY := Sy;
+   { hauteur affichee de cette ligne source }
+   NesScale := 1;
+   While (Dy + NesScale < GridH) And
+         (Integer((LongInt(Dy + NesScale) * GfxH) Div GridH) = Sy) Do
+    Inc(NesScale);
    PrevC := -1; RunStart := 0;
-   ScY := GridY + Sy * Scale;
-   For Sx := 0 To GfxW - 1 Do Begin
-    If EmuVideo.VBEActive Then Begin
-     BgiC := 0;
-     If EmuVideo.S3MemReady Then Begin
-      If EmuVideo.BitsPerPix = 8 Then Begin
-       S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx;
-       If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) Then
-        BgiC := EmuVideo.S3Mem^[S3PixOfs]; { index VBE brut = index palette
-          hote }
-      End Else If EmuVideo.BitsPerPix = 16 Then Begin
-       S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx * 2;
-       If (S3PixOfs >= 0) And (S3PixOfs + 1 < S3_VRAM_SIZE) Then Begin
-        S3PixWord := Word(EmuVideo.S3Mem^[S3PixOfs]) Or
-         (Word(EmuVideo.S3Mem^[S3PixOfs + 1]) Shl 8);
-        { RGB565 -> approximation 16 couleurs (voir disclosure ci-dessus). }
-        S3R5 := (S3PixWord Shr 11) And $1F;
-        S3G6 := (S3PixWord Shr 5) And $3F;
-        S3B5 := S3PixWord And $1F;
-        BgiC := Emu_VidApprox16(Byte((S3R5 * 255) Div 31),
-         Byte((S3G6 * 255) Div 63), Byte((S3B5 * 255) Div 31));
-       End;
-      End;
-     End;
-    End Else Begin
-     ColorByte := Emu_VidGetPixel(Sx, Sy);
-     BgiC := Emu_VidPixelToBGI(ColorByte);
-    End;
-    If (BgiC = 0) And (Not EmuVideo.VBEActive) Then BgiC := EmuBlackIdx;
+   For Dx := 0 To GridW - 1 Do Begin
+    Sx := Integer((LongInt(Dx) * GfxW) Div GridW);
+    BgiC := Emu_GfxPixelBgi(Sx, Sy);
     If BgiC <> PrevC Then Begin
      If (PrevC > 0) Then
-      DrawFilledRect(GridX + RunStart * Scale, ScY,
-       GridX + Sx * Scale - 1, ScY + Scale - 1, PrevC);
-     PrevC := BgiC; RunStart := Sx;
+      DrawFilledRect(GridX + RunStart, GridY + Dy,
+       GridX + Dx - 1, GridY + Dy + NesScale - 1, PrevC);
+     PrevC := BgiC; RunStart := Dx;
     End;
    End;
    If PrevC > 0 Then
-    DrawFilledRect(GridX + RunStart * Scale, ScY,
-     GridX + GfxW * Scale - 1, ScY + Scale - 1, PrevC);
+    DrawFilledRect(GridX + RunStart, GridY + Dy,
+     GridX + GridW - 1, GridY + Dy + NesScale - 1, PrevC);
   End;
   { Barre d etat }
   DrawFilledRect(GridX, GridY + GridH + 2,
@@ -198804,6 +199034,15 @@ Begin
  { chantier (voir project_devenv_xms_int2f_recursion.md pour le detail       }
  { complet des hypotheses deja testees et ecartees). }
  If (Addr < 0) Then Exit;
+ { Tampon lineaire VBE de la S3 (2026-11-12, voir EMU_S3_LFB_BASE). }
+ If (Addr >= EMU_S3_LFB_BASE) And (Addr < EMU_S3_LFB_BASE + S3_VRAM_SIZE)
+ Then Begin
+  If Not EmuVideo.S3MemReady Then Exit;
+  If Addr + LongInt(SizeBytes) > EMU_S3_LFB_BASE + S3_VRAM_SIZE Then
+   SizeBytes := Word(EMU_S3_LFB_BASE + S3_VRAM_SIZE - Addr);
+  Move(EmuVideo.S3Mem^[Addr - EMU_S3_LFB_BASE], Buffer, SizeBytes);
+  Exit;
+ End;
  If (Addr >= SizeOf(TEmuMemBuf)) Then Begin
   If (EmuDpmiExtMem = Nil) Or (Addr >= EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes)
     Then Exit;
@@ -198889,6 +199128,21 @@ Begin
  { peut pas reproduire cela - boucle octet par octet, avec Ofs+I         }
  { enveloppe en Word, uniquement dans ce cas limite (le chemin rapide     }
  { normal reste un Move direct). }
+ { Fenetre graphique A000 (EGA/VGA planaire, mode 13h, VBE en banques) -  }
+ { BOGUE REEL CORRIGE (2026-11-12, curseur souris de Pasdows 95) : les     }
+ { lectures (octet, mot, double mot) lisaient la RAM ordinaire en A0000h  }
+ { au lieu de la memoire video : ni verrous charges, ni Read Map Select,  }
+ { ni mode de lecture 1 (comparaison de couleurs). Chaque octet passe     }
+ { desormais par Emu_VidReadByte, comme sur une vraie carte. }
+ If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) And (SizeBytes > 0)
+ Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   BPtr^ := Emu_VidReadByte((LongInt(Seg) Shl 4) + Word(Ofs + I) - $A0000);
+   Inc(BPtr);
+  End;
+  Exit;
+ End;
  If LongInt(Ofs) + SizeBytes > $10000 Then Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
@@ -198972,6 +199226,16 @@ Begin
  { Voir le commentaire jumeau dans Emu_ReadAbsBlock (borne HMA + redirection }
  { EmuDpmiExtMem au-dela de TEmuMemBuf, meme chantier 2026-10-14). }
  If (Addr < 0) Then Exit;
+ { Tampon lineaire VBE de la S3 (2026-11-12, voir EMU_S3_LFB_BASE). }
+ If (Addr >= EMU_S3_LFB_BASE) And (Addr < EMU_S3_LFB_BASE + S3_VRAM_SIZE)
+ Then Begin
+  If Not EmuVideo.S3MemReady Then Exit;
+  If Addr + LongInt(SizeBytes) > EMU_S3_LFB_BASE + S3_VRAM_SIZE Then
+   SizeBytes := Word(EMU_S3_LFB_BASE + S3_VRAM_SIZE - Addr);
+  Move(Buffer, EmuVideo.S3Mem^[Addr - EMU_S3_LFB_BASE], SizeBytes);
+  EmuVideo.GfxDirty := True;
+  Exit;
+ End;
  If (Addr >= SizeOf(TEmuMemBuf)) Then Begin
   If (EmuDpmiExtMem = Nil) Or (Addr >= EMU_DPMI_EXT_BASE + EmuDpmi.ExtCapBytes)
     Then Exit;
@@ -199115,6 +199379,19 @@ Begin
  { BOGUE REEL CORRIGE (2026-09-03) : meme correctif que Emu_ReadBlock -   }
  { voir son commentaire pour le contexte complet (enroulement de l offset}
  { a la limite $FFFF/$0000 d un segment). }
+ { Fenetre graphique A000 : ecritures de mots/doubles mots (REP STOSW,     }
+ { MOVSW, MOV [A000:x],AX...) - BOGUE REEL CORRIGE (2026-11-12) : seules  }
+ { les ecritures d UN octet (Emu_WriteByte) atteignaient la VGA, les      }
+ { autres allaient en RAM ordinaire et restaient invisibles. }
+ If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) And (SizeBytes > 0)
+ Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   Emu_VidWriteByte((LongInt(Seg) Shl 4) + Word(Ofs + I) - $A0000, BPtr^);
+   Inc(BPtr);
+  End;
+  Exit;
+ End;
  If LongInt(Ofs) + SizeBytes > $10000 Then Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
@@ -199181,16 +199458,16 @@ Begin
   End;
   Exit;
  End;
- { Redirection planar EGA/VGA pour ecritures dans $A0000..$AFFFF. }
+ { Redirection planar EGA/VGA pour ecritures dans $A0000..$AFFFF.       }
+ { BOGUE REEL CORRIGE (2026-11-12, curseur souris de Pasdows 95 en mode   }
+ { 12h : rayures verticales a sa place) : chaque ecriture RECHARGEAIT les }
+ { verrous (latches) depuis l adresse ecrite - un palliatif au fait que   }
+ { les LECTURES de A000 ne passaient pas par la VGA (voir Emu_ReadBlock). }
+ { Sur une vraie VGA, seules les lectures chargent les verrous : copies   }
+ { en mode d ecriture 1, sauvegarde/restauration plan par plan (registre  }
+ { Read Map Select) en dependent. Les lectures passant desormais par     }
+ { Emu_VidReadByte, l ecriture n y touche plus. }
  If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) Then Begin
-  { Pre-charger latches via lecture du mot a la meme adresse. }
-  EmuVideo.Latch[0] := EmuVideo.Mem^[(LongInt(Seg) Shl 4) + Ofs - $A0000];
-  EmuVideo.Latch[1] := EmuVideo.Mem^[$10000 + ((LongInt(Seg) Shl 4) + Ofs -
-    $A0000)];
-  EmuVideo.Latch[2] := EmuVideo.Mem^[$20000 + ((LongInt(Seg) Shl 4) + Ofs -
-    $A0000)];
-  EmuVideo.Latch[3] := EmuVideo.Mem^[$30000 + ((LongInt(Seg) Shl 4) + Ofs -
-    $A0000)];
   Emu_VidWriteByte((LongInt(Seg) Shl 4) + Ofs - $A0000, X);
   Exit;
  End;
@@ -199931,7 +200208,12 @@ Begin
   { DOS_RunOneChunk (CS/IP/Op/ES/DI/CX/AX), meme tampon circulaire. }
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
-  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  { 2026-11-12 : en mode protege (DpmiCPU), CS:IP reel n a pas de sens et  }
+  { cette lecture (Emu_ReadByte -> Emu_Addr -> Emu_UnrealBase) coutait      }
+  { environ 10 % du temps d execution de Pasdows 95 - sautee. }
+  If DpmiCPU.Active Then EmuTraceBuf[EmuTraceIdx].Op := $90
+  Else
+   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
   EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
@@ -207262,11 +207544,199 @@ Begin
  Emu8042.KbdEnabled := True;
 End;
 
+{ Souris PS/2 du port auxiliaire du 8042 (2026-11-12, demande explicite :  }
+{ Pasdows 95 pilote lui-meme clavier et souris par le 8042, IRQ 1 et 12,  }
+{ comme Windows 95). Commandes 64h A7h/A8h/A9h/D4h, reponses FAh de la    }
+{ souris (FFh reset -> FA AA 00, F2h -> FA 00, E9h -> etat), mode flux    }
+{ F4h/F5h, paquets de 3 octets a partir de la souris de l hote, octet     }
+{ d etat bit 5 (donnee auxiliaire) et IRQ 12 (EmuIrqPending2). }
+Procedure Emu_8042_AuxPut(B: Byte);
+Begin
+ If Emu8042.AuxQLen >= SizeOf(Emu8042.AuxQ) Then Exit;
+ Emu8042.AuxQ[(Emu8042.AuxQHead + Emu8042.AuxQLen) Mod SizeOf(Emu8042.AuxQ)]
+   := B;
+ Inc(Emu8042.AuxQLen);
+End;
+
+Procedure Emu_8042_KbdPut(B: Byte);
+Begin
+ If Emu8042.KbdQLen >= SizeOf(Emu8042.KbdQ) Then Exit;
+ Emu8042.KbdQ[(Emu8042.KbdQHead + Emu8042.KbdQLen) Mod SizeOf(Emu8042.KbdQ)]
+   := B;
+ Inc(Emu8042.KbdQLen);
+End;
+
+{ Placer le prochain octet (clavier d abord, puis souris) dans le tampon }
+{ de sortie s il est libre. }
+Procedure Emu_8042_Pump;
+Begin
+ If Emu8042.OutBufFull Then Exit;
+ If (Emu8042.KbdQLen > 0) And ((Emu8042.CmdByte And $10) = 0) Then Begin
+  Emu8042.OutBuf := Emu8042.KbdQ[Emu8042.KbdQHead];
+  Emu8042.KbdQHead := (Emu8042.KbdQHead + 1) Mod SizeOf(Emu8042.KbdQ);
+  Dec(Emu8042.KbdQLen);
+  Emu8042.OutBufFull := True;
+  Emu8042.OutIsAux := False;
+  If (Emu8042.CmdByte And $01) <> 0 Then
+   EmuIrqPending := EmuIrqPending Or $02;       { IRQ 1 }
+  Exit;
+ End;
+ If Emu8042.AuxQLen = 0 Then Exit;
+ Emu8042.OutBuf := Emu8042.AuxQ[Emu8042.AuxQHead];
+ Emu8042.AuxQHead := (Emu8042.AuxQHead + 1) Mod SizeOf(Emu8042.AuxQ);
+ Dec(Emu8042.AuxQLen);
+ Emu8042.OutBufFull := True;
+ Emu8042.OutIsAux := True;
+ If (Emu8042.CmdByte And $02) <> 0 Then
+  EmuIrqPending2 := EmuIrqPending2 Or $10;      { IRQ 12 }
+End;
+
+Procedure Emu_8042_AuxCmd(V: Byte);
+Begin
+ If Emu8042.AuxArgFor <> 0 Then Begin          { argument de F3h/E8h }
+  Emu8042.AuxArgFor := 0;
+  Emu_8042_AuxPut($FA);
+  Emu_8042_Pump;
+  Exit;
+ End;
+ Emu_8042_AuxPut($FA);
+ Case V Of
+  $FF: Begin                                   { reset : BAT OK, ID 00 }
+        Emu_8042_AuxPut($AA); Emu_8042_AuxPut($00);
+        Emu8042.AuxStream := False;
+       End;
+  $F6, $F5: Emu8042.AuxStream := False;        { defauts / desactiver }
+  $F4: Begin                                   { activer les paquets }
+        Emu8042.AuxStream := True; Emu8042.AuxSynced := False;
+       End;
+  $F3, $E8: Emu8042.AuxArgFor := V;            { taux / resolution }
+  $F2: Emu_8042_AuxPut($00);                   { ID : souris standard }
+  $E9: Begin                                   { etat : flux, 4/mm, 100/s }
+        If Emu8042.AuxStream Then Emu_8042_AuxPut($20)
+        Else Emu_8042_AuxPut($00);
+        Emu_8042_AuxPut($02); Emu_8042_AuxPut(100);
+       End;
+ End;
+ Emu_8042_Pump;
+End;
+
+{ Mouvement/boutons de la souris de l hote, en coordonnees invitees : un   }
+{ paquet PS/2 relatif (Y vers le haut) si le flux est actif. }
+{ 2026-11-12 : touche hote -> VRAIS codes de balayage (jeu 1) sur le     }
+{ port 60h avec IRQ 1, pour un systeme invite en mode protege qui a son  }
+{ propre IDT (noyau VMM32 de Pasdows 95, ou tout autre systeme amorce par }
+{ l onglet El Torito) : il n utilise ni INT 16h ni le tampon BIOS, seul  }
+{ chemin qu empruntaient jusqu ici les frappes (voir DOS_RunOneChunk).   }
+{ K = (code de balayage Shl 8) Or ASCII, comme EmuVScr_PushKey. Clavier  }
+{ americain (QWERTY), Maj/Ctrl simules autour de la touche, prefixe E0h  }
+{ pour les touches grises (fleches, Inser, Suppr, Origine, Fin, Pg). }
+Procedure Emu_8042_KeyFromHost(K: Word);
+Const
+ KLo: String[60] = #0#27'1234567890-='#8#9'qwertyuiop[]'#13#0 +
+   'asdfghjkl;''`'#0'\zxcvbnm,./'#0'*'#0' ';
+ KHi: String[60] = #0#27'!@#$%^&*()_+'#8#9'QWERTYUIOP{}'#13#0 +
+   'ASDFGHJKL:"~'#0'|ZXCVBNM<>?'#0'*'#0' ';
+Var Sc, Ch: Byte; I: Integer; Sh, Ctl, Ext: Boolean;
+Begin
+ Sc := Hi(K); Ch := Lo(K);
+ Sh := False; Ctl := False; Ext := False;
+ If Ch <> 0 Then Begin                     { caractere : Maj selon la table }
+  Sc := 0;
+  If (Ch >= 1) And (Ch <= 26) And Not (Ch In [8, 9, 13]) Then Begin
+   Ctl := True; Ch := Ch + Ord('a') - 1;           { Ctrl+lettre }
+  End;
+  For I := 2 To Length(KLo) Do
+   If (Sc = 0) And (Ord(KLo[I]) = Ch) And (Ch <> 0) Then Sc := I - 1;
+  For I := 2 To Length(KHi) Do
+   If (Sc = 0) And (Ord(KHi[I]) = Ch) And (Ch <> 0) Then Begin
+    Sc := I - 1; Sh := True;
+   End;
+  If Sc = 0 Then Exit;
+ End Else Begin
+  Ext := (Sc And $7F) In [$47, $48, $49, $4B, $4D, $4F, $50, $51, $52, $53];
+  { Code de relachement seul (bit 7), ou touche de controle (Ctrl, Maj, }
+  { Alt) seule : un seul code, sans son relachement automatique - voir  }
+  { EmuCtxSendCtrlAltDel, qui pousse appuis et relachements separes. }
+  If ((Sc And $80) <> 0) Or (Sc In [$1D, $2A, $36, $38]) Then Begin
+   If Ext Then Emu_8042_KbdPut($E0);
+   Emu_8042_KbdPut(Sc);
+   Emu_8042_Pump;
+   Exit;
+  End;
+ End;
+ If Ctl Then Emu_8042_KbdPut($1D);
+ If Sh Then Emu_8042_KbdPut($2A);
+ If Ext Then Emu_8042_KbdPut($E0);
+ Emu_8042_KbdPut(Sc);
+ If Ext Then Emu_8042_KbdPut($E0);
+ Emu_8042_KbdPut(Sc Or $80);
+ If Sh Then Emu_8042_KbdPut($AA);
+ If Ctl Then Emu_8042_KbdPut($9D);
+ Emu_8042_Pump;
+End;
+
+{ Un paquet PS/2 (deplacements -255..255, Y vers le haut). }
+Procedure Emu_8042_AuxPacket(Dx, Dy: Integer; Btns: Byte);
+Var B0: Byte;
+Begin
+ Dy := -Dy;
+ B0 := $08 Or (Btns And 7);
+ If Dx < 0 Then B0 := B0 Or $10;
+ If Dy < 0 Then B0 := B0 Or $20;
+ Emu_8042_AuxPut(B0); Emu_8042_AuxPut(Byte(Dx)); Emu_8042_AuxPut(Byte(Dy));
+End;
+
+{ 2026-11-12 : la souris PS/2 est RELATIVE - le pointeur de l invite part }
+{ de sa propre position (ex. centre de l ecran), sans rapport avec celle  }
+{ de l hote, et un deplacement de plus de 255 pixels etait tronque : le   }
+{ pointeur invite derivait loin du pointeur hote (clics a cote). Au       }
+{ premier paquet, le pointeur est d abord pousse dans le coin superieur   }
+{ gauche (l invite borne a 0), puis amene a la position absolue ; les     }
+{ grands deplacements sont decoupes en plusieurs paquets. }
+Procedure Emu_8042_AuxMove(GX, GY: Integer; Btns: Byte);
+Var Dx, Dy, Sx, Sy, I: Integer;
+Begin
+ If Not Emu8042.AuxStream Or ((Emu8042.CmdByte And $20) <> 0) Then Begin
+  Emu8042.AuxLastX := GX; Emu8042.AuxLastY := GY;
+  Exit;
+ End;
+ If Not Emu8042.AuxSynced Then Begin
+  If Emu8042.AuxQLen + 3 * 8 > SizeOf(Emu8042.AuxQ) Then Exit;
+  For I := 1 To 8 Do
+   Emu_8042_AuxPacket(-255, -255, Emu8042.AuxLastBtn);
+  Emu8042.AuxLastX := 0; Emu8042.AuxLastY := 0;
+  Emu8042.AuxSynced := True;
+ End;
+ Dx := GX - Emu8042.AuxLastX; Dy := GY - Emu8042.AuxLastY;
+ If (Dx = 0) And (Dy = 0) And ((Btns And 7) = Emu8042.AuxLastBtn) Then Begin
+  Emu_8042_Pump;
+  Exit;
+ End;
+ Repeat
+  Sx := Dx; Sy := Dy;
+  If Sx > 255 Then Sx := 255; If Sx < -255 Then Sx := -255;
+  If Sy > 255 Then Sy := 255; If Sy < -255 Then Sy := -255;
+  If Emu8042.AuxQLen + 3 > SizeOf(Emu8042.AuxQ) Then Break;
+  { les boutons ne changent qu avec le dernier paquet (clic a la bonne  }
+  { position) }
+  If (Sx = Dx) And (Sy = Dy) Then Begin
+   Emu_8042_AuxPacket(Sx, Sy, Btns);
+   Emu8042.AuxLastBtn := Btns And 7;
+  End Else
+   Emu_8042_AuxPacket(Sx, Sy, Emu8042.AuxLastBtn);
+  Emu8042.AuxLastX := Emu8042.AuxLastX + Sx;
+  Emu8042.AuxLastY := Emu8042.AuxLastY + Sy;
+  Dx := Dx - Sx; Dy := Dy - Sy;
+ Until (Dx = 0) And (Dy = 0);
+ Emu_8042_Pump;
+End;
+
 Function Emu_8042_ReadData(Var P: TEmulatorPanel): Byte;
 Begin
  If Emu8042.OutBufFull Then Begin
   Emu_8042_ReadData := Emu8042.OutBuf;
   Emu8042.OutBufFull := False;
+  Emu8042.OutIsAux := False;
   { Reponse multi-octets (ex. F2h/Identify Keyboard : ACK puis 2 octets  }
   { d ID) - voir Emu_8042_WriteData. Un vrai 8042 leve une NOUVELLE IRQ1 }
   { pour chaque octet qui arrive dans le tampon de sortie, d ou le       }
@@ -207277,7 +207747,8 @@ Begin
    Emu8042.ExtraQueue[0] := Emu8042.ExtraQueue[1];
    Dec(Emu8042.ExtraQueueLen);
    EmuIrqPending := EmuIrqPending Or $02;
-  End;
+  End Else
+   Emu_8042_Pump;                              { octet suivant de la souris }
  End Else
   Emu_8042_ReadData := P.CPU.NextRawKey; { pas de reponse en attente : scancode
     direct }
@@ -207303,6 +207774,14 @@ Begin
  If Emu8042.PendingCmd <> 0 Then Begin
   Case Emu8042.PendingCmd Of
    $60: Emu8042.CmdByte := Value;
+   $D4: Begin Emu8042.PendingCmd := 0; Emu_8042_AuxCmd(Value); Exit; End;
+   $D3: Begin Emu8042.PendingCmd := 0; Emu_8042_AuxPut(Value); Emu_8042_Pump;
+         Exit; End;
+   $D2: Begin
+         Emu8042.OutBuf := Value; Emu8042.OutBufFull := True;
+         Emu8042.OutIsAux := False;
+         EmuIrqPending := EmuIrqPending Or $02;
+        End;
    $D1: Begin
          Emu8042.OutputPort := Value;
          Emu8042.A20Enabled := (Value And $02) <> 0;
@@ -207356,6 +207835,7 @@ Var S: Byte;
 Begin
  S := $14; { bit4=clavier deverrouille, bit2=indicateur systeme (POST reussi) }
  If Emu8042.OutBufFull Then S := S Or $01;
+ If Emu8042.OutBufFull And Emu8042.OutIsAux Then S := S Or $20; { souris }
  Emu_8042_ReadStatus := S;
 End;
 
@@ -207375,6 +207855,14 @@ Begin
   $D0: Begin Emu8042.OutBuf := Emu8042.OutputPort; Emu8042.OutBufFull := True;
        EmuIrqPending := EmuIrqPending Or $02; End;
   $D1: Emu8042.PendingCmd := $D1;
+  { Port auxiliaire (2026-11-12, voir Emu_8042_AuxCmd) }
+  $A7: Emu8042.CmdByte := Emu8042.CmdByte Or $20;        { souris desactivee }
+  $A8: Emu8042.CmdByte := Emu8042.CmdByte And Not Byte($20); { activee }
+  $A9, $AB: Begin Emu8042.OutBuf := $00; Emu8042.OutBufFull := True;
+             Emu8042.OutIsAux := False; End;           { tests d interface }
+  $AA: Begin Emu8042.OutBuf := $55; Emu8042.OutBufFull := True;
+        Emu8042.OutIsAux := False; End;                 { autotest }
+  $D2, $D3, $D4: Emu8042.PendingCmd := Value;
  Else
   ; { autotest 0AAh, lecture/ecriture RAM interne 20h-3Fh/60h-7Fh, reset  }
     { systeme FEh, etc. : acceptees sans effet, hors perimetre demande.  }
@@ -207856,6 +208344,23 @@ End;
 
 { --- Forward / dispatcher I/O global pour IN AL,DX et OUT DX,AL.
       Les ports non ger?s retournent 0. --- }
+Function Emu_IdeRead(Ch, RegIdx: Integer): Byte; Forward;
+Procedure Emu_IdeWrite(Ch, RegIdx: Integer; Value: Byte); Forward;
+
+{ Recopier un octet emis sur COM1 dans le fichier /COM1:fichier (ouvert a }
+{ la premiere emission, vide a chaque lancement de DEVENV). }
+Procedure Emu_Com1Capture(B: Byte);
+Begin
+ If EmuCom1Path = '' Then Exit;
+ If Not EmuCom1Open Then Begin
+  {$I-} Assign(EmuCom1F, EmuCom1Path); Rewrite(EmuCom1F, 1); {$I+}
+  If IOResult <> 0 Then Begin EmuCom1Path := ''; Exit; End;
+  EmuCom1Open := True;
+ End;
+ {$I-} BlockWrite(EmuCom1F, B, 1); {$I+}
+ If IOResult <> 0 Then ;
+End;
+
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
 Var
  CmosIdxPort, CmosDataPort: Word;
@@ -207923,9 +208428,9 @@ Begin
   { de melange, fidele au fait qu un PC reel n a jamais deux protocoles de }
   { controleur de disque actifs sur les memes ports. }
   $1F0..$1F7: If Emu_DiskIfFamily = DIF_ATA Then
-               Emu_PortRead := Emu_ATA_ReadReg(EmuATA[0], Port - $1F0);
+               Emu_PortRead := Emu_IdeRead(0, Port - $1F0);
   $170..$177: If Emu_DiskIfFamily = DIF_ATA Then
-               Emu_PortRead := Emu_ATA_ReadReg(EmuATA[1], Port - $170);
+               Emu_PortRead := Emu_IdeRead(1, Port - $170);
   $320..$323: If Emu_DiskIfFamily = DIF_ST506 Then
    Case Port Of
     $320: Emu_PortRead := Emu_ST506_ReadData(EmuST506);
@@ -207954,6 +208459,8 @@ Begin
   $278..$27A: Emu_PortRead := Emu_LPT_Read(EmuLPT2, Port - $278);
   $2E8..$2EF: Emu_PortRead := Emu_UART_Read(EmuCOM4, Byte(Port - $2E8));
   $2F8..$2FF: Emu_PortRead := Emu_UART_Read(EmuCOM2, Byte(Port - $2F8));
+  $3E8..$3EF: Emu_PortRead := Emu_UART_Read(EmuCOM3, Byte(Port - $3E8));
+  $3F8..$3FF: Emu_PortRead := Emu_UART_Read(EmuCOM1, Byte(Port - $3F8));
   $3B4..$3BB: Emu_PortRead := Emu_VidPortRead(Port);
   { LPT1 (carte combo mono+imprimante) : 3BCh=donnees,3BDh=etat,3BEh=     }
   { controle - jamais interprete par Emu_VidPortRead auparavant (son      }
@@ -207962,11 +208469,16 @@ Begin
   { video existant. }
   $3BC..$3BE: Emu_PortRead := Emu_LPT_Read(EmuLPT1, Port - $3BC);
   $3BF: Emu_PortRead := 0;
+  { Port 92h "A20 rapide" (PS/2, tout PC AT/386 moderne) - 2026-11-12,     }
+  { Pasdows 95 : bit 1 = porte A20 (meme drapeau que la commande D1h du     }
+  { 8042), bit 0 = reinitialisation du processeur (non modelisee).        }
+  $92: If Emu_IsATClassHw Then
+        Emu_PortRead := Ord(Emu8042.A20Enabled) Shl 1;
   $3C0..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
   $3F6: If Emu_DiskIfFamily = DIF_ATA Then
-         Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[0]);
+         Emu_PortRead := Emu_IdeRead(0, 8);
   $376: If Emu_DiskIfFamily = DIF_ATA Then
-         Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[1]);
+         Emu_PortRead := Emu_IdeRead(1, 8);
   { Controleur de disquette (FDC) - TOUJOURS present, independant de       }
   { l Interface de disque ci-dessus (peripherique distinct, voir TEmuFDC). }
   { 3F0h/3F1h/3F7h : materiel classe AT+ seulement (82077AA integre), un   }
@@ -208033,9 +208545,9 @@ Begin
        Else Emu_PPI_MirrorWrite(Port, Value);
   $65..$6F: If Not Emu_IsATClassHw Then Emu_PPI_MirrorWrite(Port, Value);
   $1F0..$1F7: If Emu_DiskIfFamily = DIF_ATA Then
-               Emu_ATA_WriteReg(EmuATA[0], Port - $1F0, Value);
+               Emu_IdeWrite(0, Port - $1F0, Value);
   $170..$177: If Emu_DiskIfFamily = DIF_ATA Then
-               Emu_ATA_WriteReg(EmuATA[1], Port - $170, Value);
+               Emu_IdeWrite(1, Port - $170, Value);
   $320..$323: If Emu_DiskIfFamily = DIF_ST506 Then
    Case Port Of
     $320: Emu_ST506_WriteData(EmuST506, Value);
@@ -208056,13 +208568,18 @@ Begin
   $278..$27A: Emu_LPT_Write(EmuLPT2, Port - $278, Value);
   $2E8..$2EF: Emu_UART_Write(EmuCOM4, Byte(Port - $2E8), Value);
   $2F8..$2FF: Emu_UART_Write(EmuCOM2, Byte(Port - $2F8), Value);
+  $3E8..$3EF: Emu_UART_Write(EmuCOM3, Byte(Port - $3E8), Value);
+  $3F8..$3FF: Begin
+   If (Port = $3F8) And ((EmuCOM1.LCR And $80) = 0) Then
+    Emu_Com1Capture(Value);
+   Emu_UART_Write(EmuCOM1, Byte(Port - $3F8), Value);
+  End;
   $3B4..$3BB: Emu_VidPortWrite(Port, Value);
   $3BC..$3BE: Emu_LPT_Write(EmuLPT1, Port - $3BC, Value);
+  $92: If Emu_IsATClassHw Then Emu8042.A20Enabled := (Value And $02) <> 0;
   $3C0..$3DF: Emu_VidPortWrite(Port, Value);
-  $3F6: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[0],
-    Value);
-  $376: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[1],
-    Value);
+  $3F6: If Emu_DiskIfFamily = DIF_ATA Then Emu_IdeWrite(0, 8, Value);
+  $376: If Emu_DiskIfFamily = DIF_ATA Then Emu_IdeWrite(1, 8, Value);
   { Controleur de disquette (FDC) - voir le commentaire de lecture ci-dessus. }
   $3F2: Emu_FDC_WriteDOR(EmuFDC, Value);
   $3F5: Emu_FDC_WriteData(EmuFDC, Value);
@@ -208087,6 +208604,375 @@ Begin
   End;
  End;
 End;
+
+{ ============================================================
+  Lecteur de CD-ROM ATAPI sur le canal IDE secondaire (2026-11-12,
+  demande explicite : Pasdows 95 dans l onglet El Torito). Jusqu ici le
+  CD-ROM monte (/CDROM:) n existait que pour INT 13h/MSCDEX : un noyau 32
+  bits qui pilote lui-meme le lecteur (registres IDE 170h-177h, commande
+  PACKET, comme le pilote ATAPI de Windows 95) ne le trouvait pas. Maitre
+  du canal secondaire (comme QEMU), esclave si une image disque y est deja
+  montee (/DISK81:). Secteurs de 2048 octets lus dans l image ISO
+  (Emu_IsoReadLBA) ; commandes ATA : IDENTIFY PACKET DEVICE, PACKET, DEVICE
+  RESET, EXECUTE DIAGNOSTIC (IDENTIFY DEVICE refusee avec la signature
+  ATAPI 14h/EBh) ; paquets : TEST UNIT READY, REQUEST SENSE, INQUIRY, START
+  STOP, PREVENT ALLOW, READ CAPACITY, READ(10), READ(12), READ TOC, MODE
+  SENSE(10). Transfert PIO par blocs limites par le compte d octets (CylLo/
+  CylHi) donne par l hote. Pas d IRQ 15 (scrutation, comme le reste de
+  l emulation IDE de ce fichier).
+  ============================================================ }
+
+Type
+ TEmuAtapiCd = Record
+  ErrFeat, SectorCnt, SectorNum, CylLo, CylHi, DriveHead, Status : Byte;
+  Sector : TEmuIsoSector;          { secteur ISO courant / reponses }
+  Cdb    : Array[0..11] Of Byte;   { paquet en cours de reception }
+  CdbPos : Integer;
+  RecvCdb: Boolean;                { attend les 12 octets du paquet }
+  DataLen, DataPos, BlkEnd : Integer; { reponse : long., position, fin DRQ }
+  Active : Boolean;                { phase de donnees (vers l hote) en cours }
+  LBA, Left : LongInt;             { READ : secteur courant, secteurs restants }
+  Limit  : Integer;                { compte d octets max par bloc DRQ }
+  SenseKey, Asc : Byte;
+ End;
+
+Var
+ EmuCd       : TEmuAtapiCd;
+ EmuAtaSlave : Array[0..1] Of Boolean; { peripherique choisi (bit DEV) }
+
+Function Emu_CdPresent: Boolean;
+Begin
+ Emu_CdPresent := EmuCdrom[0].Open;
+End;
+
+{ Le CD-ROM est esclave du canal secondaire si une image disque y est   }
+{ montee comme maitre (/DISK81:). }
+Function Emu_CdIsSlave: Boolean;
+Begin
+ Emu_CdIsSlave := EmuFloppyOpen[3];
+End;
+
+{ Peripherique choisi sur le canal Ch : 0 aucun, 1 disque ATA, 2 CD-ROM. }
+Function Emu_AtaSelKind(Ch: Integer): Integer;
+Begin
+ Emu_AtaSelKind := 0;
+ If (Ch = 1) And Emu_CdPresent And (EmuAtaSlave[1] = Emu_CdIsSlave) Then
+  Emu_AtaSelKind := 2
+ Else If (Not EmuAtaSlave[Ch]) And
+   (EmuFloppyOpen[Emu_ATA_UnitForChannel(Ch)] Or Emu_ATA_IsPacketDevice) Then
+  Emu_AtaSelKind := 1;
+End;
+
+{ Un peripherique au moins sur le canal Ch ? (sinon bus flottant : FFh) }
+Function Emu_AtaChanUsed(Ch: Integer): Boolean;
+Begin
+ Emu_AtaChanUsed := EmuFloppyOpen[Emu_ATA_UnitForChannel(Ch)] Or
+  Emu_ATA_IsPacketDevice Or ((Ch = 1) And Emu_CdPresent);
+End;
+
+Procedure Emu_CdSignature;
+Begin
+ EmuCd.SectorCnt := 1; EmuCd.SectorNum := 1;
+ EmuCd.CylLo := $14; EmuCd.CylHi := $EB;
+End;
+
+Procedure Emu_CdDone(Ok: Boolean);
+Begin
+ EmuCd.Active := False; EmuCd.RecvCdb := False;
+ EmuCd.SectorCnt := 3;                     { I/O=1, C/D=1 : etat final }
+ If Ok Then Begin
+  EmuCd.Status := $50; EmuCd.ErrFeat := 0; EmuCd.SenseKey := 0; EmuCd.Asc := 0;
+ End Else Begin
+  EmuCd.Status := $51;                     { DRDY+ERR (CHECK CONDITION) }
+  EmuCd.ErrFeat := (EmuCd.SenseKey Shl 4) Or $04;
+ End;
+End;
+
+Procedure Emu_CdFail(Key, Asc: Byte);
+Begin
+ EmuCd.SenseKey := Key; EmuCd.Asc := Asc;
+ Emu_CdDone(False);
+End;
+
+{ Ouvrir le bloc DRQ suivant de la reponse (Sector[DataPos..DataLen-1]). }
+Procedure Emu_CdNextBlock;
+Var N: Integer;
+Begin
+ N := EmuCd.DataLen - EmuCd.DataPos;
+ If N > EmuCd.Limit Then N := EmuCd.Limit;
+ EmuCd.BlkEnd := EmuCd.DataPos + N;
+ EmuCd.CylLo := Lo(N); EmuCd.CylHi := Hi(N);
+ EmuCd.SectorCnt := 2;                     { I/O=1, C/D=0 : donnees }
+ EmuCd.Status := $58;                      { DRDY+DRQ+DSC }
+ EmuCd.Active := True;
+End;
+
+Procedure Emu_CdDataIn(Len: Integer);
+Begin
+ EmuCd.DataLen := Len; EmuCd.DataPos := 0;
+ If Len <= 0 Then Begin Emu_CdDone(True); Exit; End;
+ Emu_CdNextBlock;
+End;
+
+Function Emu_CdSectors: LongInt;
+Begin
+ Emu_CdSectors := EmuCdrom[0].IsoSize Div EMU_ISO_SECTOR;
+End;
+
+{ Charger le secteur EmuCd.LBA dans EmuCd.Sector et l offrir a l hote. }
+Procedure Emu_CdLoadSector;
+Begin
+ If (EmuCd.LBA < 0) Or (EmuCd.LBA >= Emu_CdSectors) Or
+    Not Emu_IsoReadLBA(0, EmuCd.LBA, EmuCd.Sector) Then Begin
+  Emu_CdFail(5, $21);                      { LBA hors limites }
+  Exit;
+ End;
+ Emu_CdDataIn(EMU_ISO_SECTOR);
+End;
+
+Procedure Emu_CdPacket;
+Var Op: Byte; I: Integer; N: LongInt; S: String;
+Begin
+ Op := EmuCd.Cdb[0];
+ FillChar(EmuCd.Sector, SizeOf(EmuCd.Sector), 0);
+ Case Op Of
+  $00, $1B, $1E: Emu_CdDone(True); { TEST UNIT READY, START STOP, PREVENT }
+  $03: Begin { REQUEST SENSE }
+   EmuCd.Sector[0] := $70; EmuCd.Sector[2] := EmuCd.SenseKey;
+   EmuCd.Sector[7] := 10; EmuCd.Sector[12] := EmuCd.Asc;
+   EmuCd.SenseKey := 0; EmuCd.Asc := 0;
+   Emu_CdDataIn(18);
+  End;
+  $12: Begin { INQUIRY }
+   EmuCd.Sector[0] := $05; EmuCd.Sector[1] := $80;
+   EmuCd.Sector[2] := $00; EmuCd.Sector[3] := $21; EmuCd.Sector[4] := 31;
+   S := 'DEV-COOLATAPI CD-ROM    1.00';
+   For I := 1 To Length(S) Do EmuCd.Sector[7 + I] := Ord(S[I]);
+   Emu_CdDataIn(36);
+  End;
+  $25: Begin { READ CAPACITY : dernier LBA, taille de bloc }
+   N := Emu_CdSectors - 1;
+   EmuCd.Sector[0] := Byte(N Shr 24); EmuCd.Sector[1] := Byte(N Shr 16);
+   EmuCd.Sector[2] := Byte(N Shr 8);  EmuCd.Sector[3] := Byte(N);
+   EmuCd.Sector[6] := Hi(EMU_ISO_SECTOR); EmuCd.Sector[7] := Lo(EMU_ISO_SECTOR);
+   Emu_CdDataIn(8);
+  End;
+  $28, $A8: Begin { READ(10) / READ(12) }
+   EmuCd.LBA := (LongInt(EmuCd.Cdb[2]) Shl 24) Or (LongInt(EmuCd.Cdb[3]) Shl 16)
+    Or (LongInt(EmuCd.Cdb[4]) Shl 8) Or EmuCd.Cdb[5];
+   If Op = $28 Then
+    EmuCd.Left := (LongInt(EmuCd.Cdb[7]) Shl 8) Or EmuCd.Cdb[8]
+   Else
+    EmuCd.Left := (LongInt(EmuCd.Cdb[6]) Shl 24) Or
+     (LongInt(EmuCd.Cdb[7]) Shl 16) Or (LongInt(EmuCd.Cdb[8]) Shl 8) Or
+     EmuCd.Cdb[9];
+   If EmuCd.Left <= 0 Then Emu_CdDone(True) Else Emu_CdLoadSector;
+  End;
+  $43: Begin { READ TOC (format 0) : piste 1 de donnees + piste AAh }
+   N := Emu_CdSectors;
+   EmuCd.Sector[1] := 18; EmuCd.Sector[2] := 1; EmuCd.Sector[3] := 1;
+   EmuCd.Sector[5] := $14; EmuCd.Sector[6] := 1;
+   EmuCd.Sector[13] := $14; EmuCd.Sector[14] := $AA;
+   EmuCd.Sector[16] := Byte(N Shr 24); EmuCd.Sector[17] := Byte(N Shr 16);
+   EmuCd.Sector[18] := Byte(N Shr 8);  EmuCd.Sector[19] := Byte(N);
+   Emu_CdDataIn(20);
+  End;
+  $5A: Begin { MODE SENSE(10) : en-tete seul }
+   EmuCd.Sector[1] := 6; EmuCd.Sector[2] := $01;
+   Emu_CdDataIn(8);
+  End;
+ Else
+  Emu_CdFail(5, $20);                      { commande invalide }
+ End;
+End;
+
+Procedure Emu_CdIdentify;
+Var I: Integer; S: String;
+Begin
+ FillChar(EmuCd.Sector, SizeOf(EmuCd.Sector), 0);
+ EmuCd.Sector[0] := $C0; EmuCd.Sector[1] := $85; { ATAPI, CD-ROM, amovible, }
+                                                 { paquets de 12 octets    }
+ S := 'DEV-COOLS ATAPI CD-ROM';
+ For I := 0 To 19 Do Begin                       { modele : mots 27-46 }
+  If I * 2 + 2 <= Length(S) Then EmuCd.Sector[54 + I * 2] := Ord(S[I * 2 + 2])
+  Else EmuCd.Sector[54 + I * 2] := 32;
+  If I * 2 + 1 <= Length(S) Then EmuCd.Sector[55 + I * 2] := Ord(S[I * 2 + 1])
+  Else EmuCd.Sector[55 + I * 2] := 32;
+ End;
+ EmuCd.Sector[99] := $02;                        { mot 49 : LBA }
+ EmuCd.Limit := 512;
+ Emu_CdDataIn(512);
+End;
+
+Procedure Emu_CdCommand(Cmd: Byte);
+Begin
+ Case Cmd Of
+  $08, $90: Begin { DEVICE RESET / EXECUTE DEVICE DIAGNOSTIC }
+   Emu_CdSignature;
+   EmuCd.ErrFeat := 1; EmuCd.Status := $00;
+   EmuCd.Active := False; EmuCd.RecvCdb := False;
+  End;
+  $A1: Emu_CdIdentify;                           { IDENTIFY PACKET DEVICE }
+  $A0: Begin { PACKET : recevoir 12 octets }
+   EmuCd.Limit := (Integer(EmuCd.CylHi) Shl 8) Or EmuCd.CylLo;
+   If (EmuCd.Limit = 0) Or (EmuCd.Limit > EMU_ISO_SECTOR) Then
+    EmuCd.Limit := EMU_ISO_SECTOR;
+   EmuCd.Limit := EmuCd.Limit And $FFFE;
+   EmuCd.CdbPos := 0; EmuCd.RecvCdb := True; EmuCd.Active := False;
+   EmuCd.SectorCnt := 1;                         { C/D=1, I/O=0 : paquet }
+   EmuCd.Status := $58;
+  End;
+  $E0..$E7, $EF: Emu_CdDone(True);              { veille, SET FEATURES }
+ Else
+  { IDENTIFY DEVICE (ECh) et le reste : refus avec la signature ATAPI, }
+  { qu un pilote reconnait comme "peripherique a paquets". }
+  Emu_CdSignature;
+  EmuCd.ErrFeat := $04; EmuCd.Status := $51;
+ End;
+End;
+
+Function Emu_CdReadReg(RegIdx: Integer): Byte;
+Begin
+ Emu_CdReadReg := 0;
+ Case RegIdx Of
+  0: If EmuCd.Active And (EmuCd.DataPos < EmuCd.BlkEnd) Then Begin
+      Emu_CdReadReg := EmuCd.Sector[EmuCd.DataPos];
+      Inc(EmuCd.DataPos);
+      If EmuCd.DataPos >= EmuCd.BlkEnd Then Begin
+       If EmuCd.DataPos < EmuCd.DataLen Then Emu_CdNextBlock
+       Else If EmuCd.Left > 1 Then Begin
+        Dec(EmuCd.Left); Inc(EmuCd.LBA);
+        Emu_CdLoadSector;
+       End Else Begin
+        EmuCd.Left := 0;
+        Emu_CdDone(True);
+       End;
+      End;
+     End;
+  1: Emu_CdReadReg := EmuCd.ErrFeat;
+  2: Emu_CdReadReg := EmuCd.SectorCnt;
+  3: Emu_CdReadReg := EmuCd.SectorNum;
+  4: Emu_CdReadReg := EmuCd.CylLo;
+  5: Emu_CdReadReg := EmuCd.CylHi;
+  6: Emu_CdReadReg := EmuCd.DriveHead Or $A0;
+  7: Emu_CdReadReg := EmuCd.Status;
+ End;
+End;
+
+Procedure Emu_CdWriteReg(RegIdx: Integer; Value: Byte);
+Begin
+ Case RegIdx Of
+  0: If EmuCd.RecvCdb And (EmuCd.CdbPos < 12) Then Begin
+      EmuCd.Cdb[EmuCd.CdbPos] := Value;
+      Inc(EmuCd.CdbPos);
+      If EmuCd.CdbPos >= 12 Then Begin
+       EmuCd.RecvCdb := False;
+       Emu_CdPacket;
+      End;
+     End;
+  1: EmuCd.ErrFeat := Value;
+  2: EmuCd.SectorCnt := Value;
+  3: EmuCd.SectorNum := Value;
+  4: EmuCd.CylLo := Value;
+  5: EmuCd.CylHi := Value;
+  6: EmuCd.DriveHead := Value;
+  7: Emu_CdCommand(Value);
+ End;
+End;
+
+Procedure Emu_CdDevCtrl(Value: Byte);
+Begin
+ If (Value And $04) <> 0 Then Begin            { SRST }
+  Emu_CdSignature;
+  EmuCd.Status := $00; EmuCd.ErrFeat := 1;
+  EmuCd.Active := False; EmuCd.RecvCdb := False;
+ End;
+End;
+
+{ Registres IDE 1F0h-1F7h/170h-177h (RegIdx 0-7) et etat alternatif /   }
+{ controle (RegIdx 8 : 3F6h/376h) - aiguillage selon le peripherique     }
+{ choisi par le bit DEV (2026-11-12). Un esclave absent lit 0, un canal  }
+{ sans aucun peripherique lit FFh (bus flottant), comme sur un vrai PC.  }
+Function Emu_IdeRead(Ch, RegIdx: Integer): Byte;
+Begin
+ Case Emu_AtaSelKind(Ch) Of
+  2: If RegIdx = 8 Then Emu_IdeRead := EmuCd.Status
+     Else Emu_IdeRead := Emu_CdReadReg(RegIdx);
+  1: If RegIdx = 8 Then Emu_IdeRead := Emu_ATA_ReadAltStatus(EmuATA[Ch])
+     Else Emu_IdeRead := Emu_ATA_ReadReg(EmuATA[Ch], RegIdx);
+ Else
+  If Not Emu_AtaChanUsed(Ch) Then Emu_IdeRead := $FF
+  Else If RegIdx = 6 Then Emu_IdeRead := EmuATA[Ch].DriveHead Or $A0
+  Else Emu_IdeRead := 0;
+ End;
+End;
+
+Procedure Emu_IdeWrite(Ch, RegIdx: Integer; Value: Byte);
+Begin
+ If RegIdx = 8 Then Begin                      { controle : les deux }
+  Emu_ATA_WriteDevCtrl(EmuATA[Ch], Value);
+  If (Ch = 1) And Emu_CdPresent Then Emu_CdDevCtrl(Value);
+  Exit;
+ End;
+ If RegIdx = 6 Then Begin                      { choix maitre/esclave }
+  EmuAtaSlave[Ch] := (Value And $10) <> 0;
+  Emu_ATA_WriteReg(EmuATA[Ch], 6, Value);
+  If (Ch = 1) And Emu_CdPresent Then Emu_CdWriteReg(6, Value);
+  Exit;
+ End;
+ Case Emu_AtaSelKind(Ch) Of
+  2: Emu_CdWriteReg(RegIdx, Value);
+  1: Emu_ATA_WriteReg(EmuATA[Ch], RegIdx, Value);
+ End;
+End;
+
+{ E/S 16 et 32 bits (2026-11-12) : un IN AX,DX / OUT DX,AX vers un       }
+{ peripherique ISA 8 bits se decompose en deux cycles DX et DX+1 (ce que }
+{ faisaient toutes les instructions de ce fichier), MAIS le registre de  }
+{ donnees IDE (1F0h/170h) est un vrai port 16 bits : deux mots lus du    }
+{ MEME port - sinon le second octet venait du registre d erreur (1F1h),  }
+{ et un IDENTIFY/secteur lu par REP INSW etait faux un octet sur deux.   }
+Function Emu_IsWideDataPort(Port: Word): Boolean;
+Begin
+ Emu_IsWideDataPort := ((Port = $1F0) Or (Port = $170)) And
+  (Emu_DiskIfFamily = DIF_ATA);
+End;
+
+Function Emu_PortRead16(Var P: TEmulatorPanel; Port: Word): Word;
+Var L: Byte;
+Begin
+ L := Emu_PortRead(P, Port);
+ If Emu_IsWideDataPort(Port) Then
+  Emu_PortRead16 := Word(L) Or (Word(Emu_PortRead(P, Port)) Shl 8)
+ Else
+  Emu_PortRead16 := Word(L) Or (Word(Emu_PortRead(P, Word(Port + 1))) Shl 8);
+End;
+
+Function Emu_PortRead32(Var P: TEmulatorPanel; Port: Word): LongInt;
+Var L: Word;
+Begin
+ L := Emu_PortRead16(P, Port);
+ If Emu_IsWideDataPort(Port) Then
+  Emu_PortRead32 := LongInt(L) Or (LongInt(Emu_PortRead16(P, Port)) Shl 16)
+ Else
+  Emu_PortRead32 := LongInt(L) Or
+   (LongInt(Emu_PortRead16(P, Word(Port + 2))) Shl 16);
+End;
+
+Procedure Emu_PortWrite16(Var P: TEmulatorPanel; Port: Word; V: Word);
+Begin
+ Emu_PortWrite(P, Port, Lo(V));
+ If Emu_IsWideDataPort(Port) Then Emu_PortWrite(P, Port, Hi(V))
+ Else Emu_PortWrite(P, Word(Port + 1), Hi(V));
+End;
+
+Procedure Emu_PortWrite32(Var P: TEmulatorPanel; Port: Word; V: LongInt);
+Begin
+ Emu_PortWrite16(P, Port, Word(V));
+ If Emu_IsWideDataPort(Port) Then Emu_PortWrite16(P, Port, Word(V Shr 16))
+ Else Emu_PortWrite16(P, Word(Port + 2), Word(V Shr 16));
+End;
+
 
 { --- INT 10h : services video (BIOS) --- }
 
@@ -208181,6 +209067,34 @@ End;
 { champs rarement lus, ex. DirectColorModeInfo, sont laisses a 0) - assez   }
 { pour qu un vrai utilitaire de detection VESA (ex. CHKVESA, UNIVBE) ou un   }
 { petit programme de test voie une carte SVGA coherente et fonctionnelle. }
+{ Polices de la ROM video emulee (2026-11-12, Pasdows 95) : 8x16 en       }
+{ C000:0000, 8x14 en C000:1000 (lignes 1 a 14 de la 8x16), 8x8 en         }
+{ C000:1E00 (une ligne sur deux de la 8x16) - a partir de la police VGA    }
+{ 8x16 deja presente dans ce fichier (Banner_Matrix8x16, la police IBM     }
+{ CP437 du terminal Bash). INT 43h pointe sur la 8x8 (caracteres 0-127),   }
+{ INT 1Fh sur ses caracteres 128-255, comme un BIOS VGA apres son init.   }
+Procedure Emu_VidRomFonts(Var P: TEmulatorPanel);
+Var Ch, Row: Integer; B: Byte;
+Begin
+ If Emu_ReadByte(P.CPU, $C000, EMU_VIDROM_FONT16 + 65 * 16 + 4) =
+    Banner_Matrix8x16[65 * 16 + 4] Then
+  If Emu_ReadByte(P.CPU, $C000, EMU_VIDROM_FONT8 + 65 * 8 + 3) =
+     Banner_Matrix8x16[65 * 16 + 6] Then Exit;   { deja en place }
+ For Ch := 0 To 255 Do
+  For Row := 0 To 15 Do Begin
+   B := Banner_Matrix8x16[Ch * 16 + Row];
+   Emu_WriteByte(P.CPU, $C000, EMU_VIDROM_FONT16 + Ch * 16 + Row, B);
+   If (Row >= 1) And (Row <= 14) Then
+    Emu_WriteByte(P.CPU, $C000, EMU_VIDROM_FONT14 + Ch * 14 + Row - 1, B);
+   If (Row And 1) = 0 Then
+    Emu_WriteByte(P.CPU, $C000, EMU_VIDROM_FONT8 + Ch * 8 + Row Div 2, B);
+  End;
+ Emu_WriteWord(P.CPU, 0, $43 * 4, EMU_VIDROM_FONT8);
+ Emu_WriteWord(P.CPU, 0, $43 * 4 + 2, $C000);
+ Emu_WriteWord(P.CPU, 0, $1F * 4, EMU_VIDROM_FONT8 + 128 * 8);
+ Emu_WriteWord(P.CPU, 0, $1F * 4 + 2, $C000);
+End;
+
 Procedure Emu_DoInt10_VBE(Var P: TEmulatorPanel);
 Var
  ModeNum: Word;
@@ -208245,10 +209159,10 @@ Begin
    End;
    InfoSeg := P.CPU.Segs.ES;
    InfoOfs := P.CPU.Regs.DI;
-   If S3VbeBpp[ModeIdx] = 8 Then
-    ModeAttr := $1B  { supporte + sortie TTY BIOS + couleur + graphique }
-   Else
-    ModeAttr := $9B; { idem, bit7 = couleur directe (pas de palette DAC) }
+   { 2026-11-12 : bit 7 = tampon d image LINEAIRE disponible (VBE 2.0) -    }
+   { pas "couleur directe" comme le disait l ancien commentaire. Annonce    }
+   { pour tous les modes, l adresse est en PhysBasePtr (offset 40). }
+   ModeAttr := $9B; { supporte + TTY BIOS + couleur + graphique + LFB }
    Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 0, ModeAttr);
    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 2, $07);  { WinAAttributes }
    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 3, $00);  { WinBAttributes : absente
@@ -208289,16 +209203,19 @@ Begin
     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 38, 0);  { RsvdFieldPosition }
     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 39, 0);  { DirectColorModeInfo }
    End;
+   { PhysBasePtr (VBE 2.0) : tampon lineaire, voir EMU_S3_LFB_BASE ;      }
+   { OffScreenMemOffset/Size nuls. }
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 40, Word(EMU_S3_LFB_BASE));
+   Emu_WriteWord(P.CPU, InfoSeg, InfoOfs + 42, Word(EMU_S3_LFB_BASE Shr 16));
+   For I := 44 To 49 Do Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + I, 0);
    P.CPU.Regs.AX := $004F;
   End;
   $02: Begin
    { Set Mode. BX=numero de mode (bit14=framebuffer lineaire, refuse -     }
    { voir disclosure de tete -, bit15=ne pas effacer la VRAM). }
    ModeNum := P.CPU.Regs.BX And $01FF;
-   If (P.CPU.Regs.BX And $4000) <> 0 Then Begin
-    P.CPU.Regs.AX := $014F; { framebuffer lineaire non supporte - echec propre }
-    Exit;
-   End;
+   { Bit 14 (tampon lineaire) accepte depuis 2026-11-12 : la VRAM S3 est    }
+   { aussi visible a EMU_S3_LFB_BASE (Dpmi_*BytePhys, Emu_*AbsBlock). }
    ModeIdx := S3_FindVbeMode(ModeNum);
    If ModeIdx < 0 Then Begin
     P.CPU.Regs.AX := $014F;
@@ -208647,8 +209564,34 @@ Begin
      $30 get font info -> ES:BP = adresse fonte, CX=hauteur, DL=lignes-1. }
    Begin
     If P.CPU.Regs.AL = $30 Then Begin
+     { BOGUE REEL CORRIGE (2026-11-12, Pasdows 95 dans l onglet El Torito :   }
+     { TOUT le texte de son interface 16 couleurs s affichait en barres) :   }
+     { ES:BP pointait toujours sur C000:0000 quel que soit BH, et AUCUNE      }
+     { police n y etait jamais copiee - le programme recopiait donc des      }
+     { octets arbitraires comme glyphes. Un vrai BIOS VGA renvoie, selon BH, }
+     { sa police en ROM : 2 = 8x14, 3 = 8x8 (car. 0-127), 4 = 8x8 (car.     }
+     { 128-255), 5/7 = 9x14/9x16 (aucune table de 9e colonne ici : la police }
+     { de base), 6 = 8x16 ; 0/1 = vecteurs INT 1Fh/43h. Lors d un amorcage   }
+     { reel (EmuBootActive, aucun LOADHIGH possible) les polices sont        }
+     { recopiees dans la ROM video emulee (Emu_VidRomFonts) ; CX = hauteur  }
+     { de la police courante, DL = lignes de texte - 1. }
+     If EmuBootActive Then Emu_VidRomFonts(P);
      P.CPU.Segs.ES := $C000;
-     P.CPU.Regs.BP := 0;
+     Case P.CPU.Regs.BH Of
+      0: Begin
+          P.CPU.Segs.ES := Emu_ReadWord(P.CPU, 0, $1F * 4 + 2);
+          P.CPU.Regs.BP := Emu_ReadWord(P.CPU, 0, $1F * 4);
+         End;
+      1: Begin
+          P.CPU.Segs.ES := Emu_ReadWord(P.CPU, 0, $43 * 4 + 2);
+          P.CPU.Regs.BP := Emu_ReadWord(P.CPU, 0, $43 * 4);
+         End;
+      2, 5: P.CPU.Regs.BP := EMU_VIDROM_FONT14;
+      3: P.CPU.Regs.BP := EMU_VIDROM_FONT8;
+      4: P.CPU.Regs.BP := EMU_VIDROM_FONT8 + 128 * 8;
+     Else
+      P.CPU.Regs.BP := EMU_VIDROM_FONT16;
+     End;
      P.CPU.Regs.CX := 16;
      P.CPU.Regs.DL := 24;
     End;
@@ -213794,6 +214737,40 @@ Begin
    End;
    P.CPU.Regs.AH := 0;
   End;
+  $24: Begin { Porte A20 (2026-11-12, Pasdows 95) : 2400h desactiver,       }
+             { 2401h activer, 2402h etat (AL), 2403h methodes prises en    }
+             { charge (BX bit0=8042, bit1=port 92h). Meme drapeau que le   }
+             { 8042 (commande D1h) et le port 92h, voir Emu_PortWrite.     }
+   Case P.CPU.Regs.AL Of
+    0: Begin Emu8042.A20Enabled := False; P.CPU.Regs.AH := 0; End;
+    1: Begin Emu8042.A20Enabled := True;  P.CPU.Regs.AH := 0; End;
+    2: Begin
+        P.CPU.Regs.AL := Ord(Emu8042.A20Enabled);
+        P.CPU.Regs.AH := 0;
+        P.CPU.Regs.CX := 0;
+       End;
+    3: Begin P.CPU.Regs.BX := 3; P.CPU.Regs.AH := 0; End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AH := $86;
+   End;
+  End;
+  $E8: Begin { AX=E801h (2026-11-12, Pasdows 95) : AX=CX = Ko entre 1 Mo et }
+             { 16 Mo (15360 au plus), BX=DX = blocs de 64 Ko au-dela de 16 }
+             { Mo - meme taille que AH=88h (DosXMSSize), sans sa limite.   }
+   Int88ExtKB := OptionsDlg.Data.DosXMSSize;
+   If Int88ExtKB > EMU_XMS_CAP_KB Then Int88ExtKB := EMU_XMS_CAP_KB;
+   If Int88ExtKB < 64 Then Int88ExtKB := 64;
+   If Int88ExtKB > 15360 Then Begin
+    P.CPU.Regs.AX := 15360;
+    P.CPU.Regs.BX := Word((Int88ExtKB - 15360) Div 64);
+   End Else Begin
+    P.CPU.Regs.AX := Word(Int88ExtKB);
+    P.CPU.Regs.BX := 0;
+   End;
+   P.CPU.Regs.CX := P.CPU.Regs.AX;
+   P.CPU.Regs.DX := P.CPU.Regs.BX;
+  End;
   $90, $91: ; { Device Busy / Interrupt Complete : notification de chainage   }
               { d ISR (reseau/souris) sans contrepartie multitache reelle ici }
               { - acceptee sans effet (CF=0), comme un vrai BIOS le ferait    }
@@ -213821,6 +214798,15 @@ Var
  EvMask: Word;
  DeltaMickX, DeltaMickY: Integer;
 Begin
+ { Souris PS/2 du 8042 (2026-11-12) : alimentee meme sans pilote INT 33h  }
+ { (un noyau qui lit lui-meme la souris, comme Pasdows 95). }
+ If EmuVideo.IsGraphic And (EmuGfxDstW > 0) And (EmuGfxDstH > 0) Then
+  Emu_8042_AuxMove(
+   Integer((LongInt(HostX - P.PanelX) * EmuVideo.Width) Div EmuGfxDstW),
+   Integer((LongInt(HostY - P.PanelY - 24) * EmuVideo.Height) Div EmuGfxDstH),
+   NewBtns)
+ Else
+  Emu_8042_AuxMove(HostX - P.PanelX, HostY - P.PanelY - 24, NewBtns);
  If Not EmuMouseInst Then Exit;
  { Recalculer offsets/scale comme DrawEmulatorPanel }
  If EmuVideo.IsGraphic Then Begin
@@ -213833,6 +214819,12 @@ Begin
   GridY := P.PanelY + 24;
   LX := (HostX - GridX) Div Scale;
   LY := (HostY - GridY) Div Scale;
+  { 2026-11-12 : taille REELLEMENT affichee par DrawEmulatorPanel (mise a   }
+  { l echelle quand l ecran emule ne tient pas dans la fenetre DEVENV).    }
+  If (EmuGfxDstW > 0) And (EmuGfxDstH > 0) Then Begin
+   LX := Integer((LongInt(HostX - GridX) * GfxW) Div EmuGfxDstW);
+   LY := Integer((LongInt(HostY - GridY) * GfxH) Div EmuGfxDstH);
+  End;
  End Else Begin
   GridX := P.PanelX;
   GridY := P.PanelY + 24;
@@ -221013,6 +222005,26 @@ End;
 { ELF64). --- }
 Function Dpmi_ReadBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt): Byte;
 Begin
+ { Tampon lineaire VBE de la S3 (2026-11-12, voir EMU_S3_LFB_BASE). }
+ If (PhysAddr >= EMU_S3_LFB_BASE) And
+    (PhysAddr < EMU_S3_LFB_BASE + S3_VRAM_SIZE) Then Begin
+  If EmuVideo.S3MemReady Then
+   Dpmi_ReadBytePhys := EmuVideo.S3Mem^[PhysAddr - EMU_S3_LFB_BASE]
+  Else Dpmi_ReadBytePhys := 0;
+  Exit;
+ End;
+ { BOGUE REEL CORRIGE (2026-11-12, noyau VMM32 de Pasdows 95 : ses 64      }
+ { premiers Ko, copies a 1 Mo par INT 15h AH=87h, etaient lus comme des    }
+ { zeros une fois en mode protege) : 100000h-10FFEFh (la HMA) appartient   }
+ { au tampon principal TEmuMemBuf pour TOUS les acces du mode reel         }
+ { (Emu_ReadAbsBlock/Emu_WriteAbsBlock, AH=87h) - le coeur protege lisait  }
+ { ici le tampon de memoire etendue. Meme correspondance desormais, sauf   }
+ { quand le pilote XMS emule possede ce tampon (enquete WIN386 inchangee). }
+ If (PhysAddr >= EMU_DPMI_EXT_BASE) And (PhysAddr < SizeOf(TEmuMemBuf)) And
+    (EmuBootActive Or Not (EmuXms.Active And (EmuXmsMem <> Nil))) Then Begin
+  Dpmi_ReadBytePhys := P.CPU.Memory^[PhysAddr];
+  Exit;
+ End;
  If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
   Dpmi_ReadBytePhys := P.CPU.Memory^[PhysAddr]
  { BOGUE REEL CORRIGE (2026-10-17, enquete WIN.COM 386 Enhanced Mode, suite }
@@ -221078,6 +222090,21 @@ Begin
     ' EDI=', HexLong(DpmiCPU.Reg.EDI));
   Close(WLog);
   {$I+} If IOResult <> 0 Then ;
+ End;
+ { Tampon lineaire VBE de la S3 (2026-11-12, voir EMU_S3_LFB_BASE). }
+ If (PhysAddr >= EMU_S3_LFB_BASE) And
+    (PhysAddr < EMU_S3_LFB_BASE + S3_VRAM_SIZE) Then Begin
+  If EmuVideo.S3MemReady Then Begin
+   EmuVideo.S3Mem^[PhysAddr - EMU_S3_LFB_BASE] := V;
+   EmuVideo.GfxDirty := True;
+  End;
+  Exit;
+ End;
+ { HMA : voir le commentaire jumeau de Dpmi_ReadBytePhys (2026-11-12). }
+ If (PhysAddr >= EMU_DPMI_EXT_BASE) And (PhysAddr < SizeOf(TEmuMemBuf)) And
+    (EmuBootActive Or Not (EmuXms.Active And (EmuXmsMem <> Nil))) Then Begin
+  P.CPU.Memory^[PhysAddr] := V;
+  Exit;
  End;
  If (PhysAddr >= 0) And (PhysAddr < EMU_DPMI_EXT_BASE) Then
   P.CPU.Memory^[PhysAddr] := V
@@ -221203,7 +222230,10 @@ End;
 
 Function Dpmi_ReadByte(Var P: TEmulatorPanel; LinAddr: LongInt): Byte;
 Begin
- Dpmi_ReadByte := Dpmi_ReadBytePhys(P, Dpmi_TranslateLin(P, LinAddr));
+ If (DpmiCPU.CR0 And LongInt($80000000)) = 0 Then { sans pagination }
+  Dpmi_ReadByte := Dpmi_ReadBytePhys(P, LinAddr)
+ Else
+  Dpmi_ReadByte := Dpmi_ReadBytePhys(P, Dpmi_TranslateLin(P, LinAddr));
 End;
 
 Procedure Dpmi_WriteByte(Var P: TEmulatorPanel; LinAddr: LongInt; V: Byte);
@@ -222301,10 +223331,27 @@ End;
 { 0Dh GPF simulee) - portee delib. reduite a un CPU "de confiance". }
 { ========================================================================= }
 
+{ 2026-11-12 : base de CS memorisee pour la duree d UNE instruction        }
+{ (invalidee au debut de Dpmi_Step) - chaque octet d instruction refaisait }
+{ Dpmi_LinAddr -> Dpmi_SelBase -> Dpmi_SelToIdx puis Dpmi_TranslateLin, le }
+{ chemin le plus chaud de l emulation de Pasdows 95. Sans pagination, la    }
+{ lecture va directement en memoire physique. }
+Var
+ DpmiFetchValid: Boolean;
+ DpmiFetchSel: Word;
+ DpmiFetchBase: LongInt;
+
 Function Dpmi_FetchByte(Var P: TEmulatorPanel; Step: Integer): Byte;
 Begin
- Dpmi_FetchByte := Dpmi_ReadByte(P,
-  Dpmi_LinAddr(DpmiCPU.SegSel[1], DpmiCPU.EIP + Step));
+ If (Not DpmiFetchValid) Or (DpmiFetchSel <> DpmiCPU.SegSel[1]) Then Begin
+  DpmiFetchSel := DpmiCPU.SegSel[1];
+  DpmiFetchBase := Dpmi_SelBase(DpmiFetchSel);
+  DpmiFetchValid := True;
+ End;
+ If (DpmiCPU.CR0 And LongInt($80000000)) = 0 Then
+  Dpmi_FetchByte := Dpmi_ReadBytePhys(P, DpmiFetchBase + DpmiCPU.EIP + Step)
+ Else
+  Dpmi_FetchByte := Dpmi_ReadByte(P, DpmiFetchBase + DpmiCPU.EIP + Step);
 End;
 
 Function Dpmi_FetchWord(Var P: TEmulatorPanel; Step: Integer): Word;
@@ -222802,6 +223849,15 @@ Begin
  Dpmi_Push32(P, DpmiCPU.Flags.Abs);
  Dpmi_Push32(P, LongInt(DpmiCPU.SegSel[1]));
  Dpmi_Push32(P, DpmiCPU.EIP);
+ { BOGUE REEL CORRIGE (2026-11-12, souris PS/2 de Pasdows 95 : X et Y    }
+ { inverses, pointeur loin de la souris) : une porte d INTERRUPTION      }
+ { (type 6/Eh) remet IF a 0 en entrant dans le gestionnaire - seule une  }
+ { porte de TRAPPE (7/Fh) le laisse tel quel. IF restait a 1 : l IRQ 12  }
+ { suivante etait livree pendant que le gestionnaire de la precedente    }
+ { n avait pas encore range son octet - 30 gestionnaires imbriques, les  }
+ { octets ranges a l envers. TF est remis a 0 dans les deux cas. }
+ If (GateAttr And $07) = $06 Then Exclude(DpmiCPU.Flags.s, EFG_IF);
+ Exclude(DpmiCPU.Flags.s, EFG_TF);
  DpmiCPU.SegSel[1] := GateSel;
  DpmiCPU.EIP := GateOfs;
  Dpmi_SyncIs32Bit;
@@ -223663,14 +224719,10 @@ Begin
     1: Dpmi_WriteByte(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
         Emu_PortRead(P, Word(DpmiCPU.Reg.DX)));
     2: Dpmi_WriteWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
-        Word(Emu_PortRead(P, Word(DpmiCPU.Reg.DX))) Or
-        (Word(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 1)) Shl 8));
+        Emu_PortRead16(P, Word(DpmiCPU.Reg.DX)));
    Else
      Dpmi_WriteDWord(P, Dpmi_LinAddr(DpmiCPU.SegSel[0], DstOfs),
-      LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX)))) Or
-      (LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 1))) Shl 8) Or
-      (LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 2))) Shl 16) Or
-      (LongInt(LongWord(Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 3))) Shl 24));
+      Emu_PortRead32(P, Word(DpmiCPU.Reg.DX)));
    End;
    DstOfs := DstOfs + Dir * Sz;
   End;
@@ -223681,15 +224733,11 @@ Begin
         Byte(Dpmi_ReadByte(P, Dpmi_LinAddr(DefSeg, SrcOfs))));
     2: Begin
      V16 := Dpmi_ReadWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
-     Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), Byte(V16));
-     Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 1, Byte(V16 Shr 8));
+     Emu_PortWrite16(P, Word(DpmiCPU.Reg.DX), V16);
     End;
    Else
     V32 := Dpmi_ReadDWord(P, Dpmi_LinAddr(DefSeg, SrcOfs));
-    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), Byte(V32));
-    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 1, Byte(V32 Shr 8));
-    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 2, Byte(V32 Shr 16));
-    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 3, Byte(V32 Shr 24));
+    Emu_PortWrite32(P, Word(DpmiCPU.Reg.DX), V32);
    End;
    SrcOfs := SrcOfs + Dir * Sz;
   End;
@@ -223731,6 +224779,20 @@ Var
 { Execute une seule instruction protegee. Ne fait rien si DpmiCPU.Active   }
 { est faux (securite - ne devrait pas etre appelee dans ce cas, voir le    }
 { branchement dans la boucle principale). }
+{ IN/OUT 16 ou 32 bits du coeur protege (2026-11-12) : AX = 2 ports,      }
+{ EAX = 4 ports consecutifs (meme materiel emule que Emu_PortRead/Write). }
+Procedure Dpmi_PortIn(Var P: TEmulatorPanel; Port: Word; OpSize: Byte);
+Begin
+ If OpSize = 4 Then DpmiCPU.Reg.EAX := Emu_PortRead32(P, Port)
+ Else DpmiCPU.Reg.AX := Emu_PortRead16(P, Port);
+End;
+
+Procedure Dpmi_PortOut(Var P: TEmulatorPanel; Port: Word; OpSize: Byte);
+Begin
+ If OpSize = 4 Then Emu_PortWrite32(P, Port, DpmiCPU.Reg.EAX)
+ Else Emu_PortWrite16(P, Port, DpmiCPU.Reg.AX);
+End;
+
 Procedure Dpmi_Step(Var P: TEmulatorPanel);
 Var
  DiagPStepF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPSTEP.LOG }
@@ -223758,6 +224820,7 @@ Var
  { (2026-10-14, demande explicite de l utilisateur, suite enquete PKUNZIP). }
 Begin
  If Not DpmiCPU.Active Then Exit;
+ DpmiFetchValid := False; { base de CS relue une fois par instruction }
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  DpmiCPU.AddrIs32 := DpmiCPU.Is32Bit; { 17e correctif, voir TDpmiCPU.AddrIs32 }
@@ -224987,41 +226050,38 @@ Begin
    { juste apres avoir enfin atteint un nouveau segment de code, CS=008Ch).  }
    { Reutilise Emu_PortRead/Emu_PortWrite (meme materiel emule que le coeur  }
    { reel, voir Emu_StepOne $E4-$EF) - aucune duplication de logique E/S. }
-   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
+   { BOGUE REEL CORRIGE (2026-11-12, noyau VMM32 de Pasdows 95 : decodage   }
+   { desynchronise des le premier OUT, puis RET vers F6F6F6F6) : Dpmi_Step  }
+   { consomme DEJA l octet d opcode avant ce Case (voir "B :=              }
+   { Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP)" plus haut) - ces 8 formes      }
+   { IN/OUT etaient ecrites comme si EIP pointait encore sur l opcode :     }
+   { IN/OUT DX avancaient d un octet de trop, IN/OUT imm8 lisaient le port  }
+   { un octet trop loin et avancaient de 2. Formes 32 bits (IN EAX / OUT    }
+   { EAX, operande 32 bits) ajoutees : 4 ports consecutifs, comme les       }
+   { formes 16 bits en lisent/ecrivent 2. }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    DpmiCPU.Reg.AL := Emu_PortRead(P, Byte(Imm));
   End;
-  $E5: Begin { IN AX,imm8 }
-   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
-   DpmiCPU.Reg.AL := Emu_PortRead(P, Byte(Imm));
-   DpmiCPU.Reg.AH := Emu_PortRead(P, Byte(Imm) + 1);
+  $E5: Begin { IN AX/EAX,imm8 }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   Dpmi_PortIn(P, Byte(Imm), OpSize);
   End;
   $E6: Begin { OUT imm8,AL }
-   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
    Emu_PortWrite(P, Byte(Imm), DpmiCPU.Reg.AL);
   End;
-  $E7: Begin { OUT imm8,AX }
-   Imm := Dpmi_FetchByte(P, 1); Inc(DpmiCPU.EIP, 2);
-   Emu_PortWrite(P, Byte(Imm), DpmiCPU.Reg.AL);
-   Emu_PortWrite(P, Byte(Imm) + 1, DpmiCPU.Reg.AH);
+  $E7: Begin { OUT imm8,AX/EAX }
+   Imm := Dpmi_FetchByte(P, 0); Inc(DpmiCPU.EIP);
+   Dpmi_PortOut(P, Byte(Imm), OpSize);
   End;
-  $EC: Begin { IN AL,DX }
-   Inc(DpmiCPU.EIP);
+  $EC: { IN AL,DX }
    DpmiCPU.Reg.AL := Emu_PortRead(P, Word(DpmiCPU.Reg.DX));
-  End;
-  $ED: Begin { IN AX,DX }
-   Inc(DpmiCPU.EIP);
-   DpmiCPU.Reg.AL := Emu_PortRead(P, Word(DpmiCPU.Reg.DX));
-   DpmiCPU.Reg.AH := Emu_PortRead(P, Word(DpmiCPU.Reg.DX) + 1);
-  End;
-  $EE: Begin { OUT DX,AL }
-   Inc(DpmiCPU.EIP);
+  $ED: { IN AX/EAX,DX }
+   Dpmi_PortIn(P, Word(DpmiCPU.Reg.DX), OpSize);
+  $EE: { OUT DX,AL }
    Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), DpmiCPU.Reg.AL);
-  End;
-  $EF: Begin { OUT DX,AX }
-   Inc(DpmiCPU.EIP);
-   Emu_PortWrite(P, Word(DpmiCPU.Reg.DX), DpmiCPU.Reg.AL);
-   Emu_PortWrite(P, Word(DpmiCPU.Reg.DX) + 1, DpmiCPU.Reg.AH);
-  End;
+  $EF: { OUT DX,AX/EAX }
+   Dpmi_PortOut(P, Word(DpmiCPU.Reg.DX), OpSize);
   $C6: Begin { MOV Eb,Ib }
    ModRM := Dpmi_FetchByte(P, 0);
    Dpmi_DecodeModRM(P, ModRM, DefSeg, HasOvr, Op);
@@ -226483,8 +227543,16 @@ Begin
    { les 8259A/8042/FDC deja gates de la meme facon ailleurs : un PC/XT/     }
    { PCjr/clone PC anterieur n a jamais eu ces fonctions, un vrai AT/PS2/    }
    { Compaq Deskpro 386 les a toujours. Voir Emu_DoInt15AT pour le detail.  }
+   { Pasdows 95 (2026-11-12) : AH=87h (deplacement de bloc, deja implante   }
+   { dans Emu_DoInt15AT mais JAMAIS atteint : seuls C0h/88h/90h/91h etaient }
+   { routes ici, 87h tombait dans la branche "non supporte" CF=1/AH=86h),   }
+   { AX=E801h (taille memoire etendue au-dela de 64 Mo de AH=88h) et        }
+   { AH=24h (porte A20 : 2400h-2403h) - services de tout BIOS AT/386.      }
+   { IO.SYS de Pasdows 95 les utilise pour copier VMM32.VXD a 4 Mo.        }
    Else If Emu_IsATClassHw And
     ((P.CPU.Regs.AH = $C0) Or (P.CPU.Regs.AH = $88) Or
+     (P.CPU.Regs.AH = $87) Or (P.CPU.Regs.AX = $E801) Or
+     (P.CPU.Regs.AH = $24) Or
      (P.CPU.Regs.AH = $90) Or (P.CPU.Regs.AH = $91)) Then Begin
     If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15AT(P);
    End
@@ -227264,6 +228332,7 @@ Begin
  EmuStepsPerTick := 5000;
  EmuStepsToTick  := EmuStepsPerTick;
  EmuIrqPending   := 0;
+ EmuIrqPending2  := 0;
  EmuVideo.StatusRetrace := 0;
  EmuVideo.VRetraceAcc   := 0;
  { Etat materiel volatil (8259A/8255A/UART/LPT/NE2000) remis a neuf pour    }
@@ -227291,11 +228360,19 @@ Begin
  FillChar(EmuLPT2, SizeOf(EmuLPT2), 0);
  Emu_UART_Init(EmuCOM2);
  Emu_UART_Init(EmuCOM4);
+ Emu_UART_Init(EmuCOM1);
+ Emu_UART_Init(EmuCOM3);
  Emu_NE2000_Init(EmuNE2000);
  Emu_8042_Init;
  FillChar(EmuST506, SizeOf(EmuST506), 0);
  Emu_ATA_Init(EmuATA[0], 0);
  Emu_ATA_Init(EmuATA[1], 1);
+ { CD-ROM ATAPI du canal secondaire (2026-11-12) : pret (DRDY), signature }
+ { ATAPI, maitre choisi - voir Emu_CdCommand. }
+ FillChar(EmuCd, SizeOf(EmuCd), 0);
+ Emu_CdSignature;
+ EmuCd.Status := $50;
+ EmuAtaSlave[0] := False; EmuAtaSlave[1] := False;
  FillChar(EmuSCSI, SizeOf(EmuSCSI), 0);
  FillChar(EmuFDC, SizeOf(EmuFDC), 0);
  Emu_Tv_Init(P);
@@ -227420,7 +228497,7 @@ Begin
  { reellement leur livraison ici est une implementation fidele et non un   }
  { simple suivi d etat (voir le commentaire de perimetre pres de TVOT_*). }
  If EmuTvCritical Then Exit;
- If EmuIrqPending = 0 Then Exit;
+ If (EmuIrqPending = 0) And (EmuIrqPending2 = 0) Then Exit;
  { Gate sur l IMR du 8259A maitre (OUT 21h) uniquement, PAS sur son ISR :   }
  { voir le commentaire de TEmuPICChip - un IRQ masque reste en attente     }
  { (pas perdu) jusqu a ce que le logiciel invite le demasque explicitement.}
@@ -227472,6 +228549,20 @@ Begin
       Dpmi_FireProtectedHandler(P, Byte(EmuPICMaster.VectorBase + 1));
    End Else
     Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 1));
+   Exit;
+ End;
+ { IRQ 12 (souris PS/2, 2026-11-12) : PIC esclave, cascade sur IRQ 2. }
+ If ((EmuIrqPending2 And $10) <> 0) And ((EmuPICSlave.IMR And $10) = 0) And
+    ((EmuPICMaster.IMR And $04) = 0) Then Begin
+   EmuIrqPending2 := EmuIrqPending2 And Not Byte($10);
+   EmuPICSlave.ISR := EmuPICSlave.ISR Or $10;
+   EmuPICMaster.ISR := EmuPICMaster.ISR Or $04;
+   If DpmiCPU.Active Then Begin
+    If Not Dpmi_FireViaRealIdt(P, Byte(EmuPICSlave.VectorBase + 4)) Then
+     If DpmiCPU.IntSel[Byte(EmuPICSlave.VectorBase + 4)] <> 0 Then
+      Dpmi_FireProtectedHandler(P, Byte(EmuPICSlave.VectorBase + 4));
+   End Else
+    Emu_FireHwInt(P, Byte(EmuPICSlave.VectorBase + 4));
    Exit;
  End;
 End;
@@ -229431,15 +230522,11 @@ Begin
     If P.CPU.OperandSize32 Then Begin
      If EFG_DF In P.CPU.Flags.s Then Inc16 := -4 Else Inc16 := 4;
      Emu_WriteDWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
-      LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX))) Or
-      (LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX + 1))) Shl 8) Or
-      (LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX + 2))) Shl 16) Or
-      (LongInt(LongWord(Emu_PortRead(P, P.CPU.Regs.DX + 3))) Shl 24));
+      Emu_PortRead32(P, P.CPU.Regs.DX));
     End Else Begin
      If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
      Emu_WriteWord(P.CPU, P.CPU.Segs.ES, P.CPU.Regs.DI,
-      Word(Emu_PortRead(P, P.CPU.Regs.DX)) Or
-      (Word(Emu_PortRead(P, P.CPU.Regs.DX + 1)) Shl 8));
+      Emu_PortRead16(P, P.CPU.Regs.DX));
     End;
     P.CPU.Regs.DI := Word(P.CPU.Regs.DI + Inc16);
     Inc(P.CPU.IP);
@@ -229470,15 +230557,11 @@ Begin
     If P.CPU.OperandSize32 Then Begin
      If EFG_DF In P.CPU.Flags.s Then Inc16 := -4 Else Inc16 := 4;
      V32 := Emu_ReadDWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
-     Emu_PortWrite(P, P.CPU.Regs.DX, Byte(V32));
-     Emu_PortWrite(P, P.CPU.Regs.DX + 1, Byte(V32 Shr 8));
-     Emu_PortWrite(P, P.CPU.Regs.DX + 2, Byte(V32 Shr 16));
-     Emu_PortWrite(P, P.CPU.Regs.DX + 3, Byte(V32 Shr 24));
+     Emu_PortWrite32(P, P.CPU.Regs.DX, V32);
     End Else Begin
      If EFG_DF In P.CPU.Flags.s Then Inc16 := -2 Else Inc16 := 2;
      V16 := Emu_ReadWord(P.CPU, Emu_DataSeg(P.CPU), P.CPU.Regs.SI);
-     Emu_PortWrite(P, P.CPU.Regs.DX, Byte(V16));
-     Emu_PortWrite(P, P.CPU.Regs.DX + 1, Byte(V16 Shr 8));
+     Emu_PortWrite16(P, P.CPU.Regs.DX, V16);
     End;
     P.CPU.Regs.SI := Word(P.CPU.Regs.SI + Inc16);
     Inc(P.CPU.IP);
@@ -230598,22 +231681,27 @@ Begin
     Inc(P.CPU.IP, 1);
     P.CPU.Regs.AL := Emu_PortRead(P, P.CPU.Regs.DX);
    End;
-  $ED: { IN AX, DX }
+  $ED: { IN AX, DX / IN EAX, DX (2026-11-12 : forme 32 bits et port de  }
+       { donnees IDE 16 bits, voir Emu_PortRead16/32) }
    Begin
     Inc(P.CPU.IP, 1);
-    P.CPU.Regs.AL := Emu_PortRead(P, P.CPU.Regs.DX);
-    P.CPU.Regs.AH := Emu_PortRead(P, P.CPU.Regs.DX + 1);
+    If P.CPU.OperandSize32 Then
+     P.CPU.Regs.EAX := Emu_PortRead32(P, P.CPU.Regs.DX)
+    Else
+     P.CPU.Regs.AX := Emu_PortRead16(P, P.CPU.Regs.DX);
    End;
   $EE: { OUT DX, AL }
    Begin
     Inc(P.CPU.IP, 1);
     Emu_PortWrite(P, P.CPU.Regs.DX, P.CPU.Regs.AL);
    End;
-  $EF: { OUT DX, AX }
+  $EF: { OUT DX, AX / OUT DX, EAX (2026-11-12, voir $ED) }
    Begin
     Inc(P.CPU.IP, 1);
-    Emu_PortWrite(P, P.CPU.Regs.DX, P.CPU.Regs.AL);
-    Emu_PortWrite(P, P.CPU.Regs.DX + 1, P.CPU.Regs.AH);
+    If P.CPU.OperandSize32 Then
+     Emu_PortWrite32(P, P.CPU.Regs.DX, P.CPU.Regs.EAX)
+    Else
+     Emu_PortWrite16(P, P.CPU.Regs.DX, P.CPU.Regs.AX);
    End;
   $9A: { CALL far ptr16:16 }
    Begin
@@ -257473,7 +258561,12 @@ Begin
   If Win16_ChunkBreak Then Begin Win16_ChunkBreak := False; Break; End;
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
-  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  { 2026-11-12 : en mode protege (DpmiCPU), CS:IP reel n a pas de sens et  }
+  { cette lecture (Emu_ReadByte -> Emu_Addr -> Emu_UnrealBase) coutait      }
+  { environ 10 % du temps d execution de Pasdows 95 - sautee. }
+  If DpmiCPU.Active Then EmuTraceBuf[EmuTraceIdx].Op := $90
+  Else
+   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
   EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
@@ -257937,6 +259030,16 @@ Begin
     { Drainer le clavier hote vers buffer BIOS }
     While EmuVScr_HasKey(P) Do Begin
       EntryAddr16 := EmuVScr_PopKey(P);
+      { Systeme invite en mode protege avec son propre IDT (noyau qui     }
+      { gere lui-meme le clavier, ex. Pasdows 95), ou programme qui a     }
+      { masque l IRQ 1 au PIC pour interroger lui-meme le 8042 (console   }
+      { et interface 16 couleurs d IO.SYS de Pasdows 95) : vrais codes de }
+      { balayage sur le port 60h (+ IRQ 1), voir Emu_8042_KeyFromHost.    }
+      If (DpmiCPU.Active And (DpmiCPU.IdtBase <> 0)) Or
+         ((EmuPICMaster.IMR And $02) <> 0) Then Begin
+       Emu_8042_KeyFromHost(EntryAddr16);
+       Continue;
+      End;
       { Le mot est encode (scancode<<8) Or ASCII. Pour les fleches
         et touches speciales, ASCII=0 et scancode est valide. }
       Emu_PushBiosKey(P, Hi(EntryAddr16), Lo(EntryAddr16));
@@ -257991,8 +259094,15 @@ Begin
     la machine emulee (EmuVScr_PushKey/EmuMouse_UpdateFromHost) se fait
     desormais UNIQUEMENT via HandleEmulatorPanelEvent, appele par
     MainLoop APRES avoir deja verifie hit-test/focus - seule autorite de
-    routage, plus de sondage concurrent. }
-  If EmuHasFocus Then Begin
+    routage, plus de sondage concurrent.
+    2026-11-12 (Pasdows 95 : environ 3 s entre une frappe et son
+    affichage) : ce bloc s executait a CHAQUE instruction emulee - or
+    KeyPressed (PtcCrt) passe par TPTCWrapperThread.NextEvent, qui fait
+    un ThreadSwitch (appel systeme sched_yield) et prend une section
+    critique a chaque appel : la majeure partie du temps du programme
+    partait dans ces appels. Une fois toutes les 1024 instructions
+    suffit pour Echap/Ctrl+C et le redessin periodique (80 ms). }
+  If EmuHasFocus And ((ChunkI And 1023) = 1023) Then Begin
    While KeyPressed Do Begin
     K := Ord(ReadKey);
     If K = 27 Then Begin
@@ -263526,8 +264636,12 @@ Begin
  { de la barre d onglets, quels que soient les futurs ajustements de mise    }
  { en page. }
  Y1 := P.PanelY;
- X2 := P.PanelX + P.Cols * P.CharW + 4;
- Y2 := P.PanelY + P.Rows * P.CharH + 24;
+ { 2026-11-12 : en mode graphique, l image affichee (LastGridW/H, mise  }
+ { a l echelle) depasse souvent la grille texte Cols x Rows - un clic en   }
+ { bas de l ecran emule (ex. bouton Demarrer de la barre des taches)       }
+ { tombait hors de ce rectangle et etait donne a l IDE. }
+ X2 := P.PanelX + MaxInt(P.Cols * P.CharW, P.LastGridW) + 4;
+ Y2 := P.PanelY + MaxInt(P.Rows * P.CharH, P.LastGridH) + 24;
  EmuPanel_HitTest := (MX >= X1) And (MX <= X2) And (MY >= Y1) And (MY <= Y2);
 End;
 
@@ -265804,7 +266918,7 @@ Var
  { d etre tape (avec un curseur "_") sur fond blanc en surbrillance au     }
  { lieu de la valeur statique "NNNN Ko". }
  Procedure CheckWithSize(Checked: Boolean; Const Caption: String;
-  KoValue, FieldId: Integer);
+  KoValue: LongInt; FieldId: Integer);
  Begin
   DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
    BaseY + OPT_CHECK_SIZE, CLR_BORDER);
@@ -266409,7 +267523,7 @@ End;
 { clic ailleurs dans le dialogue (HandleOptionsEvent), comme un champ de   }
 { saisie Windows normal qui valide en perdant le focus. }
 Procedure CommitSizeEdit(Var Dlg: TOptionsDialog);
-Var V, Code: Integer;
+Var V: LongInt; Code: Integer;
 Begin
  If Dlg.SizeEditField = 0 Then Exit;
  If Length(Dlg.SizeEditBuf) > 0 Then Begin
@@ -266417,7 +267531,7 @@ Begin
   If (Code = 0) And (V > 0) Then Begin
    Case Dlg.SizeEditField Of
     1: Dlg.Data.DosXMSSize := V;
-    2: Dlg.Data.DosEMSSize := V;
+    2: If V <= 32767 Then Dlg.Data.DosEMSSize := V;
     3: Dlg.Data.DosDPMISize := V;
    End;
    Dlg.Modified := True;
@@ -276935,6 +278049,12 @@ Begin
   DrawCreateTableDialog;
  If IISFieldDlg.Base.Visible Then
   DrawIISFieldDialog;
+ { 2026-11-12 : apres un effacement complet (ClearScreen ci-dessus, ex.   }
+ { fermeture du menu contextuel de l emulateur), l image emulee doit etre }
+ { redessinee meme si l invite n a rien change (emulation en pause tant   }
+ { que le panneau n a pas le focus) - sinon le panneau restait vide.      }
+ If EmuPanel.Base.Visible And WasFullRepaint Then
+  EmuPanel.NeedRepaint := True;
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
  { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) -
@@ -280446,6 +281566,11 @@ Var
  LinAddr: LongInt;
 Begin
  If Not EmuDbg.Active Then Exit;
+ { 2026-11-12 : rien a verifier sans point d arret, demande d arret ni pas }
+ { a pas - evite le calcul d adresse et la recherche a CHAQUE instruction  }
+ { (environ 6 % du temps d emulation de Pasdows 95). }
+ If (EmuDbg.BPCount = 0) And (Not EmuDbg.BreakReq) And
+    (EmuDbg.StepMode = ESM_NONE) Then Exit;
  { BOGUE REEL CORRIGE (2026-10-19, enquete DPMI/BC.EXE) : ce hook lisait  }
  { TOUJOURS EmuPanel.CPU.Segs.CS/IP (coeur REEL), meme une fois          }
  { DpmiCPU.Active=True - or DOS_RunOneChunk n appelle alors plus JAMAIS   }
@@ -280904,6 +282029,8 @@ Begin
      { demande explicite) - voir ShowEmulatorContextMenu. }
      1000: EmuCtxPasteText; { Coller du texte }
      1001: EmuCtxSendCtrlAltDel; { Envoi Ctrl+Alt+Suppr }
+     1004: If EmuPanel.Loaded Then         { Envoi Echap : Echap seul ferme }
+            EmuVScr_PushKey(EmuPanel, $011B); { l onglet, voir plus haut }
      1002: ShowEmulatorVBScriptOpenDialog; { Executer le VBScript... }
      1003: ShowEmulatorPascalScriptOpenDialog; { Executer le PascalScript... }
      500: Begin { Ouvrir }
@@ -281422,6 +282549,15 @@ Begin
     { Stage 1 : clic HORS du panneau -> relache le focus, l evenement
       retombe sur le reste de l IDE (voir plus bas dans DispatchEvent). }
     EmuHasFocus := False;
+   End Else If EmuPanel.Loaded And Not EmuHasFocus And
+              (Not EmuDbg.Paused) And (Ev.Kind = EV_MOUSE_MOVE) And
+              EmuPanel.Base.Visible And
+              EmuPanel_HitTest(EmuPanel, Ev.MouseX, Ev.MouseY) Then Begin
+    { 2026-11-12 : deplacement AU-DESSUS du panneau sans le focus - ne pas  }
+    { le transmettre au Terminal/Sortie places DESSOUS (masques par l image }
+    { emulee) : leur survol les redessinait PAR-DESSUS l ecran emule (barre }
+    { des taches de Pasdows 95 recouverte par le Terminal). }
+    Exit;
    End Else If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus And
               (Ev.Kind <> EV_MOUSE_DOWN)) Then Begin
     { Debogueur en pause, ou pas (plus) le focus emulateur ET ce n est pas  }
