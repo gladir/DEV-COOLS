@@ -5365,9 +5365,12 @@ Type
   { file des octets emis par la souris (reponses et paquets), mode flux,  }
   { argument attendu (F3h/E8h), octet de sortie venant de la souris,      }
   { derniere position invitee transmise (paquets relatifs). }
-  AuxQ       : Array[0..95] Of Byte;
+  AuxQ       : Array[0..383] Of Byte;
   AuxQHead, AuxQLen : Integer;
   AuxStream  : Boolean;
+  AuxSynced  : Boolean;          { pointeur invite cale sur l hote }
+  KbdQ       : Array[0..127] Of Byte; { codes de balayage en attente }
+  KbdQHead, KbdQLen : Integer;
   AuxArgFor  : Byte;
   OutIsAux   : Boolean;
   AuxLastX, AuxLastY : Integer;
@@ -7558,14 +7561,16 @@ Type
   DosEmu80286     : Boolean;     { emulation 80286                }
   DosEmu80386     : Boolean;     { emulation 80386                }
   DosXMS          : Boolean;     { memoire XMS activee            }
-  DosXMSSize      : Integer;     { taille XMS en Ko               }
+  DosXMSSize      : LongInt;     { taille XMS en Ko (2026-11-12 :   }
+                                 { LongInt, Integer plafonnait a 32 }
+                                 { Mo - Pasdows 95 en veut plus)    }
   DosEMS          : Boolean;     { memoire EMS activee            }
   DosEMSSize      : Integer;     { taille EMS en Ko               }
   DosEMSVersion   : Integer;     { version LIM EMS emulee (0=3.0/1=3.2/2=4.0) }
   DosTopView      : Boolean;     { API IBM TopView (INT 15h AH=10h/11h/12h),
     voir DOC/TOPVIEW_PROGRAMMING.txt }
   DosDPMI         : Boolean;     { support DPMI active (INT 31h)  }
-  DosDPMISize     : Integer;     { taille memoire etendue DPMI en Ko }
+  DosDPMISize     : LongInt;     { taille memoire etendue DPMI en Ko }
   DosAnsiSys      : Boolean;     { pilote ANSI.SYS (sequences ESC[) }
   DosUMB          : Boolean;     { memoire haute (UMB, $D000 - voir }
                                   { EMU_UMB_SEG) activee, defaut True}
@@ -207503,10 +207508,30 @@ Begin
  Inc(Emu8042.AuxQLen);
 End;
 
-{ Placer le prochain octet de la souris dans le tampon de sortie si libre. }
+Procedure Emu_8042_KbdPut(B: Byte);
+Begin
+ If Emu8042.KbdQLen >= SizeOf(Emu8042.KbdQ) Then Exit;
+ Emu8042.KbdQ[(Emu8042.KbdQHead + Emu8042.KbdQLen) Mod SizeOf(Emu8042.KbdQ)]
+   := B;
+ Inc(Emu8042.KbdQLen);
+End;
+
+{ Placer le prochain octet (clavier d abord, puis souris) dans le tampon }
+{ de sortie s il est libre. }
 Procedure Emu_8042_Pump;
 Begin
- If Emu8042.OutBufFull Or (Emu8042.AuxQLen = 0) Then Exit;
+ If Emu8042.OutBufFull Then Exit;
+ If (Emu8042.KbdQLen > 0) And ((Emu8042.CmdByte And $10) = 0) Then Begin
+  Emu8042.OutBuf := Emu8042.KbdQ[Emu8042.KbdQHead];
+  Emu8042.KbdQHead := (Emu8042.KbdQHead + 1) Mod SizeOf(Emu8042.KbdQ);
+  Dec(Emu8042.KbdQLen);
+  Emu8042.OutBufFull := True;
+  Emu8042.OutIsAux := False;
+  If (Emu8042.CmdByte And $01) <> 0 Then
+   EmuIrqPending := EmuIrqPending Or $02;       { IRQ 1 }
+  Exit;
+ End;
+ If Emu8042.AuxQLen = 0 Then Exit;
  Emu8042.OutBuf := Emu8042.AuxQ[Emu8042.AuxQHead];
  Emu8042.AuxQHead := (Emu8042.AuxQHead + 1) Mod SizeOf(Emu8042.AuxQ);
  Dec(Emu8042.AuxQLen);
@@ -207531,7 +207556,9 @@ Begin
         Emu8042.AuxStream := False;
        End;
   $F6, $F5: Emu8042.AuxStream := False;        { defauts / desactiver }
-  $F4: Emu8042.AuxStream := True;              { activer les paquets }
+  $F4: Begin                                   { activer les paquets }
+        Emu8042.AuxStream := True; Emu8042.AuxSynced := False;
+       End;
   $F3, $E8: Emu8042.AuxArgFor := V;            { taux / resolution }
   $F2: Emu_8042_AuxPut($00);                   { ID : souris standard }
   $E9: Begin                                   { etat : flux, 4/mm, 100/s }
@@ -207545,26 +207572,101 @@ End;
 
 { Mouvement/boutons de la souris de l hote, en coordonnees invitees : un   }
 { paquet PS/2 relatif (Y vers le haut) si le flux est actif. }
-Procedure Emu_8042_AuxMove(GX, GY: Integer; Btns: Byte);
-Var Dx, Dy: Integer; B0: Byte;
+{ 2026-11-12 : touche hote -> VRAIS codes de balayage (jeu 1) sur le     }
+{ port 60h avec IRQ 1, pour un systeme invite en mode protege qui a son  }
+{ propre IDT (noyau VMM32 de Pasdows 95, ou tout autre systeme amorce par }
+{ l onglet El Torito) : il n utilise ni INT 16h ni le tampon BIOS, seul  }
+{ chemin qu empruntaient jusqu ici les frappes (voir DOS_RunOneChunk).   }
+{ K = (code de balayage Shl 8) Or ASCII, comme EmuVScr_PushKey. Clavier  }
+{ americain (QWERTY), Maj/Ctrl simules autour de la touche, prefixe E0h  }
+{ pour les touches grises (fleches, Inser, Suppr, Origine, Fin, Pg). }
+Procedure Emu_8042_KeyFromHost(K: Word);
+Const
+ KLo: String[60] = #0#27'1234567890-='#8#9'qwertyuiop[]'#13#0 +
+   'asdfghjkl;''`'#0'\zxcvbnm,./'#0'*'#0' ';
+ KHi: String[60] = #0#27'!@#$%^&*()_+'#8#9'QWERTYUIOP{}'#13#0 +
+   'ASDFGHJKL:"~'#0'|ZXCVBNM<>?'#0'*'#0' ';
+Var Sc, Ch: Byte; I: Integer; Sh, Ctl, Ext: Boolean;
 Begin
- If Not Emu8042.AuxStream Or ((Emu8042.CmdByte And $20) <> 0) Then Begin
-  Emu8042.AuxLastX := GX; Emu8042.AuxLastY := GY;
-  Exit;
- End;
- Dx := GX - Emu8042.AuxLastX; Dy := GY - Emu8042.AuxLastY;
- If Dx > 255 Then Dx := 255; If Dx < -255 Then Dx := -255;
- If Dy > 255 Then Dy := 255; If Dy < -255 Then Dy := -255;
- If (Dx = 0) And (Dy = 0) And ((Btns And 7) = Emu8042.AuxLastBtn) Then Exit;
- If Emu8042.AuxQLen + 3 > SizeOf(Emu8042.AuxQ) Then Exit;
- Emu8042.AuxLastX := Emu8042.AuxLastX + Dx;
- Emu8042.AuxLastY := Emu8042.AuxLastY + Dy;
- Emu8042.AuxLastBtn := Btns And 7;
+ Sc := Hi(K); Ch := Lo(K);
+ Sh := False; Ctl := False; Ext := False;
+ If Sc = 0 Then Begin
+  If (Ch >= 1) And (Ch <= 26) And Not (Ch In [8, 9, 13]) Then Begin
+   Ctl := True; Ch := Ch + Ord('a') - 1;           { Ctrl+lettre }
+  End;
+  For I := 2 To Length(KLo) Do
+   If (Sc = 0) And (Ord(KLo[I]) = Ch) And (Ch <> 0) Then Sc := I - 1;
+  For I := 2 To Length(KHi) Do
+   If (Sc = 0) And (Ord(KHi[I]) = Ch) And (Ch <> 0) Then Begin
+    Sc := I - 1; Sh := True;
+   End;
+  If Sc = 0 Then Exit;
+ End Else
+  Ext := Sc In [$47, $48, $49, $4B, $4D, $4F, $50, $51, $52, $53];
+ If Ctl Then Emu_8042_KbdPut($1D);
+ If Sh Then Emu_8042_KbdPut($2A);
+ If Ext Then Emu_8042_KbdPut($E0);
+ Emu_8042_KbdPut(Sc);
+ If Ext Then Emu_8042_KbdPut($E0);
+ Emu_8042_KbdPut(Sc Or $80);
+ If Sh Then Emu_8042_KbdPut($AA);
+ If Ctl Then Emu_8042_KbdPut($9D);
+ Emu_8042_Pump;
+End;
+
+{ Un paquet PS/2 (deplacements -255..255, Y vers le haut). }
+Procedure Emu_8042_AuxPacket(Dx, Dy: Integer; Btns: Byte);
+Var B0: Byte;
+Begin
  Dy := -Dy;
  B0 := $08 Or (Btns And 7);
  If Dx < 0 Then B0 := B0 Or $10;
  If Dy < 0 Then B0 := B0 Or $20;
  Emu_8042_AuxPut(B0); Emu_8042_AuxPut(Byte(Dx)); Emu_8042_AuxPut(Byte(Dy));
+End;
+
+{ 2026-11-12 : la souris PS/2 est RELATIVE - le pointeur de l invite part }
+{ de sa propre position (ex. centre de l ecran), sans rapport avec celle  }
+{ de l hote, et un deplacement de plus de 255 pixels etait tronque : le   }
+{ pointeur invite derivait loin du pointeur hote (clics a cote). Au       }
+{ premier paquet, le pointeur est d abord pousse dans le coin superieur   }
+{ gauche (l invite borne a 0), puis amene a la position absolue ; les     }
+{ grands deplacements sont decoupes en plusieurs paquets. }
+Procedure Emu_8042_AuxMove(GX, GY: Integer; Btns: Byte);
+Var Dx, Dy, Sx, Sy, I: Integer;
+Begin
+ If Not Emu8042.AuxStream Or ((Emu8042.CmdByte And $20) <> 0) Then Begin
+  Emu8042.AuxLastX := GX; Emu8042.AuxLastY := GY;
+  Exit;
+ End;
+ If Not Emu8042.AuxSynced Then Begin
+  If Emu8042.AuxQLen + 3 * 8 > SizeOf(Emu8042.AuxQ) Then Exit;
+  For I := 1 To 8 Do
+   Emu_8042_AuxPacket(-255, -255, Emu8042.AuxLastBtn);
+  Emu8042.AuxLastX := 0; Emu8042.AuxLastY := 0;
+  Emu8042.AuxSynced := True;
+ End;
+ Dx := GX - Emu8042.AuxLastX; Dy := GY - Emu8042.AuxLastY;
+ If (Dx = 0) And (Dy = 0) And ((Btns And 7) = Emu8042.AuxLastBtn) Then Begin
+  Emu_8042_Pump;
+  Exit;
+ End;
+ Repeat
+  Sx := Dx; Sy := Dy;
+  If Sx > 255 Then Sx := 255; If Sx < -255 Then Sx := -255;
+  If Sy > 255 Then Sy := 255; If Sy < -255 Then Sy := -255;
+  If Emu8042.AuxQLen + 3 > SizeOf(Emu8042.AuxQ) Then Break;
+  { les boutons ne changent qu avec le dernier paquet (clic a la bonne  }
+  { position) }
+  If (Sx = Dx) And (Sy = Dy) Then Begin
+   Emu_8042_AuxPacket(Sx, Sy, Btns);
+   Emu8042.AuxLastBtn := Btns And 7;
+  End Else
+   Emu_8042_AuxPacket(Sx, Sy, Emu8042.AuxLastBtn);
+  Emu8042.AuxLastX := Emu8042.AuxLastX + Sx;
+  Emu8042.AuxLastY := Emu8042.AuxLastY + Sy;
+  Dx := Dx - Sx; Dy := Dy - Sy;
+ Until (Dx = 0) And (Dy = 0);
  Emu_8042_Pump;
 End;
 
@@ -214596,6 +214698,7 @@ Begin
              { 16 Mo (15360 au plus), BX=DX = blocs de 64 Ko au-dela de 16 }
              { Mo - meme taille que AH=88h (DosXMSSize), sans sa limite.   }
    Int88ExtKB := OptionsDlg.Data.DosXMSSize;
+   If Int88ExtKB > EMU_XMS_CAP_KB Then Int88ExtKB := EMU_XMS_CAP_KB;
    If Int88ExtKB < 64 Then Int88ExtKB := 64;
    If Int88ExtKB > 15360 Then Begin
     P.CPU.Regs.AX := 15360;
@@ -223665,6 +223768,15 @@ Begin
  Dpmi_Push32(P, DpmiCPU.Flags.Abs);
  Dpmi_Push32(P, LongInt(DpmiCPU.SegSel[1]));
  Dpmi_Push32(P, DpmiCPU.EIP);
+ { BOGUE REEL CORRIGE (2026-11-12, souris PS/2 de Pasdows 95 : X et Y    }
+ { inverses, pointeur loin de la souris) : une porte d INTERRUPTION      }
+ { (type 6/Eh) remet IF a 0 en entrant dans le gestionnaire - seule une  }
+ { porte de TRAPPE (7/Fh) le laisse tel quel. IF restait a 1 : l IRQ 12  }
+ { suivante etait livree pendant que le gestionnaire de la precedente    }
+ { n avait pas encore range son octet - 30 gestionnaires imbriques, les  }
+ { octets ranges a l envers. TF est remis a 0 dans les deux cas. }
+ If (GateAttr And $07) = $06 Then Exclude(DpmiCPU.Flags.s, EFG_IF);
+ Exclude(DpmiCPU.Flags.s, EFG_TF);
  DpmiCPU.SegSel[1] := GateSel;
  DpmiCPU.EIP := GateOfs;
  Dpmi_SyncIs32Bit;
@@ -258831,6 +258943,13 @@ Begin
     { Drainer le clavier hote vers buffer BIOS }
     While EmuVScr_HasKey(P) Do Begin
       EntryAddr16 := EmuVScr_PopKey(P);
+      { Systeme invite en mode protege avec son propre IDT (noyau qui     }
+      { gere lui-meme le clavier, ex. Pasdows 95) : vrais codes de        }
+      { balayage sur le port 60h + IRQ 1, voir Emu_8042_KeyFromHost.      }
+      If DpmiCPU.Active And (DpmiCPU.IdtBase <> 0) Then Begin
+       Emu_8042_KeyFromHost(EntryAddr16);
+       Continue;
+      End;
       { Le mot est encode (scancode<<8) Or ASCII. Pour les fleches
         et touches speciales, ASCII=0 et scancode est valide. }
       Emu_PushBiosKey(P, Hi(EntryAddr16), Lo(EntryAddr16));
@@ -264420,8 +264539,12 @@ Begin
  { de la barre d onglets, quels que soient les futurs ajustements de mise    }
  { en page. }
  Y1 := P.PanelY;
- X2 := P.PanelX + P.Cols * P.CharW + 4;
- Y2 := P.PanelY + P.Rows * P.CharH + 24;
+ { 2026-11-12 : en mode graphique, l image affichee (LastGridW/H, mise  }
+ { a l echelle) depasse souvent la grille texte Cols x Rows - un clic en   }
+ { bas de l ecran emule (ex. bouton Demarrer de la barre des taches)       }
+ { tombait hors de ce rectangle et etait donne a l IDE. }
+ X2 := P.PanelX + MaxInt(P.Cols * P.CharW, P.LastGridW) + 4;
+ Y2 := P.PanelY + MaxInt(P.Rows * P.CharH, P.LastGridH) + 24;
  EmuPanel_HitTest := (MX >= X1) And (MX <= X2) And (MY >= Y1) And (MY <= Y2);
 End;
 
@@ -266698,7 +266821,7 @@ Var
  { d etre tape (avec un curseur "_") sur fond blanc en surbrillance au     }
  { lieu de la valeur statique "NNNN Ko". }
  Procedure CheckWithSize(Checked: Boolean; Const Caption: String;
-  KoValue, FieldId: Integer);
+  KoValue: LongInt; FieldId: Integer);
  Begin
   DrawRect(FX, BaseY, FX + OPT_CHECK_SIZE,
    BaseY + OPT_CHECK_SIZE, CLR_BORDER);
@@ -267303,7 +267426,7 @@ End;
 { clic ailleurs dans le dialogue (HandleOptionsEvent), comme un champ de   }
 { saisie Windows normal qui valide en perdant le focus. }
 Procedure CommitSizeEdit(Var Dlg: TOptionsDialog);
-Var V, Code: Integer;
+Var V: LongInt; Code: Integer;
 Begin
  If Dlg.SizeEditField = 0 Then Exit;
  If Length(Dlg.SizeEditBuf) > 0 Then Begin
@@ -267311,7 +267434,7 @@ Begin
   If (Code = 0) And (V > 0) Then Begin
    Case Dlg.SizeEditField Of
     1: Dlg.Data.DosXMSSize := V;
-    2: Dlg.Data.DosEMSSize := V;
+    2: If V <= 32767 Then Dlg.Data.DosEMSSize := V;
     3: Dlg.Data.DosDPMISize := V;
    End;
    Dlg.Modified := True;
@@ -282316,6 +282439,15 @@ Begin
     { Stage 1 : clic HORS du panneau -> relache le focus, l evenement
       retombe sur le reste de l IDE (voir plus bas dans DispatchEvent). }
     EmuHasFocus := False;
+   End Else If EmuPanel.Loaded And Not EmuHasFocus And
+              (Not EmuDbg.Paused) And (Ev.Kind = EV_MOUSE_MOVE) And
+              EmuPanel.Base.Visible And
+              EmuPanel_HitTest(EmuPanel, Ev.MouseX, Ev.MouseY) Then Begin
+    { 2026-11-12 : deplacement AU-DESSUS du panneau sans le focus - ne pas  }
+    { le transmettre au Terminal/Sortie places DESSOUS (masques par l image }
+    { emulee) : leur survol les redessinait PAR-DESSUS l ecran emule (barre }
+    { des taches de Pasdows 95 recouverte par le Terminal). }
+    Exit;
    End Else If EmuDbg.Paused Or (EmuPanel.Loaded And Not EmuHasFocus And
               (Ev.Kind <> EV_MOUSE_DOWN)) Then Begin
     { Debogueur en pause, ou pas (plus) le focus emulateur ET ce n est pas  }
