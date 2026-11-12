@@ -96448,6 +96448,7 @@ Var
  CdSlot: Integer;
  SigEnforceFlag: ShortInt;
  HasExplicitDrive: Boolean;
+ ForceCd: Integer; { BOOT x: ou x: est la lettre d un CD-ROM monte }
  ElToritoEntry: TEmuElToritoEntry;
 Begin
  { BOGUE REEL / demande explicite de l utilisateur (2026-09-02) : "BOOT" tape }
@@ -96463,10 +96464,8 @@ Begin
  HasExplicitDrive := (Length(P) >= 2) And (P[2] = ':');
  If HasExplicitDrive Then Begin
   DL := UpCase(P[1]);
-  If Not Term_DriveIdxFromLetter(DL, Idx) Then Begin
-   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
-   Exit;
-  End;
+  { lettre de CD-ROM possible (E:...) : verifiee apres les montages }
+  If Not Term_DriveIdxFromLetter(DL, Idx) Then Idx := 255;
  End;
  { BOGUE REEL / demande explicite de l utilisateur (2026-08-25) : BOOT ne     }
  { pouvait monter une image que si /DISK0../DISK81 avait deja ete passe EN   }
@@ -96529,14 +96528,31 @@ Begin
    End;
   End;
  End;
- If Not HasExplicitDrive Then Begin
+ { 2026-11-12 : "BOOT D:" (ou E:) designant un CD-ROM monte - sans disque }
+ { sur cette lettre - amorce le CD (El Torito). Avant, un disque dur monte }
+ { (/DISK80) rendait impossible l amorcage du CD : BOOT seul choisit C:,   }
+ { et BOOT D: repondait "le systeme ne peut pas trouver le lecteur". }
+ ForceCd := -1;
+ If HasExplicitDrive Then Begin
+  For SlotIdx := 0 To 1 Do
+   If (ForceCd < 0) And EmuCdrom[SlotIdx].Open And
+      (EmuCdrom[SlotIdx].DriveLetter = Ord(DL) - Ord('A')) Then
+    If Idx = 255 Then ForceCd := SlotIdx
+    Else If Not EmuFloppyOpen[Idx] Then ForceCd := SlotIdx;
+  If (ForceCd < 0) And (Idx = 255) Then Begin
+   TermAddLine(TP, 'Lettre de lecteur invalide : ' + P);
+   Exit;
+  End;
+ End;
+ If (Not HasExplicitDrive) Or (ForceCd >= 0) Then Begin
   { Aucune lettre fournie : choisir le premier emplacement DISK0../DISK81   }
   { (A..D) reellement ouvert - couvre a la fois un montage fait ci-dessus   }
   { par /DISK0../DISK81 sur CET appel, et un disque deja monte au           }
   { lancement de DEVENV.exe ou par un BOOT precedent. }
   Idx := 255;
-  For SlotIdx := 0 To 3 Do
-   If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
+  If ForceCd < 0 Then
+   For SlotIdx := 0 To 3 Do
+    If (Idx = 255) And EmuFloppyOpen[SlotIdx] Then Idx := SlotIdx;
   If Idx = 255 Then Begin
    { Aucun disque/disquette monte : tenter un amorcage El Torito reel si   }
    { un CD-ROM est monte (voir Emu_ElToritoFindEntry/Emu_LoadElToritoBoot/ }
@@ -96545,7 +96561,8 @@ Begin
    { 1-4, ex. MSDOS-0\IMAGE\DOSCD.ISO) : image extraite puis montee       }
    { sur A: ou C: (Emu_ElToritoExtractImage). }
    CdSlot := -1;
-   If EmuCdrom[0].Open Then CdSlot := 0
+   If ForceCd >= 0 Then CdSlot := ForceCd
+   Else If EmuCdrom[0].Open Then CdSlot := 0
    Else If EmuCdrom[1].Open Then CdSlot := 1;
    If CdSlot >= 0 Then Begin
     If Not Emu_ElToritoFindEntry(Byte(CdSlot), ElToritoEntry) Then Begin
