@@ -2896,6 +2896,9 @@ Const
  { autres stubs de ce fichier), puis en ne renvoyant QUE ES:BX pointant vers
    }
  { CET emplacement - jamais d ecriture a l adresse fournie par l appelant. }
+ EMU_VIDROM_FONT16 = $0000; { ROM video C000 : police 8x16 (4096 octets) }
+ EMU_VIDROM_FONT14 = $1000; { police 8x14 (3584 octets) }
+ EMU_VIDROM_FONT8  = $1E00; { police 8x8 (2048 octets) }
  EMU_SYSCONF_SEG = $F000;
  EMU_SYSCONF_OFS = $F660; { table de 10 octets (longueur+8), au-dela de       }
                            { EMU_LOL_NULDEV_OFS+18=$F652, donc sans collision }
@@ -9149,6 +9152,8 @@ Var
  { atteindre cette valeur - l indexation de UnitTests8086[] au-dela de      }
  { 32767 tests aurait silencieusement corrompu ou plante). }
  UnitTest8086Count: LongInt;
+ EmuExact16: Boolean; { hote 256 couleurs : 16 couleurs exactes (240-255) }
+ EmuGfxDstW, EmuGfxDstH: Integer; { taille affichee de l ecran graphique emule }
  EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
                                  { s il a ete cree par Emu_LoadBootSector }
                                  { (vs Emu_LoadProgram) - voir le garde-  }
@@ -197726,6 +197731,15 @@ Begin
   EmuColor := C And $F;
 End;
 
+{ Palette EGA/VGA 16 couleurs de l hote (PtcGraph), en 6 bits par canal. }
+Const
+ EMU_EGA_R: Array[0..15] Of Byte =
+  (0, 0, 0, 0, 42, 42, 42, 42, 21, 21, 21, 21, 63, 63, 63, 63);
+ EMU_EGA_G: Array[0..15] Of Byte =
+  (0, 0, 42, 42, 0, 0, 21, 42, 21, 21, 63, 63, 21, 21, 63, 63);
+ EMU_EGA_B: Array[0..15] Of Byte =
+  (0, 42, 0, 42, 0, 42, 0, 42, 21, 63, 21, 63, 21, 63, 21, 63);
+
 { --- Mapper RGB 6 bits (0..63) vers la palette BGI 16 couleurs.
       Approximation par seuil. C est utilise par le rendu graphique
       mode 13h / EGA / VGA en panneau emulateur.                     --- }
@@ -197733,7 +197747,33 @@ Function Emu_VidApprox16(R, G, B: Byte): Byte;
 Var Bright, Rb, Gb, Bb: Byte;
     MaxC: Byte;
     Result: Byte;
+    I, Best: Integer; D, BestD: LongInt;
 Begin
+ { BOGUE REEL CORRIGE (2026-11-12, Pasdows 95 : fenetres, boutons et barre }
+ { des taches GRIS ARGENT affiches BLANCS, texte blanc sur gris invisible) :}
+ { l ancien seuil (canal >= 42 => "brillant") envoyait le gris C0C0C0 ET   }
+ { le gris AAAAAA vers le blanc (15), et 808080 vers le gris clair (7) -   }
+ { le relief "Windows" (blanc/argent/gris/noir) devenait illisible. Les     }
+ { gris purs suivent maintenant la rampe noir/gris fonce/gris clair/blanc,  }
+ { les autres couleurs la plus proche des 16 couleurs EGA de l hote.        }
+ If (R = G) And (G = B) Then Begin
+  If R < 11 Then Emu_VidApprox16 := 0
+  Else If R < 37 Then Emu_VidApprox16 := 8
+  Else If R < 54 Then Emu_VidApprox16 := 7
+  Else Emu_VidApprox16 := 15;
+  Exit;
+ End;
+ Best := -1; BestD := 0;
+ For I := 0 To 15 Do Begin
+  D := Sqr(LongInt(R) - EMU_EGA_R[I]) + Sqr(LongInt(G) - EMU_EGA_G[I]) +
+       Sqr(LongInt(B) - EMU_EGA_B[I]);
+  If (Best < 0) Or (D < BestD) Then Begin Best := I; BestD := D; End;
+ End;
+ If (Best = 0) And ((R Or G Or B) > 0) Then Best := 8;
+ If Best >= 0 Then Begin
+  Emu_VidApprox16 := Best;
+  Exit;
+ End;
  MaxC := R; If G > MaxC Then MaxC := G; If B > MaxC Then MaxC := B;
  If MaxC >= 42 Then Bright := 8 Else Bright := 0;
  If R >= 22 Then Rb := 4 Else Rb := 0;
@@ -197752,6 +197792,13 @@ Function Emu_VidPixelToBGI(C: Byte): Byte;
 Var Idx: Word;
     R, G, Bv: Byte;
 Begin
+ { Hote 256 couleurs (2026-11-12) : les 16 couleurs d un mode planaire    }
+ { sont recopiees EXACTEMENT dans les entrees 240-255 de la palette hote  }
+ { (voir DrawEmulatorPanel) - plus d approximation sur 16 couleurs.       }
+ If EmuExact16 And EmuVideo.IsPlanar And (EmuVideo.Mode <> $13) Then Begin
+  Emu_VidPixelToBGI := 240 + (C And $0F);
+  Exit;
+ End;
  If EmuVideo.Mode = $13 Then
   Idx := C
  Else If EmuVideo.IsPlanar Then Begin
@@ -197785,7 +197832,9 @@ End;
 Function EmuPanelTitleFor(Const TargetCPU: String): String;
 Begin
  If (TargetCPU = '-CD') Or (TargetCPU = '-CP') Then
-  EmuPanelTitleFor := 'Emulateur 8086'
+  { 2026-11-12 : le processeur REELLEMENT emule (Options > Emulateur > DOS) }
+  { plutot qu un "8086" fige - un 80386 configure s affichait "8086".      }
+  EmuPanelTitleFor := 'Emulateur ' + DosCpuTypeName(OptionsDlg.Data.DosCpuType)
  Else If TargetCPU = '-CZ80' Then
   EmuPanelTitleFor := 'Emulateur Z80'
  Else If TargetCPU = '-CTRS80' Then
@@ -198109,6 +198158,41 @@ End;
 
 Var EmuBlackIdx: Integer;
 
+{ Couleur BGI hote du pixel (Sx, Sy) de l ecran graphique emule (VBE 8/16 }
+{ bits ou modes CGA/EGA/VGA) - extrait de DrawEmulatorPanel (2026-11-12). }
+Function Emu_GfxPixelBgi(Sx, Sy: Integer): Integer;
+Var BgiC, ColorByte: Byte; S3PixOfs: LongInt; S3PixWord, S3R5, S3G6, S3B5: Word;
+Begin
+ If EmuVideo.VBEActive Then Begin
+  BgiC := 0;
+  If EmuVideo.S3MemReady Then Begin
+   If EmuVideo.BitsPerPix = 8 Then Begin
+    S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx;
+    If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) Then
+     BgiC := EmuVideo.S3Mem^[S3PixOfs]; { index VBE brut = index palette
+       hote }
+   End Else If EmuVideo.BitsPerPix = 16 Then Begin
+    S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx * 2;
+    If (S3PixOfs >= 0) And (S3PixOfs + 1 < S3_VRAM_SIZE) Then Begin
+     S3PixWord := Word(EmuVideo.S3Mem^[S3PixOfs]) Or
+      (Word(EmuVideo.S3Mem^[S3PixOfs + 1]) Shl 8);
+     { RGB565 -> approximation 16 couleurs (voir disclosure ci-dessus). }
+     S3R5 := (S3PixWord Shr 11) And $1F;
+     S3G6 := (S3PixWord Shr 5) And $3F;
+     S3B5 := S3PixWord And $1F;
+     BgiC := Emu_VidApprox16(Byte((S3R5 * 255) Div 31),
+      Byte((S3G6 * 255) Div 63), Byte((S3B5 * 255) Div 31));
+    End;
+   End;
+  End;
+ End Else Begin
+  ColorByte := Emu_VidGetPixel(Sx, Sy);
+  BgiC := Emu_VidPixelToBGI(ColorByte);
+ End;
+ If (BgiC = 0) And (Not EmuVideo.VBEActive) Then BgiC := EmuBlackIdx;
+ Emu_GfxPixelBgi := BgiC;
+End;
+
 Procedure DrawEmulatorPanel(Var P: TEmulatorPanel);
 Var
  GridX, GridY: Integer;
@@ -198131,6 +198215,7 @@ Var
  S3PixWord: Word;
  S3R5, S3G6, S3B5: Word;
  S3PalIdx: Integer;
+ Dx, Dy: Integer;
 Begin
  ScrH := GetScreenHeight;
  { Atari ST : ecran emule (onglet complet, bloc St_) }
@@ -198314,6 +198399,25 @@ Begin
   End;
   GridW := GfxW * Scale;
   GridH := GfxH * Scale;
+  { BOGUE REEL CORRIGE (2026-11-12, Pasdows 95 en 640x480 dans une fenetre  }
+  { DEVENV de 640x480 - le cas par defaut, PtcGraph "Detect") : quand meme  }
+  { l echelle 1 ne tient pas, l image depassait simplement l ecran (barre    }
+  { des taches de Pasdows invisible, clics impossibles en bas). Reduction   }
+  { (plus proche voisin) pour tenir dans la zone disponible, rapport        }
+  { largeur/hauteur conserve ; EmuGfxDstW/H memorisent la taille affichee   }
+  { pour la conversion des coordonnees de la souris. }
+  EmuGfxDstW := GridW; EmuGfxDstH := GridH;
+  If GridH > ScrH - MENUBAR_HEIGHT - TOOLBAR_HEIGHT - TAB_HEIGHT - 60 Then
+  Begin
+   GridH := ScrH - MENUBAR_HEIGHT - TOOLBAR_HEIGHT - TAB_HEIGHT - 60;
+   If GridH < 16 Then GridH := 16;
+   GridW := Integer((LongInt(GfxW) * GridH) Div GfxH);
+  End;
+  If GridW > GetScreenWidth - 4 Then Begin
+   GridW := GetScreenWidth - 4;
+   GridH := Integer((LongInt(GfxH) * GridW) Div GfxW);
+  End;
+  EmuGfxDstW := GridW; EmuGfxDstH := GridH;
   { Meme convention que le panneau texte ci-dessus : colle a gauche, sous }
   { la barre d onglets, comme un editeur de texte. }
   P.PanelX := 0;
@@ -198337,40 +198441,32 @@ Begin
   GetImage(0, 0, GetScreenWidth - 1, GetScreenHeight - 1, EmuPageBuf^);
   SetActivePage(EmuBackPage);
   PutImage(0, 0, EmuPageBuf^, NormalPut);
-  { Bordure et barre de titre }
+  { Bordure et barre de titre. 2026-11-12 : effacer aussi la zone d une    }
+  { image PRECEDENTE plus grande (mode texte 80 colonnes, ou ecran non     }
+  { reduit) - sinon son titre et ses bords restaient affiches a droite et  }
+  { en bas de la nouvelle image, plus petite. }
   DrawFilledRect(P.PanelX - 2, P.PanelY - 2,
-   P.PanelX + GridW + 2, P.PanelY + GridH + 48,
-   CLR_BACKGROUND);
+   P.PanelX + MaxInt(GridW, P.LastGridW) + 2,
+   P.PanelY + MaxInt(GridH, P.LastGridH) + 48, CLR_BACKGROUND);
   DrawFilledRect(P.PanelX, P.PanelY,
    P.PanelX + GridW, P.PanelY + 22,
    CLR_TITLEBAR_ACTIVE);
   { Compter les pixels non-noirs pour diagnostic. En mode VESA/VBE (S3),   }
   { Emu_VidGetPixel se limite au 8 bits/pixel (voir disclosure la-bas) -   }
   { lire S3Mem directement ici couvre aussi le 16 bits/pixel. }
-  RunStart := 0;
-  If EmuVideo.VBEActive Then Begin
-   If EmuVideo.S3MemReady Then
-    For Sy := 0 To GfxH - 1 Do
-     For Sx := 0 To GfxW - 1 Do Begin
-      S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine +
-       Sx * (EmuVideo.BitsPerPix Div 8);
-      If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) And
-       (EmuVideo.S3Mem^[S3PixOfs] <> 0) Then Inc(RunStart);
-     End;
-  End Else
-   For Sy := 0 To GfxH - 1 Do
-    For Sx := 0 To GfxW - 1 Do
-     If Emu_VidGetPixel(Sx, Sy) <> 0 Then Inc(RunStart);
+  { 2026-11-12 : le compteur diagnostique "px<>0" (pixels non nuls de     }
+  { TOUT l ecran, recalcule a chaque image) est retire - en 640x480 il     }
+  { debordait l Integer 16 bits (-Mtp) et s affichait negatif dans le      }
+  { titre, tout en relisant 307200 pixels a chaque rafraichissement.      }
   If EmuVideo.VBEActive Then
    FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
             ' [VESA $' + HexWord(EmuVideo.VBEMode) + ' ' +
             IntToStr(GfxW) + 'x' + IntToStr(GfxH) + 'x' +
-            IntToStr(EmuVideo.BitsPerPix) + ' px<>0=' + IntToStr(RunStart) + ']'
+            IntToStr(EmuVideo.BitsPerPix) + ']'
   Else
    FullTitle := EmuPanelTitleFor(P.TargetCPU) + ' - ' + P.BinaryPath +
             ' [mode $' + HexByte(EmuVideo.Mode) + ' ' +
-            IntToStr(GfxW) + 'x' + IntToStr(GfxH) +
-            ' px<>0=' + IntToStr(RunStart) + ']';
+            IntToStr(GfxW) + 'x' + IntToStr(GfxH) + ']';
   Title := TruncateTitleToWidth(FullTitle, GridW - 108);
   DrawText(P.PanelX + 6, P.PanelY + 6, Title, CLR_HIGHLIGHTTEXT);
   DrawText(P.PanelX + GridW - 100, P.PanelY + 6,
@@ -198402,47 +198498,49 @@ Begin
      (LongInt(EmuVideo.DAC[S3PalIdx * 3 + 2]) * 255) Div 63);
   { Rendu pixel : RLE par ligne pour limiter le nombre de
     primitives de dessin. }
-  For Sy := 0 To GfxH - 1 Do Begin
+  EmuExact16 := (GetMaxColor >= 255) And EmuVideo.IsPlanar And
+                (Not EmuVideo.VBEActive) And (EmuVideo.Mode <> $13);
+  If EmuExact16 Then
+   For S3PalIdx := 0 To 15 Do Begin
+    If EmuVideo.ACReg[S3PalIdx] < 64 Then Sx := EmuVideo.ACReg[S3PalIdx]
+    Else Sx := S3PalIdx;
+    SetRGBPalette(240 + S3PalIdx,
+     (LongInt(EmuVideo.DAC[Sx * 3 + 0]) * 255) Div 63,
+     (LongInt(EmuVideo.DAC[Sx * 3 + 1]) * 255) Div 63,
+     (LongInt(EmuVideo.DAC[Sx * 3 + 2]) * 255) Div 63);
+   End;
+  { Rendu en coordonnees DESTINATION (2026-11-12) : chaque ligne/colonne   }
+  { affichee prend le pixel source correspondant - identique a l ancien    }
+  { rendu quand GridW = GfxW * Scale (agrandissement entier), et permet la }
+  { reduction ci-dessus quand l image ne tient pas. RLE par ligne. }
+  ScY := -1;
+  For Dy := 0 To GridH - 1 Do Begin
+   Sy := Integer((LongInt(Dy) * GfxH) Div GridH);
+   If (Dy > 0) And (Sy = ScY) Then Begin
+    { meme ligne source que la precedente : recopier la ligne affichee }
+    { (cas de l agrandissement), sans relire la memoire video emulee. }
+    Continue;
+   End;
+   ScY := Sy;
+   { hauteur affichee de cette ligne source }
+   NesScale := 1;
+   While (Dy + NesScale < GridH) And
+         (Integer((LongInt(Dy + NesScale) * GfxH) Div GridH) = Sy) Do
+    Inc(NesScale);
    PrevC := -1; RunStart := 0;
-   ScY := GridY + Sy * Scale;
-   For Sx := 0 To GfxW - 1 Do Begin
-    If EmuVideo.VBEActive Then Begin
-     BgiC := 0;
-     If EmuVideo.S3MemReady Then Begin
-      If EmuVideo.BitsPerPix = 8 Then Begin
-       S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx;
-       If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) Then
-        BgiC := EmuVideo.S3Mem^[S3PixOfs]; { index VBE brut = index palette
-          hote }
-      End Else If EmuVideo.BitsPerPix = 16 Then Begin
-       S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx * 2;
-       If (S3PixOfs >= 0) And (S3PixOfs + 1 < S3_VRAM_SIZE) Then Begin
-        S3PixWord := Word(EmuVideo.S3Mem^[S3PixOfs]) Or
-         (Word(EmuVideo.S3Mem^[S3PixOfs + 1]) Shl 8);
-        { RGB565 -> approximation 16 couleurs (voir disclosure ci-dessus). }
-        S3R5 := (S3PixWord Shr 11) And $1F;
-        S3G6 := (S3PixWord Shr 5) And $3F;
-        S3B5 := S3PixWord And $1F;
-        BgiC := Emu_VidApprox16(Byte((S3R5 * 255) Div 31),
-         Byte((S3G6 * 255) Div 63), Byte((S3B5 * 255) Div 31));
-       End;
-      End;
-     End;
-    End Else Begin
-     ColorByte := Emu_VidGetPixel(Sx, Sy);
-     BgiC := Emu_VidPixelToBGI(ColorByte);
-    End;
-    If (BgiC = 0) And (Not EmuVideo.VBEActive) Then BgiC := EmuBlackIdx;
+   For Dx := 0 To GridW - 1 Do Begin
+    Sx := Integer((LongInt(Dx) * GfxW) Div GridW);
+    BgiC := Emu_GfxPixelBgi(Sx, Sy);
     If BgiC <> PrevC Then Begin
      If (PrevC > 0) Then
-      DrawFilledRect(GridX + RunStart * Scale, ScY,
-       GridX + Sx * Scale - 1, ScY + Scale - 1, PrevC);
-     PrevC := BgiC; RunStart := Sx;
+      DrawFilledRect(GridX + RunStart, GridY + Dy,
+       GridX + Dx - 1, GridY + Dy + NesScale - 1, PrevC);
+     PrevC := BgiC; RunStart := Dx;
     End;
    End;
    If PrevC > 0 Then
-    DrawFilledRect(GridX + RunStart * Scale, ScY,
-     GridX + GfxW * Scale - 1, ScY + Scale - 1, PrevC);
+    DrawFilledRect(GridX + RunStart, GridY + Dy,
+     GridX + GridW - 1, GridY + Dy + NesScale - 1, PrevC);
   End;
   { Barre d etat }
   DrawFilledRect(GridX, GridY + GridH + 2,
@@ -198889,6 +198987,21 @@ Begin
  { peut pas reproduire cela - boucle octet par octet, avec Ofs+I         }
  { enveloppe en Word, uniquement dans ce cas limite (le chemin rapide     }
  { normal reste un Move direct). }
+ { Fenetre graphique A000 (EGA/VGA planaire, mode 13h, VBE en banques) -  }
+ { BOGUE REEL CORRIGE (2026-11-12, curseur souris de Pasdows 95) : les     }
+ { lectures (octet, mot, double mot) lisaient la RAM ordinaire en A0000h  }
+ { au lieu de la memoire video : ni verrous charges, ni Read Map Select,  }
+ { ni mode de lecture 1 (comparaison de couleurs). Chaque octet passe     }
+ { desormais par Emu_VidReadByte, comme sur une vraie carte. }
+ If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) And (SizeBytes > 0)
+ Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   BPtr^ := Emu_VidReadByte((LongInt(Seg) Shl 4) + Word(Ofs + I) - $A0000);
+   Inc(BPtr);
+  End;
+  Exit;
+ End;
  If LongInt(Ofs) + SizeBytes > $10000 Then Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
@@ -199115,6 +199228,19 @@ Begin
  { BOGUE REEL CORRIGE (2026-09-03) : meme correctif que Emu_ReadBlock -   }
  { voir son commentaire pour le contexte complet (enroulement de l offset}
  { a la limite $FFFF/$0000 d un segment). }
+ { Fenetre graphique A000 : ecritures de mots/doubles mots (REP STOSW,     }
+ { MOVSW, MOV [A000:x],AX...) - BOGUE REEL CORRIGE (2026-11-12) : seules  }
+ { les ecritures d UN octet (Emu_WriteByte) atteignaient la VGA, les      }
+ { autres allaient en RAM ordinaire et restaient invisibles. }
+ If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) And (SizeBytes > 0)
+ Then Begin
+  BPtr := @Buffer;
+  For I := 0 To SizeBytes - 1 Do Begin
+   Emu_VidWriteByte((LongInt(Seg) Shl 4) + Word(Ofs + I) - $A0000, BPtr^);
+   Inc(BPtr);
+  End;
+  Exit;
+ End;
  If LongInt(Ofs) + SizeBytes > $10000 Then Begin
   BPtr := @Buffer;
   For I := 0 To SizeBytes - 1 Do Begin
@@ -199181,16 +199307,16 @@ Begin
   End;
   Exit;
  End;
- { Redirection planar EGA/VGA pour ecritures dans $A0000..$AFFFF. }
+ { Redirection planar EGA/VGA pour ecritures dans $A0000..$AFFFF.       }
+ { BOGUE REEL CORRIGE (2026-11-12, curseur souris de Pasdows 95 en mode   }
+ { 12h : rayures verticales a sa place) : chaque ecriture RECHARGEAIT les }
+ { verrous (latches) depuis l adresse ecrite - un palliatif au fait que   }
+ { les LECTURES de A000 ne passaient pas par la VGA (voir Emu_ReadBlock). }
+ { Sur une vraie VGA, seules les lectures chargent les verrous : copies   }
+ { en mode d ecriture 1, sauvegarde/restauration plan par plan (registre  }
+ { Read Map Select) en dependent. Les lectures passant desormais par     }
+ { Emu_VidReadByte, l ecriture n y touche plus. }
  If EmuVideo.IsGraphic And ((Seg And $F000) = $A000) Then Begin
-  { Pre-charger latches via lecture du mot a la meme adresse. }
-  EmuVideo.Latch[0] := EmuVideo.Mem^[(LongInt(Seg) Shl 4) + Ofs - $A0000];
-  EmuVideo.Latch[1] := EmuVideo.Mem^[$10000 + ((LongInt(Seg) Shl 4) + Ofs -
-    $A0000)];
-  EmuVideo.Latch[2] := EmuVideo.Mem^[$20000 + ((LongInt(Seg) Shl 4) + Ofs -
-    $A0000)];
-  EmuVideo.Latch[3] := EmuVideo.Mem^[$30000 + ((LongInt(Seg) Shl 4) + Ofs -
-    $A0000)];
   Emu_VidWriteByte((LongInt(Seg) Shl 4) + Ofs - $A0000, X);
   Exit;
  End;
@@ -207962,6 +208088,11 @@ Begin
   { video existant. }
   $3BC..$3BE: Emu_PortRead := Emu_LPT_Read(EmuLPT1, Port - $3BC);
   $3BF: Emu_PortRead := 0;
+  { Port 92h "A20 rapide" (PS/2, tout PC AT/386 moderne) - 2026-11-12,     }
+  { Pasdows 95 : bit 1 = porte A20 (meme drapeau que la commande D1h du     }
+  { 8042), bit 0 = reinitialisation du processeur (non modelisee).        }
+  $92: If Emu_IsATClassHw Then
+        Emu_PortRead := Ord(Emu8042.A20Enabled) Shl 1;
   $3C0..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
   $3F6: If Emu_DiskIfFamily = DIF_ATA Then
          Emu_PortRead := Emu_ATA_ReadAltStatus(EmuATA[0]);
@@ -208058,6 +208189,7 @@ Begin
   $2F8..$2FF: Emu_UART_Write(EmuCOM2, Byte(Port - $2F8), Value);
   $3B4..$3BB: Emu_VidPortWrite(Port, Value);
   $3BC..$3BE: Emu_LPT_Write(EmuLPT1, Port - $3BC, Value);
+  $92: If Emu_IsATClassHw Then Emu8042.A20Enabled := (Value And $02) <> 0;
   $3C0..$3DF: Emu_VidPortWrite(Port, Value);
   $3F6: If Emu_DiskIfFamily = DIF_ATA Then Emu_ATA_WriteDevCtrl(EmuATA[0],
     Value);
@@ -208181,6 +208313,34 @@ End;
 { champs rarement lus, ex. DirectColorModeInfo, sont laisses a 0) - assez   }
 { pour qu un vrai utilitaire de detection VESA (ex. CHKVESA, UNIVBE) ou un   }
 { petit programme de test voie une carte SVGA coherente et fonctionnelle. }
+{ Polices de la ROM video emulee (2026-11-12, Pasdows 95) : 8x16 en       }
+{ C000:0000, 8x14 en C000:1000 (lignes 1 a 14 de la 8x16), 8x8 en         }
+{ C000:1E00 (une ligne sur deux de la 8x16) - a partir de la police VGA    }
+{ 8x16 deja presente dans ce fichier (Banner_Matrix8x16, la police IBM     }
+{ CP437 du terminal Bash). INT 43h pointe sur la 8x8 (caracteres 0-127),   }
+{ INT 1Fh sur ses caracteres 128-255, comme un BIOS VGA apres son init.   }
+Procedure Emu_VidRomFonts(Var P: TEmulatorPanel);
+Var Ch, Row: Integer; B: Byte;
+Begin
+ If Emu_ReadByte(P.CPU, $C000, EMU_VIDROM_FONT16 + 65 * 16 + 4) =
+    Banner_Matrix8x16[65 * 16 + 4] Then
+  If Emu_ReadByte(P.CPU, $C000, EMU_VIDROM_FONT8 + 65 * 8 + 3) =
+     Banner_Matrix8x16[65 * 16 + 6] Then Exit;   { deja en place }
+ For Ch := 0 To 255 Do
+  For Row := 0 To 15 Do Begin
+   B := Banner_Matrix8x16[Ch * 16 + Row];
+   Emu_WriteByte(P.CPU, $C000, EMU_VIDROM_FONT16 + Ch * 16 + Row, B);
+   If (Row >= 1) And (Row <= 14) Then
+    Emu_WriteByte(P.CPU, $C000, EMU_VIDROM_FONT14 + Ch * 14 + Row - 1, B);
+   If (Row And 1) = 0 Then
+    Emu_WriteByte(P.CPU, $C000, EMU_VIDROM_FONT8 + Ch * 8 + Row Div 2, B);
+  End;
+ Emu_WriteWord(P.CPU, 0, $43 * 4, EMU_VIDROM_FONT8);
+ Emu_WriteWord(P.CPU, 0, $43 * 4 + 2, $C000);
+ Emu_WriteWord(P.CPU, 0, $1F * 4, EMU_VIDROM_FONT8 + 128 * 8);
+ Emu_WriteWord(P.CPU, 0, $1F * 4 + 2, $C000);
+End;
+
 Procedure Emu_DoInt10_VBE(Var P: TEmulatorPanel);
 Var
  ModeNum: Word;
@@ -208647,8 +208807,34 @@ Begin
      $30 get font info -> ES:BP = adresse fonte, CX=hauteur, DL=lignes-1. }
    Begin
     If P.CPU.Regs.AL = $30 Then Begin
+     { BOGUE REEL CORRIGE (2026-11-12, Pasdows 95 dans l onglet El Torito :   }
+     { TOUT le texte de son interface 16 couleurs s affichait en barres) :   }
+     { ES:BP pointait toujours sur C000:0000 quel que soit BH, et AUCUNE      }
+     { police n y etait jamais copiee - le programme recopiait donc des      }
+     { octets arbitraires comme glyphes. Un vrai BIOS VGA renvoie, selon BH, }
+     { sa police en ROM : 2 = 8x14, 3 = 8x8 (car. 0-127), 4 = 8x8 (car.     }
+     { 128-255), 5/7 = 9x14/9x16 (aucune table de 9e colonne ici : la police }
+     { de base), 6 = 8x16 ; 0/1 = vecteurs INT 1Fh/43h. Lors d un amorcage   }
+     { reel (EmuBootActive, aucun LOADHIGH possible) les polices sont        }
+     { recopiees dans la ROM video emulee (Emu_VidRomFonts) ; CX = hauteur  }
+     { de la police courante, DL = lignes de texte - 1. }
+     If EmuBootActive Then Emu_VidRomFonts(P);
      P.CPU.Segs.ES := $C000;
-     P.CPU.Regs.BP := 0;
+     Case P.CPU.Regs.BH Of
+      0: Begin
+          P.CPU.Segs.ES := Emu_ReadWord(P.CPU, 0, $1F * 4 + 2);
+          P.CPU.Regs.BP := Emu_ReadWord(P.CPU, 0, $1F * 4);
+         End;
+      1: Begin
+          P.CPU.Segs.ES := Emu_ReadWord(P.CPU, 0, $43 * 4 + 2);
+          P.CPU.Regs.BP := Emu_ReadWord(P.CPU, 0, $43 * 4);
+         End;
+      2, 5: P.CPU.Regs.BP := EMU_VIDROM_FONT14;
+      3: P.CPU.Regs.BP := EMU_VIDROM_FONT8;
+      4: P.CPU.Regs.BP := EMU_VIDROM_FONT8 + 128 * 8;
+     Else
+      P.CPU.Regs.BP := EMU_VIDROM_FONT16;
+     End;
      P.CPU.Regs.CX := 16;
      P.CPU.Regs.DL := 24;
     End;
@@ -213794,6 +213980,39 @@ Begin
    End;
    P.CPU.Regs.AH := 0;
   End;
+  $24: Begin { Porte A20 (2026-11-12, Pasdows 95) : 2400h desactiver,       }
+             { 2401h activer, 2402h etat (AL), 2403h methodes prises en    }
+             { charge (BX bit0=8042, bit1=port 92h). Meme drapeau que le   }
+             { 8042 (commande D1h) et le port 92h, voir Emu_PortWrite.     }
+   Case P.CPU.Regs.AL Of
+    0: Begin Emu8042.A20Enabled := False; P.CPU.Regs.AH := 0; End;
+    1: Begin Emu8042.A20Enabled := True;  P.CPU.Regs.AH := 0; End;
+    2: Begin
+        P.CPU.Regs.AL := Ord(Emu8042.A20Enabled);
+        P.CPU.Regs.AH := 0;
+        P.CPU.Regs.CX := 0;
+       End;
+    3: Begin P.CPU.Regs.BX := 3; P.CPU.Regs.AH := 0; End;
+   Else
+    Include(P.CPU.Flags.s, EFG_CF);
+    P.CPU.Regs.AH := $86;
+   End;
+  End;
+  $E8: Begin { AX=E801h (2026-11-12, Pasdows 95) : AX=CX = Ko entre 1 Mo et }
+             { 16 Mo (15360 au plus), BX=DX = blocs de 64 Ko au-dela de 16 }
+             { Mo - meme taille que AH=88h (DosXMSSize), sans sa limite.   }
+   Int88ExtKB := OptionsDlg.Data.DosXMSSize;
+   If Int88ExtKB < 64 Then Int88ExtKB := 64;
+   If Int88ExtKB > 15360 Then Begin
+    P.CPU.Regs.AX := 15360;
+    P.CPU.Regs.BX := Word((Int88ExtKB - 15360) Div 64);
+   End Else Begin
+    P.CPU.Regs.AX := Word(Int88ExtKB);
+    P.CPU.Regs.BX := 0;
+   End;
+   P.CPU.Regs.CX := P.CPU.Regs.AX;
+   P.CPU.Regs.DX := P.CPU.Regs.BX;
+  End;
   $90, $91: ; { Device Busy / Interrupt Complete : notification de chainage   }
               { d ISR (reseau/souris) sans contrepartie multitache reelle ici }
               { - acceptee sans effet (CF=0), comme un vrai BIOS le ferait    }
@@ -213833,6 +214052,12 @@ Begin
   GridY := P.PanelY + 24;
   LX := (HostX - GridX) Div Scale;
   LY := (HostY - GridY) Div Scale;
+  { 2026-11-12 : taille REELLEMENT affichee par DrawEmulatorPanel (mise a   }
+  { l echelle quand l ecran emule ne tient pas dans la fenetre DEVENV).    }
+  If (EmuGfxDstW > 0) And (EmuGfxDstH > 0) Then Begin
+   LX := Integer((LongInt(HostX - GridX) * GfxW) Div EmuGfxDstW);
+   LY := Integer((LongInt(HostY - GridY) * GfxH) Div EmuGfxDstH);
+  End;
  End Else Begin
   GridX := P.PanelX;
   GridY := P.PanelY + 24;
@@ -226483,8 +226708,16 @@ Begin
    { les 8259A/8042/FDC deja gates de la meme facon ailleurs : un PC/XT/     }
    { PCjr/clone PC anterieur n a jamais eu ces fonctions, un vrai AT/PS2/    }
    { Compaq Deskpro 386 les a toujours. Voir Emu_DoInt15AT pour le detail.  }
+   { Pasdows 95 (2026-11-12) : AH=87h (deplacement de bloc, deja implante   }
+   { dans Emu_DoInt15AT mais JAMAIS atteint : seuls C0h/88h/90h/91h etaient }
+   { routes ici, 87h tombait dans la branche "non supporte" CF=1/AH=86h),   }
+   { AX=E801h (taille memoire etendue au-dela de 64 Mo de AH=88h) et        }
+   { AH=24h (porte A20 : 2400h-2403h) - services de tout BIOS AT/386.      }
+   { IO.SYS de Pasdows 95 les utilise pour copier VMM32.VXD a 4 Mo.        }
    Else If Emu_IsATClassHw And
     ((P.CPU.Regs.AH = $C0) Or (P.CPU.Regs.AH = $88) Or
+     (P.CPU.Regs.AH = $87) Or (P.CPU.Regs.AX = $E801) Or
+     (P.CPU.Regs.AH = $24) Or
      (P.CPU.Regs.AH = $90) Or (P.CPU.Regs.AH = $91)) Then Begin
     If Emu_IntIsHooked(P, $15) Then Emu_FireHwInt(P, $15) Else Emu_DoInt15AT(P);
    End
