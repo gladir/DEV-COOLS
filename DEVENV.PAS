@@ -1017,7 +1017,7 @@ Program DEVENV;
 
 Uses DOS,
      {$IFDEF FPC}
-      PtcGraph,PtcCrt,PtcMouse
+      PtcGraph,PtcCrt,PtcMouse,PtcWrapper,Ptc
      {$ELSE}
       Crt,Graph
      {$ENDIF};
@@ -14294,6 +14294,59 @@ End;
  Procedure HideMouse;
  Begin
   { PtcMouse gere le masquage }
+ End;
+
+ { 2026-11-12 : GetMouseState de PtcMouse vide la file d evenements de   }
+ { PTC et ne garde que l ETAT FINAL des boutons - un clic bref (appui et }
+ { relachement entre deux appels, par ex. pendant le redessin de l ecran }
+ { emule) etait perdu, et un double-clic devenait un simple clic ou rien }
+ { (icones du bureau de Pasdows 95 qui ne s ouvraient pas sous Windows). }
+ { Cette version, qui masque celle de PtcMouse pour tout DEVENV, lit les }
+ { evenements de PTC dans l ordre et met en file chaque changement des   }
+ { boutons : chaque appel rend le prochain changement (position du clic }
+ { comprise), puis l etat courant une fois la file videe. }
+ Var
+  HostMouseX, HostMouseY, HostMouseBtn: LongInt;
+  HostMouseQX, HostMouseQY, HostMouseQB: Array[0..63] Of LongInt;
+  HostMouseQHead, HostMouseQLen: Integer;
+
+ Procedure HostMouse_Pump;
+ Var
+  Ev: IPTCEvent;
+  Me: IPTCMouseEvent;
+  B, I: LongInt;
+ Begin
+  If (PTCWrapperObject = Nil) Or (Not PTCWrapperObject.IsOpen) Then Exit;
+  Repeat
+   PTCWrapperObject.NextEvent(Ev, False, [PTCMouseEvent]);
+   If Ev <> Nil Then
+    If Ev.QueryInterface(IPTCMouseEvent, Me) = 0 Then Begin
+     B := 0;
+     If PTCMouseButton1 In Me.ButtonState Then B := B Or 1;
+     If PTCMouseButton2 In Me.ButtonState Then B := B Or 2;
+     If PTCMouseButton3 In Me.ButtonState Then B := B Or 4;
+     HostMouseX := Me.X; HostMouseY := Me.Y;
+     If (B <> HostMouseBtn) And (HostMouseQLen < 64) Then Begin
+      I := (HostMouseQHead + HostMouseQLen) Mod 64;
+      HostMouseQX[I] := Me.X; HostMouseQY[I] := Me.Y; HostMouseQB[I] := B;
+      Inc(HostMouseQLen);
+     End;
+     HostMouseBtn := B;
+    End;
+  Until Ev = Nil;
+ End;
+
+ Procedure GetMouseState(Var X, Y, Button: LongInt);
+ Begin
+  HostMouse_Pump;
+  If HostMouseQLen > 0 Then Begin
+   X := HostMouseQX[HostMouseQHead]; Y := HostMouseQY[HostMouseQHead];
+   Button := HostMouseQB[HostMouseQHead];
+   HostMouseQHead := (HostMouseQHead + 1) Mod 64;
+   Dec(HostMouseQLen);
+  End Else Begin
+   X := HostMouseX; Y := HostMouseY; Button := HostMouseBtn;
+  End;
  End;
 {$ENDIF}
 
@@ -222036,6 +222089,14 @@ Begin
   Else Dpmi_ReadBytePhys := 0;
   Exit;
  End;
+ { 2026-11-12 : fenetre graphique A0000h en mode protege - meme chemin   }
+ { que le mode reel (Emu_ReadBlock) : verrous, Read Map Select, mode de  }
+ { lecture 1. Elle lisait la RAM ordinaire. }
+ If EmuVideo.IsGraphic And (PhysAddr >= $A0000) And (PhysAddr < $B0000)
+ Then Begin
+  Dpmi_ReadBytePhys := Emu_VidReadByte(PhysAddr - $A0000);
+  Exit;
+ End;
  { BOGUE REEL CORRIGE (2026-11-12, noyau VMM32 de Pasdows 95 : ses 64      }
  { premiers Ko, copies a 1 Mo par INT 15h AH=87h, etaient lus comme des    }
  { zeros une fois en mode protege) : 100000h-10FFEFh (la HMA) appartient   }
@@ -222121,6 +222182,15 @@ Begin
    EmuVideo.S3Mem^[PhysAddr - EMU_S3_LFB_BASE] := V;
    EmuVideo.GfxDirty := True;
   End;
+  Exit;
+ End;
+ { 2026-11-12 : fenetre graphique A0000h en mode protege (VGA 16        }
+ { couleurs de Pasdows 95, extenseurs DOS en mode 12h/13h) : les        }
+ { ecritures allaient en RAM ordinaire, sans plans ni masque - ecran     }
+ { emule inchange. Meme chemin que le mode reel (Emu_WriteBlock). }
+ If EmuVideo.IsGraphic And (PhysAddr >= $A0000) And (PhysAddr < $B0000)
+ Then Begin
+  Emu_VidWriteByte(PhysAddr - $A0000, V);
   Exit;
  End;
  { HMA : voir le commentaire jumeau de Dpmi_ReadBytePhys (2026-11-12). }
@@ -265788,7 +265858,12 @@ Begin
     If IsWin16Target Then
      Win16_HandleMouseEvent(P, Ev.MouseX, Ev.MouseY, 0);
    End;
-  EV_MOUSE_DOWN:
+  { 2026-11-12 : un 2e appui rapide arrive en EV_MOUSE_DBLCLICK (voir       }
+  { IsDoubleClick, 300 ms) - pour l invite c est un appui ordinaire, qu il  }
+  { interprete lui-meme. Ignore jusqu ici : le double-clic n arrivait au    }
+  { systeme emule que comme appui, relachement, relachement (icones du     }
+  { bureau de Pasdows 95 impossibles a ouvrir en cliquant vite). }
+  EV_MOUSE_DOWN, EV_MOUSE_DBLCLICK:
    Begin
     If IsDOSTarget Then Begin
      Case Ev.MouseBtn Of
