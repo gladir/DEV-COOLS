@@ -214800,13 +214800,27 @@ Var
 Begin
  { Souris PS/2 du 8042 (2026-11-12) : alimentee meme sans pilote INT 33h  }
  { (un noyau qui lit lui-meme la souris, comme Pasdows 95). }
- If EmuVideo.IsGraphic And (EmuGfxDstW > 0) And (EmuGfxDstH > 0) Then
-  Emu_8042_AuxMove(
-   Integer((LongInt(HostX - P.PanelX) * EmuVideo.Width) Div EmuGfxDstW),
-   Integer((LongInt(HostY - P.PanelY - 24) * EmuVideo.Height) Div EmuGfxDstH),
-   NewBtns)
- Else
-  Emu_8042_AuxMove(HostX - P.PanelX, HostY - P.PanelY - 24, NewBtns);
+ { 2026-11-12 (signale par l utilisateur : sous Windows, clic sur        }
+ { Demarrer -> Calculatrice, pointeur invite ~60 px trop haut) : une      }
+ { position hote HORS de l image emulee (souris descendue sur la ligne    }
+ { d etat sous la barre des taches, par ex.) etait transmise telle quelle }
+ { a la souris PS/2 relative - l invite, lui, bloque son pointeur au bord }
+ { de l ecran, d ou un decalage permanent au retour. Position bornee a    }
+ { l ecran emule, comme le fait l invite. }
+ If EmuVideo.IsGraphic And (EmuGfxDstW > 0) And (EmuGfxDstH > 0) Then Begin
+  LX := Integer((LongInt(HostX - P.PanelX) * EmuVideo.Width) Div EmuGfxDstW);
+  LY := Integer((LongInt(HostY - P.PanelY - 24) * EmuVideo.Height) Div
+    EmuGfxDstH);
+  If LX > EmuVideo.Width - 1 Then LX := EmuVideo.Width - 1;
+  If LY > EmuVideo.Height - 1 Then LY := EmuVideo.Height - 1;
+ End Else Begin
+  LX := HostX - P.PanelX; LY := HostY - P.PanelY - 24;
+  If LX > P.Cols * P.CharW - 1 Then LX := P.Cols * P.CharW - 1;
+  If LY > P.Rows * P.CharH - 1 Then LY := P.Rows * P.CharH - 1;
+ End;
+ If LX < 0 Then LX := 0;
+ If LY < 0 Then LY := 0;
+ Emu_8042_AuxMove(LX, LY, NewBtns);
  If Not EmuMouseInst Then Exit;
  { Recalculer offsets/scale comme DrawEmulatorPanel }
  If EmuVideo.IsGraphic Then Begin
