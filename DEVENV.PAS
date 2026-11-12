@@ -197663,6 +197663,8 @@ End;
 
 { --- Empiler une touche dans la file (ring buffer 64 octets) --- }
 
+Function EmuKey_AsciiToScan(C: Char): Byte; Forward;
+
 Procedure EmuVScr_PushKey(Var P: TEmulatorPanel; K: Word);
 Var
  NextHead: Byte;
@@ -197683,6 +197685,14 @@ Begin
   End;
   {$I+} If IOResult <> 0 Then ;
  End;
+ { 2026-11-12 : un caractere tape (EV_KEY_CHAR) arrive sans code de       }
+ { balayage - un vrai BIOS range TOUJOURS les deux. Les programmes qui    }
+ { testent le code (AH=1Ch pour Entree, 01h pour Echap...) ne voyaient    }
+ { jamais la touche (menu F8 d IO.SYS de Pasdows 95 : Entree sans effet). }
+ { Complete ici, a la source : le tampon BIOS (DOS_RunOneChunk) et les    }
+ { lectures directes de INT 16h/21h en profitent tous. }
+ If (Hi(K) = 0) And (Lo(K) <> 0) Then
+  K := K Or (Word(EmuKey_AsciiToScan(Chr(Lo(K)))) Shl 8);
  NextHead := (P.KeyHead + 1) And $3F;
  If NextHead <> P.KeyTail Then Begin
   P.KeyBuf[P.KeyHead] := K;
@@ -197755,6 +197765,23 @@ Begin
   '7','&': EmuKey_AsciiToScan := $08;
   '8','*': EmuKey_AsciiToScan := $09;
   '9','(': EmuKey_AsciiToScan := $0A;
+  { 2026-11-12 : ponctuation (clavier americain) et Ctrl+lettre - voir    }
+  { DOS_RunOneChunk, qui s en sert pour completer le code de balayage    }
+  { d un caractere tape. }
+  '-','_': EmuKey_AsciiToScan := $0C;
+  '=','+': EmuKey_AsciiToScan := $0D;
+  '[','{': EmuKey_AsciiToScan := $1A;
+  ']','}': EmuKey_AsciiToScan := $1B;
+  ';',':': EmuKey_AsciiToScan := $27;
+  '''','"': EmuKey_AsciiToScan := $28;
+  '`','~': EmuKey_AsciiToScan := $29;
+  '\','|': EmuKey_AsciiToScan := $2B;
+  ',','<': EmuKey_AsciiToScan := $33;
+  '.','>': EmuKey_AsciiToScan := $34;
+  '/','?': EmuKey_AsciiToScan := $35;
+  #10: EmuKey_AsciiToScan := $1C;       { Ctrl+Entree }
+  #1..#7, #11, #12, #14..#26:            { Ctrl+lettre }
+   EmuKey_AsciiToScan := EmuKey_AsciiToScan(Chr(Ord(C) + Ord('a') - 1));
  Else
   EmuKey_AsciiToScan := 0;
  End;
@@ -200164,7 +200191,12 @@ Begin
   { DOS_RunOneChunk (CS/IP/Op/ES/DI/CX/AX), meme tampon circulaire. }
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
-  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  { 2026-11-12 : en mode protege (DpmiCPU), CS:IP reel n a pas de sens et  }
+  { cette lecture (Emu_ReadByte -> Emu_Addr -> Emu_UnrealBase) coutait      }
+  { environ 10 % du temps d execution de Pasdows 95 - sautee. }
+  If DpmiCPU.Active Then EmuTraceBuf[EmuTraceIdx].Op := $90
+  Else
+   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
   EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
@@ -207591,7 +207623,8 @@ Var Sc, Ch: Byte; I: Integer; Sh, Ctl, Ext: Boolean;
 Begin
  Sc := Hi(K); Ch := Lo(K);
  Sh := False; Ctl := False; Ext := False;
- If Sc = 0 Then Begin
+ If Ch <> 0 Then Begin                     { caractere : Maj selon la table }
+  Sc := 0;
   If (Ch >= 1) And (Ch <= 26) And Not (Ch In [8, 9, 13]) Then Begin
    Ctl := True; Ch := Ch + Ord('a') - 1;           { Ctrl+lettre }
   End;
@@ -222180,7 +222213,10 @@ End;
 
 Function Dpmi_ReadByte(Var P: TEmulatorPanel; LinAddr: LongInt): Byte;
 Begin
- Dpmi_ReadByte := Dpmi_ReadBytePhys(P, Dpmi_TranslateLin(P, LinAddr));
+ If (DpmiCPU.CR0 And LongInt($80000000)) = 0 Then { sans pagination }
+  Dpmi_ReadByte := Dpmi_ReadBytePhys(P, LinAddr)
+ Else
+  Dpmi_ReadByte := Dpmi_ReadBytePhys(P, Dpmi_TranslateLin(P, LinAddr));
 End;
 
 Procedure Dpmi_WriteByte(Var P: TEmulatorPanel; LinAddr: LongInt; V: Byte);
@@ -223278,10 +223314,27 @@ End;
 { 0Dh GPF simulee) - portee delib. reduite a un CPU "de confiance". }
 { ========================================================================= }
 
+{ 2026-11-12 : base de CS memorisee pour la duree d UNE instruction        }
+{ (invalidee au debut de Dpmi_Step) - chaque octet d instruction refaisait }
+{ Dpmi_LinAddr -> Dpmi_SelBase -> Dpmi_SelToIdx puis Dpmi_TranslateLin, le }
+{ chemin le plus chaud de l emulation de Pasdows 95. Sans pagination, la    }
+{ lecture va directement en memoire physique. }
+Var
+ DpmiFetchValid: Boolean;
+ DpmiFetchSel: Word;
+ DpmiFetchBase: LongInt;
+
 Function Dpmi_FetchByte(Var P: TEmulatorPanel; Step: Integer): Byte;
 Begin
- Dpmi_FetchByte := Dpmi_ReadByte(P,
-  Dpmi_LinAddr(DpmiCPU.SegSel[1], DpmiCPU.EIP + Step));
+ If (Not DpmiFetchValid) Or (DpmiFetchSel <> DpmiCPU.SegSel[1]) Then Begin
+  DpmiFetchSel := DpmiCPU.SegSel[1];
+  DpmiFetchBase := Dpmi_SelBase(DpmiFetchSel);
+  DpmiFetchValid := True;
+ End;
+ If (DpmiCPU.CR0 And LongInt($80000000)) = 0 Then
+  Dpmi_FetchByte := Dpmi_ReadBytePhys(P, DpmiFetchBase + DpmiCPU.EIP + Step)
+ Else
+  Dpmi_FetchByte := Dpmi_ReadByte(P, DpmiFetchBase + DpmiCPU.EIP + Step);
 End;
 
 Function Dpmi_FetchWord(Var P: TEmulatorPanel; Step: Integer): Word;
@@ -224750,6 +224803,7 @@ Var
  { (2026-10-14, demande explicite de l utilisateur, suite enquete PKUNZIP). }
 Begin
  If Not DpmiCPU.Active Then Exit;
+ DpmiFetchValid := False; { base de CS relue une fois par instruction }
  HasOvr := False; DefSeg := DpmiCPU.SegSel[3]; { DS par defaut }
  If DpmiCPU.Is32Bit Then OpSize := 4 Else OpSize := 2;
  DpmiCPU.AddrIs32 := DpmiCPU.Is32Bit; { 17e correctif, voir TDpmiCPU.AddrIs32 }
@@ -258490,7 +258544,12 @@ Begin
   If Win16_ChunkBreak Then Begin Win16_ChunkBreak := False; Break; End;
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
-  EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
+  { 2026-11-12 : en mode protege (DpmiCPU), CS:IP reel n a pas de sens et  }
+  { cette lecture (Emu_ReadByte -> Emu_Addr -> Emu_UnrealBase) coutait      }
+  { environ 10 % du temps d execution de Pasdows 95 - sautee. }
+  If DpmiCPU.Active Then EmuTraceBuf[EmuTraceIdx].Op := $90
+  Else
+   EmuTraceBuf[EmuTraceIdx].Op := Emu_ReadByte(P.CPU, P.CPU.Segs.CS, P.CPU.IP);
   EmuTraceBuf[EmuTraceIdx].ES := P.CPU.Segs.ES;
   EmuTraceBuf[EmuTraceIdx].DI := P.CPU.Regs.DI;
   EmuTraceBuf[EmuTraceIdx].CX := P.CPU.Regs.CX;
@@ -258955,9 +259014,12 @@ Begin
     While EmuVScr_HasKey(P) Do Begin
       EntryAddr16 := EmuVScr_PopKey(P);
       { Systeme invite en mode protege avec son propre IDT (noyau qui     }
-      { gere lui-meme le clavier, ex. Pasdows 95) : vrais codes de        }
-      { balayage sur le port 60h + IRQ 1, voir Emu_8042_KeyFromHost.      }
-      If DpmiCPU.Active And (DpmiCPU.IdtBase <> 0) Then Begin
+      { gere lui-meme le clavier, ex. Pasdows 95), ou programme qui a     }
+      { masque l IRQ 1 au PIC pour interroger lui-meme le 8042 (console   }
+      { et interface 16 couleurs d IO.SYS de Pasdows 95) : vrais codes de }
+      { balayage sur le port 60h (+ IRQ 1), voir Emu_8042_KeyFromHost.    }
+      If (DpmiCPU.Active And (DpmiCPU.IdtBase <> 0)) Or
+         ((EmuPICMaster.IMR And $02) <> 0) Then Begin
        Emu_8042_KeyFromHost(EntryAddr16);
        Continue;
       End;
@@ -259015,8 +259077,15 @@ Begin
     la machine emulee (EmuVScr_PushKey/EmuMouse_UpdateFromHost) se fait
     desormais UNIQUEMENT via HandleEmulatorPanelEvent, appele par
     MainLoop APRES avoir deja verifie hit-test/focus - seule autorite de
-    routage, plus de sondage concurrent. }
-  If EmuHasFocus Then Begin
+    routage, plus de sondage concurrent.
+    2026-11-12 (Pasdows 95 : environ 3 s entre une frappe et son
+    affichage) : ce bloc s executait a CHAQUE instruction emulee - or
+    KeyPressed (PtcCrt) passe par TPTCWrapperThread.NextEvent, qui fait
+    un ThreadSwitch (appel systeme sched_yield) et prend une section
+    critique a chaque appel : la majeure partie du temps du programme
+    partait dans ces appels. Une fois toutes les 1024 instructions
+    suffit pour Echap/Ctrl+C et le redessin periodique (80 ms). }
+  If EmuHasFocus And ((ChunkI And 1023) = 1023) Then Begin
    While KeyPressed Do Begin
     K := Ord(ReadKey);
     If K = 27 Then Begin
@@ -281480,6 +281549,11 @@ Var
  LinAddr: LongInt;
 Begin
  If Not EmuDbg.Active Then Exit;
+ { 2026-11-12 : rien a verifier sans point d arret, demande d arret ni pas }
+ { a pas - evite le calcul d adresse et la recherche a CHAQUE instruction  }
+ { (environ 6 % du temps d emulation de Pasdows 95). }
+ If (EmuDbg.BPCount = 0) And (Not EmuDbg.BreakReq) And
+    (EmuDbg.StepMode = ESM_NONE) Then Exit;
  { BOGUE REEL CORRIGE (2026-10-19, enquete DPMI/BC.EXE) : ce hook lisait  }
  { TOUJOURS EmuPanel.CPU.Segs.CS/IP (coeur REEL), meme une fois          }
  { DpmiCPU.Active=True - or DOS_RunOneChunk n appelle alors plus JAMAIS   }
