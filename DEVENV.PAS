@@ -1017,7 +1017,7 @@ Program DEVENV;
 
 Uses DOS,
      {$IFDEF FPC}
-      PtcGraph,PtcCrt,PtcMouse,PtcWrapper,Ptc
+      PtcGraph,PtcCrt,PtcMouse
      {$ELSE}
       Crt,Graph
      {$ENDIF};
@@ -14294,59 +14294,6 @@ End;
  Procedure HideMouse;
  Begin
   { PtcMouse gere le masquage }
- End;
-
- { 2026-11-12 : GetMouseState de PtcMouse vide la file d evenements de   }
- { PTC et ne garde que l ETAT FINAL des boutons - un clic bref (appui et }
- { relachement entre deux appels, par ex. pendant le redessin de l ecran }
- { emule) etait perdu, et un double-clic devenait un simple clic ou rien }
- { (icones du bureau de Pasdows 95 qui ne s ouvraient pas sous Windows). }
- { Cette version, qui masque celle de PtcMouse pour tout DEVENV, lit les }
- { evenements de PTC dans l ordre et met en file chaque changement des   }
- { boutons : chaque appel rend le prochain changement (position du clic }
- { comprise), puis l etat courant une fois la file videe. }
- Var
-  HostMouseX, HostMouseY, HostMouseBtn: LongInt;
-  HostMouseQX, HostMouseQY, HostMouseQB: Array[0..63] Of LongInt;
-  HostMouseQHead, HostMouseQLen: Integer;
-
- Procedure HostMouse_Pump;
- Var
-  Ev: IPTCEvent;
-  Me: IPTCMouseEvent;
-  B, I: LongInt;
- Begin
-  If (PTCWrapperObject = Nil) Or (Not PTCWrapperObject.IsOpen) Then Exit;
-  Repeat
-   PTCWrapperObject.NextEvent(Ev, False, [PTCMouseEvent]);
-   If Ev <> Nil Then
-    If Ev.QueryInterface(IPTCMouseEvent, Me) = 0 Then Begin
-     B := 0;
-     If PTCMouseButton1 In Me.ButtonState Then B := B Or 1;
-     If PTCMouseButton2 In Me.ButtonState Then B := B Or 2;
-     If PTCMouseButton3 In Me.ButtonState Then B := B Or 4;
-     HostMouseX := Me.X; HostMouseY := Me.Y;
-     If (B <> HostMouseBtn) And (HostMouseQLen < 64) Then Begin
-      I := (HostMouseQHead + HostMouseQLen) Mod 64;
-      HostMouseQX[I] := Me.X; HostMouseQY[I] := Me.Y; HostMouseQB[I] := B;
-      Inc(HostMouseQLen);
-     End;
-     HostMouseBtn := B;
-    End;
-  Until Ev = Nil;
- End;
-
- Procedure GetMouseState(Var X, Y, Button: LongInt);
- Begin
-  HostMouse_Pump;
-  If HostMouseQLen > 0 Then Begin
-   X := HostMouseQX[HostMouseQHead]; Y := HostMouseQY[HostMouseQHead];
-   Button := HostMouseQB[HostMouseQHead];
-   HostMouseQHead := (HostMouseQHead + 1) Mod 64;
-   Dec(HostMouseQLen);
-  End Else Begin
-   X := HostMouseX; Y := HostMouseY; Button := HostMouseBtn;
-  End;
  End;
 {$ENDIF}
 
