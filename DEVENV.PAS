@@ -195172,6 +195172,7 @@ Begin
  CM.Width := 220;
  AddContextItem(CM, 'Coller du texte', 1000);
  AddContextItem(CM, 'Envoi Ctrl+Alt+Suppr', 1001);
+ AddContextItem(CM, 'Envoi Echap', 1004);
  AddContextSeparator(CM);
  AddContextItem(CM, 'Executer le VBScript...', 1002);
  AddContextItem(CM, 'Executer le PascalScript...', 1003);
@@ -207601,8 +207602,18 @@ Begin
     Sc := I - 1; Sh := True;
    End;
   If Sc = 0 Then Exit;
- End Else
-  Ext := Sc In [$47, $48, $49, $4B, $4D, $4F, $50, $51, $52, $53];
+ End Else Begin
+  Ext := (Sc And $7F) In [$47, $48, $49, $4B, $4D, $4F, $50, $51, $52, $53];
+  { Code de relachement seul (bit 7), ou touche de controle (Ctrl, Maj, }
+  { Alt) seule : un seul code, sans son relachement automatique - voir  }
+  { EmuCtxSendCtrlAltDel, qui pousse appuis et relachements separes. }
+  If ((Sc And $80) <> 0) Or (Sc In [$1D, $2A, $36, $38]) Then Begin
+   If Ext Then Emu_8042_KbdPut($E0);
+   Emu_8042_KbdPut(Sc);
+   Emu_8042_Pump;
+   Exit;
+  End;
+ End;
  If Ctl Then Emu_8042_KbdPut($1D);
  If Sh Then Emu_8042_KbdPut($2A);
  If Ext Then Emu_8042_KbdPut($E0);
@@ -277952,6 +277963,12 @@ Begin
   DrawCreateTableDialog;
  If IISFieldDlg.Base.Visible Then
   DrawIISFieldDialog;
+ { 2026-11-12 : apres un effacement complet (ClearScreen ci-dessus, ex.   }
+ { fermeture du menu contextuel de l emulateur), l image emulee doit etre }
+ { redessinee meme si l invite n a rien change (emulation en pause tant   }
+ { que le panneau n a pas le focus) - sinon le panneau restait vide.      }
+ If EmuPanel.Base.Visible And WasFullRepaint Then
+  EmuPanel.NeedRepaint := True;
  If EmuPanel.Base.Visible Then
   DrawEmulatorPanel(EmuPanel);
  { Fenetre debogueur emulateur (par-dessus tout sauf menus et dialogues) -
@@ -281921,6 +281938,8 @@ Begin
      { demande explicite) - voir ShowEmulatorContextMenu. }
      1000: EmuCtxPasteText; { Coller du texte }
      1001: EmuCtxSendCtrlAltDel; { Envoi Ctrl+Alt+Suppr }
+     1004: If EmuPanel.Loaded Then         { Envoi Echap : Echap seul ferme }
+            EmuVScr_PushKey(EmuPanel, $011B); { l onglet, voir plus haut }
      1002: ShowEmulatorVBScriptOpenDialog; { Executer le VBScript... }
      1003: ShowEmulatorPascalScriptOpenDialog; { Executer le PascalScript... }
      500: Begin { Ouvrir }
