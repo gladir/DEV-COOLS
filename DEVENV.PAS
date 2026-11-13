@@ -7610,14 +7610,14 @@ Type
     mineure }
   DosCountry      : Integer;     { code pays MS-DOS (AH=38h), voir
     DosCountryName }
-  DosSoundOn      : Boolean;     { drapeau son - voir le commentaire de tete
-    de  }
-                                  { TermCmd_DOSCFG : aucun haut-parleur
-                                    PC/carte  }
-                                  { son synthetise dans ce fichier pour
-                                    l'instant,}
-                                  { simple etat memorise/rapporte
-                                    honnetement.    }
+  DosSoundOn      : Boolean;     { drapeau son : sur materiel classe AT,
+    }
+                                  { Sound Blaster 16 et OPL2 MUETTES en
+    220h/ }
+                                  { 388h (voir Emu_SbRead) ; aucun son
+    n'est }
+                                  { produit pour l'instant.
+    }
   { Emulateur > Z8001 (2026-09-20, demande explicite de l'utilisateur -     }
   { "Enter sur .Z8K doit lancer l'emulateur Z8001 avec une API CP/M         }
   { integree si la case CP/M est cochee, cochee par defaut"). }
@@ -170305,10 +170305,9 @@ End;
 { ouvrir de fenetre. DOSVER/COUNTRY/SOUND sont de VRAIS nouveaux champs     }
 { (DosVerMajor/DosVerMinor/DosCountry/DosSoundOn) introduits ici meme,       }
 { cables dans Emu_DoInt21 $30/$33 sous-fonction 6/$38 (voir ces 3 cases) -   }
-{ SOUND reste honnetement un simple drapeau memorise (aucune carte son/     }
-{ haut-parleur PC synthetise dans ce fichier pour l'instant, voir le         }
-{ commentaire de tete de DosSoundOn) : la commande le rapporte fidelement,   }
-{ ne pretend pas a un effet audible qui n'existe pas encore. }
+{ SOUND active une Sound Blaster 16 et un OPL2 MUETS (2026-11-13, voir    }
+{ Emu_SbRead) : les pilotes les detectent et la lecture avance au bon      }
+{ rythme, mais aucun son n'est produit pour l'instant. }
 Function DosCountryName(Code: Integer): String; Forward;
 Function DosCountryCodeFromName(Const NameIn: String): Integer; Forward;
 Procedure Emu_ApplyCpuType(CpuType: Integer); Forward;
