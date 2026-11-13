@@ -208498,6 +208498,12 @@ Begin
   $3F5: Emu_PortRead := Emu_FDC_ReadData(EmuFDC);
   $3F7: If Emu_IsATClassHw Then Emu_PortRead := Emu_FDC_ReadDIR(EmuFDC);
   Else Begin
+   { 2026-11-12 : un port sans peripherique lit FFh sur un vrai PC (bus   }
+   { flottant, tirages). 0 faisait croire a une carte presente : Pasdows }
+   { 95 cherchait une carte reseau NE2000 en 300h (Port[$300] <> $FF) et }
+   { attendait la fin de sa reinitialisation (200000 lectures, ~2 s au   }
+   { demarrage) ; le bus PCI (CFCh) semblait aussi peuple de zeros. }
+   Emu_PortRead := $FF;
    { DIAGNOSTIC TEMPORAIRE - a retirer : voir le commentaire de tete d       }
    { EmuUnkPortHits - port LU sans aucune branche geree ci-dessus. }
    If EmuUnkPortHits < 300 Then Begin
@@ -208508,7 +208514,7 @@ Begin
     {$I+}
     If IOResult = 0 Then Begin
      WriteLn(DiagUnkF, '#', EmuUnkPortHits, ' IN port=', HexWord(Port),
-      ' -> 0 (non gere)  Steps=', P.TotalSteps, ' CS:IP=',
+      ' -> FF (non gere)  Steps=', P.TotalSteps, ' CS:IP=',
       HexWord(P.CPU.Segs.CS), ':', HexWord(P.CPU.IP));
      Close(DiagUnkF);
     End;
