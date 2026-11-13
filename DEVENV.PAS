@@ -208548,6 +208548,277 @@ Begin
  If IOResult <> 0 Then ;
 End;
 
+{ Sound Blaster 16 et AdLib (OPL2) MUETTES - 2026-11-13, Pasdows 95     }
+{ (pilotes de carte son, icone de volume, Controle du volume et          }
+{ Gestionnaire de peripheriques). Aucun son n est produit : la carte    }
+{ existe pour que les pilotes la detectent et que la lecture avance au  }
+{ bon rythme. Presente sur materiel classe AT+ quand SOUND=ON          }
+{ (DosSoundOn, Options > Emulateur > DOS ou commande DOSCFG), aux       }
+{ adresses de la variable BLASTER=A220 I5 D1 H5 T6 :                    }
+{  - DSP en 220h : reinitialisation (226h : 1 puis 0 -> AAh en 22Ah),   }
+{    lecture 22Ah, ecriture/etat 22Ch, etat/acquittement 8 bits 22Eh,   }
+{    acquittement 16 bits 22Fh ; version 4.05 (E1h), haut-parleur       }
+{    (D1h/D3h/D8h), frequence (40h, 41h/42h), blocs 8 bits (14h, 1Ch,   }
+{    48h, 90h/91h) et SB16 (B0h-CFh), pause/reprise (D0h/D4h/D5h/D6h),  }
+{    fin d auto-initialisation (D9h/DAh), IRQ forcees (F2h/F3h).        }
+{    Chaque bloc dure (longueur / frequence) en temps reel de l hote ; a }
+{    sa fin, l IRQ 5 est levee (mixeur 82h bit 0 ou 1) et le bloc       }
+{    recommence s il est auto-initialise. Le controleur DMA n est pas   }
+{    emule : les octets ne sont jamais lus, seul le rythme compte.      }
+{  - Mixeur CT1745 en 224h/225h : volumes memorises, 80h = IRQ 5 (02h), }
+{    81h = DMA 1 et 5 (22h), 82h = interruptions en attente.             }
+{  - OPL2 en 388h/389h (miroirs 220h/221h et 228h/229h) : registres      }
+{    memorises, minuteries 1 et 2 qui expirent des leur demarrage (bits  }
+{    6/5 et 7 de l etat), ce que verifie la detection AdLib classique.  }
+Var
+ EmuSbRstVal: Byte;
+ EmuSbOut: Array[0..15] Of Byte;
+ EmuSbOutN: Integer;
+ EmuSbCmd, EmuSbNeed, EmuSbArgN: Integer;
+ EmuSbArg: Array[0..3] Of Byte;
+ EmuSbMixIdx: Byte;
+ EmuSbMix: Array[0..255] Of Byte;
+ EmuSbSpeaker, EmuSbPlaying, EmuSbPaused, EmuSbAuto, EmuSb16,
+  EmuSbExitAuto: Boolean;
+ EmuSbRate: LongInt;        { octets (ou echantillons) par seconde }
+ EmuSbBlock: LongInt;       { echantillons par bloc }
+ EmuSbBlockMs, EmuSbNextMs, EmuSbLastMs: LongInt;
+ EmuSbTestReg: Byte;
+ EmuOplIdx, EmuOplStatus: Byte;
+ EmuOplReg: Array[0..255] Of Byte;
+ EmuSbReady: Boolean;
+
+Function Emu_SbOn: Boolean;
+Begin
+ Emu_SbOn := Emu_IsATClassHw And OptionsDlg.Data.DosSoundOn;
+End;
+
+{ Horloge de l hote en millisecondes depuis minuit (DOS.GetTime) }
+Function Emu_SbNowMs: LongInt;
+Var H, M, S, S100: Word;
+Begin
+ GetTime(H, M, S, S100);
+ Emu_SbNowMs := ((LongInt(H) * 60 + M) * 60 + S) * 1000 + S100 * 10;
+End;
+
+Procedure Emu_SbMixReset;
+Begin
+ FillChar(EmuSbMix, SizeOf(EmuSbMix), 0);
+ EmuSbMix[$22] := $CC; EmuSbMix[$04] := $CC; EmuSbMix[$26] := $CC;
+ EmuSbMix[$30] := $C0; EmuSbMix[$31] := $C0;
+ EmuSbMix[$32] := $C0; EmuSbMix[$33] := $C0;
+ EmuSbMix[$34] := $C0; EmuSbMix[$35] := $C0;
+ EmuSbMix[$80] := $02; EmuSbMix[$81] := $22;
+End;
+
+Procedure Emu_SbInit;
+Begin
+ If EmuSbReady Then Exit;
+ EmuSbReady := True;
+ EmuSbOutN := 0; EmuSbCmd := -1; EmuSbNeed := 0; EmuSbArgN := 0;
+ EmuSbPlaying := False; EmuSbPaused := False; EmuSbAuto := False;
+ EmuSbRate := 11025; EmuSbBlock := 2048; EmuSbSpeaker := False;
+ Emu_SbMixReset;
+ FillChar(EmuOplReg, SizeOf(EmuOplReg), 0);
+ EmuOplStatus := 0;
+End;
+
+Procedure Emu_SbPush(B: Byte);
+Begin
+ If EmuSbOutN < 16 Then Begin
+  EmuSbOut[EmuSbOutN] := B;
+  Inc(EmuSbOutN);
+ End;
+End;
+
+Procedure Emu_SbIrq(Bits16: Boolean);
+Begin
+ If Bits16 Then EmuSbMix[$82] := EmuSbMix[$82] Or 2
+ Else EmuSbMix[$82] := EmuSbMix[$82] Or 1;
+ EmuIrqPending := EmuIrqPending Or $20;          { IRQ 5 }
+End;
+
+{ Debut d un bloc de Len echantillons }
+Procedure Emu_SbStart(Len: LongInt; Auto, B16: Boolean);
+Var R: LongInt;
+Begin
+ EmuSbBlock := Len; EmuSbAuto := Auto; EmuSb16 := B16;
+ EmuSbExitAuto := False; EmuSbPaused := False;
+ R := EmuSbRate;
+ If R < 1000 Then R := 1000;
+ EmuSbBlockMs := (Len * 1000) Div R;
+ If EmuSbBlockMs < 10 Then EmuSbBlockMs := 10;
+ EmuSbLastMs := Emu_SbNowMs;
+ EmuSbNextMs := EmuSbLastMs + EmuSbBlockMs;
+ EmuSbPlaying := True;
+End;
+
+{ Avance la lecture (appele a chaque tic d horloge) }
+Procedure Emu_SbService;
+Var N: LongInt;
+Begin
+ If Not EmuSbPlaying Or EmuSbPaused Then Exit;
+ N := Emu_SbNowMs;
+ If N < EmuSbLastMs Then EmuSbNextMs := N;   { minuit }
+ EmuSbLastMs := N;
+ If N < EmuSbNextMs Then Exit;
+ Emu_SbIrq(EmuSb16);
+ If EmuSbAuto And Not EmuSbExitAuto Then
+  EmuSbNextMs := EmuSbNextMs + EmuSbBlockMs
+ Else
+  EmuSbPlaying := False;
+ If EmuSbNextMs < N Then EmuSbNextMs := N + EmuSbBlockMs;
+End;
+
+{ Nombre d octets d arguments de la commande DSP C }
+Function Emu_SbArgCount(C: Integer): Integer;
+Begin
+ Case C Of
+  $10, $38, $40, $E0, $E2, $E4: Emu_SbArgCount := 1;
+  $14, $16, $17, $24, $41, $42, $48, $74..$7F, $80: Emu_SbArgCount := 2;
+  $B0..$CF: Emu_SbArgCount := 3;
+ Else
+  Emu_SbArgCount := 0;
+ End;
+End;
+
+Procedure Emu_SbExec;
+Var Len: LongInt;
+Begin
+ Case EmuSbCmd Of
+  $14, $16, $17, $24: Emu_SbStart(LongInt(EmuSbArg[0]) Or
+   (LongInt(EmuSbArg[1]) Shl 8) + 1, False, False);
+  $1C, $90: Emu_SbStart(EmuSbBlock, True, False);
+  $91: Emu_SbStart(EmuSbBlock, False, False);
+  { constante de temps : octets par seconde, les deux voies comprises }
+  $40: EmuSbRate := 1000000 Div (256 - EmuSbArg[0]);
+  $41, $42: EmuSbRate := (LongInt(EmuSbArg[0]) Shl 8) Or EmuSbArg[1];
+  $48: EmuSbBlock := (LongInt(EmuSbArg[0]) Or
+        (LongInt(EmuSbArg[1]) Shl 8)) + 1;
+  $80: Emu_SbStart((LongInt(EmuSbArg[0]) Or
+        (LongInt(EmuSbArg[1]) Shl 8)) + 1, False, False);
+  $B0..$CF: Begin
+   Len := (LongInt(EmuSbArg[1]) Or (LongInt(EmuSbArg[2]) Shl 8)) + 1;
+   { stereo (mode bit 5) : la longueur compte les deux voies }
+   If (EmuSbArg[0] And $20) <> 0 Then Len := Len Div 2;
+   Emu_SbStart(Len, (EmuSbCmd And 4) <> 0, EmuSbCmd < $C0);
+  End;
+  $D0, $D5: EmuSbPaused := True;
+  $D4, $D6: If EmuSbPlaying Then Begin
+             EmuSbPaused := False;
+             EmuSbLastMs := Emu_SbNowMs;
+             EmuSbNextMs := EmuSbLastMs + EmuSbBlockMs;
+            End;
+  $D1: EmuSbSpeaker := True;
+  $D3: EmuSbSpeaker := False;
+  $D8: If EmuSbSpeaker Then Emu_SbPush($FF) Else Emu_SbPush(0);
+  $D9, $DA: EmuSbExitAuto := True;
+  $E0: Emu_SbPush(Not EmuSbArg[0]);
+  $E1: Begin Emu_SbPush(4); Emu_SbPush(5); End;
+  $E3: ; { copyright : rien }
+  $E4: EmuSbTestReg := EmuSbArg[0];
+  $E8: Emu_SbPush(EmuSbTestReg);
+  $F2: Emu_SbIrq(False);
+  $F3: Emu_SbIrq(True);
+  $F8: Emu_SbPush(0);
+ End;
+End;
+
+Function Emu_SbRead(Port: Word): Byte;
+Var I: Integer;
+Begin
+ Emu_SbInit;
+ Emu_SbRead := $FF;
+ Case Port And $F Of
+  $A: If EmuSbOutN > 0 Then Begin
+       Emu_SbRead := EmuSbOut[0];
+       For I := 1 To EmuSbOutN - 1 Do EmuSbOut[I - 1] := EmuSbOut[I];
+       Dec(EmuSbOutN);
+      End Else Emu_SbRead := 0;
+  $C: Emu_SbRead := $7F;                        { pret a ecrire }
+  $E: Begin
+       If EmuSbOutN > 0 Then Emu_SbRead := $FF Else Emu_SbRead := $7F;
+       EmuSbMix[$82] := EmuSbMix[$82] And Not 1;
+      End;
+  $F: Begin
+       Emu_SbRead := $FF;
+       EmuSbMix[$82] := EmuSbMix[$82] And Not 2;
+      End;
+  4: Emu_SbRead := EmuSbMixIdx;
+  5: Case EmuSbMixIdx Of
+      $82: Emu_SbRead := (EmuSbMix[$82] And 3) Or $20;
+     Else
+      Emu_SbRead := EmuSbMix[EmuSbMixIdx];
+     End;
+  0, 8: Emu_SbRead := EmuOplStatus;
+ End;
+End;
+
+Procedure Emu_OplWrite(Port: Word; V: Byte);
+Begin
+ Emu_SbInit;
+ If (Port And 1) = 0 Then Begin
+  EmuOplIdx := V;
+  Exit;
+ End;
+ EmuOplReg[EmuOplIdx] := V;
+ If EmuOplIdx = 4 Then Begin
+  If (V And $80) <> 0 Then EmuOplStatus := 0
+  Else Begin
+   { minuteries : expirent immediatement si demarrees et non masquees }
+   If ((V And 1) <> 0) And ((V And $40) = 0) Then
+    EmuOplStatus := EmuOplStatus Or $C0;
+   If ((V And 2) <> 0) And ((V And $20) = 0) Then
+    EmuOplStatus := EmuOplStatus Or $A0;
+  End;
+ End;
+End;
+
+Function Emu_OplRead: Byte;
+Begin
+ Emu_SbInit;
+ Emu_OplRead := EmuOplStatus;
+End;
+
+Procedure Emu_SbWrite(Port: Word; V: Byte);
+Begin
+ Emu_SbInit;
+ Case Port And $F Of
+  0, 1, 8, 9: Emu_OplWrite(Port, V);
+  4: EmuSbMixIdx := V;
+  5: Case EmuSbMixIdx Of
+      0: Emu_SbMixReset;
+      $80, $81: ; { IRQ/DMA fixes (BLASTER=A220 I5 D1 H5) }
+      $82: ;
+     Else
+      EmuSbMix[EmuSbMixIdx] := V;
+     End;
+  6: Begin
+      If ((V And 1) = 0) And ((EmuSbRstVal And 1) <> 0) Then Begin
+       EmuSbOutN := 0; EmuSbCmd := -1; EmuSbNeed := 0;
+       EmuSbPlaying := False; EmuSbSpeaker := False;
+       Emu_SbPush($AA);
+      End;
+      EmuSbRstVal := V;
+     End;
+  $C: If EmuSbCmd >= 0 Then Begin
+       EmuSbArg[EmuSbArgN] := V;
+       Inc(EmuSbArgN);
+       If EmuSbArgN >= EmuSbNeed Then Begin
+        Emu_SbExec;
+        EmuSbCmd := -1;
+       End;
+      End Else Begin
+       EmuSbCmd := V; EmuSbArgN := 0;
+       EmuSbNeed := Emu_SbArgCount(V);
+       If EmuSbNeed = 0 Then Begin
+        Emu_SbExec;
+        EmuSbCmd := -1;
+       End;
+      End;
+ End;
+End;
+
 Function Emu_PortRead(Var P: TEmulatorPanel; Port: Word): Byte;
 Var
  CmosIdxPort, CmosDataPort: Word;
@@ -208662,6 +208933,11 @@ Begin
   $92: If Emu_IsATClassHw Then
         Emu_PortRead := Ord(Emu8042.A20Enabled) Shl 1;
   $3C0..$3DF: Emu_PortRead := Emu_VidPortRead(Port);
+  { Sound Blaster 16 et OPL2 muettes : voir Emu_SbRead }
+  $220..$22F: If Emu_SbOn Then Emu_PortRead := Emu_SbRead(Port)
+              Else Emu_PortRead := $FF;
+  $388..$38B: If Emu_SbOn Then Emu_PortRead := Emu_OplRead
+              Else Emu_PortRead := $FF;
   $3F6: If Emu_DiskIfFamily = DIF_ATA Then
          Emu_PortRead := Emu_IdeRead(0, 8);
   $376: If Emu_DiskIfFamily = DIF_ATA Then
@@ -208771,6 +209047,8 @@ Begin
   $3BC..$3BE: Emu_LPT_Write(EmuLPT1, Port - $3BC, Value);
   $92: If Emu_IsATClassHw Then Emu8042.A20Enabled := (Value And $02) <> 0;
   $3C0..$3DF: Emu_VidPortWrite(Port, Value);
+  $220..$22F: If Emu_SbOn Then Emu_SbWrite(Port, Value);
+  $388..$38B: If Emu_SbOn Then Emu_OplWrite(Port, Value);
   $3F6: If Emu_DiskIfFamily = DIF_ATA Then Emu_IdeWrite(0, 8, Value);
   $376: If Emu_DiskIfFamily = DIF_ATA Then Emu_IdeWrite(1, 8, Value);
   { Controleur de disquette (FDC) - voir le commentaire de lecture ci-dessus. }
@@ -228793,6 +229071,7 @@ Begin
  Emu_WriteWord(P.CPU, $40, $6C, Word(Counter And $FFFF));
  Emu_WriteWord(P.CPU, $40, $6E, Word((Counter Shr 16) And $FFFF));
  EmuIrqPending := EmuIrqPending Or $01;
+ If EmuSbPlaying Then Emu_SbService; { Sound Blaster : fin de bloc -> IRQ 5 }
  If OptionsDlg.Data.DosTopView Then Begin
   Emu_Tv_ServiceSound;  { SOUND (1019h) - avance la file de notes }
   Emu_Tv_ServiceTimers; { TIMER TopView - avance les compteurs actifs }
@@ -228881,6 +229160,19 @@ Begin
       Dpmi_FireProtectedHandler(P, Byte(EmuPICMaster.VectorBase + 1));
    End Else
     Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 1));
+   Exit;
+ End;
+ { IRQ 5 (Sound Blaster 16 muette, 2026-11-13) : fin de bloc DMA. }
+ If ((EmuIrqPending And $20) <> 0) And ((EmuPICMaster.IMR And $20) = 0) Then
+   Begin
+   EmuIrqPending := EmuIrqPending And Not Byte($20);
+   EmuPICMaster.ISR := EmuPICMaster.ISR Or $20;
+   If DpmiCPU.Active Then Begin
+    If Not Dpmi_FireViaRealIdt(P, Byte(EmuPICMaster.VectorBase + 5)) Then
+     If DpmiCPU.IntSel[Byte(EmuPICMaster.VectorBase + 5)] <> 0 Then
+      Dpmi_FireProtectedHandler(P, Byte(EmuPICMaster.VectorBase + 5));
+   End Else
+    Emu_FireHwInt(P, Byte(EmuPICMaster.VectorBase + 5));
    Exit;
  End;
  { IRQ 12 (souris PS/2, 2026-11-12) : PIC esclave, cascade sur IRQ 2. }
