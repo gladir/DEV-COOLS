@@ -2026,7 +2026,10 @@ Const
  { EGA/CGA planar, voir plus bas) car allouee seulement quand Video1/2 =   }
  { S3 Trio64, pour ne rien changer au format/comportement des autres       }
  { cartes deja en place. }
- S3_VRAM_SIZE         = 1048576;
+ { 4 Mo depuis 2026-11-13 (Pasdows 95, Panneau de configuration,          }
+ { Affichage) : modes 15, 16, 24 et 32 bits jusqu a 1024x768, comme une     }
+ { Trio64 equipee de 4 Mo. }
+ S3_VRAM_SIZE         = 4194304;
  { Tampon d image lineaire (LFB) VBE 2.0 de la S3 emulee (2026-11-12) :     }
  { adresse physique annoncee par AX=4F01h (PhysBasePtr), positive en       }
  { LongInt pour des comparaisons simples, hors de toute RAM emulee.        }
@@ -2039,17 +2042,25 @@ Const
  { limite authentique, pas un oubli). Pas de mode "flat/lineaire" (bit 14    }
  { de BX sur AX=4F02h) : uniquement l acces banque classique (AX=4F05h),     }
  { le seul que ce CPU 8086/80386 reel-mode emule necessite vraiment. }
- S3_VBE_MODE_COUNT    = 5;
+ { 2026-11-13 : numerotation VESA standard (110h = 640x480 en 15 bits,    }
+ { 111h en 16 bits - l ancienne table annoncait 110h/111h comme 640x480 et }
+ { 800x600 en 16 bits), modes 15/16/24 bits ajoutes et 32 bits (140h-142h, }
+ { hors norme comme sur les vraies cartes), 1280x1024 en 256 couleurs.     }
+ S3_VBE_MODE_COUNT    = 16;
  S3VbeModeNum : Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
-  ($101, $103, $105, $110, $111);
+  ($101, $103, $105, $107, $110, $111, $112, $113, $114, $115, $116, $117,
+   $118, $140, $141, $142);
  S3VbeWidth   : Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
-  (640, 800, 1024, 640, 800);
+  (640, 800, 1024, 1280, 640, 640, 640, 800, 800, 800, 1024, 1024, 1024,
+   640, 800, 1024);
  S3VbeHeight  : Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
-  (480, 600, 768, 480, 600);
+  (480, 600, 768, 1024, 480, 480, 480, 600, 600, 600, 768, 768, 768, 480,
+   600, 768);
  S3VbeBpp     : Array[0..S3_VBE_MODE_COUNT - 1] Of Byte =
-  (8, 8, 8, 16, 16);
+  (8, 8, 8, 8, 15, 16, 24, 15, 16, 24, 15, 16, 24, 32, 32, 32);
  S3VbeBytesPerLine: Array[0..S3_VBE_MODE_COUNT - 1] Of Word =
-  (640, 800, 1024, 1280, 1600);
+  (640, 800, 1024, 1280, 1280, 1280, 1920, 1600, 1600, 2400, 2048, 2048,
+   3072, 2560, 3200, 4096);
  DOS_DISK_IF_COUNT    = 13;      { nombre d interfaces de disque emulables }
  DOS_LAN_VENDOR_COUNT = 8;       { nombre de produits pilote LAN emulables }
  DOS_EMS_VERSION_COUNT = 3;      { nombre de versions LIM EMS emulables   }
@@ -9176,6 +9187,9 @@ Var
  EmuVbeMap: Array[0..255] Of Byte;     { VBE 8 bits : invite -> hote }
  EmuVbeLastDac: Array[0..767] Of Byte; { DAC deja charge dans l hote }
  EmuVbeMapHost256: Boolean;
+ { Couleurs directes (15/16/24/32 bits) sur un hote 256 couleurs : cube   }
+ { 6x6x6 charge dans les entrees 17-232 de la palette hote (2026-11-13). }
+ EmuCubeLoaded: Boolean;
  EmuExact16: Boolean; { hote 256 couleurs : 16 couleurs exactes (240-255) }
  EmuGfxDstW, EmuGfxDstH: Integer; { taille affichee de l ecran graphique emule }
  EmuBootActive: Boolean;        { True pour l onglet en cours SEULEMENT  }
@@ -198266,6 +198280,7 @@ Begin
   If Not Changed Then Exit;
   Move(EmuVideo.DAC, EmuVbeLastDac, SizeOf(EmuVbeLastDac));
   EmuVbeMapHost256 := True;
+  EmuCubeLoaded := False;
   For I := 0 To 238 Do Begin
    EmuVbeMap[I] := 17 + I;
    SetRGBPalette(17 + I, (LongInt(EmuVideo.DAC[I * 3]) * 255) Div 63,
@@ -198290,6 +198305,31 @@ Begin
  End;
 End;
 
+{ Couleurs directes (2026-11-13) : hote 256 couleurs -> cube 6x6x6 dans   }
+{ les entrees 17-232 (recharge seulement apres un mode 8 bits, qui y met  }
+{ le DAC invite), hote 16 couleurs -> Emu_VidApprox16. }
+Procedure Emu_DirectBuildMap;
+Var R, G, B: Integer;
+Begin
+ If (GetMaxColor < 255) Or EmuCubeLoaded Then Exit;
+ For R := 0 To 5 Do
+  For G := 0 To 5 Do
+   For B := 0 To 5 Do
+    SetRGBPalette(17 + R * 36 + G * 6 + B, R * 51, G * 51, B * 51);
+ EmuCubeLoaded := True;
+ EmuVbeMapHost256 := False; { le prochain mode 8 bits recharge son DAC }
+End;
+
+Function Emu_DirectBgi(R, G, B: Byte): Integer;
+Begin
+ If GetMaxColor >= 255 Then
+  Emu_DirectBgi := 17 + ((Word(R) * 6) Shr 8) * 36 +
+   ((Word(G) * 6) Shr 8) * 6 + ((Word(B) * 6) Shr 8)
+ Else
+  { Emu_VidApprox16 attend des composantes 6 bits (0..63, comme le DAC) }
+  Emu_DirectBgi := Emu_VidApprox16(R Shr 2, G Shr 2, B Shr 2);
+End;
+
 { Couleur BGI hote du pixel (Sx, Sy) de l ecran graphique emule (VBE 8/16 }
 { bits ou modes CGA/EGA/VGA) - extrait de DrawEmulatorPanel (2026-11-12). }
 Function Emu_GfxPixelBgi(Sx, Sy: Integer): Integer;
@@ -198302,18 +198342,33 @@ Begin
     S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx;
     If (S3PixOfs >= 0) And (S3PixOfs < S3_VRAM_SIZE) Then
      BgiC := EmuVbeMap[EmuVideo.S3Mem^[S3PixOfs]]; { voir Emu_VbeBuildMap }
-   End Else If EmuVideo.BitsPerPix = 16 Then Begin
+   End Else If (EmuVideo.BitsPerPix = 16) Or
+               (EmuVideo.BitsPerPix = 15) Then Begin
     S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine + Sx * 2;
     If (S3PixOfs >= 0) And (S3PixOfs + 1 < S3_VRAM_SIZE) Then Begin
      S3PixWord := Word(EmuVideo.S3Mem^[S3PixOfs]) Or
       (Word(EmuVideo.S3Mem^[S3PixOfs + 1]) Shl 8);
-     { RGB565 -> approximation 16 couleurs (voir disclosure ci-dessus). }
-     S3R5 := (S3PixWord Shr 11) And $1F;
-     S3G6 := (S3PixWord Shr 5) And $3F;
+     If EmuVideo.BitsPerPix = 16 Then Begin
+      { RGB565 }
+      S3R5 := (S3PixWord Shr 11) And $1F;
+      S3G6 := (S3PixWord Shr 5) And $3F;
+     End Else Begin
+      { RGB555 (2026-11-13) }
+      S3R5 := (S3PixWord Shr 10) And $1F;
+      S3G6 := ((S3PixWord Shr 5) And $1F) * 2 + 1;
+     End;
      S3B5 := S3PixWord And $1F;
-     BgiC := Emu_VidApprox16(Byte((S3R5 * 255) Div 31),
+     BgiC := Emu_DirectBgi(Byte((S3R5 * 255) Div 31),
       Byte((S3G6 * 255) Div 63), Byte((S3B5 * 255) Div 31));
     End;
+   End Else If (EmuVideo.BitsPerPix = 24) Or
+               (EmuVideo.BitsPerPix = 32) Then Begin
+    { 8:8:8 (2026-11-13) : B, V, R en memoire, 4e octet ignore en 32 bits }
+    S3PixOfs := LongInt(Sy) * EmuVideo.VBEBytesPerScanLine +
+     LongInt(Sx) * (EmuVideo.BitsPerPix Div 8);
+    If (S3PixOfs >= 0) And (S3PixOfs + 2 < S3_VRAM_SIZE) Then
+     BgiC := Emu_DirectBgi(EmuVideo.S3Mem^[S3PixOfs + 2],
+      EmuVideo.S3Mem^[S3PixOfs + 1], EmuVideo.S3Mem^[S3PixOfs]);
    End;
   End;
  End Else Begin
@@ -198626,7 +198681,8 @@ Begin
   { rouges/bleus/illisibles) ; sur un hote 16 couleurs (defaut), l indice   }
   { invite etait utilise tel quel. Table de correspondance EmuVbeMap, voir  }
   { Emu_VbeBuildMap. }
-  If EmuVideo.VBEActive And (EmuVideo.BitsPerPix = 8) Then Emu_VbeBuildMap;
+  If EmuVideo.VBEActive And (EmuVideo.BitsPerPix = 8) Then Emu_VbeBuildMap
+  Else If EmuVideo.VBEActive Then Emu_DirectBuildMap;
   { Rendu pixel : RLE par ligne pour limiter le nombre de
     primitives de dessin. }
   EmuExact16 := (GetMaxColor >= 255) And EmuVideo.IsPlanar And
@@ -207847,8 +207903,22 @@ Begin
  Emu_8042_ReadStatus := S;
 End;
 
+{ Reinitialisation systeme par le 8042 (commande FEh, 2026-11-13) :       }
+{ Pasdows 95 redemarre ainsi (Arreter > Redemarrer, mode MS-DOS, nouveau  }
+{ nombre de couleurs) - auparavant ignoree, l ecran restait noir. La      }
+{ boucle d emulation s arrete (EmuResetReq) et StepEmulator relance       }
+{ l amorcage El Torito du meme CD-ROM dans le meme onglet ; le CMOS est   }
+{ conserve, comme sur une vraie machine. }
+Var
+ EmuResetReq: Boolean;
+ EmuLastElToritoSlot: Integer;
+
 Procedure Emu_8042_WriteCmd(Value: Byte);
 Begin
+ If Value = $FE Then Begin
+  EmuResetReq := True;
+  Exit;
+ End;
  { Meme correctif IRQ1 que Emu_8042_WriteData ci-dessus, par coherence :  }
  { un vrai 8042 leve IRQ1 (si armee par le bit0 du octet de commande) des }
  { qu un octet est pose dans son tampon de sortie, quelle qu en soit la   }
@@ -208952,9 +209022,104 @@ Begin
   (Emu_DiskIfFamily = DIF_ATA);
 End;
 
+{ Interface VBE "DISPI" de Bochs/QEMU (ports 1CEh index, 1CFh donnees,  }
+{ 16 bits) - 2026-11-13, Pasdows 95 (Panneau de configuration, Affichage :}
+{ changement de resolution et de nombre de couleurs sans redemarrer, le    }
+{ noyau 32 bits ne pouvant plus appeler l INT 10h du BIOS). Presente quand }
+{ la S3 Trio64 est configuree (meme VRAM et meme tampon lineaire           }
+{ EMU_S3_LFB_BASE que ses modes VESA), comme la carte VGA standard de      }
+{ QEMU. Registres : 0 ID (B0C5h), 1 largeur, 2 hauteur, 3 bits par point,  }
+{ 4 activation (bit 0 actif, bit 6 tampon lineaire, bit 7 sans effacement),}
+{ 5 banque, 6/7 largeur/hauteur virtuelles, 8/9 decalages X/Y, 10 VRAM en  }
+{ blocs de 64 Ko. Les E/S 16 bits sur ces ports ne sont PAS decoupees en   }
+{ octets (1CFh suit 1CEh : l octet haut de l index tomberait sur les       }
+{ donnees), voir Emu_PortRead16/Emu_PortWrite16. }
+Var
+ EmuDispiIdx: Word;
+ EmuDispiReg: Array[0..10] Of Word;
+
+Function Emu_DispiRead(Port: Word): Word;
+Begin
+ If Not Emu_S3Active Then Begin
+  Emu_DispiRead := $FFFF;
+  Exit;
+ End;
+ If Port = $1CE Then Begin
+  Emu_DispiRead := EmuDispiIdx;
+  Exit;
+ End;
+ Case EmuDispiIdx Of
+  0: Emu_DispiRead := $B0C5;
+  10: Emu_DispiRead := S3_VRAM_SIZE Div 65536;
+  1..9: Emu_DispiRead := EmuDispiReg[EmuDispiIdx];
+ Else
+  Emu_DispiRead := 0;
+ End;
+End;
+
+Procedure Emu_DispiEnable(V: Word);
+Var W, H, Bpp, Pitch: LongInt;
+Begin
+ W := EmuDispiReg[1]; H := EmuDispiReg[2]; Bpp := EmuDispiReg[3];
+ If (V And 1) = 0 Then Begin
+  EmuDispiReg[4] := 0;
+  Exit;
+ End;
+ If Not ((Bpp = 8) Or (Bpp = 15) Or (Bpp = 16) Or (Bpp = 24) Or
+         (Bpp = 32)) Then Bpp := 0;
+ If EmuDispiReg[6] > W Then W := EmuDispiReg[6];
+ Pitch := W * ((Bpp + 7) Div 8);
+ If (Bpp = 0) Or (EmuDispiReg[1] < 320) Or (H < 200) Or
+    (EmuDispiReg[1] > 1600) Or (H > 1200) Or
+    (Pitch * H > S3_VRAM_SIZE) Then Begin
+  { mode impossible : refuse (le logiciel le voit a la relecture) }
+  EmuDispiReg[4] := 0;
+  EmuDispiReg[1] := 0;
+  Exit;
+ End;
+ If Not EmuVideo.MemReady Then Emu_VidInit;
+ If Not EmuVideo.S3MemReady Then Begin
+  New(EmuVideo.S3Mem);
+  FillChar(EmuVideo.S3Mem^, SizeOf(EmuVideo.S3Mem^), 0);
+  EmuVideo.S3MemReady := True;
+ End;
+ EmuDispiReg[4] := V;
+ EmuVideo.VBEActive := True;
+ EmuVideo.VBEMode := 0;
+ EmuVideo.VBEBank := 0;
+ EmuVideo.VBEBytesPerScanLine := Pitch;
+ EmuVideo.Width := EmuDispiReg[1];
+ EmuVideo.Height := H;
+ EmuVideo.BitsPerPix := Bpp;
+ EmuVideo.IsGraphic := True;
+ EmuVideo.IsPlanar := False;
+ EmuVideo.ChainFour := False;
+ EmuVideo.Mode := $6A;
+ EmuVideo.GfxDirty := True;
+ If (V And $80) = 0 Then
+  FillChar(EmuVideo.S3Mem^, SizeOf(EmuVideo.S3Mem^), 0);
+End;
+
+Procedure Emu_DispiWrite(Port: Word; V: Word);
+Begin
+ If Not Emu_S3Active Then Exit;
+ If Port = $1CE Then Begin
+  EmuDispiIdx := V;
+  Exit;
+ End;
+ Case EmuDispiIdx Of
+  4: Emu_DispiEnable(V);
+  1..3, 5..9: EmuDispiReg[EmuDispiIdx] := V;
+ End;
+End;
+
 Function Emu_PortRead16(Var P: TEmulatorPanel; Port: Word): Word;
 Var L: Byte;
 Begin
+ If (Port = $1CE) Or (Port = $1CF) Then Begin
+  Emu_PortRead16 := Emu_DispiRead(Port);
+  Exit;
+ End;
  L := Emu_PortRead(P, Port);
  If Emu_IsWideDataPort(Port) Then
   Emu_PortRead16 := Word(L) Or (Word(Emu_PortRead(P, Port)) Shl 8)
@@ -208975,6 +209140,10 @@ End;
 
 Procedure Emu_PortWrite16(Var P: TEmulatorPanel; Port: Word; V: Word);
 Begin
+ If (Port = $1CE) Or (Port = $1CF) Then Begin
+  Emu_DispiWrite(Port, V);
+  Exit;
+ End;
  Emu_PortWrite(P, Port, Lo(V));
  If Emu_IsWideDataPort(Port) Then Emu_PortWrite(P, Port, Hi(V))
  Else Emu_PortWrite(P, Word(Port + 1), Hi(V));
@@ -209205,16 +209374,28 @@ Begin
    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 28, 64);  { BankSize (Ko) }
    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 29, 0);   { NumberOfImagePages }
    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 30, 0);   { Reserved1 }
-   If S3VbeBpp[ModeIdx] = 16 Then Begin
-    { Couleur directe RGB565 - champs VBE 1.2 }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 31, 5);  { RedMaskSize }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 32, 11); { RedFieldPosition }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 33, 6);  { GreenMaskSize }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 34, 5);  { GreenFieldPosition }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 35, 5);  { BlueMaskSize }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 36, 0);  { BlueFieldPosition }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 37, 0);  { RsvdMaskSize }
-    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 38, 0);  { RsvdFieldPosition }
+   If S3VbeBpp[ModeIdx] > 8 Then Begin
+    { Couleur directe - champs VBE 1.2 : RGB555 (15 bits), RGB565 (16),   }
+    { 8:8:8 (24 bits et 32 bits, octet haut reserve en 32 bits). }
+    Case S3VbeBpp[ModeIdx] Of
+     15: Begin R8 := 5; G8 := 5; B8 := 10; End;
+     16: Begin R8 := 5; G8 := 6; B8 := 11; End;
+    Else
+     Begin R8 := 8; G8 := 8; B8 := 16; End;
+    End;
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 31, R8);  { RedMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 32, B8);  { RedFieldPosition }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 33, G8);  { GreenMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 34, R8);  { GreenFieldPosition }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 35, R8);  { BlueMaskSize }
+    Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 36, 0);   { BlueFieldPosition }
+    If S3VbeBpp[ModeIdx] = 32 Then Begin
+     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 37, 8);  { RsvdMaskSize }
+     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 38, 24); { RsvdFieldPosition }
+    End Else Begin
+     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 37, 0);
+     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 38, 0);
+    End;
     Emu_WriteByte(P.CPU, InfoSeg, InfoOfs + 39, 0);  { DirectColorModeInfo }
    End;
    { PhysBasePtr (VBE 2.0) : tampon lineaire, voir EMU_S3_LFB_BASE ;      }
@@ -258635,6 +258816,10 @@ Var
 Begin
  For ChunkI := 0 To 4999 Do Begin
   If P.CPU.Fault <> sfNone Then Break;
+  If EmuResetReq Then Begin
+   P.CPU.Fault := sfEndProgram;
+   Break;
+  End;
   If Win16_ChunkBreak Then Begin Win16_ChunkBreak := False; Break; End;
   EmuTraceBuf[EmuTraceIdx].CS := P.CPU.Segs.CS;
   EmuTraceBuf[EmuTraceIdx].IP := P.CPU.IP;
@@ -264495,6 +264680,7 @@ Begin NesActive := False;
  { dela de ce seul lancement. }
  If EmuBootFromDrive >= 0 Then Begin
   EmuBootActive := True;
+  EmuLastElToritoSlot := -1; { reinitialisation 8042 : voir EmuResetReq }
   Loaded := Emu_LoadBootSector(P.CPU, Byte(EmuBootFromDrive));
   EmuBootFromDrive := -1;
  End Else If EmuBootFromElTorito >= 0 Then Begin
@@ -264506,6 +264692,7 @@ Begin NesActive := False;
   EmuBootFromElTorito := -1;
  End Else Begin
   EmuBootActive := False;
+  EmuLastElToritoSlot := -1;
   Loaded := Emu_LoadProgram(P.CPU, BinaryPath);
  End;
  { Voir le commentaire de tete d EmuFakeDosSuppressed/EmuBootDosInRom :     }
@@ -265557,6 +265744,18 @@ Begin
     deroulant ouvert). }
   If EmuDbg.WinVisible And (Not MenuActive) Then EmuDbg_DrawWindow;
   If P.CPU.Fault <> sfNone Then Begin
+   If EmuResetReq And (EmuLastElToritoSlot >= 0) Then Begin
+    { redemarrage demande par le 8042 (voir EmuResetReq) }
+    EmuResetReq := False;
+    Emu_Done(P.CPU);
+    DpmiCPU.Active := False;
+    FillChar(EmuDispiReg, SizeOf(EmuDispiReg), 0);
+    EmuIrqPending := 0; EmuIrqPending2 := 0;
+    EmuBootFromElTorito := EmuLastElToritoSlot;
+    ShowEmulatorPanel(P, P.BinaryPath, '-CD', '');
+    Exit;
+   End;
+   EmuResetReq := False;
    DOS_PrintEndMessage(P);
    DrawEmulatorPanel(P);
   End;
@@ -265703,6 +265902,7 @@ Begin
  Node^.Win.Height := GetScreenHeight - MENUBAR_HEIGHT
    - TOOLBAR_HEIGHT - TAB_HEIGHT - OUTPUT_HEIGHT - STATUSBAR_HEIGHT;
  EmuBootFromElTorito := CdIdx;
+ EmuLastElToritoSlot := CdIdx;
  ShowEmulatorPanel(EmuPanel, DispName, '-CD', '');
  Node^.EmuTab := EmuPanel;
  Inc(WinMgr.WinCount);
