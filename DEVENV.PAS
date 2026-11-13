@@ -6880,7 +6880,7 @@ Type
   TvDefCursorX, TvDefCursorY : Word;
   { --- CMOS --- }
   CMOSIndex      : Byte;
-  CMOSReg        : Array[0..63] Of Byte;
+  CMOSReg        : Array[0..127] Of Byte;
   { --- Trace circulaire + diagnostics (etat "vivant", pas juste des logs   }
   { ponctuels - inclus pour une exactitude complete des dumps EMUDIAG.LOG   }
   { apres bascule d onglet, meme si l impact fonctionnel serait mineur en   }
@@ -10363,7 +10363,10 @@ Var
  { la session DEVENV (pile de sauvegarde simulee), pas seulement pour    }
  { l execution emulee en cours - comme la pile CMOS d un vrai AT. }
  EmuCMOS_Index  : Byte;          { registre d index (bit7 = masque NMI) }
- EmuCMOS_Reg    : Array[0..63] Of Byte; { registres 02h-3Fh (RAM/config) }
+ EmuCMOS_Reg    : Array[0..127] Of Byte; { registres 0Ah-7Fh (RAM/config) }
+ { decalage en secondes de l horloge invitee sur l horloge hote (heure  }
+ { reglee par le systeme invite, 2026-11-13) }
+ EmuRtcOffset   : LongInt;
         { Diagnostic PERMANENT (ajoute 2026-09-02, enquete div0 BOOT MS-DOS) : }
  { la trace circulaire habituelle (EmuTraceBuf) ne couvre que les 8192      }
  { DERNIERS pas, insuffisant pour un boot de plusieurs centaines de         }
@@ -206661,21 +206664,103 @@ Begin
  End;
 End;
 
+{ Horloge reglable (2026-11-13, Pasdows 95 : Proprietes de Date/Heure) : }
+{ l heure invitee est l heure hote plus EmuRtcOffset secondes. Jours     }
+{ comptes depuis le 1er janvier 2000 (calendrier gregorien). }
+Function Emu_RtcDays(Y, M, D: LongInt): LongInt;
+Const Cum: Array[1..12] Of Word = (0, 31, 59, 90, 120, 151, 181, 212, 243,
+  273, 304, 334);
+Var N: LongInt;
+Begin
+ { annees bissextiles de 2000 a Y-1 : celles de 1 a Y-1 moins les 484 }
+ { de 1 a 1999 }
+ N := (Y - 2000) * 365 + ((Y - 1) Div 4 - 499) - ((Y - 1) Div 100 - 19) +
+      ((Y - 1) Div 400 - 4);
+ N := N + Cum[M] + D - 1;
+ If (M > 2) And ((Y Mod 4 = 0) And ((Y Mod 100 <> 0) Or (Y Mod 400 = 0)))
+ Then Inc(N);
+ Emu_RtcDays := N;
+End;
+
+Function Emu_RtcHostSecs: LongInt;
+Var Yr, Mo, Dy, Wd, Hr, Mn, Sc, Cs: Word;
+Begin
+ GetDate(Yr, Mo, Dy, Wd);
+ GetTime(Hr, Mn, Sc, Cs);
+ Emu_RtcHostSecs := Emu_RtcDays(Yr, Mo, Dy) * 86400 + LongInt(Hr) * 3600 +
+  LongInt(Mn) * 60 + Sc;
+End;
+
+{ Heure invitee decomposee }
+Procedure Emu_RtcNow(Var Y, M, D, Wd, H, Mn, S: LongInt);
+Var T, Days, DimV: LongInt;
+Begin
+ T := Emu_RtcHostSecs + EmuRtcOffset;
+ If T < 0 Then T := 0;
+ Days := T Div 86400; T := T Mod 86400;
+ H := T Div 3600; Mn := (T Div 60) Mod 60; S := T Mod 60;
+ Wd := (Days + 6) Mod 7;                       { 1/1/2000 : samedi }
+ Y := 2000;
+ While True Do Begin
+  If (Y Mod 4 = 0) And ((Y Mod 100 <> 0) Or (Y Mod 400 = 0)) Then
+   DimV := 366 Else DimV := 365;
+  If Days < DimV Then Break;
+  Days := Days - DimV; Inc(Y);
+ End;
+ M := 1;
+ While True Do Begin
+  Case M Of
+   4, 6, 9, 11: DimV := 30;
+   2: If (Y Mod 4 = 0) And ((Y Mod 100 <> 0) Or (Y Mod 400 = 0)) Then
+       DimV := 29 Else DimV := 28;
+  Else
+   DimV := 31;
+  End;
+  If (Days < DimV) Or (M = 12) Then Break;
+  Days := Days - DimV; Inc(M);
+ End;
+ D := Days + 1;
+End;
+
+{ Valeur V au format du registre B (BCD si bit 2 a 0) }
+Function Emu_RtcEnc(V: LongInt): Byte;
+Begin
+ If (EmuCMOS_Reg[$0B] And 4) <> 0 Then Emu_RtcEnc := Byte(V)
+ Else Emu_RtcEnc := Emu_BCD(Byte(V));
+End;
+
+Function Emu_RtcDec(V: Byte): LongInt;
+Begin
+ If (EmuCMOS_Reg[$0B] And 4) <> 0 Then Emu_RtcDec := V
+ Else Emu_RtcDec := (V Shr 4) * 10 + (V And 15);
+End;
+
 Function Emu_CMOS_ReadReg(Reg: Byte): Byte;
 Var
- Yr, Mo, Dy, Wd: Word;
- Hr, Mn, Sc, Cs: Word;
+ Yr, Mo, Dy, Wd, Hr, Mn, Sc: LongInt;
  ExtKB: LongInt;
 Begin
  Case Reg Of
-  $00: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Sc); End;
-  $02: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Mn); End;
-  $04: Begin GetTime(Hr, Mn, Sc, Cs); Emu_CMOS_ReadReg := Emu_BCD(Hr); End;
-  $06: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Wd + 1; End;
-  $07: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Emu_BCD(Dy); End;
-  $08: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Emu_BCD(Mo); End;
-  $09: Begin GetDate(Yr, Mo, Dy, Wd); Emu_CMOS_ReadReg := Emu_BCD(Yr Mod 100);
-    End;
+  $00, $02, $04, $06, $07, $08, $09, $32: Begin
+   Emu_RtcNow(Yr, Mo, Dy, Wd, Hr, Mn, Sc);
+   Case Reg Of
+    $00: Emu_CMOS_ReadReg := Emu_RtcEnc(Sc);
+    $02: Emu_CMOS_ReadReg := Emu_RtcEnc(Mn);
+    $04:
+     If (EmuCMOS_Reg[$0B] And 2) <> 0 Then
+      Emu_CMOS_ReadReg := Emu_RtcEnc(Hr)
+     Else If Hr = 0 Then Emu_CMOS_ReadReg := Emu_RtcEnc(12)
+     Else If Hr < 12 Then Emu_CMOS_ReadReg := Emu_RtcEnc(Hr)
+     Else If Hr = 12 Then Emu_CMOS_ReadReg := Emu_RtcEnc(12) Or $80
+     Else Emu_CMOS_ReadReg := Emu_RtcEnc(Hr - 12) Or $80;
+    $06: Emu_CMOS_ReadReg := Wd + 1;
+    $07: Emu_CMOS_ReadReg := Emu_RtcEnc(Dy);
+    $08: Emu_CMOS_ReadReg := Emu_RtcEnc(Mo);
+    $09: Emu_CMOS_ReadReg := Emu_RtcEnc(Yr Mod 100);
+   Else
+    Emu_CMOS_ReadReg := Emu_RtcEnc(Yr Div 100);   { $32 : siecle }
+   End;
+  End;
   { Registre A : bit7 (UIP) toujours a 0 - jamais "en cours de mise a jour" }
   $0A: Emu_CMOS_ReadReg := EmuCMOS_Reg[$0A] And $7F;
   { Registre D : bit7 (VRT) toujours a 1 - pile CMOS toujours valide }
@@ -206705,9 +206790,33 @@ Begin
 End;
 
 Procedure Emu_CMOS_WriteReg(Reg: Byte; Value: Byte);
+Var Yr, Mo, Dy, Wd, Hr, Mn, Sc, V: LongInt;
 Begin
- { 00h-09h (horloge/alarme) : lecture seule - l heure emulee vient de    }
- { l horloge hote, on ne simule pas le reglage de l heure/alarme. }
+ { 00h-09h : reglage de l heure (2026-11-13) - le champ ecrit remplace   }
+ { celui de l heure invitee courante, d ou un nouveau EmuRtcOffset ;     }
+ { alarmes (01h/03h/05h) et jour de semaine (06h, recalcule) ignores.    }
+ If (Reg In [$00, $02, $04, $07, $08, $09]) Then Begin
+  Emu_RtcNow(Yr, Mo, Dy, Wd, Hr, Mn, Sc);
+  If Reg = $04 Then Begin
+   V := Emu_RtcDec(Value And $7F);
+   If (EmuCMOS_Reg[$0B] And 2) = 0 Then Begin
+    If V = 12 Then V := 0;
+    If (Value And $80) <> 0 Then V := V + 12;
+   End;
+  End Else V := Emu_RtcDec(Value);
+  Case Reg Of
+   $00: If V < 60 Then Sc := V;
+   $02: If V < 60 Then Mn := V;
+   $04: If V < 24 Then Hr := V;
+   $07: If (V >= 1) And (V <= 31) Then Dy := V;
+   $08: If (V >= 1) And (V <= 12) Then Mo := V;
+   $09: Yr := (Yr Div 100) * 100 + V;
+  End;
+  If Yr < 2000 Then Yr := 2000;
+  EmuRtcOffset := Emu_RtcDays(Yr, Mo, Dy) * 86400 + Hr * 3600 + Mn * 60 +
+   Sc - Emu_RtcHostSecs;
+  Exit;
+ End;
  If Reg > $09 Then EmuCMOS_Reg[Reg] := Value;
 End;
 
@@ -208451,7 +208560,7 @@ Begin
   Exit;
  End;
  If Port = CmosDataPort Then Begin
-  Emu_PortRead := Emu_CMOS_ReadReg(EmuCMOS_Index And $3F);
+  Emu_PortRead := Emu_CMOS_ReadReg(EmuCMOS_Index And $7F);
   Exit;
  End;
  Case Port Of
@@ -208605,7 +208714,7 @@ Begin
   Exit;
  End;
  If Port = CmosDataPort Then Begin
-  Emu_CMOS_WriteReg(EmuCMOS_Index And $3F, Value);
+  Emu_CMOS_WriteReg(EmuCMOS_Index And $7F, Value);
   Exit;
  End;
  Case Port Of
