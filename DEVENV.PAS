@@ -10255,7 +10255,6 @@ Var
  Emu8042WriteHits: Integer;      { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuKeyPushHits: Integer;        { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagInt31Hits: Integer;         { DIAGNOSTIC TEMPORAIRE - a retirer }
- DiagPStepHits: Integer;         { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagPIntHits: Integer;          { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagLoop3090Done: Boolean;      { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagVidModeHits: Integer;       { DIAGNOSTIC TEMPORAIRE - a retirer }
@@ -217002,23 +217001,35 @@ Begin
  Exclude(P.CPU.Flags.s, EFG_CF);
 End;
 
+{ 2026-11-12 : fichier ouvert une seule fois - il etait ouvert puis ferme }
+{ a chaque appel (plus de 1400 fois au demarrage de Pasdows 95), ce qui    }
+{ coute des secondes sous Windows. Flush garde le journal a jour. }
+Var
+ EmuInt13LogF: Text;
+ EmuInt13LogOpen: Boolean;
+
 Procedure Emu_LogInt13(Const Phase: String; AH, AL, CH, CL, DH, DL: Byte;
  CX, DX, ES, BX: Word; LBA, Count: LongInt; Steps: LongInt);
-Var LogF: Text;
 Begin
  If Not OptionsDlg.Data.DosLogInt13 Then Exit;
  {$I-}
- Assign(LogF, 'EMUINT13.LOG'); Append(LogF);
- If IOResult <> 0 Then Begin Assign(LogF, 'EMUINT13.LOG'); Rewrite(LogF); End;
+ If Not EmuInt13LogOpen Then Begin
+  Assign(EmuInt13LogF, 'EMUINT13.LOG'); Append(EmuInt13LogF);
+  If IOResult <> 0 Then Begin
+   Assign(EmuInt13LogF, 'EMUINT13.LOG'); Rewrite(EmuInt13LogF);
+  End;
+  EmuInt13LogOpen := IOResult = 0;
+  If Not EmuInt13LogOpen Then Exit;
+ End;
  { DIAGNOSTIC TEMPORAIRE (2026-10-19, enquete W95) : Steps= ajoute pour      }
  { correler avec EMUWATCH.LOG (destination ES=9000 couvrant 1230h, voir     }
  { l enquete segment 1073h/REP MOVSW/'$' qui ne se termine jamais). }
- WriteLn(LogF, Phase, ' #', EmuInt13LogCount, ' Steps=', Steps,
+ WriteLn(EmuInt13LogF, Phase, ' #', EmuInt13LogCount, ' Steps=', Steps,
   ' AH=', AH, ' AL=', AL,
   ' CH=', CH, ' CL=', CL, ' DH=', DH, ' DL=', DL,
   ' CX=', CX, ' DX=', DX, ' ES=', ES, ' BX=', BX,
   ' LBA=', LBA, ' COUNT=', Count);
- Close(LogF);
+ Flush(EmuInt13LogF);
  {$I+} If IOResult <> 0 Then ;
  Inc(EmuInt13LogCount);
 End;
@@ -224835,7 +224846,6 @@ End;
 
 Procedure Dpmi_Step(Var P: TEmulatorPanel);
 Var
- DiagPStepF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPSTEP.LOG }
  DiagPIntF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPINT.LOG }
  DiagLoop3090F: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir
    DIAGLOOP3090.LOG }
@@ -224975,24 +224985,10 @@ Begin
    End;
    {$I+} If IOResult <> 0 Then ;
   End;
-  { DIAGNOSTIC TEMPORAIRE - a retirer (enquete DPMI/BC.EXE) }
-  If DiagPStepHits < 20000 Then Begin
-   Inc(DiagPStepHits);
-   {$I-} Assign(DiagPStepF, 'DIAGPSTEP.LOG');
-   If FileExists('DIAGPSTEP.LOG') Then Append(DiagPStepF) Else
-     Rewrite(DiagPStepF);
-   {$I+}
-   If IOResult = 0 Then Begin
-    WriteLn(DiagPStepF, '#', DiagPStepHits, ' CS=', HexWord(DpmiCPU.SegSel[1]),
-     ' EIP=', HexLong(DpmiCPU.EIP),
-     ' B=', HexByte(B), ' EAX=', HexLong(DpmiCPU.Reg.EAX),
-     ' EBX=', HexLong(DpmiCPU.Reg.EBX), ' ESP=', HexLong(DpmiCPU.Reg.ESP),
-     ' SS=', HexWord(DpmiCPU.SegSel[2]), ' CF=',
-     Byte(EFG_CF In DpmiCPU.Flags.s));
-    Close(DiagPStepF);
-   End;
-   {$I+} If IOResult <> 0 Then ;
-  End;
+  { 2026-11-12 : journal DIAGPSTEP.LOG (enquete DPMI/BC.EXE) retire - il  }
+  { ouvrait et refermait le fichier pour chacune des 20000 premieres       }
+  { instructions en mode protege : sous Windows, des minutes d ecran noir  }
+  { au demarrage de Pasdows 95. }
   Case B Of
    $66: Begin
     If OpSize = 2 Then OpSize := 4 Else OpSize := 2;
@@ -258614,6 +258610,8 @@ Begin
   Emu_WallTickDue := False;
 End;
 
+Var EmuBootLoopDumps: Integer; { releves DIAGBOOTLOOP.LOG, voir plus bas }
+
 Procedure DOS_RunOneChunk(Var P: TEmulatorPanel);
 Var
  ChunkI: LongInt;
@@ -258800,7 +258798,12 @@ Begin
   { foreground fige alors que c etait un pur aliasing d echantillonnage.   }
   { 999983 est premier (ne divise PAS 5000), garantit un echantillonnage   }
   { qui glisse a travers TOUTES les phases du cycle au fil du temps. }
-  If (P.TotalSteps Mod 999983 = 0) And (P.TotalSteps > 0) Then Begin
+  { 2026-11-12 : limite a 20 releves (avant : un tous les ~10^6 pas, sans  }
+  { fin - un fichier ouvert/ferme plusieurs fois par seconde, journal sans }
+  { limite de taille). }
+  If (EmuBootLoopDumps < 20) And (P.TotalSteps Mod 999983 = 0) And
+     (P.TotalSteps > 0) Then Begin
+   Inc(EmuBootLoopDumps);
    {$I-} Assign(DiagBootLoop, 'DIAGBOOTLOOP.LOG'); Rewrite(DiagBootLoop); {$I+}
    If IOResult = 0 Then Begin
     WriteLn(DiagBootLoop, 'Steps=', P.TotalSteps, ' CS:IP=',
