@@ -659,6 +659,13 @@ Type
  JSObjectPtr = ^JSObjectRec;
  JSPropertyPtr = ^JSPropertyRec;
 
+ { Pointeurs vers des types declares plus loin (DOMStyle, CSSSelectorPart) :
+   le cache CSS par noeud est alloue a la demande (seuls les elements dont
+   le style a ete resolu en paient le cout memoire) et les parties de
+   selecteur sont parcourues par pointeur plutot que copiees. }
+ DOMStylePtr = ^DOMStyle;
+ CSSSelectorPartPtr = ^CSSSelectorPart;
+
  { Type pour un noeud HTML }
  HTMLNode = Record
   NodeType: Byte;            { Type de noeud (element, texte, commentaire, etc.) }
@@ -675,6 +682,17 @@ Type
   NextSibling: HTMLNodePtr;
   ChildCount: Integer;
   Parent: HTMLNodePtr;       { Pointeur vers le noeud parent }
+  { Cache CSS par noeud : CSSCacheGen est la "generation" globale
+    (CSSResolveGeneration) au moment ou CSSCacheStyle a ete calcule ; une
+    valeur differente de la generation actuelle signifie "perime".
+    -1 = jamais calcule. La generation n'est incrementee que par
+    DOMSetAttribute / DOMRemoveAttribute / CSSExtractFromDocument (seules
+    facons de changer ce qu'un selecteur peut voir) ; ajouter/retirer des
+    noeuds ne peut pas changer les regles d'un AUTRE noeud (ce moteur n'a
+    aucun selecteur structurel). Le cache vit sur le noeud : liberÃ© avec
+    lui (voir FreeHTMLNode), aucun risque d'adresse reutilisee. }
+  CSSCacheGen: LongInt;
+  CSSCacheStyle: DOMStylePtr;
  End;
 
  { Structure pour stocker les zones de liens cliquables }
@@ -1339,6 +1357,13 @@ PositionAnchorX, PositionAnchorY, PositionAnchorMaxX: Integer;
  CSSGlobalStylesheet: CSSStylesheet;  { Feuille de style globale }
  CSSParseError: String;               { Message d'erreur de parsing }
  CSSEnabled: Boolean;                 { CSS active ou non }
+ { Generation du cache CSS par noeud (jamais remise a zero) }
+ CSSResolveGeneration: LongInt;
+ { Memo des couleurs CSS deja converties (table directe de 64 entrees) ;
+   invalide si HTMLBlackColorIndex change (palette reprogrammee). }
+ CSSColCacheKey: Array[0..63] Of String[40];
+ CSSColCacheVal: Array[0..63] Of Integer;
+ CSSColCacheBlack: Integer;
  CSSPreparedForRender:Boolean;        { feuille deja extraite pour cette navigation }
 
 Var
@@ -1501,6 +1526,28 @@ End;
 { Equivalents locaux des quelques routines de bibliotheque auparavant
   utilisees. Ils suivent la methode de DEVENV.PAS et restent compatibles
   avec Turbo Pascal 7. }
+{ Egalite insensible a la casse (A-Z seulement, comme HTMLLowerCase) SANS
+  copie de chaine : remplace HTMLLowerCase(A) = HTMLLowerCase(B) dans les
+  boucles chaudes (attributs, balises). }
+Function HTMLStrEqI(Const A, B: String): Boolean;
+Var
+ I: Integer;
+ CA, CB: Char;
+Begin
+ HTMLStrEqI := False;
+ If Length(A) <> Length(B) Then Exit;
+ For I := 1 To Length(A) Do Begin
+  CA := A[I];
+  CB := B[I];
+  If CA <> CB Then Begin
+   If (CA >= 'A') And (CA <= 'Z') Then CA := Chr(Ord(CA) + 32);
+   If (CB >= 'A') And (CB <= 'Z') Then CB := Chr(Ord(CB) + 32);
+   If CA <> CB Then Exit;
+  End;
+ End;
+ HTMLStrEqI := True;
+End;
+
 Function HTMLUpperCase(S:String):String;
 Var I:LongInt;
 Begin
@@ -2589,6 +2636,8 @@ Begin
  Node^.NextSibling := Nil;
  Node^.ChildCount := 0;
  Node^.Parent := Nil;
+ Node^.CSSCacheGen := -1;
+ Node^.CSSCacheStyle := Nil;
  CreateHTMLNode := Node;
 End;
 
@@ -2684,6 +2733,7 @@ Begin
   Child := NextChild;
  End;
  HTMLFreeAttributes(Node);
+ If Node^.CSSCacheStyle <> Nil Then Dispose(Node^.CSSCacheStyle);
  Dispose(Node);
 End;
 
@@ -5672,16 +5722,13 @@ End;
 Function DOMGetAttribute(Node: HTMLNodePtr; AttrName: String): String;
 Var
  Attr: HTMLAttributePtr;
- LowerAttr, LowerName: String;
 Begin
  DOMGetAttribute := '';
  If Node = Nil Then Exit;
 
- LowerAttr := HTMLLowerCase(AttrName);
  Attr := Node^.FirstAttribute;
  While Attr <> Nil Do Begin
-  LowerName := HTMLLowerCase(Attr^.Name);
-  If LowerName = LowerAttr Then Begin
+  If HTMLStrEqI(Attr^.Name, AttrName) Then Begin
    DOMGetAttribute := Attr^.Value;
    Exit;
   End;
@@ -5693,15 +5740,15 @@ End;
 Procedure DOMSetAttribute(Node: HTMLNodePtr; AttrName, AttrValue: String);
 Var
  Attr: HTMLAttributePtr;
- LowerAttr, LowerName: String;
 Begin
+ { Cache CSS par noeud : un attribut change (class/id/style/...) -> perimer
+   tout le cache d'un coup (O(1)). }
+ Inc(CSSResolveGeneration);
  If Node = Nil Then Exit;
 
- LowerAttr := HTMLLowerCase(AttrName);
  Attr := Node^.FirstAttribute;
  While Attr <> Nil Do Begin
-  LowerName := HTMLLowerCase(Attr^.Name);
-  If LowerName = LowerAttr Then Begin
+  If HTMLStrEqI(Attr^.Name, AttrName) Then Begin
    Attr^.Value := AttrValue;
    Exit;
   End;
@@ -5714,17 +5761,15 @@ End;
 Procedure DOMRemoveAttribute(Node: HTMLNodePtr; AttrName: String);
 Var
  Attr, PreviousAttr: HTMLAttributePtr;
- LowerAttr, LowerName: String;
 Begin
+ { Cache CSS par noeud : voir DOMSetAttribute. }
+ Inc(CSSResolveGeneration);
  If Node = Nil Then Exit;
-
- LowerAttr := HTMLLowerCase(AttrName);
 
  PreviousAttr := Nil;
  Attr := Node^.FirstAttribute;
  While Attr <> Nil Do Begin
-  LowerName := HTMLLowerCase(Attr^.Name);
-  If LowerName = LowerAttr Then Begin
+  If HTMLStrEqI(Attr^.Name, AttrName) Then Begin
    If PreviousAttr = Nil Then Node^.FirstAttribute := Attr^.Next
    Else PreviousAttr^.Next := Attr^.Next;
    If Node^.LastAttribute = Attr Then Node^.LastAttribute := PreviousAttr;
@@ -5741,16 +5786,13 @@ End;
 Function DOMHasAttribute(Node: HTMLNodePtr; AttrName: String): Boolean;
 Var
  Attr: HTMLAttributePtr;
- LowerAttr, LowerName: String;
 Begin
  DOMHasAttribute := False;
  If Node = Nil Then Exit;
 
- LowerAttr := HTMLLowerCase(AttrName);
  Attr := Node^.FirstAttribute;
  While Attr <> Nil Do Begin
-  LowerName := HTMLLowerCase(Attr^.Name);
-  If LowerName = LowerAttr Then Begin
+  If HTMLStrEqI(Attr^.Name, AttrName) Then Begin
    DOMHasAttribute := True;
    Exit;
   End;
@@ -5878,32 +5920,43 @@ Begin
 End;
 
 { Verifier si un noeud a une classe specifique }
-Function DOMHasClass(Node: HTMLNodePtr; ClassName: String): Boolean;
+{ Le nom de classe figure-t-il dans la liste ClassAttr (separee par des
+  espaces) ? Parcours en place, sans Copy ni allocation. }
+Function CSSClassListHas(Const ClassAttr, ClassName: String): Boolean;
 Var
- ClassAttr: String;
- I, StartPos: Integer;
- CurrentClass: String;
+ I, StartPos, L, N: Integer;
+ K: Integer;
+ Same: Boolean;
 Begin
- DOMHasClass := False;
- If Node = Nil Then Exit;
-
- ClassAttr := DOMGetAttribute(Node, 'class');
- If ClassAttr = '' Then Exit;
-
- { Parser les classes (separees par des espaces) }
+ CSSClassListHas := False;
+ L := Length(ClassAttr);
+ N := Length(ClassName);
+ If (L = 0) Or (N = 0) Then Exit;
  StartPos := 1;
- For I := 1 To Length(ClassAttr) + 1 Do Begin
-  If (I > Length(ClassAttr)) Or (ClassAttr[I] = ' ') Then Begin
-   If I > StartPos Then Begin
-    CurrentClass := Copy(ClassAttr, StartPos, I - StartPos);
-    If CurrentClass = ClassName Then Begin
-     DOMHasClass := True;
+ For I := 1 To L + 1 Do Begin
+  If (I > L) Or (ClassAttr[I] = ' ') Then Begin
+   If (I - StartPos) = N Then Begin
+    Same := True;
+    For K := 1 To N Do
+     If ClassAttr[StartPos + K - 1] <> ClassName[K] Then Begin
+      Same := False;
+      Break;
+     End;
+    If Same Then Begin
+     CSSClassListHas := True;
      Exit;
     End;
    End;
    StartPos := I + 1;
   End;
  End;
+End;
+
+Function DOMHasClass(Node: HTMLNodePtr; ClassName: String): Boolean;
+Begin
+ DOMHasClass := False;
+ If Node = Nil Then Exit;
+ DOMHasClass := CSSClassListHas(DOMGetAttribute(Node, 'class'), ClassName);
 End;
 
 { Procedure recursive pour chercher des elements par classe }
@@ -7323,9 +7376,8 @@ End;
 Function CSSMatchSelector(Const Sel: CSSSelector; Element: HTMLNodePtr): Boolean;
 Var
  I: Integer;
- Part: CSSSelectorPart;
+ Part: CSSSelectorPartPtr;
  Node: HTMLNodePtr;
- ClassName, NodeClass: String;
  Match: Boolean;
 Begin
  CSSMatchSelector := False;
@@ -7334,37 +7386,44 @@ Begin
 
  Node := Element;
 
- { Parcourir les parties du selecteur de droite a gauche }
+ { Parcourir les parties du selecteur de droite a gauche (par pointeur : une
+   partie pese ~170 octets, la copier a chaque tour etait couteux) }
  For I := Sel.PartCount DownTo 1 Do Begin
   If Node = Nil Then Exit;
-  Part := Sel.Parts[I];
+  Part := @Sel.Parts[I];
 
   { Verifier la correspondance }
   Repeat
    Match := False;
-   Case Part.PartType Of
+   Case Part^.PartType Of
     CSS_SEL_TAG: Begin
-     Match := HTMLLowerCase(Node^.TagName) = Part.Value;
+     Match := HTMLStrEqI(Node^.TagName, Part^.Value);
     End;
     CSS_SEL_CLASS: Begin
-     NodeClass := DOMGetAttribute(Node, 'class');
-     Match := DOMHasClass(Node, Part.Value);
+     Match := DOMHasClass(Node, Part^.Value);
     End;
     CSS_SEL_ID: Begin
-     Match := DOMGetAttribute(Node, 'id') = Part.Value;
+     Match := DOMGetAttribute(Node, 'id') = Part^.Value;
     End;
     CSS_SEL_UNIVERSAL: Begin
      Match := True;
     End;
     CSS_SEL_ATTRIBUTE: Begin
-     Match := DOMHasAttribute(Node, Part.AttrName);
-     If Match And (Part.AttrOp > 0) Then
-      Match := DOMGetAttribute(Node, Part.AttrName) = Part.AttrValue;
+     Match := DOMHasAttribute(Node, Part^.AttrName);
+     If Match And (Part^.AttrOp > 0) Then
+      Match := DOMGetAttribute(Node, Part^.AttrName) = Part^.AttrValue;
     End;
    End;
 
    If Not Match Then Begin
-    Case Part.Combinator Of
+    { BOGUE REEL (".Tab li") : la toute DERNIERE partie du selecteur (celle
+      qui doit correspondre a l'ELEMENT CIBLE lui-meme) ne doit JAMAIS
+      remonter l'arbre sur un echec. Sans cela ".Tab li" correspondait a
+      N'IMPORTE QUEL descendant d'un <li> lui-meme descendant d'un .Tab (un
+      simple <a> heritait a tort de "display:table-cell"). Remonter reste
+      correct pour les parties INTERMEDIAIRES (I < Sel.PartCount). }
+    If I = Sel.PartCount Then Exit;
+    Case Part^.Combinator Of
      CSS_COMB_DESCENDANT: Begin
       { Remonter dans l'arbre }
       Node := Node^.Parent;
@@ -7375,15 +7434,10 @@ Begin
    End;
   Until Match;
 
-  { Passer au noeud suivant selon le combinateur : Sel.Parts[I] (et
-    non Parts[I-1]) contient le combinateur qui relie la partie I a
-    la partie I-1, puisque c'est la valeur enregistree par
-    CSSParseSelector juste avant d'ajouter la partie I. Avec le
-    mauvais index, un selecteur compose comme "li.Foo" (Combinator =
-    CSS_COMB_NONE) etait traite comme un descendant ("li .Foo"),
-    remontant vers le parent au lieu de re-tester le meme element -
-    ce qui faisait silencieusement echouer la quasi-totalite des
-    selecteurs composes (balise+classe, balise+id, etc.). }
+  { Passer au noeud suivant selon le combinateur : Sel.Parts[I] (et non
+    Parts[I-1]) contient le combinateur qui relie la partie I a la partie
+    I-1 (valeur enregistree par CSSParseSelector juste avant d'ajouter la
+    partie I). CSS_COMB_NONE = selecteur compose (li.Foo) : meme element. }
   If I > 1 Then Begin
    Case Sel.Parts[I].Combinator Of
     CSS_COMB_NONE: { Selecteur compose : rester sur le meme element } ;
@@ -7399,54 +7453,15 @@ Begin
 End;
 
 { Obtenir les styles CSS appliques a un element }
+Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle); Forward;
+
+{ Obtenir les styles CSS appliques a un element : passe maintenant par la
+  cascade complete (specificite, ordre source, !important, style inline) et
+  par son cache par noeud - l'ancienne version appliquait la 1ere regle
+  trouvee dans l'ordre source, sans tri ni cache. }
 Procedure CSSGetComputedStyle(Element: HTMLNodePtr; Var Style: DOMStyle);
-Var
- I, J, K: Integer;
- InlineStyle: String;
 Begin
- { Initialiser avec valeurs par defaut }
- FillChar(Style,SizeOf(Style),0);
- Style.Color := '';
- Style.BackgroundColor := '';
- Style.BackgroundPosition := '';
- Style.BackgroundImage := '';
- Style.Opacity := '';
- Style.FontSize := '';
- Style.FontWeight := '';
- Style.FontStyle := '';
- Style.TextDecoration := '';
- Style.Display := '';
- Style.Visibility := '';
- Style.Width := '';
- Style.Height := '';
- Style.Margin := '';
- Style.Padding := '';
- Style.Border := '';
- Style.BorderTop := '';
- Style.BorderRight := '';
- Style.BorderBottom := '';
- Style.BorderLeft := '';
-
- If Element = Nil Then Exit;
-
- { Appliquer les regles de la feuille de style }
- For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
-  For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
-   If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
-    { Appliquer les proprietes }
-    For K := 1 To CSSGlobalStylesheet.Rules[I].PropertyCount Do Begin
-     CSSAssignProperty(CSSGlobalStylesheet.Rules[I].Properties[K].PropId,
-      CSSGlobalStylesheet.Rules[I].Properties[K].Value,Style);
-    End;
-    Break;
-   End;
-  End;
- End;
-
- { Appliquer le style inline (priorite maximale) }
- InlineStyle := DOMGetAttribute(Element, 'style');
- If Length(InlineStyle) > 0 Then
-  CSSParseInlineStyle(InlineStyle, Style);
+ CSSResolveCascade(Element, Style);
 End;
 
 { Convertir une couleur CSS en index de couleur EGA/VGA }
@@ -7664,7 +7679,7 @@ Begin
  End;
 End;
 
-Function CSSColorToIndex(Const ColorStr: String): Integer;
+Function CSSColorToIndexSlow(Const ColorStr: String): Integer;
 Var
  LowerColor: String;
  HexResult: Integer;
@@ -7675,13 +7690,13 @@ Begin
    en hexadecimal etait silencieusement ignoree. }
  If (Length(ColorStr) > 0) And (ColorStr[1] = '#') Then Begin
   HexResult := CSSParseHexColor(ColorStr);
-  CSSColorToIndex := HexResult;
+  CSSColorToIndexSlow := HexResult;
   Exit;
  End;
 
  { Fonctions rgb()/rgba() }
  If (System.Pos('rgb', HTMLLowerCase(ColorStr)) = 1) Then Begin
-  CSSColorToIndex := CSSParseRGBFunc(ColorStr);
+  CSSColorToIndexSlow := CSSParseRGBFunc(ColorStr);
   Exit;
  End;
 
@@ -7691,11 +7706,41 @@ Begin
    lieu des 27 comparaisons Si/SinonSi d'avant. }
  If CSSFindNamedColor(LowerColor, NamedIdx) Then Begin
   If NamedIdx = CSS_COLOR_BLACK_SENTINEL Then
-   CSSColorToIndex := HTMLBlackColorIndex
+   CSSColorToIndexSlow := HTMLBlackColorIndex
   Else
-   CSSColorToIndex := NamedIdx;
+   CSSColorToIndexSlow := NamedIdx;
  End Else
-  CSSColorToIndex := -1;
+  CSSColorToIndexSlow := -1;
+End;
+
+{ Conversion couleur CSS -> index, avec memo (table directe de 64 entrees
+  indexee par un hachage de la chaine) : la meme poignee de couleurs revient
+  des milliers de fois par page. Invalide si l'index de noir change. }
+Function CSSColorToIndex(Const ColorStr: String): Integer;
+Var
+ H: LongInt;
+ I, R: Integer;
+Begin
+ If (Length(ColorStr) = 0) Or (Length(ColorStr) > 40) Then Begin
+  CSSColorToIndex := CSSColorToIndexSlow(ColorStr);
+  Exit;
+ End;
+ If CSSColCacheBlack <> HTMLBlackColorIndex Then Begin
+  For I := 0 To 63 Do CSSColCacheKey[I] := '';
+  CSSColCacheBlack := HTMLBlackColorIndex;
+ End;
+ H := 0;
+ For I := 1 To Length(ColorStr) Do
+  H := (H * 31 + Ord(ColorStr[I])) And $FFFF;
+ H := H And 63;
+ If CSSColCacheKey[H] = ColorStr Then Begin
+  CSSColorToIndex := CSSColCacheVal[H];
+  Exit;
+ End;
+ R := CSSColorToIndexSlow(ColorStr);
+ CSSColCacheKey[H] := ColorStr;
+ CSSColCacheVal[H] := R;
+ CSSColorToIndex := R;
 End;
 
 { Extraire le CSS des balises <style> du document }
@@ -7715,6 +7760,51 @@ End;
 { CurrentURL est elle-meme une URL distante - voir CSSExtractFromDocument  }
 { ci-dessous pour le telechargement reel via Browser_HttpGet qui consomme  }
 { ensuite ce resultat. }
+{ Normalise une URL http(s) sans chemin ("https://www.gladir.com") en lui
+  ajoutant la racine "/" (avant tout "?" ou "#"). Sans cela, la resolution
+  d'un href relatif remontait jusqu'au "/" de "://" et produisait
+  "https://include/style.css" (hote perdu) : aucune feuille de style
+  distante ne se chargeait pour une page ouverte par son seul nom d'hote. }
+Function BrowserNormalizeURL(Const URL: String): String;
+Var
+ L: String;
+ I, S: Integer;
+Begin
+ BrowserNormalizeURL := URL;
+ L := HTMLLowerCase(URL);
+ If (Copy(L, 1, 7) <> 'http://') And (Copy(L, 1, 8) <> 'https://') Then Exit;
+ S := Pos('://', URL) + 3;
+ I := S;
+ While (I <= Length(URL)) And (URL[I] <> '/') And (URL[I] <> '?') And
+       (URL[I] <> '#') Do Inc(I);
+ If I > Length(URL) Then
+  BrowserNormalizeURL := URL + '/'
+ Else If URL[I] <> '/' Then
+  BrowserNormalizeURL := Copy(URL, 1, I - 1) + '/' + Copy(URL, I, Length(URL));
+End;
+
+{ Repertoire d'une URL distante (se termine par '/'), sans requete ni
+  fragment, hote conserve. }
+Function BrowserRemoteBaseDir(Const URL: String): String;
+Var
+ U: String;
+ I, S: Integer;
+Begin
+ U := BrowserNormalizeURL(URL);
+ For I := 1 To Length(U) Do
+  If (U[I] = '?') Or (U[I] = '#') Then Begin
+   U := Copy(U, 1, I - 1);
+   Break;
+  End;
+ S := Pos('://', U) + 3;
+ For I := Length(U) DownTo S Do
+  If U[I] = '/' Then Begin
+   BrowserRemoteBaseDir := Copy(U, 1, I);
+   Exit;
+  End;
+ BrowserRemoteBaseDir := U + '/';
+End;
+
 Function CSSBuildStylesheetPath(Const Src: String): String;
 Var
  BasePath: String;
@@ -7760,14 +7850,7 @@ Begin
    Exit;
   End;
   { href relatif : repertoire de la page courante (jusqu'au dernier '/'). }
-  BasePath := CurrentURL;
-  For I := Length(BasePath) DownTo 1 Do Begin
-   If BasePath[I] = '/' Then Begin
-    BasePath := Copy(BasePath, 1, I);
-    Break;
-   End;
-  End;
-  CSSBuildStylesheetPath := BasePath + Src;
+  CSSBuildStylesheetPath := BrowserRemoteBaseDir(CurrentURL) + Src;
   Exit;
  End;
 
@@ -7854,6 +7937,9 @@ Var
   {$ENDIF}
  InlineStyleNumber:Integer;
 Begin
+ { Cache CSS par noeud : la feuille de style va etre reconstruite, un noeud
+   deja calcule pourrait correspondre a d'autres regles -> perimer. }
+ Inc(CSSResolveGeneration);
  { Repartir d'une feuille de style VIDE a chaque appel - sans ce reset,
    chaque appel (ex: un rechargement de page reutilisant la meme
    CSSGlobalStylesheet globale) rajoutait ses regles A LA SUITE des
@@ -8003,67 +8089,51 @@ End;
 
 Procedure CSSResolveCascade(Element: HTMLNodePtr; Var Style: DOMStyle);
 Var
- I, J, RuleIndex: Integer;
+ I, J, K, RuleIndex, PC: Integer;
  MatchedRules: Array[1..128] Of CSSMatchedRule;
  MatchedCount: Integer;
  Temp: CSSMatchedRule;
- InlineStyle: String;
+ InlineStyle, ElemId, ElemClass: String;
+ LastPart: CSSSelectorPartPtr;
+ Skip: Boolean;
 Begin
- { Initialiser avec valeurs par defaut }
+ { Valeurs par defaut : FillChar suffit (une chaine courte a longueur 0 est
+   vide) - les ~45 affectations := '' d'avant etaient redondantes. }
  FillChar(Style,SizeOf(Style),0);
- Style.Color := '';
- Style.BackgroundColor := '';
- Style.BackgroundPosition := '';
- Style.BackgroundImage := '';
- Style.Opacity := '';
- Style.FontSize := '';
- Style.FontWeight := '';
- Style.FontStyle := '';
- Style.TextDecoration := '';
- Style.Display := '';
- Style.Visibility := '';
- Style.Width := '';
- Style.Height := '';
- Style.Margin := '';
- Style.Padding := '';
- Style.Border := '';
- Style.TextAlign := '';
- Style.LineHeight := '';
- Style.Float := '';
- Style.ClearProp := '';
- Style.PositionProp := '';
- Style.TopProp := '';
- Style.RightProp := '';
- Style.BottomProp := '';
- Style.LeftProp := '';
- Style.ListStyle := '';
- Style.ListStyleType := '';
- Style.VerticalAlign := '';
- Style.WhiteSpace := '';
- Style.Overflow := '';
- Style.MarginTop := '';
- Style.MarginRight := '';
- Style.MarginBottom := '';
- Style.MarginLeft := '';
- Style.PaddingTop := '';
- Style.PaddingRight := '';
- Style.PaddingBottom := '';
- Style.PaddingLeft := '';
- Style.BorderColor := '';
- Style.BorderWidth := '';
- Style.BorderStyle := '';
- Style.BorderTop := '';
- Style.BorderRight := '';
- Style.BorderBottom := '';
- Style.BorderLeft := '';
 
  If Element = Nil Then Exit;
+
+ { Cache par noeud : si aucun attribut n'a change nulle part depuis le dernier
+   calcul de CE noeud (meme generation), reutiliser le resultat. }
+ If (Element^.CSSCacheGen = CSSResolveGeneration) And
+    (Element^.CSSCacheStyle <> Nil) Then Begin
+  Style := Element^.CSSCacheStyle^;
+  Exit;
+ End;
+
+ { Id et classes de l'element, lus UNE fois (et non par selecteur) }
+ ElemId := DOMGetAttribute(Element, 'id');
+ ElemClass := DOMGetAttribute(Element, 'class');
 
  { Collecter les regles correspondantes }
  MatchedCount := 0;
  For I := 1 To CSSGlobalStylesheet.RuleCount Do Begin
   For J := 1 To CSSGlobalStylesheet.Rules[I].SelectorCount Do Begin
-   If CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
+   { Rejet rapide : la derniere partie du selecteur doit correspondre a
+     l'element lui-meme (jamais a un ancetre, voir CSSMatchSelector) ; on
+     la teste ici sans appel ni copie avant le test complet. }
+   Skip := False;
+   PC := CSSGlobalStylesheet.Rules[I].Selectors[J].PartCount;
+   If PC > 0 Then Begin
+    LastPart := @CSSGlobalStylesheet.Rules[I].Selectors[J].Parts[PC];
+    Case LastPart^.PartType Of
+     CSS_SEL_TAG: Skip := Not HTMLStrEqI(Element^.TagName, LastPart^.Value);
+     CSS_SEL_CLASS: Skip := Not CSSClassListHas(ElemClass, LastPart^.Value);
+     CSS_SEL_ID: Skip := ElemId <> LastPart^.Value;
+    End;
+   End;
+   If (Not Skip) And
+      CSSMatchSelector(CSSGlobalStylesheet.Rules[I].Selectors[J], Element) Then Begin
     If MatchedCount < 128 Then Begin
      Inc(MatchedCount);
      MatchedRules[MatchedCount].RuleIndex := I;
@@ -8077,17 +8147,20 @@ Begin
   End;
  End;
 
- { Trier par specificite et ordre de source (tri a bulles simple) }
- For I := 1 To MatchedCount - 1 Do
-  For J := I + 1 To MatchedCount Do
-   If CSSCompareRules(MatchedRules[I], MatchedRules[J]) > 0 Then Begin
-    Temp := MatchedRules[I];
-    MatchedRules[I] := MatchedRules[J];
-    MatchedRules[J] := Temp;
-   End;
+ { Trier par specificite puis ordre de source : tri par insertion (stable,
+   quasi lineaire car les regles arrivent deja dans l'ordre source) au lieu
+   du tri a bulles O(n^2) avec echanges d'enregistrements. }
+ For I := 2 To MatchedCount Do Begin
+  Temp := MatchedRules[I];
+  K := I - 1;
+  While (K >= 1) And (CSSCompareRules(MatchedRules[K], Temp) > 0) Do Begin
+   MatchedRules[K + 1] := MatchedRules[K];
+   Dec(K);
+  End;
+  MatchedRules[K + 1] := Temp;
+ End;
 
- { Appliquer les regles dans l'ordre de cascade }
- { D'abord les regles normales }
+ { Appliquer les regles dans l'ordre de cascade : d'abord les normales }
  For I := 1 To MatchedCount Do Begin
   RuleIndex := MatchedRules[I].RuleIndex;
   For J := 1 To CSSGlobalStylesheet.Rules[RuleIndex].PropertyCount Do Begin
@@ -8107,10 +8180,15 @@ Begin
   End;
  End;
 
- { Appliquer le style inline (priorite maximale sauf !important) }
+ { Style inline (priorite maximale sauf !important) }
  InlineStyle := DOMGetAttribute(Element, 'style');
  If Length(InlineStyle) > 0 Then
   CSSParseInlineStyle(InlineStyle, Style);
+
+ { Memoriser pour la generation courante (cache alloue a la demande) }
+ If Element^.CSSCacheStyle = Nil Then New(Element^.CSSCacheStyle);
+ Element^.CSSCacheStyle^ := Style;
+ Element^.CSSCacheGen := CSSResolveGeneration;
 End;
 
 Function CSSParseDimension(Const Value:String;DefaultPx:Integer):Integer;Forward;
@@ -19476,6 +19554,14 @@ Begin
   End;
  End;
 
+ { Ctx.Y est un Integer 16 bits : un contenu tres long (ex. une enorme table
+   ou une page de reference de plusieurs dizaines de milliers de pixels)
+   pouvait le pousser au-dela de 32767, ce qui levait une ERangeError sur
+   les sommes Ctx.Y + Ctx.LineHeight ci-dessous (plantage constate sur
+   CODER/PHP/reference.htm). Plafond bien au-dessus de la zone de mesure
+   (RENDER_LAYOUT_MAX_Y) : le contenu au-dela n'est de toute facon pas rendu. }
+ If Ctx.Y > 32000 Then Ctx.Y := 32000;
+
  { Margin-right, symetrique de l'avance margin-left ci-dessus - voir sa   }
  { disclosure complete. }
  If (Not CurrentElementWantsBlock) And (CurrentElementBox.MarginRightPx > 0) Then
@@ -23381,7 +23467,7 @@ Begin
  End;
 
  { Mettre a jour l'URL courante }
- CurrentURL := URL;
+ CurrentURL := BrowserNormalizeURL(URL);
  URLCursorPos := Length(CurrentURL);
  DrawURLBar;
  DrawFavoriteButton;
@@ -23394,7 +23480,7 @@ Procedure BrowserGoBack;
 Begin
  If CanGoBack Then Begin
   Dec(BrowserHistoryIndex);
-  CurrentURL := BrowserHistory[BrowserHistoryIndex];
+  CurrentURL := BrowserNormalizeURL(BrowserHistory[BrowserHistoryIndex]);
   URLCursorPos := Length(CurrentURL);
   DrawURLBar;
   DrawFavoriteButton;
@@ -23408,7 +23494,7 @@ Procedure BrowserGoForward;
 Begin
  If CanGoForward Then Begin
   Inc(BrowserHistoryIndex);
-  CurrentURL := BrowserHistory[BrowserHistoryIndex];
+  CurrentURL := BrowserNormalizeURL(BrowserHistory[BrowserHistoryIndex]);
   URLCursorPos := Length(CurrentURL);
   DrawURLBar;
   DrawFavoriteButton;
@@ -23529,7 +23615,7 @@ End;
 { Procedure pour definir une nouvelle URL }
 Procedure SetURL(NewURL: String);
 Begin
- CurrentURL := NewURL;
+ CurrentURL := BrowserNormalizeURL(NewURL);
  URLCursorPos := Length(CurrentURL);
  DrawURLBar;
 End;
