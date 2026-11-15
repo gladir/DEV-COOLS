@@ -96594,6 +96594,18 @@ Begin
      Exit;
     End;
     If ElToritoEntry.MediaType = 0 Then Begin
+     { Un noyau 32 bits amorce depuis le CD (OS2KRNL de OS/2-0) range ses   }
+     { processus des 16 Mo et exige 8 Mo libres de plus que son disque      }
+     { virtuel : avec les 16 Mo de memoire etendue par defaut il annoncait  }
+     { "SYS1719: disque virtuel de 4096 Ko impossible". On releve la        }
+     { memoire etendue a 64 Mo (plafond) pour ce lancement. }
+     If (Not OptionsDlg.Data.DosXMS) Or
+        (OptionsDlg.Data.DosXMSSize < EMU_XMS_CAP_KB) Then Begin
+      OptionsDlg.Data.DosXMS := True;
+      OptionsDlg.Data.DosXMSSize := EMU_XMS_CAP_KB;
+      TermAddLine(TP, 'BOOT : memoire etendue portee a 64 Mo pour ' +
+       'l''amorcage du CD-ROM.');
+     End;
      CreateEmulatorElToritoBootTab(Byte(CdSlot), 'CD-ROM (El Torito)');
      Exit;
     End;
@@ -206570,6 +206582,59 @@ Begin
  EmuPanel.NeedRepaint := True;
 End;
 
+{ Detection du mode video a partir des REGISTRES VGA ($3C4/$3CE/$3D4),     }
+{ pour un logiciel qui programme la carte lui-meme sans passer par INT 10h   }
+{ (noyau 32 bits : VIOCALLS.DLL d OS/2-0, VgaLoad ; ou jeu DOS). Avant, seule }
+{ Emu_VidSetMode (BIOS) changeait IsGraphic : l interface graphique du       }
+{ noyau dessinait dans les plans A0000h mais l ecran restait en texte.        }
+{ Garde-fous : un mode installe par le BIOS (EmuVgaRegMode=False) n est      }
+{ jamais retouche, car Emu_VidSetMode ne programme pas les registres CRTC ;   }
+{ seul le retour au texte d un mode detecte ici est automatique. }
+Var
+ EmuVgaRegMode: Boolean;
+
+Function EmuVgaRegModeWatch(Idx: Byte): Boolean;
+Begin
+ EmuVgaRegModeWatch := (Idx = 1) Or (Idx = 7) Or (Idx = 9) Or (Idx = $12);
+End;
+
+Procedure Emu_VidDetectModeFromRegs;
+Var W, H, Scan: LongInt; NewMode: Byte; Chain4: Boolean;
+Begin
+ If EmuVideo.VBEActive Or Not Emu_VGAActive Then Exit;
+ If (EmuVideo.GCReg[6] And 1) = 0 Then Begin
+  { retour au texte d un mode graphique detecte par registres }
+  If EmuVgaRegMode Then Begin
+   EmuVgaRegMode := False;
+   Emu_VidSetMode(3, EmuPanel);
+  End;
+  Exit;
+ End;
+ If EmuVideo.IsGraphic And Not EmuVgaRegMode Then Exit;
+ Chain4 := (EmuVideo.SeqReg[4] And 8) <> 0;
+ If Chain4 Then W := (LongInt(EmuVideo.CRTCReg[1]) + 1) * 4
+ Else W := (LongInt(EmuVideo.CRTCReg[1]) + 1) * 8;
+ H := LongInt(EmuVideo.CRTCReg[$12]) Or
+  (LongInt(EmuVideo.CRTCReg[7] And 2) Shl 7) Or
+  (LongInt(EmuVideo.CRTCReg[7] And $40) Shl 3);
+ Inc(H);
+ Scan := ((LongInt(EmuVideo.CRTCReg[9]) And $1F) + 1) *
+  (1 + (LongInt(EmuVideo.CRTCReg[9]) Shr 7));
+ H := H Div Scan;
+ NewMode := 0;
+ If Chain4 Then Begin
+  If (W = 320) And (H = 200) Then NewMode := $13;
+ End Else If (W = 640) And (H = 480) Then NewMode := $12
+ Else If (W = 640) And (H = 350) Then NewMode := $10
+ Else If (W = 640) And (H = 200) Then NewMode := $0E
+ Else If (W = 320) And (H = 200) Then NewMode := $0D;
+ If NewMode = 0 Then Exit;
+ If EmuVgaRegMode And EmuVideo.IsGraphic And (EmuVideo.Mode = NewMode) Then
+  Exit;
+ Emu_VidSetMode(NewMode Or $80, EmuPanel);
+ If EmuVideo.IsGraphic Then EmuVgaRegMode := True;
+End;
+
 Procedure Emu_VidPortWrite(Port: Word; Value: Byte);
 Begin
  If Not Emu_AnyVideoActive Then Exit;
@@ -206584,8 +206649,10 @@ Begin
   End;
   $3C2: ; { Misc Output, ignore }
   $3C4: If Emu_EGAActive Then EmuVideo.SeqIdx := Value And 7;
-  $3C5: If Emu_EGAActive And (EmuVideo.SeqIdx < 8) Then
+  $3C5: If Emu_EGAActive And (EmuVideo.SeqIdx < 8) Then Begin
    EmuVideo.SeqReg[EmuVideo.SeqIdx] := Value;
+   If EmuVideo.SeqIdx = 4 Then Emu_VidDetectModeFromRegs;
+  End;
   { DAC couleur ($3C6-$3C9) : materiel VGA uniquement. }
   $3C6: If Emu_VGAActive Then EmuVideo.DACMask := Value;
   $3C7: If Emu_VGAActive Then Begin
@@ -206601,14 +206668,18 @@ Begin
    EmuVideo.DACWriteIdx := (EmuVideo.DACWriteIdx + 1) Mod 768;
   End;
   $3CE: If Emu_EGAActive Then EmuVideo.GCIdx := Value And $0F;
-  $3CF: If Emu_EGAActive And (EmuVideo.GCIdx < 16) Then
+  $3CF: If Emu_EGAActive And (EmuVideo.GCIdx < 16) Then Begin
    EmuVideo.GCReg[EmuVideo.GCIdx] := Value;
+   If (EmuVideo.GCIdx = 5) Or (EmuVideo.GCIdx = 6) Then
+    Emu_VidDetectModeFromRegs;
+  End;
   { CRTC : commun a toutes les cartes, aucune garde specifique au-dela de }
   { "une carte quelconque est presente" (deja verifie plus haut). }
   $3D4, $3B4: EmuVideo.CRTCIdx := Value And $1F;
   $3D5, $3B5: Begin
    If EmuVideo.CRTCIdx < 32 Then
     EmuVideo.CRTCReg[EmuVideo.CRTCIdx] := Value;
+   If EmuVgaRegModeWatch(EmuVideo.CRTCIdx) Then Emu_VidDetectModeFromRegs;
    Emu_ATIDetectMode;
   End;
   $3D8: If Emu_CGAActive Or Emu_ATIActive Then Begin
@@ -222640,6 +222711,27 @@ End;
 Function Dpmi_ReadBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt): Byte;
 Var TRow, TCol: Integer; TIsChar: Boolean;
 Begin
+ { Chemin rapide : RAM conventionnelle (< A0000h), cas de loin le plus     }
+ { frequent (code, pile, donnees) - aucune des redirections video/XMS ci-  }
+ { dessous ne la concerne. }
+ If (PhysAddr >= 0) And (PhysAddr < $A0000) Then Begin
+  Dpmi_ReadBytePhys := P.CPU.Memory^[PhysAddr];
+  Exit;
+ End;
+ { Police VGA lue par le logiciel dans le plan 2 de A0000h en mode TEXTE  }
+ { (sequenceur en memoire sequentielle, Read Map Select = 2 : voir         }
+ { FontPlaneOn de VIOCALLS.DLL) : 32 octets par caractere, 16 utiles.       }
+ { Sans cela le noyau recopiait de la RAM non initialisee (F6h) comme       }
+ { glyphes et tout le texte de son interface graphique etait en barres. }
+ If (Not EmuVideo.IsGraphic) And (PhysAddr >= $A0000) And
+    (PhysAddr < $B0000) And ((EmuVideo.GCReg[4] And 3) = 2) And
+    ((EmuVideo.SeqReg[4] And 4) <> 0) Then Begin
+  If (PhysAddr And 31) < 16 Then
+   Dpmi_ReadBytePhys := Banner_Matrix8x16[((PhysAddr - $A0000) Shr 5) * 16 +
+    (PhysAddr And 31)]
+  Else Dpmi_ReadBytePhys := 0;
+  Exit;
+ End;
  If Dpmi_TextVramCell(PhysAddr, TRow, TCol, TIsChar) Then Begin
   If TIsChar Then Dpmi_ReadBytePhys := Byte(Ord(EmuPanel.VRAM[TRow, TCol].Ch))
   Else Dpmi_ReadBytePhys := (EmuPanel.VRAM[TRow, TCol].Fg And $0F) Or
@@ -222718,6 +222810,11 @@ Procedure Dpmi_WriteBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt; V: Byte);
 Var WLog: Text; WIO: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
  TRow, TCol: Integer; TIsChar: Boolean;
 Begin
+ { Chemin rapide : RAM conventionnelle hors surveillance WATCH. }
+ If (PhysAddr >= 0) And (PhysAddr < $A0000) And Not EmuWatchEnabled Then Begin
+  P.CPU.Memory^[PhysAddr] := V;
+  Exit;
+ End;
  { Ecran texte : mettre a jour la grille virtuelle puis laisser l ecriture }
  { continuer vers la RAM (relecture coherente hors grille 25 lignes). }
  If Dpmi_TextVramCell(PhysAddr, TRow, TCol, TIsChar) Then Begin
@@ -222819,6 +222916,11 @@ End;
 { 80386, CR3/PDE/PTE contiennent TOUJOURS des adresses physiques, jamais   }
 { une autre couche de traduction a appliquer dessus. }
 Var
+ { Cache d une entree de repertoire de pages a 4 Mo (PSE) : evite 4 lectures }
+ { physiques par octet accede. Invalide par MOV CR0/CR3/CR4. }
+ DpmiPdeCacheDir: LongInt;
+ DpmiPdeCacheCR3: LongInt;
+ DpmiPdeCacheVal: LongInt;
  EmuXlatLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGXLAT.LOG
    }
  EmuAllocBaseHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer, voir
@@ -222839,6 +222941,12 @@ Begin
  DirIdx  := (LongWord(LinAddr) Shr 22) And $3FF;
  TblIdx  := (LongWord(LinAddr) Shr 12) And $3FF;
  PageOfs := LinAddr And $FFF;
+ If (DirIdx = DpmiPdeCacheDir) And (DpmiCPU.CR3 = DpmiPdeCacheCR3) And
+    ((DpmiPdeCacheVal And $81) = $81) Then Begin
+  Dpmi_TranslateLin := (DpmiPdeCacheVal And LongInt($FFC00000)) Or
+   (LinAddr And $3FFFFF);
+  Exit;
+ End;
  PdeAddr := (DpmiCPU.CR3 And LongInt($FFFFF000)) + DirIdx * 4;
  Pde := LongInt(Dpmi_ReadBytePhys(P, PdeAddr)) Or
   (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 1)) Shl 8) Or
@@ -222848,6 +222956,9 @@ Begin
  { cadre physique (bits 31-22) - pas de table de pages. }
  If ((Pde And 1) <> 0) And ((Pde And $80) <> 0) And
     ((DpmiCPU.CR4 And $10) <> 0) Then Begin
+  DpmiPdeCacheDir := DirIdx;
+  DpmiPdeCacheCR3 := DpmiCPU.CR3;
+  DpmiPdeCacheVal := Pde;
   Dpmi_TranslateLin := (Pde And LongInt($FFC00000)) Or (LinAddr And $3FFFFF);
   Exit;
  End;
@@ -224839,6 +224950,7 @@ Begin
  DpmiCPU.CR2 := P.CPU.CR2;
  DpmiCPU.CR3 := P.CPU.CR3;
  DpmiCPU.CR4 := P.CPU.CR4;
+ DpmiPdeCacheDir := -1;
  DpmiCPU.GdtBase  := P.CPU.GdtBase;
  DpmiCPU.GdtLimit := P.CPU.GdtLimit;
  DpmiCPU.IdtBase  := P.CPU.IdtBase;
@@ -225448,12 +225560,6 @@ Var
  EmuCr0PgLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  CA6CPtr: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuLtrPrevEIP: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
- { Trace circulaire des EIP executes par Dpmi_Step (mode protege), vidage  }
- { dans EMUDIAG.LOG - Emu_DumpTrace ne voit que CS:IP reel-mode. }
- DpmiPmTraceEip: Array[0..4095] Of LongInt;
- DpmiPmTraceEsp: Array[0..4095] Of LongInt;
- DpmiPmTraceIdx: Integer;
- DpmiPmTracePrev: LongInt;
  EmuLtrPrevLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagLtrPrev: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGLTRPREV.LOG }
  EmuEntryHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
@@ -225476,6 +225582,54 @@ Begin
  Else Emu_PortWrite16(P, Port, DpmiCPU.Reg.AX);
 End;
 
+{ Retour protege -> REEL par ecriture directe de CR0 (bit PE 1->0), symetrique }
+{ de Emu_RawSwitchToProtectedViaCR0 : c est le "pont BIOS" d un              }
+{ noyau 32 bits (OS2KRNL de OS/2-0, KERNEL/BIOSCALL.ASM : mode protege 16     }
+{ bits, CR0.PE=0 puis JMP FAR 0000:7065, INT 10h/VBE, puis retour). Avant,     }
+{ Dpmi_Step continuait en protege et chargeait le selecteur 0 du JMP FAR :     }
+{ #GP "ERRCD=0 EIP=7065" des qu un programme demandait un mode video. Le JMP   }
+{ FAR qui suit est decode ici (comme a l aller) ; les registres de segment     }
+{ deviennent des paragraphes reels (base / 16). }
+Procedure Dpmi_SwitchToRealViaCR0(Var P: TEmulatorPanel);
+Var FarSeg: Word; FarOfs: LongInt; K: Integer; Has66: Boolean;
+Begin
+ K := 0;
+ Has66 := Dpmi_FetchByte(P, 0) = $66;
+ If Has66 Then K := 1;
+ If Dpmi_FetchByte(P, K) = $EA Then Begin
+  If Has66 Then Begin
+   FarOfs := Dpmi_FetchDWord(P, K + 1);
+   FarSeg := Dpmi_FetchWord(P, K + 5);
+  End Else Begin
+   FarOfs := Dpmi_FetchWord(P, K + 1);
+   FarSeg := Dpmi_FetchWord(P, K + 3);
+  End;
+ End Else Begin
+  FarSeg := Word(Dpmi_SelBase(DpmiCPU.SegSel[1]) Div 16);
+  FarOfs := DpmiCPU.EIP;
+ End;
+ P.CPU.Regs := DpmiCPU.Reg;
+ P.CPU.Flags.s := DpmiCPU.Flags.s;
+ P.CPU.Segs.ES := Word(Dpmi_SelBase(DpmiCPU.SegSel[0]) Div 16);
+ P.CPU.Segs.SS := Word(Dpmi_SelBase(DpmiCPU.SegSel[2]) Div 16);
+ P.CPU.Segs.DS := Word(Dpmi_SelBase(DpmiCPU.SegSel[3]) Div 16);
+ P.CPU.FS := Word(Dpmi_SelBase(DpmiCPU.SegSel[4]) Div 16);
+ P.CPU.GS := Word(Dpmi_SelBase(DpmiCPU.SegSel[5]) Div 16);
+ P.CPU.Segs.CS := FarSeg;
+ P.CPU.IP := Word(FarOfs);
+ P.CPU.CR0 := DpmiCPU.CR0;
+ P.CPU.CR2 := DpmiCPU.CR2;
+ P.CPU.CR3 := DpmiCPU.CR3;
+ P.CPU.CR4 := DpmiCPU.CR4;
+ P.CPU.GdtBase := DpmiCPU.GdtBase;
+ P.CPU.GdtLimit := DpmiCPU.GdtLimit;
+ P.CPU.IdtBase := DpmiCPU.IdtBase;
+ P.CPU.IdtLimit := DpmiCPU.IdtLimit;
+ P.CPU.OperandSize32 := False;
+ P.CPU.AddrSize32 := False;
+ DpmiCPU.Active := False;
+End;
+
 Procedure Dpmi_Step(Var P: TEmulatorPanel);
 Var
  DiagPIntF: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGPINT.LOG }
@@ -225494,6 +225648,7 @@ Var
  Idx: Integer; { index LDT, voir $0F 02/03 (LAR/LSL) }
  RepMode: Byte; { 0=aucun, 1=REP/REPE, 2=REPNE - voir $A4-$A5/$A6-$A7/$AA-$AF }
  EIPStart: LongInt; { EIP avant prefixes, pour rejouer l instruction REP     }
+ CR0WasPm: Boolean; { PE de CR0 avant un MOV CR0,r32 }
  NewSel: Word; { nouveau CS, voir groupe FF /3 (CALLF) et /5 (JMPF) indirects }
  RetIP32: LongInt; RetCS16: Word; { "raw mode switch" EMU_DPMI_RAWSWITCH_SEL }
  MulRes: LongInt; MulRes64: Int64; { IMUL $69/$6B }
@@ -225598,15 +225753,6 @@ Begin
   End;
   {$I+} If IOResult <> 0 Then ;
  End;
- { Ne tracer que les ruptures de sequence (saut/appel/retour/INT) : un     }
- { anneau de 4096 instructions lineaires ne remonterait pas assez loin.    }
- If (EIPStart < DpmiPmTracePrev) Or (EIPStart - DpmiPmTracePrev > 16) Then
- Begin
-  DpmiPmTraceEip[DpmiPmTraceIdx] := EIPStart;
-  DpmiPmTraceEsp[DpmiPmTraceIdx] := DpmiCPU.Reg.ESP;
-  DpmiPmTraceIdx := (DpmiPmTraceIdx + 1) And 4095;
- End;
- DpmiPmTracePrev := EIPStart;
  EmuLtrPrevEIP := EIPStart;
  RepMode := 0;
  Repeat
@@ -225881,11 +226027,22 @@ Begin
            End;
            {$I+} If IOResult <> 0 Then ;
           End;
+          DpmiPdeCacheDir := -1;
+          CR0WasPm := (DpmiCPU.CR0 And 1) <> 0;
           DpmiCPU.CR0 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+          { PE 1->0 : retour au mode reel (pont BIOS d un noyau 32 bits) }
+          If CR0WasPm And ((DpmiCPU.CR0 And 1) = 0) And EmuBootActive Then
+           Dpmi_SwitchToRealViaCR0(P);
          End;
       2: DpmiCPU.CR2 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
-      3: DpmiCPU.CR3 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
-      4: DpmiCPU.CR4 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+      3: Begin
+          DpmiPdeCacheDir := -1;
+          DpmiCPU.CR3 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+         End;
+      4: Begin
+          DpmiPdeCacheDir := -1;
+          DpmiCPU.CR4 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+         End;
      End;
     End;
     $B6: Begin { MOVZX Gv, Eb - BOGUE REEL CORRIGE (2026-10-18, enquete
@@ -260014,10 +260171,6 @@ Begin
    ' ESP=', HexWord(Word(DpmiCPU.Reg.ESP Shr 16)),
    HexWord(Word(DpmiCPU.Reg.ESP)),
    ' CR0=', HexWord(Word(DpmiCPU.CR0 Shr 16)), HexWord(Word(DpmiCPU.CR0)));
-  WriteLn(LogF_R, 'PMTRACE (4096 derniers EIP:ESP, plus ancien en tete) :');
-  For KK_R := 0 To 4095 Do
-   WriteLn(LogF_R, HexLong(DpmiPmTraceEip[(DpmiPmTraceIdx + KK_R) And 4095]),
-    ' ', HexLong(DpmiPmTraceEsp[(DpmiPmTraceIdx + KK_R) And 4095]));
   WriteLn(LogF_R, 'VIDEO: Int10=', EmuDiag_Int10Cnt,
                   ' VidWr=', EmuDiag_VidWrCnt,
                   ' PixWr=', EmuDiag_PixWrCnt,
