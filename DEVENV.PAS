@@ -6246,6 +6246,12 @@ Type
   { rempli automatiquement, seulement via un MOV CR2,reg explicite. }
   CR2      : LongInt;
   CR3      : LongInt;
+  { CR4 du coeur protege : seul le bit PSE (bit 4, pages de 4 Mo) est       }
+  { interprete, par Dpmi_TranslateLin - OS2KRNL projette ses 4 Go en        }
+  { identite avec des PDE a 4 Mo (PS=1) ; sans PSE la PDE etait lue comme   }
+  { l adresse d une table de pages et toute la memoire basse (dont la pile) }
+  { devenait illisible (octets non initialises F6). }
+  CR4      : LongInt;
  End;
 
  { Operande decode a partir d un octet ModR/M (+ eventuel SIB) par          }
@@ -222610,8 +222616,36 @@ End;
 { separe, comme EmuXmsMem/EmuEmsMem). Hors bornes : 0 en lecture, ignore   }
 { en ecriture (meme convention defensive que Emu64_GetByte de l emulateur  }
 { ELF64). --- }
-Function Dpmi_ReadBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt): Byte;
+{ Memoire video TEXTE (B0000h-BFFFFh) vue du coeur protege : l ecran texte  }
+{ de l emulateur est la grille virtuelle EmuPanel.VRAM (voir Emu_WriteBlock/ }
+{ Emu_ReadBlock), PAS la RAM ordinaire - avant ce correctif un noyau 32     }
+{ bits qui ecrit directement en B8000h (OS2KRNL de OS/2-0 : prompt CMD.EXE  }
+{ present en memoire mais jamais affiche) restait invisible. Vrai si        }
+{ l adresse est dans la fenetre texte ET tombe dans la grille 25 lignes.     }
+Function Dpmi_TextVramCell(PhysAddr: LongInt; Var Row, Col: Integer;
+ Var IsChar: Boolean): Boolean;
+Var Ofs: LongInt;
 Begin
+ Dpmi_TextVramCell := False;
+ If EmuVideo.IsGraphic Or (EmuVideo.Mode = EMU_MODE_GS640x16) Then Exit;
+ If (PhysAddr < $B0000) Or (PhysAddr >= $C0000) Then Exit;
+ Ofs := PhysAddr And $7FFF;
+ Row := (Ofs Shr 1) Div Emu_SafeVramCols;
+ Col := (Ofs Shr 1) Mod Emu_SafeVramCols;
+ If (Row < 0) Or (Row > 24) Or (Col < 0) Or (Col > 131) Then Exit;
+ IsChar := (Ofs And 1) = 0;
+ Dpmi_TextVramCell := True;
+End;
+
+Function Dpmi_ReadBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt): Byte;
+Var TRow, TCol: Integer; TIsChar: Boolean;
+Begin
+ If Dpmi_TextVramCell(PhysAddr, TRow, TCol, TIsChar) Then Begin
+  If TIsChar Then Dpmi_ReadBytePhys := Byte(Ord(EmuPanel.VRAM[TRow, TCol].Ch))
+  Else Dpmi_ReadBytePhys := (EmuPanel.VRAM[TRow, TCol].Fg And $0F) Or
+   ((EmuPanel.VRAM[TRow, TCol].Bg And $07) Shl 4);
+  Exit;
+ End;
  { Tampon lineaire VBE de la S3 (2026-11-12, voir EMU_S3_LFB_BASE). }
  If (PhysAddr >= EMU_S3_LFB_BASE) And
     (PhysAddr < EMU_S3_LFB_BASE + S3_VRAM_SIZE) Then Begin
@@ -222682,7 +222716,18 @@ End;
 
 Procedure Dpmi_WriteBytePhys(Var P: TEmulatorPanel; PhysAddr: LongInt; V: Byte);
 Var WLog: Text; WIO: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ TRow, TCol: Integer; TIsChar: Boolean;
 Begin
+ { Ecran texte : mettre a jour la grille virtuelle puis laisser l ecriture }
+ { continuer vers la RAM (relecture coherente hors grille 25 lignes). }
+ If Dpmi_TextVramCell(PhysAddr, TRow, TCol, TIsChar) Then Begin
+  If TIsChar Then EmuPanel.VRAM[TRow, TCol].Ch := Chr(V)
+  Else Begin
+   EmuPanel.VRAM[TRow, TCol].Fg := V And $0F;
+   EmuPanel.VRAM[TRow, TCol].Bg := (V Shr 4) And $07;
+  End;
+  EmuPanel.NeedRepaint := True;
+ End;
  { BOGUE REEL CORRIGE (2026-10-18, enquete WIN.COM/divergence BOUND) : la   }
  { commande WATCH/EmuWatchEnabled (voir le commentaire jumeau dans          }
  { Emu_WriteAbsBlock) ne couvrait QUE le coeur reel/unreal - TOUTE ecriture }
@@ -222799,6 +222844,13 @@ Begin
   (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 1)) Shl 8) Or
   (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 2)) Shl 16) Or
   (LongInt(Dpmi_ReadBytePhys(P, PdeAddr + 3)) Shl 24);
+ { Pages de 4 Mo (CR4.PSE=1 et PDE.PS=1) : la PDE donne directement le   }
+ { cadre physique (bits 31-22) - pas de table de pages. }
+ If ((Pde And 1) <> 0) And ((Pde And $80) <> 0) And
+    ((DpmiCPU.CR4 And $10) <> 0) Then Begin
+  Dpmi_TranslateLin := (Pde And LongInt($FFC00000)) Or (LinAddr And $3FFFFF);
+  Exit;
+ End;
  If (Pde And 1) = 0 Then Begin { PDE non presente : repli honnete }
   { DIAGNOSTIC TEMPORAIRE - a retirer (2026-10-18, enquete divergence BOUND)}
   If (Not EmuXlatLogged) And (LongWord(LinAddr) And $FFFFFF00 =
@@ -224786,6 +224838,7 @@ Begin
  DpmiCPU.CR0 := P.CPU.CR0;
  DpmiCPU.CR2 := P.CPU.CR2;
  DpmiCPU.CR3 := P.CPU.CR3;
+ DpmiCPU.CR4 := P.CPU.CR4;
  DpmiCPU.GdtBase  := P.CPU.GdtBase;
  DpmiCPU.GdtLimit := P.CPU.GdtLimit;
  DpmiCPU.IdtBase  := P.CPU.IdtBase;
@@ -225395,6 +225448,12 @@ Var
  EmuCr0PgLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  CA6CPtr: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
  EmuLtrPrevEIP: LongInt; { DIAGNOSTIC TEMPORAIRE - a retirer }
+ { Trace circulaire des EIP executes par Dpmi_Step (mode protege), vidage  }
+ { dans EMUDIAG.LOG - Emu_DumpTrace ne voit que CS:IP reel-mode. }
+ DpmiPmTraceEip: Array[0..4095] Of LongInt;
+ DpmiPmTraceEsp: Array[0..4095] Of LongInt;
+ DpmiPmTraceIdx: Integer;
+ DpmiPmTracePrev: LongInt;
  EmuLtrPrevLogged: Boolean; { DIAGNOSTIC TEMPORAIRE - a retirer }
  DiagLtrPrev: Text; { DIAGNOSTIC TEMPORAIRE - a retirer, voir DIAGLTRPREV.LOG }
  EmuEntryHits: Integer; { DIAGNOSTIC TEMPORAIRE - a retirer }
@@ -225539,6 +225598,15 @@ Begin
   End;
   {$I+} If IOResult <> 0 Then ;
  End;
+ { Ne tracer que les ruptures de sequence (saut/appel/retour/INT) : un     }
+ { anneau de 4096 instructions lineaires ne remonterait pas assez loin.    }
+ If (EIPStart < DpmiPmTracePrev) Or (EIPStart - DpmiPmTracePrev > 16) Then
+ Begin
+  DpmiPmTraceEip[DpmiPmTraceIdx] := EIPStart;
+  DpmiPmTraceEsp[DpmiPmTraceIdx] := DpmiCPU.Reg.ESP;
+  DpmiPmTraceIdx := (DpmiPmTraceIdx + 1) And 4095;
+ End;
+ DpmiPmTracePrev := EIPStart;
  EmuLtrPrevEIP := EIPStart;
  RepMode := 0;
  Repeat
@@ -225786,6 +225854,7 @@ Begin
       0: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR0);
       2: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR2);
       3: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR3);
+      4: Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, DpmiCPU.CR4);
      Else
       Dpmi_SetReg32(DpmiCPU.Reg, ModRM And 7, 0);
      End;
@@ -225816,6 +225885,7 @@ Begin
          End;
       2: DpmiCPU.CR2 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
       3: DpmiCPU.CR3 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
+      4: DpmiCPU.CR4 := Dpmi_GetReg32(DpmiCPU.Reg, ModRM And 7);
      End;
     End;
     $B6: Begin { MOVZX Gv, Eb - BOGUE REEL CORRIGE (2026-10-18, enquete
@@ -259933,6 +260003,21 @@ Begin
    HexWord(P.CPU.IP), ' SS:SP=', HexWord(P.CPU.Segs.SS), ':',
    HexWord(P.CPU.Regs.SP), ' BP=', HexWord(P.CPU.Regs.BP),
    ' DS=', HexWord(P.CPU.Segs.DS), ' ES=', HexWord(P.CPU.Segs.ES));
+  { Etat du moteur protege (DpmiCPU) : un plantage en mode protege laisse }
+  { CS:IP reel perime (ancien code reel-mode) - c est EIP ci-dessous qui  }
+  { designe la vraie instruction fautive. }
+  WriteLn(LogF_R, 'PM: Active=', DpmiCPU.Active, ' Is32=', DpmiCPU.Is32Bit,
+   ' CS=', HexWord(DpmiCPU.SegSel[1]),
+   ' EIP=', HexWord(Word(DpmiCPU.EIP Shr 16)), HexWord(Word(DpmiCPU.EIP)),
+   ' EAX=', HexWord(Word(DpmiCPU.Reg.EAX Shr 16)),
+   HexWord(Word(DpmiCPU.Reg.EAX)),
+   ' ESP=', HexWord(Word(DpmiCPU.Reg.ESP Shr 16)),
+   HexWord(Word(DpmiCPU.Reg.ESP)),
+   ' CR0=', HexWord(Word(DpmiCPU.CR0 Shr 16)), HexWord(Word(DpmiCPU.CR0)));
+  WriteLn(LogF_R, 'PMTRACE (4096 derniers EIP:ESP, plus ancien en tete) :');
+  For KK_R := 0 To 4095 Do
+   WriteLn(LogF_R, HexLong(DpmiPmTraceEip[(DpmiPmTraceIdx + KK_R) And 4095]),
+    ' ', HexLong(DpmiPmTraceEsp[(DpmiPmTraceIdx + KK_R) And 4095]));
   WriteLn(LogF_R, 'VIDEO: Int10=', EmuDiag_Int10Cnt,
                   ' VidWr=', EmuDiag_VidWrCnt,
                   ' PixWr=', EmuDiag_PixWrCnt,
