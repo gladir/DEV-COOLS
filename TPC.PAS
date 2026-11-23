@@ -493,7 +493,7 @@ Var
  RealReady,EmulatorReady: Boolean;
  RealCodeBase,RealCodeEnd,RealDataBase,RealDataEnd: Word;
  EmulatorCodeBase,EmulatorCodeEnd,EmulatorDataBase,EmulatorDataEnd: Word;
-const RealSource: array[1..326] of string[255] = (
+const RealSource: array[1..328] of string[255] = (
  '{$R-,S-,B-,N-,O-,D-,L-,Q-}',
  'type RBytes=array[0..5] of Byte;',
  '     Mant=array[0..2] of Word;',
@@ -847,32 +847,36 @@ const RealSource: array[1..326] of string[255] = (
  '   s[3]:=Byte(e shr 1) or (r[5] and 128) end end end;',
  'procedure RDouble(var d:DBytes; var r:RBytes);',
  'var e:Integer; top,low:Longint;',
- 'begin FillChar(r,6,0); e:=((Integer(d[7]) and 127) shl 4) or ' +
-   '(Integer(d[6]) shr 4);',
+ 'begin FillChar(r,6,0); e:=d[7]; e:=(e and 127) shl 4; ' +
+   'e:=e or (d[6] shr 4);',
  ' if e<>0 then begin',
- '  e:=e-894; if e<1 then Exit; if e>255 then e:=255;',
- '  top:=(Longint(d[6] and 15) shl 16) or (Longint(d[5]) shl 8) or d[4];',
- '  low:=(Longint(d[3]) shl 24) or (Longint(d[2]) shl 16) or (Longint(d[1]) ' +
-   'shl 8) or d[0];',
- '  r[0]:=Byte(e);',
- '  r[5]:=Byte((top shr 13) and 127);',
- '  r[4]:=Byte((top shr 5) and 255);',
- '  r[3]:=Byte(((top and 31) shl 3) or ((low shr 29) and 7));',
- '  r[2]:=Byte((low shr 21) and 255);',
- '  r[1]:=Byte((low shr 13) and 255);',
- '  if (d[7] and 128)<>0 then r[5]:=r[5] or 128 end end;',
+ '  e:=e-894;',
+ '  if e>=1 then begin',
+ '   if e>255 then e:=255;',
+ '   top:=(Longint(d[6] and 15) shl 16) or (Longint(d[5]) shl 8) or d[4];',
+ '   low:=(Longint(d[3]) shl 24) or (Longint(d[2]) shl 16) or ' +
+   '(Longint(d[1]) shl 8) or d[0];',
+ '   r[0]:=Byte(e);',
+ '   r[5]:=Byte((top shr 13) and 127);',
+ '   r[4]:=Byte((top shr 5) and 255);',
+ '   r[3]:=Byte(((top and 31) shl 3) or ((low shr 29) and 7));',
+ '   r[2]:=Byte((low shr 21) and 255);',
+ '   r[1]:=Byte((low shr 13) and 255);',
+ '   if (d[7] and 128)<>0 then r[5]:=r[5] or 128 end end end;',
  'procedure RToDouble(var r:RBytes; var d:DBytes);',
- 'var e:Integer;',
+ 'var e:Integer; top,low:Longint;',
  'begin FillChar(d,8,0);',
  ' if r[0]<>0 then begin',
  '  e:=Integer(r[0])+894;',
- '  d[7]:=Byte(e shr 4) or (r[5] and 128);',
- '  d[6]:=Byte((e and 15) shl 4) or Byte((r[5] and 127) shr 3);',
- '  d[5]:=Byte((r[5] and 7) shl 5) or Byte(r[4] shr 3);',
- '  d[4]:=Byte((r[4] and 7) shl 5) or Byte(r[3] shr 3);',
- '  d[3]:=Byte((r[3] and 7) shl 5) or Byte(r[2] shr 3);',
- '  d[2]:=Byte((r[2] and 7) shl 5) or Byte(r[1] shr 3);',
- '  d[1]:=Byte(r[1] and 7) shl 5 end end;');
+ '  top:=(Longint(r[5] and 127) shl 13) or (Longint(r[4]) shl 5) or ' +
+   '(r[3] shr 3);',
+ '  low:=(Longint(r[3] and 7) shl 29) or (Longint(r[2]) shl 21) or ' +
+   '(Longint(r[1]) shl 13);',
+ '  d[0]:=Byte(low and 255); d[1]:=Byte((low shr 8) and 255);',
+ '  d[2]:=Byte((low shr 16) and 255); d[3]:=Byte((low shr 24) and 255);',
+ '  d[4]:=Byte(top and 255); d[5]:=Byte((top shr 8) and 255);',
+ '  d[6]:=Byte(((top shr 16) and 15) or ((e and 15) shl 4));',
+ '  d[7]:=Byte((e shr 4) or (r[5] and 128)) end end;');
 const EmulatorSource: array[1..174] of string[255] = (
  '{$R-,S-,B-,N-,O-,D-,L-}',
  'procedure REmu(op,width,index:Integer; var mem); forward;',
@@ -4631,6 +4635,12 @@ Begin
    If TokenIsReal Then Begin
     Val(TokenText,TokenReal,N); If N<>0 Then Fail(7,
       'Constante reelle invalide');
+    { 1.70141183460469E38 (2^127 arrondi) : maximum du Real/Extended de TP,
+      ramene au maximum du Real 6 octets }
+    If (Abs(TokenReal)>1.701411834603E38) And
+       (Abs(TokenReal)<=1.70141183461E38) Then
+     If TokenReal<0 Then TokenReal:=-1.7014118346E38
+                    Else TokenReal:=1.7014118346E38;
     If Abs(TokenReal)>1.701411834603E38 Then Fail(76,
       'Constante reelle hors limites (Real 6 octets)');
    End
@@ -5463,6 +5473,7 @@ Begin
  CurrentUnit:=255;
  For T:=1 To 18 Do Begin I:=NewSymbol(Names[T]); Symbols[I].Kind:=skType;
    ApplyType(I,T) End;
+ I:=NewSymbol('EXTENDED'); Symbols[I].Kind:=skType; ApplyType(I,18);
  CurrentUnit:=0; FileModeAddress:=AllocData(1); Data[FileModeAddress]:=2;
  CurrentUnit:=255; I:=NewSymbol('FILEMODE'); Symbols[I].Kind:=skVar;
    ApplyType(I,2); Symbols[I].Addr:=FileModeAddress;
@@ -8685,6 +8696,19 @@ Begin
   If (Types[A].Typ<>ttInteger) Or (Types[A].Width<>2) Then Fail(26,
     'Code Val doit etre Integer ou Word');
   Emit($06); Emit($57); Need(tkRP); Emit($55); Emit2($89,$E5);
+  If (Types[T].Typ=ttReal) And (Types[T].Width<>6) Then Begin
+   { Single / Double : analyse dans un Real temporaire puis conversion }
+   EnsureRealRuntime; Q:=AllocData(6); Emit($06);
+   Emit($1E); Emit($07); Emit($BF); DataAddress(Q); Emit($B9); EmitWord(3);
+   Emit2($31,$C0); Emit2($F3,$AB);
+   Emit2($FF,$76); Emit(12); Emit2($FF,$76); Emit(10);
+   Emit($1E); Emit($B8); DataAddress(Q); Emit($50);
+   Emit2($FF,$76); Emit(4); Emit2($FF,$76); Emit(2); RealCall('RPARSE');
+   Emit($1E); Emit($B8); DataAddress(Q); Emit($50);
+   Emit2($FF,$76); Emit(8); Emit2($FF,$76); Emit(6);
+   If Types[T].Width=4 Then RealCall('RTOSINGLE') Else RealCall('RTODOUBLE');
+   Emit($07);
+  End Else
   If Types[T].Typ=ttReal Then Begin
    EnsureRealRuntime; Emit($06);
    Emit2($FF,$76); Emit(12); Emit2($FF,$76); Emit(10);
@@ -10427,8 +10451,17 @@ Begin
     (BuiltinType(Name)<>0))) Then Begin
    { Type(Variable) := expression : transtypage de variable en destination }
    If I<>0 Then P:=Symbols[I].TypeId Else P:=BuiltinType(Name);
-   NextToken; Q:=VariableArgument; Need(tkRP);
-   If Token In [tkLB,tkDot] Then P:=DesignatorTail(P);
+   NextToken;
+   If Types[P].Typ=ttPointer Then Begin
+    { TPtr(expression)^ := ... : la valeur du pointeur donne l'adresse }
+    Q:=Expression; Need(tkRP);
+    If Token<>tkCaret Then Fail(61,'Transtypage de variable invalide');
+    NextToken; Emit2($8E,$C2); Emit2($89,$C7);
+    P:=DesignatorTail(TypeExtras[P].ElementType);
+   End Else Begin
+    Q:=VariableArgument; Need(tkRP);
+    If Token In [tkLB,tkDot] Then P:=DesignatorTail(P);
+   End;
    AssignToDesignator(P);
   End Else
   If (I=0) And (Token=tkLB) And IsMemPort(Name) Then MemPortStore(Name)
@@ -10845,7 +10878,7 @@ Begin
  If Token=tkPacked Then NextToken;
  If Token In [tkProcedure,tkFunction] Then
   Unsupported('type procedural');
- If (Token=tkIdent) And ((TokenText='EXTENDED') Or (TokenText='COMP')) And
+ If (Token=tkIdent) And (TokenText='COMP') And
    (FindLexicalSymbol(TokenText)=0) Then
   Unsupported('type: '+TokenText);
  If Token=tkFile Then Begin
@@ -11419,8 +11452,9 @@ Begin
    If (ByVar Or IsConst) And (Token In [tkSemi,tkRP]) Then Begin T:=0;
      ByVar:=True End
    Else Begin Need(tkColon); T:=ReadType End;
+   { Single/Double par valeur : recu comme Real (les calculs sont en Real) }
    If (T<>0) And (Types[T].Typ=ttReal) And (Types[T].Width<>6) And Not ByVar
-     Then Unsupported('parametre Single/Double par valeur');
+     Then T:=11;
    If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttArray,
      ttRecord,ttString,ttSet,ttReal]) And
       Not (ByVar And ((T=0) Or (Types[T].Typ In [ttFile,ttText]))) Then
@@ -11452,6 +11486,8 @@ Begin
  If IsFunction Then Begin
   If Token=tkColon Then Begin
    FullHeading:=True; NextToken; T:=ReadType;
+   { resultat Single/Double : calcule et rendu comme Real }
+   If (Types[T].Typ=ttReal) And (Types[T].Width<>6) Then T:=11;
    If Not (Types[T].Typ In [ttInteger,ttBoolean,ttChar,ttEnum,ttPointer,ttReal,
      ttString]) Then
     Fail(34,'Resultat de fonction non ordinal');
@@ -16887,7 +16923,11 @@ Begin
  For K:=1 To SymbolCount Do
   If (Symbols[K].Kind=skProc) And Symbols[K].HasBody And Not Symbols[K].Native
     And Not Symbols[K].InlineBody And
-     Not Live[K] And (Symbols[K].Owner<>255) Then Begin
+     Not Live[K] And (Symbols[K].Owner<>255) And
+     Not ((Symbols[K].Owner=254) And ((Symbols[K].Name='RSINGLE') Or
+       (Symbols[K].Name='RTOSINGLE'))) Then Begin
+   { RSingle / RToSingle restent liees : sans elles, RDouble / RToDouble
+     (Single/Double) etaient mal generees }
    DeadProc[K]:=True; Inc(Changed);
    If GetEnv('TPC_SHOWDEAD')<>'' Then WriteLn(StdErr,'DEAD ',Symbols[K].Name);
   End;
